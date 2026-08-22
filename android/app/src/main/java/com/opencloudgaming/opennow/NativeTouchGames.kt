@@ -14,6 +14,7 @@ package com.opencloudgaming.opennow
  */
 /** The value the catalog uses to mark a touch-capable variant. */
 internal const val SUPPORTED_CONTROL_TOUCHSCREEN = "TOUCHSCREEN"
+internal const val CATALOG_FILTER_TOUCHSCREEN = "opennow:supported-controls:touchscreen"
 
 /** Whether the catalog itself claims this game takes touch, across any of its variants. */
 internal fun catalogClaimsTouchSupport(game: GameInfo): Boolean =

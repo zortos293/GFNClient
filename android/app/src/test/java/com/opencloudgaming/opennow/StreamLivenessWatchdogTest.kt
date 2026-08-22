@@ -7,109 +7,32 @@ import org.junit.Test
 
 class StreamLivenessWatchdogTest {
     @Test
-    fun catastrophic1440pAv1FirstFrameRetriesH265OnlyOnce() {
-        assertEquals(
-            CatastrophicResolutionRecoveryStep.RetryWithH265,
-            catastrophicFirstDecodedResolutionRecoveryStep(
-                transportCodec = VideoCodec.AV1,
-                expectedResolution = "2560x1440",
-                decodedResolution = "320x180",
-                completedCodecFallbacks = 0,
-            ),
-        )
-        assertEquals(
-            CatastrophicResolutionRecoveryStep.None,
-            catastrophicFirstDecodedResolutionRecoveryStep(
-                transportCodec = VideoCodec.AV1,
-                expectedResolution = "2560x1440",
-                decodedResolution = "320x180",
-                completedCodecFallbacks = 1,
-            ),
-        )
+    fun decodedResolutionTrackerAcceptsInitialAndRuntimeModeChanges() {
+        val tracker = DecodedResolutionTracker()
+
+        val initial = tracker.observe(width = 2560, height = 1440)
+        val duplicate = tracker.observe(width = 2560, height = 1440)
+        val uplayModeChange = tracker.observe(width = 1280, height = 720)
+
+        assertEquals(true, initial?.isInitial)
+        assertEquals(null, duplicate)
+        assertEquals(false, uplayModeChange?.isInitial)
+        assertEquals(2560, uplayModeChange?.previousWidth)
+        assertEquals(1440, uplayModeChange?.previousHeight)
+        assertEquals(1280, uplayModeChange?.width)
+        assertEquals(720, uplayModeChange?.height)
     }
 
     @Test
-    fun stable1440pH265DoesNotTriggerResolutionRecovery() {
-        assertEquals(
-            CatastrophicResolutionRecoveryStep.None,
-            catastrophicFirstDecodedResolutionRecoveryStep(
-                transportCodec = VideoCodec.H265,
-                expectedResolution = "2560x1440",
-                decodedResolution = "2560x1440",
-                completedCodecFallbacks = 0,
-            ),
-        )
-    }
+    fun decodedResolutionTrackerIgnoresInvalidSizesWithoutLosingCurrentMode() {
+        val tracker = DecodedResolutionTracker()
+        tracker.observe(width = 1920, height = 1080)
 
-    @Test
-    fun legitimatelyRequested320x180DoesNotTriggerResolutionRecovery() {
-        assertEquals(
-            CatastrophicResolutionRecoveryStep.None,
-            catastrophicFirstDecodedResolutionRecoveryStep(
-                transportCodec = VideoCodec.AV1,
-                expectedResolution = "320x180",
-                decodedResolution = "320x180",
-                completedCodecFallbacks = 0,
-            ),
-        )
-    }
+        assertEquals(null, tracker.observe(width = 0, height = 720))
+        val change = tracker.observe(width = 1600, height = 900)
 
-    @Test
-    fun ordinaryProviderModeChangeDoesNotTriggerResolutionRecovery() {
-        assertEquals(
-            CatastrophicResolutionRecoveryStep.None,
-            catastrophicFirstDecodedResolutionRecoveryStep(
-                transportCodec = VideoCodec.AV1,
-                expectedResolution = "2560x1440",
-                decodedResolution = "1920x1080",
-                completedCodecFallbacks = 0,
-            ),
-        )
-    }
-
-    @Test
-    fun failedH265RecoveryGetsOneFinalH264AttemptWithoutLooping() {
-        assertEquals(
-            CatastrophicResolutionRecoveryStep.RetryWithH264,
-            catastrophicFirstDecodedResolutionRecoveryStep(
-                transportCodec = VideoCodec.H265,
-                expectedResolution = "2560x1440",
-                decodedResolution = "320x180",
-                completedCodecFallbacks = 1,
-            ),
-        )
-        assertEquals(
-            CatastrophicResolutionRecoveryStep.None,
-            catastrophicFirstDecodedResolutionRecoveryStep(
-                transportCodec = VideoCodec.H264,
-                expectedResolution = "2560x1440",
-                decodedResolution = "320x180",
-                completedCodecFallbacks = 2,
-            ),
-        )
-    }
-
-    @Test
-    fun catastrophicCodecRecoveryPreservesRequested1440pGeometry() {
-        val requested = StreamSettings(
-            resolution = "2560x1440",
-            aspectRatio = "16:9",
-            fps = 60,
-            codec = VideoCodec.AV1,
-        )
-        val h265 = requested.forCatastrophicResolutionRecovery(
-            CatastrophicResolutionRecoveryStep.RetryWithH265,
-        )
-        val h264 = h265?.forCatastrophicResolutionRecovery(
-            CatastrophicResolutionRecoveryStep.RetryWithH264,
-        )
-
-        assertEquals("2560x1440", h265?.resolution)
-        assertEquals("16:9", h265?.aspectRatio)
-        assertEquals(VideoCodec.H265, h265?.codec)
-        assertEquals("2560x1440", h264?.resolution)
-        assertEquals("16:9", h264?.aspectRatio)
-        assertEquals(VideoCodec.H264, h264?.codec)
+        assertEquals(1920, change?.previousWidth)
+        assertEquals(1080, change?.previousHeight)
     }
 
     @Test

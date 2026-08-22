@@ -167,6 +167,7 @@ data class OpenNowUiState(
     val catalogSortId: String = "relevance",
     val catalogFilterIds: List<String> = emptyList(),
     val libraryFilterIds: List<String> = emptyList(),
+    val librarySortId: String = LIBRARY_SORT_DEFAULT,
     val loadingGames: Boolean = false,
     val settingsRefreshing: Boolean = false,
     val settingsRouteTarget: SettingsRouteTarget? = null,
@@ -287,6 +288,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             savedAccounts = authStore.state.value.sessions.map { session -> session.toSavedAccount() },
             loadingGames = initialAuthSession != null,
             settings = initialSettings,
+            catalogSortId = initialSettings.catalogSortId,
+            catalogFilterIds = initialSettings.catalogFilterIds,
+            librarySortId = initialSettings.librarySortId,
+            libraryFilterIds = initialSettings.libraryFilterIds,
             androidTvProfile = androidTvProfile,
             androidUpdate = appUpdater.state.value,
             dismissedAndroidUpdateNoticeKey = androidUpdateNoticeStore.dismissedKey(),
@@ -1347,27 +1352,39 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleLibraryFilter(filterId: String) {
-        _state.update {
-            val filters = if (filterId in it.libraryFilterIds) it.libraryFilterIds - filterId else it.libraryFilterIds + filterId
-            it.copy(libraryFilterIds = filters)
+        val nextFilters = state.value.libraryFilterIds.let { current ->
+            if (filterId in current) current - filterId else current + filterId
         }
+        _state.update {
+            it.copy(libraryFilterIds = nextFilters)
+        }
+        settingsStore.update { it.copy(libraryFilterIds = nextFilters) }
     }
 
     fun clearLibraryFilters() {
         _state.update { it.copy(libraryFilterIds = emptyList()) }
+        settingsStore.update { it.copy(libraryFilterIds = emptyList()) }
+    }
+
+    fun setLibrarySort(sortId: String) {
+        if (sortId !in setOf(LIBRARY_SORT_DEFAULT, LIBRARY_SORT_RECENT, LIBRARY_SORT_TITLE)) return
+        _state.update { it.copy(librarySortId = sortId) }
+        settingsStore.update { it.copy(librarySortId = sortId) }
     }
 
     fun setCatalogSort(sortId: String) {
         _state.update { it.copy(catalogSortId = sortId) }
+        settingsStore.update { it.copy(catalogSortId = sortId) }
         refreshCatalogDebounced()
     }
 
     fun toggleCatalogFilter(filterId: String) {
         val adding = filterId !in state.value.catalogFilterIds
-        _state.update {
-            val filters = if (filterId in it.catalogFilterIds) it.catalogFilterIds - filterId else it.catalogFilterIds + filterId
-            it.copy(catalogFilterIds = filters)
+        val nextFilters = state.value.catalogFilterIds.let { current ->
+            if (filterId in current) current - filterId else current + filterId
         }
+        _state.update { it.copy(catalogFilterIds = nextFilters) }
+        settingsStore.update { it.copy(catalogFilterIds = nextFilters) }
         OpenNowAnalytics.capture(
             event = "catalog_filter_applied",
             properties = mapOf(
@@ -1380,6 +1397,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearCatalogFilters() {
         _state.update { it.copy(catalogFilterIds = emptyList()) }
+        settingsStore.update { it.copy(catalogFilterIds = emptyList()) }
         refreshCatalogDebounced()
     }
 
@@ -1400,6 +1418,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun updateSettings(next: AppSettings) {
         settingsStore.replace(next)
+    }
+
+    fun addLocalApp(packageName: String) {
+        if (packageName.isBlank() || packageName == getApplication<Application>().packageName) return
+        settingsStore.update { current ->
+            current.copy(
+                localAppPackageNames = (current.localAppPackageNames + packageName).distinct(),
+            )
+        }
+    }
+
+    fun removeLocalApp(packageName: String) {
+        settingsStore.update { current ->
+            current.copy(localAppPackageNames = current.localAppPackageNames - packageName)
+        }
     }
 
     fun checkAndroidUpdate() {
@@ -3134,7 +3167,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             _state.update {
                 it.copy(
-                    games = cachedMain ?: it.games,
+                    games = cachedCatalog?.games ?: it.games.ifEmpty { cachedMain.orEmpty() },
                     libraryGames = cachedMergedLibrary.ifEmpty { cachedLibrary ?: it.libraryGames },
                     catalogResult = cachedCatalog ?: it.catalogResult,
                     loadingGames = keepRefreshVisibleWithCache,
@@ -3215,15 +3248,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         async(Dispatchers.IO) {
                             catalogRepository.fetchMainGames(token, baseUrl, includeSupplementalPublicVariants)
-                                .also { main ->
-                                    _state.update { current ->
-                                        if (current.authSession?.user?.userId == session.user.userId) {
-                                            current.copy(games = main)
-                                        } else {
-                                            current
-                                        }
-                                    }
-                                }
                         }
                     }
                     val libraryDeferred = async(Dispatchers.IO) {
@@ -3264,15 +3288,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     }
                     Triple(main, mergedLibrary, catalog)
                 }
-            }.onSuccess { (main, library, catalog) ->
-                _state.update {
-                    it.copy(
-                        games = main,
-                        libraryGames = library,
-                        catalogResult = catalog,
-                        loadingGames = false,
-                        error = null,
-                    )
+            }.onSuccess { (_, library, catalog) ->
+                _state.update { current ->
+                    if (
+                        current.authSession?.user?.userId == session.user.userId &&
+                        current.catalogSearch == initialCatalogSearch &&
+                        current.catalogSortId == initialCatalogSortId &&
+                        current.catalogFilterIds == initialCatalogFilterIds
+                    ) {
+                        current.copy(
+                            // The browse result owns catalogue order and filtering. MainV2 is
+                            // supplemental metadata and must never replace a user-sorted page.
+                            games = catalog.games,
+                            libraryGames = library,
+                            catalogResult = catalog,
+                            loadingGames = false,
+                            error = null,
+                        )
+                    } else {
+                        current
+                    }
                 }
                 refreshActiveSession()
             }.onFailure { error ->
@@ -3353,12 +3388,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
                 _state.update {
-                    it.copy(
-                        catalogResult = result,
-                        loadingGames = false,
-                        games = result.games,
-                        libraryGames = mergedLibrary.ifEmpty { it.libraryGames },
-                    )
+                    if (
+                        it.catalogSearch == searchQuery &&
+                        it.catalogSortId == sortId &&
+                        it.catalogFilterIds == filterIds
+                    ) {
+                        it.copy(
+                            catalogResult = result,
+                            loadingGames = false,
+                            games = result.games,
+                            libraryGames = mergedLibrary.ifEmpty { it.libraryGames },
+                        )
+                    } else {
+                        it
+                    }
                 }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure

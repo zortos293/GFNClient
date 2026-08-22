@@ -391,6 +391,110 @@ internal class StreamLivenessWatchdog(
     }
 }
 
+internal enum class RuntimeQualityRecoveryReason {
+    NetworkDegraded,
+    DecoderOverloaded,
+}
+
+/**
+ * Detects sustained playable-but-bad video separately from a complete media stall.
+ *
+ * Runtime stats arrive once per second. Requiring several consecutive samples keeps a short Wi-Fi
+ * spike or a single expensive keyframe from restarting an otherwise healthy stream. Packet loss
+ * takes precedence over decoder throughput because missing input frames can otherwise look like a
+ * slow decoder.
+ */
+internal class RuntimeQualityRecoveryWatchdog(
+    private val samplesBeforeRecovery: Int = RUNTIME_QUALITY_BAD_SAMPLES_BEFORE_RECOVERY,
+    private val networkLossThresholdPct: Double = RUNTIME_NETWORK_LOSS_THRESHOLD_PCT,
+    private val minimumPacketSample: Long = RUNTIME_NETWORK_MINIMUM_PACKET_SAMPLE,
+    private val decoderOutputRatioThreshold: Double = RUNTIME_DECODER_OUTPUT_RATIO_THRESHOLD,
+) {
+    private var degradedNetworkSamples = 0
+    private var overloadedDecoderSamples = 0
+
+    fun reset() {
+        degradedNetworkSamples = 0
+        overloadedDecoderSamples = 0
+    }
+
+    fun observe(
+        stats: StreamRuntimeStats,
+        requestedFps: Int,
+        recoveryEligible: Boolean,
+    ): RuntimeQualityRecoveryReason? {
+        if (!recoveryEligible) {
+            reset()
+            return null
+        }
+
+        val packetSample = (stats.packetsLostDelta ?: 0L) + (stats.packetsReceivedDelta ?: 0L)
+        val networkDegraded = packetSample >= minimumPacketSample &&
+            (stats.packetLossPct ?: 0.0) >= networkLossThresholdPct
+        if (networkDegraded) {
+            degradedNetworkSamples += 1
+            overloadedDecoderSamples = 0
+            if (degradedNetworkSamples >= samplesBeforeRecovery) {
+                reset()
+                return RuntimeQualityRecoveryReason.NetworkDegraded
+            }
+            return null
+        }
+
+        degradedNetworkSamples = 0
+        val receivedFps = stats.receivedFps
+        val decodedFps = stats.decodedFps
+        val minimumReceivedFps = maxOf(RUNTIME_DECODER_MINIMUM_RECEIVED_FPS, requestedFps / 3)
+        val frameBudgetMs = 1_000.0 / requestedFps.coerceAtLeast(1)
+        val decoderOverloaded = receivedFps != null &&
+            decodedFps != null &&
+            receivedFps >= minimumReceivedFps &&
+            decodedFps < receivedFps * decoderOutputRatioThreshold &&
+            (
+                decodedFps < receivedFps / 2 ||
+                    (stats.decodeMs ?: 0.0) >= frameBudgetMs * RUNTIME_DECODER_BUDGET_RATIO
+            )
+        if (decoderOverloaded) {
+            overloadedDecoderSamples += 1
+            if (overloadedDecoderSamples >= samplesBeforeRecovery) {
+                reset()
+                return RuntimeQualityRecoveryReason.DecoderOverloaded
+            }
+        } else {
+            overloadedDecoderSamples = 0
+        }
+        return null
+    }
+}
+
+internal fun StreamSettings.runtimeQualityRecoveryProfile(
+    reason: RuntimeQualityRecoveryReason,
+): StreamSettings = when (reason) {
+    RuntimeQualityRecoveryReason.NetworkDegraded -> copy(
+        fps = minOf(fps, RUNTIME_NETWORK_FPS_CAP),
+        maxBitrateMbps = minOf(maxBitrateMbps, RUNTIME_NETWORK_BITRATE_CAP_MBPS),
+        colorQuality = ColorQuality.EightBit420,
+        hdrEnabled = false,
+        enableCloudGsync = false,
+        streamSharpeningEnabled = false,
+    ).withCodecColorCompatibility()
+    RuntimeQualityRecoveryReason.DecoderOverloaded -> androidSafeVideoFallback().copy(
+        fps = minOf(fps, RUNTIME_DECODER_FPS_CAP),
+        maxBitrateMbps = minOf(maxBitrateMbps, RUNTIME_DECODER_BITRATE_CAP_MBPS),
+    )
+}
+
+private const val RUNTIME_QUALITY_BAD_SAMPLES_BEFORE_RECOVERY = 6
+private const val RUNTIME_NETWORK_LOSS_THRESHOLD_PCT = 12.0
+private const val RUNTIME_NETWORK_MINIMUM_PACKET_SAMPLE = 50L
+private const val RUNTIME_NETWORK_FPS_CAP = 30
+private const val RUNTIME_NETWORK_BITRATE_CAP_MBPS = 12
+private const val RUNTIME_DECODER_OUTPUT_RATIO_THRESHOLD = 0.72
+private const val RUNTIME_DECODER_BUDGET_RATIO = 0.8
+private const val RUNTIME_DECODER_MINIMUM_RECEIVED_FPS = 15
+private const val RUNTIME_DECODER_FPS_CAP = 30
+private const val RUNTIME_DECODER_BITRATE_CAP_MBPS = 25
+
 internal data class StreamRecoveryTiming(
     val keyframeAfterMs: Long,
     val keyframeIntervalMs: Long,
@@ -421,41 +525,35 @@ internal enum class FirstFrameRecoveryStep {
     ContinueBoundedTransportRecovery,
 }
 
-internal enum class CatastrophicResolutionRecoveryStep {
-    None,
-    RetryWithH265,
-    RetryWithH264,
+internal data class DecodedResolutionTransition(
+    val previousWidth: Int?,
+    val previousHeight: Int?,
+    val width: Int,
+    val height: Int,
+) {
+    val isInitial: Boolean
+        get() = previousWidth == null || previousHeight == null
 }
 
-internal fun catastrophicFirstDecodedResolutionRecoveryStep(
-    transportCodec: VideoCodec,
-    expectedResolution: String?,
-    decodedResolution: String?,
-    completedCodecFallbacks: Int,
-): CatastrophicResolutionRecoveryStep {
-    val expected = parseResolutionPixelsOrNull(expectedResolution) ?: return CatastrophicResolutionRecoveryStep.None
-    val decoded = parseResolutionPixelsOrNull(decodedResolution) ?: return CatastrophicResolutionRecoveryStep.None
-    val expectedArea = expected.first.toLong() * expected.second.toLong()
-    val decodedArea = decoded.first.toLong() * decoded.second.toLong()
-    if (decoded == expected || decodedArea * CATASTROPHIC_DECODED_AREA_DIVISOR > expectedArea) {
-        return CatastrophicResolutionRecoveryStep.None
-    }
-    return when {
-        completedCodecFallbacks == 0 && transportCodec == VideoCodec.AV1 ->
-            CatastrophicResolutionRecoveryStep.RetryWithH265
-        completedCodecFallbacks == 1 && transportCodec == VideoCodec.H265 ->
-            CatastrophicResolutionRecoveryStep.RetryWithH264
-        else -> CatastrophicResolutionRecoveryStep.None
-    }
-}
+/** Tracks actual decoder output sizes; every valid change is accepted without transport policy. */
+internal class DecodedResolutionTracker {
+    private var width: Int? = null
+    private var height: Int? = null
 
-internal fun StreamSettings.forCatastrophicResolutionRecovery(
-    step: CatastrophicResolutionRecoveryStep,
-): StreamSettings? = when (step) {
-    CatastrophicResolutionRecoveryStep.RetryWithH265 ->
-        copy(codec = VideoCodec.H265).withCodecColorCompatibility()
-    CatastrophicResolutionRecoveryStep.RetryWithH264 -> androidSafeVideoFallback()
-    CatastrophicResolutionRecoveryStep.None -> null
+    @Synchronized
+    fun observe(width: Int, height: Int): DecodedResolutionTransition? {
+        if (width <= 0 || height <= 0) return null
+        if (this.width == width && this.height == height) return null
+        return DecodedResolutionTransition(
+            previousWidth = this.width,
+            previousHeight = this.height,
+            width = width,
+            height = height,
+        ).also {
+            this.width = width
+            this.height = height
+        }
+    }
 }
 
 internal fun firstFrameRecoveryStep(
@@ -815,23 +913,24 @@ internal fun streamPointForTouch(
     var offsetX = 0f
     var offsetY = 0f
 
-    // The renderer always applies aspect-ratio constraints (fillMaxHeight/Width + aspectRatio),
-    // so letterbox/pillarbox offsets exist regardless of stretchToFit.
-    val streamAspectRatio =
-        if (renderingAspectRatio.isFinite() && renderingAspectRatio > 0f) {
-            renderingAspectRatio
-        } else {
-            viewAspectOf(streamWidth, streamHeight)
+    // A stretched surface occupies the complete view. Aspect-ratio bars only exist in fit mode.
+    if (!stretchToFit) {
+        val streamAspectRatio =
+            if (renderingAspectRatio.isFinite() && renderingAspectRatio > 0f) {
+                renderingAspectRatio
+            } else {
+                viewAspectOf(streamWidth, streamHeight)
+            }
+        val viewAspectRatio = viewAspectOf(viewWidth, viewHeight)
+        if (viewAspectRatio > streamAspectRatio) {
+            // Pillarboxed — bars left and right.
+            videoWidth = viewHeight * streamAspectRatio
+            offsetX = (viewWidth - videoWidth) / 2f
+        } else if (viewAspectRatio < streamAspectRatio) {
+            // Letterboxed — bars top and bottom.
+            videoHeight = viewWidth / streamAspectRatio
+            offsetY = (viewHeight - videoHeight) / 2f
         }
-    val viewAspectRatio = viewAspectOf(viewWidth, viewHeight)
-    if (viewAspectRatio > streamAspectRatio) {
-        // Pillarboxed — bars left and right.
-        videoWidth = viewHeight * streamAspectRatio
-        offsetX = (viewWidth - videoWidth) / 2f
-    } else if (viewAspectRatio < streamAspectRatio) {
-        // Letterboxed — bars top and bottom.
-        videoHeight = viewWidth / streamAspectRatio
-        offsetY = (viewHeight - videoHeight) / 2f
     }
 
     if (!videoWidth.isFinite() || !videoHeight.isFinite() || videoWidth <= 0f || videoHeight <= 0f) {

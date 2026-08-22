@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
@@ -71,8 +72,24 @@ internal fun BoxScope.ControllerFocusFrame(
     visible: Boolean,
     cornerRadius: Dp,
     tint: Color? = null,
+    secondaryTint: Color? = null,
+    verticalInset: Dp = 0.dp,
 ) {
     if (!visible) return
+    val staticWhiteOutline = tint == Color.White && (secondaryTint == null || secondaryTint == Color.White)
+    if (staticWhiteOutline) {
+        Canvas(Modifier.matchParentSize()) {
+            val insetPx = verticalInset.toPx().coerceIn(0f, size.height / 2f)
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.96f),
+                topLeft = Offset(0f, insetPx),
+                size = Size(size.width, (size.height - insetPx * 2f).coerceAtLeast(0f)),
+                cornerRadius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx()),
+                style = Stroke(width = 3.dp.toPx()),
+            )
+        }
+        return
+    }
     val reduceMotion = LocalReduceMotion.current
     val orbitProgress = if (reduceMotion) {
         null
@@ -91,7 +108,8 @@ internal fun BoxScope.ControllerFocusFrame(
     Canvas(Modifier.matchParentSize()) {
         // The path is centered on the parent's exact bounds. Callers place this Canvas beside the
         // clipped artwork, so the glow can spill outward instead of consuming the image edge.
-        val borderSize = size
+        val insetPx = verticalInset.toPx().coerceIn(0f, size.height / 2f)
+        val borderSize = Size(size.width, (size.height - insetPx * 2f).coerceAtLeast(0f))
         if (borderSize.width == 0f || borderSize.height == 0f) return@Canvas
         val radius = cornerRadius.toPx().coerceAtLeast(0f)
         val perimeter = (
@@ -119,7 +137,7 @@ internal fun BoxScope.ControllerFocusFrame(
             fireArc,
         )
         val flicker = orbitProgress?.let(::controllerFocusFlickerAlpha) ?: 0.9f
-        val topLeft = Offset.Zero
+        val topLeft = Offset(0f, insetPx)
         val roundedCorner = CornerRadius(radius, radius)
 
         fun drawEnergyArc(color: Color, hotColor: Color, smooth: PathEffect, electric: PathEffect) {
@@ -148,8 +166,8 @@ internal fun BoxScope.ControllerFocusFrame(
 
         val firstColor = tint ?: FireOrange
         val firstHotColor = tint?.focusHighlight() ?: FireHot
-        val secondColor = tint?.focusShade() ?: ElectricBlue
-        val secondHotColor = tint ?: ElectricBlueHot
+        val secondColor = secondaryTint ?: tint?.focusShade() ?: ElectricBlue
+        val secondHotColor = secondaryTint?.focusHighlight() ?: tint ?: ElectricBlueHot
         drawEnergyArc(firstColor, firstHotColor, fireArc, fireStatic)
         drawEnergyArc(secondColor, secondHotColor, blueArc, blueStatic)
 

@@ -997,11 +997,11 @@ internal fun StreamScreen(
                     },
                     onMaxBitrateChange = { value ->
                         viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = value) }
-                        // Apply to the live session too: replaces b=AS in the local SDP so the
-                        // server adapts via RTCP feedback without a full renegotiation.
+                        // Apply to this cloud session too. The client debounces slider movement,
+                        // then creates a legal fresh WebRTC offer/answer transport with the new
+                        // b=AS ceiling; changing a stable local description in place is invalid.
                         client.updateBitrateLimit(value * 1000)
-                        // Optimistic indicator; the polling LaunchedEffect corrects it if the live
-                        // apply fails (fallback to next-session only).
+                        // Optimistic indicator; polling follows the transport-owned value.
                         liveBitrateLimitKbps = value * 1000
                     },
                     onTouchScaleChange = { value ->

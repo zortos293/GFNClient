@@ -11,10 +11,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,6 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -86,7 +91,6 @@ import kotlin.math.roundToInt
 
 // Aliases onto the shared token layer — these used to be a byte-for-byte copy of the palette in
 // OpenNowScreens.kt, which meant any colour change had to be made twice or the two would drift.
-internal val SettingsBackground = OpenNowPalette.Background
 internal val SettingsPanel = OpenNowPalette.Panel
 internal val SettingsPanelAlt = OpenNowPalette.PanelAlt
 internal val SettingsText = OpenNowPalette.TextPrimary
@@ -98,6 +102,33 @@ internal const val PHONE_ULTRAWIDE_MIN_STREAM_ASPECT = 2.2f
 internal const val PHONE_ULTRAWIDE_MIN_VIEWPORT_ASPECT = 2.0f
 internal const val CATALOG_BACKGROUND_IMAGE_FILE_PREFIX = "catalog_background_image"
 internal val LocalSettingsControllerNavigationEnabled = androidx.compose.runtime.staticCompositionLocalOf { false }
+private val SettingsFocusTopClearance = 16.dp
+private val SettingsFocusBottomClearance = 40.dp
+
+internal fun settingsFocusScrollDistance(
+    itemOffsetPx: Float,
+    itemSizePx: Float,
+    containerSizePx: Float,
+    topClearancePx: Float,
+    bottomClearancePx: Float,
+): Float {
+    if (itemSizePx <= 0f || containerSizePx <= 0f || itemSizePx >= containerSizePx) return 0f
+    val availableClearance = (containerSizePx - itemSizePx).coerceAtLeast(0f)
+    val requestedClearance = topClearancePx.coerceAtLeast(0f) + bottomClearancePx.coerceAtLeast(0f)
+    val clearanceScale = if (requestedClearance > availableClearance && requestedClearance > 0f) {
+        availableClearance / requestedClearance
+    } else {
+        1f
+    }
+    val safeTop = topClearancePx.coerceAtLeast(0f) * clearanceScale
+    val safeBottom = containerSizePx - bottomClearancePx.coerceAtLeast(0f) * clearanceScale
+    val itemBottom = itemOffsetPx + itemSizePx
+    return when {
+        itemOffsetPx < safeTop -> itemOffsetPx - safeTop
+        itemBottom > safeBottom -> itemBottom - safeBottom
+        else -> 0f
+    }
+}
 
 internal data class SettingsChoiceOption(val value: String, val label: String)
 internal data class ChoiceMenuOption(
@@ -194,6 +225,7 @@ private val gameLanguageOptions = listOf(
     SettingsChoiceOption("no_NO", "Norsk"),
 )
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun SettingsScreen(
     state: OpenNowUiState,
@@ -208,6 +240,9 @@ internal fun SettingsScreen(
     var showSessionProxyWarning by remember { mutableStateOf(false) }
     var selectedCategory by remember { mutableStateOf<SettingsCategory?>(null) }
     val scrollState = rememberScrollState()
+    val landingListState = rememberLazyListState()
+    val detailListState = rememberLazyListState()
+    val listState = if (selectedCategory == null && searchQuery.isBlank()) landingListState else detailListState
     val searchFocusRequester = remember { FocusRequester() }
     val detailFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -216,6 +251,34 @@ internal fun SettingsScreen(
     val controllerNavigationEnabled = tvProfile || controllerFamily != null
     val showSearch = searchRequested || searchQuery.isNotBlank()
     val categories = remember { settingsCategories() }
+    val platformBringIntoViewSpec = LocalBringIntoViewSpec.current
+    val density = LocalDensity.current
+    val focusTopClearancePx = with(density) { SettingsFocusTopClearance.toPx() }
+    val focusBottomClearancePx = with(density) { SettingsFocusBottomClearance.toPx() }
+    val settingsBringIntoViewSpec = remember(
+        tvProfile,
+        platformBringIntoViewSpec,
+        focusTopClearancePx,
+        focusBottomClearancePx,
+    ) {
+        if (tvProfile) {
+            platformBringIntoViewSpec
+        } else {
+            object : BringIntoViewSpec {
+                override fun calculateScrollDistance(
+                    offset: Float,
+                    size: Float,
+                    containerSize: Float,
+                ): Float = settingsFocusScrollDistance(
+                    itemOffsetPx = offset,
+                    itemSizePx = size,
+                    containerSizePx = containerSize,
+                    topClearancePx = focusTopClearancePx,
+                    bottomClearancePx = focusBottomClearancePx,
+                )
+            }
+        }
+    }
     LaunchedEffect(searchRequested) {
         if (searchRequested) {
             delay(90)
@@ -247,6 +310,9 @@ internal fun SettingsScreen(
     LaunchedEffect(selectedCategory, controllerNavigationEnabled) {
         val detailOpen = selectedCategory != null
         onDetailRouteChange(detailOpen)
+        if (detailOpen && !tvProfile) {
+            detailListState.scrollToItem(0)
+        }
         if (detailOpen && controllerNavigationEnabled) {
             delay(90)
             runCatching { detailFocusRequester.requestFocus() }
@@ -267,7 +333,10 @@ internal fun SettingsScreen(
     DisposableEffect(Unit) {
         onDispose { onDetailRouteChange(false) }
     }
-    CompositionLocalProvider(LocalSettingsControllerNavigationEnabled provides controllerNavigationEnabled) {
+    CompositionLocalProvider(
+        LocalSettingsControllerNavigationEnabled provides controllerNavigationEnabled,
+        LocalBringIntoViewSpec provides settingsBringIntoViewSpec,
+    ) {
         if (showSessionProxyWarning) {
             SessionProxyWarningDialog(
                 onCancel = { showSessionProxyWarning = false },
@@ -287,10 +356,14 @@ internal fun SettingsScreen(
                 Column(
                     Modifier
                         .fillMaxSize()
-                        .background(SettingsBackground)
                         .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) }
                         .verticalScroll(scrollState)
-                        .padding(20.dp),
+                        .padding(
+                            start = 20.dp,
+                            top = 20.dp,
+                            end = 20.dp,
+                            bottom = AppScrollEndSpacing,
+                        ),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     AnimatedVisibility(visible = showSearch) {
@@ -327,9 +400,14 @@ internal fun SettingsScreen(
             ) {
                 LazyColumn(
                     Modifier
-                        .fillMaxSize()
-                        .background(SettingsBackground),
-                    contentPadding = PaddingValues(14.dp),
+                        .fillMaxSize(),
+                    state = listState,
+                    contentPadding = PaddingValues(
+                        start = 14.dp,
+                        top = 14.dp,
+                        end = 14.dp,
+                        bottom = AppScrollEndSpacing,
+                    ),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item {
@@ -504,7 +582,7 @@ private fun SettingsContent(
                     setAndroidAppLanguage(context, languageTag)
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_nerd_mode), "advanced", "advanced options", "nerd", "experimental", "diagnostics", "catalog", "cave", "background", "wallpaper", "image", "custom") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_nerd_mode), "advanced", "advanced options", "nerd", "experimental", "diagnostics") {
                 AdvancedOptionsSettings(settings = settings, viewModel = viewModel)
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "Privacy", "privacy", "analytics", "telemetry", "posthog", "usage", "tracking", "opt out") {
@@ -982,18 +1060,28 @@ private fun SettingsContent(
                 NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "tv", "safe area", "screen padding", "overscan") {
-                val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "catalog", "background", "wallpaper", "image", "custom", "tv", "safe area", "screen padding", "overscan") {
+                val accentOptions = UiAccent.entries
+                    .filterNot { it == UiAccent.AbsoluteCinema }
+                    .map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 ChoiceRow(
                     label = stringResource(R.string.settings_accent),
                     options = accentOptions.map { it.second },
                     selected = accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second,
-                    activeOutlineColor = settings.uiAccent.color.takeIf { settings.liveSelectedOutlines },
+                    activeOutlineColor = settings.activeSelectionColor.takeIf { settings.liveSelectionEffectsEnabled },
+                    activeOutlineSecondaryColor = settings.activeSelectionSecondaryColor.takeIf { settings.liveSelectionEffectsEnabled },
                 ) { label ->
                     accentOptions.firstOrNull { it.second == label }?.first?.let { accent ->
                         viewModel.updateSettings(settings.copy(uiAccent = accent))
                     }
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_absolute_cinema_effects),
+                    checked = settings.absoluteCinemaEffects,
+                    description = stringResource(R.string.settings_absolute_cinema_effects_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(absoluteCinemaEffects = enabled))
                 }
                 SettingSwitch(
                     label = stringResource(R.string.settings_expressive_ui),
@@ -1002,16 +1090,31 @@ private fun SettingsContent(
                 ) {
                     viewModel.updateSettings(settings.copy(expressiveUi = it))
                 }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_live_selected_outlines),
-                    checked = settings.liveSelectedOutlines,
-                    description = stringResource(R.string.settings_live_selected_outlines_desc),
-                ) { enabled ->
-                    viewModel.updateSettings(settings.copy(liveSelectedOutlines = enabled))
+                if (settings.uiAccent != UiAccent.OpenNow && !settings.absoluteCinemaEffects) {
+                    SettingSwitch(
+                        label = stringResource(R.string.settings_live_selected_outlines),
+                        checked = settings.liveSelectedOutlines,
+                        description = stringResource(R.string.settings_live_selected_outlines_desc),
+                    ) { enabled ->
+                        viewModel.updateSettings(settings.copy(liveSelectedOutlines = enabled))
+                    }
+                }
+                if (BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED) {
+                    SettingSwitch(
+                        label = stringResource(R.string.settings_local_apps),
+                        checked = settings.localAppsEnabled,
+                        description = stringResource(R.string.settings_local_apps_desc),
+                    ) { enabled ->
+                        viewModel.updateSettings(settings.copy(localAppsEnabled = enabled))
+                    }
+                    if (settings.localAppsEnabled) {
+                        DefaultLauncherSetting()
+                    }
                 }
                 NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f, unit = "dp") { value ->
                     viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
                 }
+                CatalogBackgroundSettings(settings = settings, viewModel = viewModel)
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_library_navigation), "interface", "launch page", "default page", "store", "library", "compact", "cards", "titles", "store labels", "favorites", "favourites", "save", "icon", "game card size", "server selector") {
                 val launchPageOptions = AppLaunchPage.entries.map { page -> page to appLaunchPageLabel(page) }
@@ -1232,6 +1335,10 @@ private fun AdvancedOptionsSettings(settings: AppSettings, viewModel: OpenNowVie
     ) {
         viewModel.updateSettings(settings.copy(nerdMode = it))
     }
+}
+
+@Composable
+private fun CatalogBackgroundSettings(settings: AppSettings, viewModel: OpenNowViewModel) {
     SettingSwitch(
         label = stringResource(R.string.settings_nerd_catalog_background),
         checked = settings.nerdCatalogBackground,
@@ -1239,9 +1346,9 @@ private fun AdvancedOptionsSettings(settings: AppSettings, viewModel: OpenNowVie
     ) {
         viewModel.updateSettings(settings.copy(nerdCatalogBackground = it))
     }
-    if (settings.nerdCatalogBackground) {
-        CatalogBackgroundImageSetting(settings = settings, viewModel = viewModel)
-    }
+    // Keep the choices discoverable while the backdrop is off. Choosing an image or preset turns
+    // the backdrop on, so users do not have to know that the switch used to gate these controls.
+    CatalogBackgroundImageSetting(settings = settings, viewModel = viewModel)
 }
 
 @Composable
@@ -1321,6 +1428,7 @@ private fun CatalogBackgroundImageSetting(settings: AppSettings, viewModel: Open
                     ?: return@ChoiceRow
                 viewModel.updateSettings(
                     settings.copy(
+                        nerdCatalogBackground = true,
                         catalogBackgroundPreset = selectedPreset,
                         nerdCatalogBackgroundUri = null,
                     ),
@@ -1621,7 +1729,10 @@ private fun SettingsDetailHeader(
                 color = if (backFocused) MaterialTheme.colorScheme.primary.copy(alpha = 0.24f) else Color.Transparent,
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    // The badge touches the capsule edge so its white ring and the focused outer
+                    // ring read as one continuous controller affordance instead of two outlines
+                    // separated by a dark crescent.
+                    modifier = Modifier.padding(end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
@@ -1634,7 +1745,7 @@ private fun SettingsDetailHeader(
                     }
                     Surface(
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(38.dp)
                             .border(2.dp, Color.White.copy(alpha = 0.9f), CircleShape),
                         shape = CircleShape,
                         color = backBadgeColor,

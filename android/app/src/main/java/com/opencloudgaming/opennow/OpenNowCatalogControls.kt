@@ -46,6 +46,8 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -86,7 +88,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import coil3.compose.AsyncImage
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
@@ -166,8 +167,16 @@ internal fun SelectedFilterChips(options: List<CatalogFilterOption>, selectedIds
 internal fun catalogVisibleFilterGroups(groups: List<CatalogFilterGroup>): List<CatalogFilterGroup> =
     groups.filter { it.id in setOf("digital_store", "genre", "subscriptions") }
 
+@Composable
 internal fun catalogFilterOptions(groups: List<CatalogFilterGroup>): List<CatalogFilterOption> =
-    groups.flatMap { group -> group.options.take(if (group.id == "genre") 10 else group.options.size) }
+    groups.flatMap { group -> group.options.take(if (group.id == "genre") 10 else group.options.size) } +
+        CatalogFilterOption(
+            id = CATALOG_FILTER_TOUCHSCREEN,
+            rawId = SUPPORTED_CONTROL_TOUCHSCREEN,
+            label = stringResource(R.string.catalog_filter_touch_controls),
+            groupId = "supported_controls",
+            groupLabel = stringResource(R.string.catalog_filter_controls_group),
+        )
 
 @Composable
 internal fun FilterMenu(
@@ -248,6 +257,173 @@ internal fun FilterMenu(
                 }
             )
         }
+    }
+}
+
+/** One compact top-bar entry point for the complete catalogue ordering and filtering surface. */
+@Composable
+internal fun CatalogSortFilterMenu(
+    sortOptions: List<CatalogSortOption>,
+    selectedSortId: String,
+    filterOptions: List<CatalogFilterOption>,
+    selectedFilterIds: List<String>,
+    onSortChange: (String) -> Unit,
+    onFilterToggle: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null,
+    leadingFocusRequester: FocusRequester? = null,
+) {
+    val sorts = sortOptions.ifEmpty { listOf(CatalogSortOption("relevance", "Relevance", "")) }
+    var expanded by remember { mutableStateOf(false) }
+    BackHandler(enabled = expanded) { expanded = false }
+    val description = if (selectedFilterIds.isEmpty()) {
+        stringResource(R.string.catalog_sort_filter)
+    } else {
+        stringResource(R.string.catalog_sort_filter_active, selectedFilterIds.size)
+    }
+    var focused by remember { mutableStateOf(false) }
+    Box(modifier) {
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = Color.White.copy(alpha = 0.1f),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+        ) {
+            IconButton(
+                onClick = { expanded = true },
+                modifier = Modifier
+                    .size(40.dp)
+                    .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
+                    .then(
+                        leadingFocusRequester?.let { leading ->
+                            Modifier.focusProperties {
+                                left = leading
+                                up = leading
+                            }
+                        } ?: Modifier,
+                    )
+                    .onFocusChanged { focused = it.isFocused },
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_sort_filter),
+                    contentDescription = description,
+                    tint = if (selectedFilterIds.isEmpty()) TextPrimary else LocalActiveSelectionColor.current,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+        ControllerFocusFrame(
+            visible = focused && LocalAbsoluteCinemaEffects.current,
+            cornerRadius = 14.dp,
+            tint = LocalActiveSelectionColor.current,
+            secondaryTint = LocalActiveSelectionSecondaryColor.current,
+        )
+        if (expanded) {
+            AlertDialog(
+                onDismissRequest = { expanded = false },
+                title = {
+                    Text(
+                        stringResource(R.string.catalog_sort_filter),
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary,
+                    )
+                },
+                text = {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxHeight(0.68f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        item {
+                            Text(
+                                stringResource(R.string.catalog_sort_section),
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            )
+                        }
+                        items(sorts, key = { "sort:${it.id}" }) { option ->
+                            val selected = option.id == selectedSortId
+                            CatalogMenuChoiceRow(
+                                label = option.label,
+                                selected = selected,
+                                onClick = { onSortChange(option.id) },
+                            )
+                        }
+                        if (filterOptions.isNotEmpty()) {
+                            item {
+                                Text(
+                                    stringResource(R.string.catalog_filter_section),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+                                )
+                            }
+                            items(filterOptions, key = { "filter:${it.id}" }) { option ->
+                                val selected = option.id in selectedFilterIds
+                                CatalogMenuChoiceRow(
+                                    label = option.label,
+                                    selected = selected,
+                                    checkbox = true,
+                                    onClick = { onFilterToggle(option.id) },
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    androidx.compose.material3.Button(onClick = { expanded = false }) {
+                        Text(stringResource(R.string.stream_panel_done))
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun CatalogMenuChoiceRow(
+    label: String,
+    selected: Boolean,
+    checkbox: Boolean = false,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(9.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .onFocusChanged { focused = it.isFocused }
+            .background(
+                when {
+                    focused -> Color.White.copy(alpha = 0.1f)
+                    selected -> LocalActiveSelectionColor.current.copy(alpha = 0.12f)
+                    else -> Color.Transparent
+                },
+            )
+            .border(
+                width = if (focused || selected) 1.dp else 0.dp,
+                color = if (focused) Color.White else if (selected) LocalActiveSelectionColor.current else Color.Transparent,
+                shape = shape,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (checkbox) {
+            Checkbox(checked = selected, onCheckedChange = null)
+        } else {
+            Text(if (selected) "✓" else "", modifier = Modifier.width(36.dp), color = LocalActiveSelectionColor.current)
+        }
+        Spacer(Modifier.width(if (checkbox) 10.dp else 0.dp))
+        Text(
+            label,
+            color = TextPrimary,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -431,12 +607,16 @@ private fun PrintedWasteOptionsColumn(
         }
     }
     LaunchedEffect(state.printedWasteLoading, state.printedWasteError, zones.size) {
-        delay(80)
-        if (!state.printedWasteLoading && state.printedWasteError == null && zones.isNotEmpty()) {
-            runCatching { launchFocusRequester.requestFocus() }
+        val initialFocusRequester = if (
+            !state.printedWasteLoading &&
+            state.printedWasteError == null &&
+            zones.isNotEmpty()
+        ) {
+            launchFocusRequester
         } else {
-            runCatching { defaultFocusRequester.requestFocus() }
+            defaultFocusRequester
         }
+        requestFocusWithRetry(initialFocusRequester)
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (state.printedWasteLoading) {
@@ -509,7 +689,7 @@ private fun PrintedWasteOptionsColumn(
                         selected = isCurrent,
                         focused = isCurrent && listFocused,
                         listFocused = listFocused,
-                        liveSelectedOutlines = state.settings.liveSelectedOutlines,
+                        liveSelectedOutlines = state.settings.liveSelectionEffectsEnabled,
                         onClick = { onSelectZone(zoneOption.zoneId) },
                     )
                 }
@@ -584,9 +764,9 @@ private fun PrintedWasteZoneRow(
                 .focusProperties { canFocus = false }
                 .clickable { onClick() },
             shape = RoundedCornerShape(12.dp),
-            color = if (focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else PanelAlt,
+            color = if (focused) Color.White.copy(alpha = 0.16f) else if (selected) LocalActiveSelectionColor.current.copy(alpha = 0.16f) else PanelAlt,
             tonalElevation = if (selected) 2.dp else 0.dp,
-            border = if (selected && listFocused && !liveSelectedOutlines) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+            border = if (selected && listFocused && !liveSelectedOutlines) BorderStroke(2.dp, LocalActiveSelectionColor.current) else null,
         ) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 val compact = maxWidth < 520.dp
@@ -597,11 +777,11 @@ private fun PrintedWasteZoneRow(
                     ) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else TextPrimary)
+                                Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) LocalActiveSelectionColor.current else TextPrimary)
                                 Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
                             }
                             if (selected) {
-                                Text(stringResource(R.string.store_selector_selected), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                                Text(stringResource(R.string.store_selector_selected), color = LocalActiveSelectionColor.current, style = MaterialTheme.typography.labelMedium)
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -617,7 +797,7 @@ private fun PrintedWasteZoneRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else TextPrimary)
+                            Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) LocalActiveSelectionColor.current else TextPrimary)
                             Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
                         }
                         QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
@@ -630,7 +810,8 @@ private fun PrintedWasteZoneRow(
         ControllerFocusFrame(
             visible = shouldShowActiveSelectionOutline(selected, liveSelectedOutlines),
             cornerRadius = 12.dp,
-            tint = Color.White,
+            tint = LocalActiveSelectionColor.current,
+            secondaryTint = LocalActiveSelectionSecondaryColor.current,
         )
     }
 }
@@ -959,6 +1140,7 @@ internal fun OpenNowAppIcon(
             val spinProgress = activeLogoSpinProgress(spin.value)
             val pulse = sin(spinProgress * PI.toFloat()).coerceAtLeast(0f)
             rotationY = spinProgress * 360f
+            translationY = activeLogoFloatOffsetDp(spin.value).dp.toPx()
             cameraDistance = 12f * density
             scaleX = 1f + pulse * 0.035f
             scaleY = scaleX
@@ -975,7 +1157,10 @@ internal fun OpenNowAppIcon(
 }
 
 internal fun activeLogoSpinProgress(cycleProgress: Float): Float =
-    (cycleProgress.coerceIn(0f, 1f) / 0.18f).coerceIn(0f, 1f)
+    ((cycleProgress.coerceIn(0f, 1f) - 0.30f) / 0.18f).coerceIn(0f, 1f)
+
+internal fun activeLogoFloatOffsetDp(cycleProgress: Float): Float =
+    sin(cycleProgress.coerceIn(0f, 1f) * 2f * PI.toFloat()) * 2.5f
 
 internal val ColorQuality.label: String
     get() = when (this) {

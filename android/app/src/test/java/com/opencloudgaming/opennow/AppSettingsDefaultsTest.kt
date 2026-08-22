@@ -17,6 +17,9 @@ class AppSettingsDefaultsTest {
         assertTrue(settings.externalMousePointerLock)
         assertFalse(settings.showFavoriteIconOnGameCards)
         assertTrue(settings.liveSelectedOutlines)
+        assertFalse(settings.absoluteCinemaEffects)
+        assertFalse(settings.localAppsEnabled)
+        assertTrue(settings.localAppPackageNames.isEmpty())
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertTrue(metrics.fps)
         assertTrue(metrics.ping)
@@ -46,6 +49,9 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.analyticsSharingEnabled)
         assertFalse(settings.showFavoriteIconOnGameCards)
         assertTrue(settings.liveSelectedOutlines)
+        assertFalse(settings.absoluteCinemaEffects)
+        assertFalse(settings.localAppsEnabled)
+        assertTrue(settings.localAppPackageNames.isEmpty())
         assertTrue(settings.showSessionReportAfterStream)
         assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
         assertEquals(TouchAimMode.LockJoystick, settings.androidTouch.aimMode)
@@ -72,6 +78,41 @@ class AppSettingsDefaultsTest {
 
         assertTrue(defaulted.liveSelectedOutlines)
         assertFalse(optedOut.liveSelectedOutlines)
+    }
+
+    @Test
+    fun localAppsAreOptInAndSavedPackagesRemainCompatible() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedIn = OpenNowJson.decodeFromString<AppSettings>(
+            """{"localAppsEnabled":true,"localAppPackageNames":["com.epicgames.fortnite"]}""",
+        )
+
+        assertFalse(defaulted.localAppsEnabled)
+        assertTrue(defaulted.localAppPackageNames.isEmpty())
+        assertTrue(optedIn.localAppsEnabled)
+        assertEquals(listOf("com.epicgames.fortnite"), optedIn.localAppPackageNames)
+    }
+
+    @Test
+    fun legacyAbsoluteCinemaAccentMigratesToIndependentEffectToggle() {
+        val cinema = OpenNowJson.decodeFromString<AppSettings>("""{"uiAccent":"AbsoluteCinema"}""").normalizedForAndroid()
+        val switch = OpenNowJson.decodeFromString<AppSettings>("""{"uiAccent":"Switch"}""")
+
+        assertEquals(UiAccent.OpenNow, cinema.uiAccent)
+        assertTrue(cinema.absoluteCinemaEffects)
+        assertEquals(UiAccent.Switch, switch.uiAccent)
+    }
+
+    @Test
+    fun catalogueSortAndFiltersSurviveSettingsDecode() {
+        val settings = OpenNowJson.decodeFromString<AppSettings>(
+            """{"catalogSortId":"latest","catalogFilterIds":["genre-action","opennow:supported-controls:touchscreen"],"librarySortId":"recent","libraryFilterIds":["library_store:steam"]}""",
+        ).normalizedForAndroid()
+
+        assertEquals("latest", settings.catalogSortId)
+        assertEquals(listOf("genre-action", CATALOG_FILTER_TOUCHSCREEN), settings.catalogFilterIds)
+        assertEquals(LIBRARY_SORT_RECENT, settings.librarySortId)
+        assertEquals(listOf("library_store:steam"), settings.libraryFilterIds)
     }
 
     @Test

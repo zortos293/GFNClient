@@ -117,6 +117,13 @@ internal fun shouldUseFixedSizeStreamSurface(
     return frameLongEdge < viewLongEdge && frameShortEdge < viewShortEdge
 }
 
+internal fun shouldSuppressHardwareKeyboardRepeat(
+    hardwareKeyboard: Boolean,
+    action: Int,
+    repeatCount: Int,
+): Boolean =
+    hardwareKeyboard && action == KeyEvent.ACTION_DOWN && repeatCount > 0
+
 internal fun isCurrentPeerOperation(
     operationGeneration: Int,
     currentGeneration: Int,
@@ -242,25 +249,23 @@ class NativeStreamClient(
     private var statsJob: Job? = null
     private var iceRecoveryJob: Job? = null
     private var offerTimeoutJob: Job? = null
+    private var bitrateUpdateJob: Job? = null
     internal var settings: StreamSettings = StreamSettings()
     private var session: SessionInfo? = null
     @Volatile
     private var transportGeneration = 0
     private var reconnectAttempts = 0
     private var transientSignalingFailures = 0
-    /** Last bitrate (kbps) applied to the live local SDP, so slider drags do not re-apply the same value. */
-    private var appliedBitrateLimitKbps = 0
     /**
-     * Bitrate ceiling (kbps) currently in effect for the *live* session, exposed for the overlay
-     * indicator. Null until the user moves the in-overlay slider; before that the session runs at
-     * the bitrate baked into the munged answer (i.e. settings). Reset on each fresh offer.
+     * Bitrate ceiling (kbps) requested for the live transport, exposed for the overlay indicator.
+     * A change is applied by creating a fresh local transport against the same cloud session; SDP
+     * descriptions cannot legally be mutated with setLocalDescription while signaling is stable.
      */
     @Volatile
     var liveBitrateLimitKbps: Int? = null
     private var videoSafeFallbackApplied = false
-    private var catastrophicResolutionCodecFallbacks = 0
     private var stableMediaStallRestarts = 0
-    private var firstDecodedResolutionEvaluated = false
+    private var runtimeQualityFallbackApplied = false
     private var transportHasStableMedia = false
     private var consecutiveTransportProgressSamples = 0
     private var sessionRecoveryRequested = false
@@ -314,6 +319,9 @@ class NativeStreamClient(
     private val mouseMoveBurstLock = Any()
     private val mouseMoveBurstLimiter = MouseMoveBurstLimiter(MOUSE_MOVE_MIN_SEND_INTERVAL_MS)
     private var mouseMoveBurstFlushJob: Job? = null
+    private val gamepadStateBurstLock = Any()
+    private val gamepadStateBurstLimiter = GamepadStateBurstLimiter(GAMEPAD_STATE_MIN_SEND_INTERVAL_MS)
+    private var gamepadStateBurstFlushJob: Job? = null
     private val externalMouseMotionAccumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
     private var externalMouseMotionDeviceId = Int.MIN_VALUE
     private var externalMouseMotionSource = 0
@@ -328,6 +336,7 @@ class NativeStreamClient(
     private val packetLossWindow = StreamPacketLossWindow()
     private var androidTvProfile = initialAndroidTvProfile
     private var livenessWatchdog = newStreamLivenessWatchdog(androidTvProfile)
+    private val runtimeQualityWatchdog = RuntimeQualityRecoveryWatchdog()
     private var firstVideoFrameWatchdog = FirstVideoFrameWatchdog(
         timeoutMs = firstVideoFrameRecoveryTimeoutMs(androidTvProfile),
     )
@@ -455,6 +464,7 @@ class NativeStreamClient(
                 viewWidth = displayMetrics.widthPixels,
                 viewHeight = displayMetrics.heightPixels,
             )
+            val decodedResolutionTracker = DecodedResolutionTracker()
             val rendererEvents = object : RendererCommon.RendererEvents {
                 override fun onFirstFrameRendered() {
                     firstVideoFrameWatchdog.markRendered()
@@ -463,9 +473,34 @@ class NativeStreamClient(
                 }
 
                 override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {
-                    NativeInputDiagnostics.add("video renderer resolution=${videoWidth}x$videoHeight rotation=$rotation")
+                    val transition = decodedResolutionTracker.observe(videoWidth, videoHeight)
+                    val resolutionMessage = when {
+                        transition == null ->
+                            "video renderer resolution=${videoWidth}x$videoHeight rotation=$rotation"
+                        transition.isInitial ->
+                            "video renderer initial resolution=${videoWidth}x$videoHeight rotation=$rotation"
+                        else ->
+                            "video renderer resolution changed=${transition.previousWidth}x${transition.previousHeight}" +
+                                "->${videoWidth}x$videoHeight rotation=$rotation keeping transport"
+                    }
+                    NativeInputDiagnostics.add(resolutionMessage)
                     if (videoWidth > 0 && videoHeight > 0) {
                         NativeStreamInputRouter.setDecodedStreamResolution(videoWidth, videoHeight)
+                    }
+                    if (transition?.isInitial == false) {
+                        scope.launch {
+                            if (renderer !== rendererView) return@launch
+                            // Uplay/provider mode switches can briefly pause decoded-frame stats.
+                            // Accept the decoder's new size and give the existing transport a fresh
+                            // liveness window instead of interpreting the change as a stream crash.
+                            livenessWatchdog.markConnected(SystemClock.elapsedRealtime())
+                            runtimeQualityWatchdog.reset()
+                            firstVideoFrameWatchdog.markRendered()
+                            recordStreamDiagnostic(
+                                "decoded resolution change accepted from=${transition.previousWidth}x${transition.previousHeight} " +
+                                    "to=${transition.width}x${transition.height}; cloud session and transport preserved",
+                            )
+                        }
                     }
                     rendererView.post {
                         if (
@@ -733,14 +768,18 @@ class NativeStreamClient(
         reconnectAttempts = 0
         transientSignalingFailures = 0
         videoSafeFallbackApplied = false
-        catastrophicResolutionCodecFallbacks = 0
         stableMediaStallRestarts = 0
+        runtimeQualityFallbackApplied = false
         sessionRecoveryRequested = false
+        bitrateUpdateJob?.cancel()
+        bitrateUpdateJob = null
+        liveBitrateLimitKbps = null
         lastStatsSample = null
         processCpuSampler.reset()
         ProcessCpuDiagnostics.beginStream()
         packetLossWindow.reset()
         livenessWatchdog.reset()
+        runtimeQualityWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         onStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
@@ -762,8 +801,13 @@ class NativeStreamClient(
         reconnectAttempts = 0
         transientSignalingFailures = 0
         stableMediaStallRestarts = 0
+        runtimeQualityFallbackApplied = false
         sessionRecoveryRequested = false
+        bitrateUpdateJob?.cancel()
+        bitrateUpdateJob = null
+        liveBitrateLimitKbps = null
         livenessWatchdog.reset()
+        runtimeQualityWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         closeTransport(clearInputState = true)
         emitState("Stopped")
@@ -875,6 +919,7 @@ class NativeStreamClient(
         externalMouseAbsoluteJumpLogged = false
         hardwareKeyboardEventLogged = false
         physicalGamepadAxisLogged = false
+        resetGamepadStateBurstLimiter()
         inputEncoder.resetGamepadSequences()
         emitControllerMouseAssistChanged(false)
     }
@@ -887,7 +932,14 @@ class NativeStreamClient(
         val hardwareKeyboard = event.isHardwareKeyboardSource()
         if (hardwareKeyboard && !hardwareKeyboardEventLogged) {
             hardwareKeyboardEventLogged = true
-            NativeInputDiagnostics.add("hardware keyboard event action=${event.action} key=${event.keyCode} scan=${event.scanCode} source=${event.source} device=${event.deviceId} mapped=${key != null}")
+            NativeInputDiagnostics.add(
+                "hardware keyboard event action=${event.action} key=${event.keyCode} " +
+                    "scan=${event.scanCode} repeat=${event.repeatCount} source=${event.source} " +
+                    "device=${event.deviceId} mapped=${key != null}",
+            )
+        }
+        if (shouldSuppressHardwareKeyboardRepeat(hardwareKeyboard, event.action, event.repeatCount)) {
+            return true
         }
         val packet = key?.let { if (event.action == KeyEvent.ACTION_DOWN) inputEncoder.encodeKeyDown(it) else inputEncoder.encodeKeyUp(it) }
         if (packet == null) {
@@ -1012,6 +1064,14 @@ class NativeStreamClient(
             mouseMoveBurstFlushJob?.cancel()
             mouseMoveBurstFlushJob = null
             mouseMoveBurstLimiter.reset()
+        }
+    }
+
+    private fun resetGamepadStateBurstLimiter() {
+        synchronized(gamepadStateBurstLock) {
+            gamepadStateBurstFlushJob?.cancel()
+            gamepadStateBurstFlushJob = null
+            gamepadStateBurstLimiter.reset()
         }
     }
 
@@ -1358,60 +1418,29 @@ class NativeStreamClient(
         recordStreamDiagnostic("microphone ${if (enabled) "enabled" else "muted"}")
     }
 
-    /**
-     * Applies a new receive bitrate ceiling to the live session, mirroring the desktop client's
-     * setMaxBitrateKbps: replace b=AS in the video section of the local description and re-apply
-     * it locally. libwebrtc picks the change up and reports the new ceiling to the server via RTCP
-     * feedback, so the encoder adapts without a full renegotiation. Non-fatal on failure — the
-     * change simply takes effect on the next session.
-     */
+    /** Applies a receive bitrate ceiling by renegotiating the local transport for this session. */
     fun updateBitrateLimit(maxBitrateKbps: Int) {
-        if (appliedBitrateLimitKbps == maxBitrateKbps) return
-        if (peerConnection == null) return
-        val generation = transportGeneration
-        // Optimistic dedup so a slider drag does not queue a setLocalDescription per tick;
-        // on failure we revert the guard so the same value can be retried (e.g. transient error).
-        val previous = appliedBitrateLimitKbps
-        appliedBitrateLimitKbps = maxBitrateKbps
-        liveBitrateLimitKbps = maxBitrateKbps
-        enqueueNativeLifecycleOperation("live-bitrate-limit") {
-            val pc = activePeerConnection(generation) ?: run {
-                restoreBitrateLimit(maxBitrateKbps, previous, generation)
-                return@enqueueNativeLifecycleOperation
-            }
-            val current = pc.localDescription ?: run {
-                restoreBitrateLimit(maxBitrateKbps, previous, generation)
-                return@enqueueNativeLifecycleOperation
-            }
-            val updated = SdpTools.replaceVideoBitrateInSdp(current.description, maxBitrateKbps)
-            if (updated == current.description) {
-                // No b=AS line to update; should not happen once mungeAnswerSdp ran at session start.
-                return@enqueueNativeLifecycleOperation
-            }
-            pc.setLocalDescription(
-                object : SimpleSdpObserver() {
-                    override fun onSetSuccess() {
-                        scope.launch {
-                            if (generation != transportGeneration) return@launch
-                            recordStreamDiagnostic("live bitrate limit applied $maxBitrateKbps kbps")
-                        }
-                    }
-
-                    override fun onSetFailure(error: String?) {
-                        restoreBitrateLimit(maxBitrateKbps, previous, generation)
-                        recordStreamDiagnostic("live bitrate limit failed error=${error.orEmpty()} (applies next session)")
-                    }
-                },
-                SessionDescription(current.type, updated),
-            )
+        val normalizedKbps = maxBitrateKbps.coerceAtLeast(1_000).let { value ->
+            ((value + 500) / 1_000) * 1_000
         }
-    }
-
-    private fun restoreBitrateLimit(expected: Int, previous: Int, generation: Int) {
-        scope.launch {
-            if (generation != transportGeneration || appliedBitrateLimitKbps != expected) return@launch
-            appliedBitrateLimitKbps = previous
-            liveBitrateLimitKbps = previous.takeIf { it > 0 }
+        if (liveBitrateLimitKbps == normalizedKbps && bitrateUpdateJob?.isActive != true) return
+        liveBitrateLimitKbps = normalizedKbps
+        bitrateUpdateJob?.cancel()
+        bitrateUpdateJob = scope.launch {
+            delay(LIVE_BITRATE_RENEGOTIATION_DEBOUNCE_MS)
+            bitrateUpdateJob = null
+            val updatedSettings = settings.copy(maxBitrateMbps = normalizedKbps / 1_000)
+            if (updatedSettings == settings) return@launch
+            val restarted = restartTransportWithProfile(
+                updatedSettings = updatedSettings,
+                diagnosticReason = "live bitrate update",
+                stateMessage = "Applying ${normalizedKbps / 1_000} Mbps stream limit",
+            )
+            if (!restarted) {
+                // Preserve the requested ceiling for an offer that has not arrived yet.
+                settings = updatedSettings
+                recordStreamDiagnostic("live bitrate limit queued for next offer $normalizedKbps kbps")
+            }
         }
     }
 
@@ -1557,7 +1586,14 @@ class NativeStreamClient(
         } else {
             virtualRightTrigger = if (pressed) 255 else 0
         }
-        sendCurrentGamepadState()
+        val sent = sendCurrentGamepadState()
+        val side = if (left) "LT" else "RT"
+        val action = if (pressed) "down" else "up"
+        NativeInputDiagnostics.retain(
+            key = "controller.virtual-trigger.$side.$action",
+            message = "virtual gamepad trigger=$side action=$action sent=$sent " +
+                "triggers=$virtualLeftTrigger,$virtualRightTrigger ${inputChannelStateSummary()}",
+        )
     }
 
     fun setVirtualLeftStick(x: Float, y: Float) {
@@ -1572,13 +1608,13 @@ class NativeStreamClient(
             virtualLeftStickActive = false
             virtualLeftStickX = 0
             virtualLeftStickY = 0
-            sendCurrentGamepadState()
+            sendBurstLimitedGamepadState()
             return
         }
         virtualLeftStickActive = normalizedX != 0f || normalizedY != 0f
         virtualLeftStickX = normalizeToInt16(normalizedX)
         virtualLeftStickY = normalizeToInt16(-normalizedY)
-        sendCurrentGamepadState()
+        sendBurstLimitedGamepadState()
     }
 
     fun setVirtualRightStick(x: Float, y: Float) {
@@ -1592,13 +1628,13 @@ class NativeStreamClient(
             virtualRightStickActive = false
             virtualRightStickX = 0
             virtualRightStickY = 0
-            sendCurrentGamepadState()
+            sendBurstLimitedGamepadState()
             return
         }
         virtualRightStickActive = normalizedX != 0f || normalizedY != 0f
         virtualRightStickX = normalizeToInt16(normalizedX)
         virtualRightStickY = normalizeToInt16(-normalizedY)
-        sendCurrentGamepadState()
+        sendBurstLimitedGamepadState()
     }
 
     fun setVirtualControllerVisible(visible: Boolean) {
@@ -1616,9 +1652,9 @@ class NativeStreamClient(
         lastIceState = null
         lastStatsSample = null
         packetLossWindow.reset()
-        firstDecodedResolutionEvaluated = false
         transportHasStableMedia = false
         consecutiveTransportProgressSamples = 0
+        runtimeQualityWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         emitStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
@@ -1660,10 +1696,12 @@ class NativeStreamClient(
         statsJob = null
         offerTimeoutJob = null
         resetMouseMoveBurstLimiter()
+        resetGamepadStateBurstLimiter()
         lastStatsSample = null
         packetLossWindow.reset()
         lastIceState = null
         livenessWatchdog.reset()
+        runtimeQualityWatchdog.reset()
         val closingSignaling = signaling
         val closingRenderer = renderer
         val closingRendererSinkAttached = rendererSinkLifecycle.requestDetach()
@@ -1675,8 +1713,6 @@ class NativeStreamClient(
         statsChannel = null
         lastParsedGameFps = null
         partiallyReliableGamepadMask = 0
-        appliedBitrateLimitKbps = 0
-        liveBitrateLimitKbps = null
         hapticsAdvertised = null
         lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
@@ -1793,10 +1829,6 @@ class NativeStreamClient(
                 }
             }
             is SignalingEvent.Offer -> {
-                // A new offer brings a fresh local answer; let the first live bitrate update
-                // re-apply, and stop the main-owned offer watchdog before native negotiation.
-                appliedBitrateLimitKbps = 0
-                liveBitrateLimitKbps = null
                 offerTimeoutJob?.cancel()
                 offerTimeoutJob = null
                 enqueueNativeLifecycleOperation("remote-offer") {
@@ -2396,6 +2428,41 @@ class NativeStreamClient(
         }
     }
 
+    /** Restarts only WebRTC/signaling while keeping the already allocated cloud session. */
+    private fun restartTransportWithProfile(
+        updatedSettings: StreamSettings,
+        diagnosticReason: String,
+        stateMessage: String,
+    ): Boolean {
+        val currentSession = session ?: return false
+        val previousSettings = settings
+        if (updatedSettings == previousSettings) return false
+        val hadStableMedia = transportHasStableMedia
+        settings = updatedSettings
+        transportGeneration += 1
+        val generation = transportGeneration
+        recordStreamDiagnostic(
+            "transport profile restart reason=$diagnosticReason generation=$generation " +
+                "from=${previousSettings.resolution}/${previousSettings.fps}/${previousSettings.codec}/${previousSettings.maxBitrateMbps}Mbps " +
+                "to=${updatedSettings.resolution}/${updatedSettings.fps}/${updatedSettings.codec}/${updatedSettings.maxBitrateMbps}Mbps",
+        )
+        emitState(stateMessage)
+        closeTransport(clearInputState = false)
+        firstVideoFrameWatchdog.reset()
+        val settleDelayMs = advancedCodecRestartSettleDelayMs(previousSettings.codec, hadStableMedia)
+        if (settleDelayMs == 0L) {
+            startTransport(currentSession, updatedSettings, generation)
+        } else {
+            iceRecoveryJob = scope.launch {
+                delay(settleDelayMs)
+                if (generation != transportGeneration || session?.sessionId != currentSession.sessionId) return@launch
+                iceRecoveryJob = null
+                startTransport(currentSession, updatedSettings, generation)
+            }
+        }
+        return true
+    }
+
     private fun requestSessionRecovery(message: String) {
         if (sessionRecoveryRequested) return
         sessionRecoveryRequested = true
@@ -2681,10 +2748,6 @@ class NativeStreamClient(
                 )
                 scope.launch {
                     if (generation != transportGeneration) return@launch
-                    if (handleCatastrophicFirstDecodedResolution(snapshot)) {
-                        onStats(snapshot.stats)
-                        return@launch
-                    }
                     handleMediaLiveness(snapshot)
                     onStats(snapshot.stats)
                 }
@@ -2828,75 +2891,6 @@ class NativeStreamClient(
         )
     }
 
-    private fun handleCatastrophicFirstDecodedResolution(snapshot: RuntimeStatsSnapshot): Boolean {
-        if (firstDecodedResolutionEvaluated || (snapshot.framesDecoded ?: 0L) <= 0L) return false
-        val decodedResolution = snapshot.stats.resolution ?: return false
-        firstDecodedResolutionEvaluated = true
-        val currentSession = session ?: return false
-        val requestedResolution = currentSession.monitorSnapshot?.requestedResolution
-            ?: streamResolutionPixels(settings).let { "${it.first}x${it.second}" }
-        val serverReturnedResolution = currentSession.monitorSnapshot?.returnedResolution
-            ?: currentSession.negotiatedStreamProfile?.resolution
-        val serverFinalResolution = currentSession.monitorSnapshot?.finalSelectedResolution
-        val expectedResolution = serverReturnedResolution ?: serverFinalResolution ?: requestedResolution
-        val step = catastrophicFirstDecodedResolutionRecoveryStep(
-            transportCodec = settings.codec,
-            expectedResolution = expectedResolution,
-            decodedResolution = decodedResolution,
-            completedCodecFallbacks = catastrophicResolutionCodecFallbacks,
-        )
-        recordStreamDiagnostic(
-            "first decoded mode requested=$requestedResolution returned=${serverReturnedResolution.orEmpty()} " +
-                "final=${serverFinalResolution.orEmpty()} expected=$expectedResolution decoded=$decodedResolution " +
-                "codec=${settings.codec} recoveryStage=$catastrophicResolutionCodecFallbacks action=$step",
-        )
-        if (step == CatastrophicResolutionRecoveryStep.None) return false
-        return requestCatastrophicResolutionCodecFallback(step, expectedResolution, decodedResolution)
-    }
-
-    private fun requestCatastrophicResolutionCodecFallback(
-        step: CatastrophicResolutionRecoveryStep,
-        expectedResolution: String,
-        decodedResolution: String,
-    ): Boolean {
-        val currentSession = session ?: return false
-        val currentSettings = settings
-        val fallback = currentSettings.forCatastrophicResolutionRecovery(step) ?: return false
-        catastrophicResolutionCodecFallbacks += 1
-        if (fallback.codec == VideoCodec.H264) videoSafeFallbackApplied = true
-        settings = fallback
-        reconnectAttempts = (reconnectAttempts + 1).coerceAtMost(MAX_TRANSPORT_RECONNECT_ATTEMPTS)
-        NativeInputDiagnostics.add(
-            "catastrophic resolution codec fallback stage=$catastrophicResolutionCodecFallbacks " +
-                "from=${currentSettings.codec} to=${fallback.codec} expected=$expectedResolution decoded=$decodedResolution " +
-                "resolution=${fallback.resolution} fps=${fallback.fps}",
-        )
-        transportGeneration += 1
-        val generation = transportGeneration
-        closeTransport(clearInputState = false)
-        firstVideoFrameWatchdog.reset()
-        val message = "${currentSettings.codec} decoded at $decodedResolution instead of $expectedResolution; " +
-            "retrying ${fallback.codec} at ${fallback.resolution}"
-        recordStreamDiagnostic(
-            "catastrophic resolution transport restart generation=$generation " +
-                "session=${streamDiagnosticId(currentSession.sessionId)} message=$message",
-        )
-        emitState("Reconnecting stream with ${fallback.codec} profile")
-        emitVideoTransportFallbackApplied(message, fallback)
-        val settleDelayMs = advancedCodecRestartSettleDelayMs(currentSettings.codec, hadStableMedia = true)
-        if (settleDelayMs == 0L) {
-            startTransport(currentSession, fallback, generation)
-        } else {
-            iceRecoveryJob = scope.launch {
-                delay(settleDelayMs)
-                if (generation != transportGeneration || session?.sessionId != currentSession.sessionId) return@launch
-                iceRecoveryJob = null
-                startTransport(currentSession, fallback, generation)
-            }
-        }
-        return true
-    }
-
     private fun handleMediaLiveness(snapshot: RuntimeStatsSnapshot) {
         val connected = lastIceState == PeerConnection.IceConnectionState.CONNECTED ||
             lastIceState == PeerConnection.IceConnectionState.COMPLETED
@@ -2907,6 +2901,14 @@ class NativeStreamClient(
             connected,
         )
         updateTransportRecoveryProgress(livenessWatchdog.latestObservationProgressed)
+        val qualityRecovery = runtimeQualityWatchdog.observe(
+            stats = snapshot.stats,
+            requestedFps = settings.fps,
+            recoveryEligible = connected && transportHasStableMedia,
+        )
+        if (qualityRecovery != null && requestRuntimeQualityFallback(qualityRecovery, snapshot.stats)) {
+            return
+        }
         if (
             rendererSinkLifecycle.isAttachRequested() &&
             firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)
@@ -2978,6 +2980,43 @@ class NativeStreamClient(
                 restartTransport("Media stalled for ${action.stalledMs / 1000}s", videoFailure = true)
             }
         }
+    }
+
+    private fun requestRuntimeQualityFallback(
+        reason: RuntimeQualityRecoveryReason,
+        stats: StreamRuntimeStats,
+    ): Boolean {
+        if (runtimeQualityFallbackApplied) return false
+        runtimeQualityFallbackApplied = true
+        val currentSettings = settings
+        val fallback = currentSettings.runtimeQualityRecoveryProfile(reason)
+        val diagnosticReason = when (reason) {
+            RuntimeQualityRecoveryReason.NetworkDegraded -> "sustained network degradation"
+            RuntimeQualityRecoveryReason.DecoderOverloaded -> "sustained decoder overload"
+        }
+        NativeInputDiagnostics.add(
+            "$diagnosticReason recovery loss=${stats.packetLossPct} ping=${stats.pingMs} " +
+                "receivedFps=${stats.receivedFps} decodedFps=${stats.decodedFps} decodeMs=${stats.decodeMs} " +
+                "codec=${fallback.codec} resolution=${fallback.resolution} fps=${fallback.fps} bitrate=${fallback.maxBitrateMbps}",
+        )
+        if (fallback == currentSettings) {
+            recordStreamDiagnostic("$diagnosticReason already at recovery profile; transport unchanged")
+            return false
+        }
+        if (fallback.codec == VideoCodec.H264) videoSafeFallbackApplied = true
+        liveBitrateLimitKbps = fallback.maxBitrateMbps * 1_000
+        val message = when (reason) {
+            RuntimeQualityRecoveryReason.NetworkDegraded ->
+                "Packet loss stayed high; reconnecting this stream at 30 FPS with a lower bitrate"
+            RuntimeQualityRecoveryReason.DecoderOverloaded ->
+                "The decoder could not keep up with received frames; reconnecting this stream with a 30 FPS H264 profile"
+        }
+        emitVideoTransportFallbackApplied(message, fallback)
+        return restartTransportWithProfile(
+            updatedSettings = fallback,
+            diagnosticReason = diagnosticReason,
+            stateMessage = "Reconnecting stream with stable profile",
+        )
     }
 
     private fun updateTransportRecoveryProgress(progressed: Boolean) {
@@ -3114,7 +3153,7 @@ class NativeStreamClient(
         physicalLeftStickY = leftY
         physicalRightStickX = rightX
         physicalRightStickY = rightY
-        val sent = sendCurrentGamepadState(controllerId = controllerId)
+        val sent = sendBurstLimitedGamepadState(controllerId = controllerId)
         if (
             abs(leftX) > ANALOG_ACTIVITY_THRESHOLD ||
             abs(leftY) > ANALOG_ACTIVITY_THRESHOLD ||
@@ -3260,6 +3299,44 @@ class NativeStreamClient(
         if (!controllerMouseAssistActive) return false
         val mouseButton = AndroidControllerMouseAssist.mouseButtonForTrigger(left) ?: return false
         return setControllerMouseButton(mouseButton, pressed)
+    }
+
+    private fun sendBurstLimitedGamepadState(controllerId: Int = activeControllerId): Boolean {
+        if (openInputChannel(partiallyReliable = false, fallbackToReliable = true) == null) return false
+        val immediateControllerId = synchronized(gamepadStateBurstLock) {
+            val immediate = gamepadStateBurstLimiter.offer(
+                controllerId = controllerId,
+                nowMs = SystemClock.elapsedRealtime(),
+            )
+            if (immediate == null && gamepadStateBurstFlushJob?.isActive != true) {
+                scheduleGamepadStateBurstFlushLocked()
+            }
+            immediate
+        }
+        return immediateControllerId?.let(::sendCurrentGamepadState) ?: true
+    }
+
+    /** Must be called with [gamepadStateBurstLock] held. */
+    private fun scheduleGamepadStateBurstFlushLocked() {
+        gamepadStateBurstFlushJob = scope.launch {
+            while (true) {
+                val waitMs = synchronized(gamepadStateBurstLock) {
+                    gamepadStateBurstLimiter.delayUntilFlushMs(SystemClock.elapsedRealtime())
+                }
+                if (waitMs == null) {
+                    synchronized(gamepadStateBurstLock) { gamepadStateBurstFlushJob = null }
+                    return@launch
+                }
+                if (waitMs > 0L) delay(waitMs)
+                val controllerId = synchronized(gamepadStateBurstLock) {
+                    gamepadStateBurstLimiter.flush(SystemClock.elapsedRealtime()).also {
+                        gamepadStateBurstFlushJob = null
+                    }
+                }
+                controllerId?.let(::sendCurrentGamepadState)
+                return@launch
+            }
+        }
     }
 
     private fun sendCurrentGamepadState(controllerId: Int = activeControllerId): Boolean {
@@ -4074,6 +4151,7 @@ class NativeStreamClient(
 
     private companion object {
         private const val ANDROID_TV_CODEC_RELEASE_SETTLE_MS = 180L
+        private const val LIVE_BITRATE_RENEGOTIATION_DEBOUNCE_MS = 350L
         private const val EXTERNAL_MOUSE_ABSOLUTE_DELTA_LIMIT_PX = 240f
         private const val GAMEPAD_MAX_CONTROLLERS = 4
         private const val RUMBLE_EFFECT_MS = 90L
@@ -4085,6 +4163,7 @@ class NativeStreamClient(
         private const val GAMEPAD_PACKET_DIAGNOSTIC_INTERVAL_MS = 1_000L
         private const val INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS = 1_000L
         private const val MOUSE_MOVE_MIN_SEND_INTERVAL_MS = 8L
+        private const val GAMEPAD_STATE_MIN_SEND_INTERVAL_MS = 16L
         private const val MAX_PENDING_INPUT_SENDS = 256
         // State inputs are superseded by newer packets, so they are dropped well before the queue
         // can grow into lag; one-shot critical events keep the generous reliable threshold.

@@ -134,6 +134,7 @@ import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -219,6 +220,7 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInteropFilter
@@ -238,6 +240,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -261,6 +264,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.ContextCompat
@@ -322,6 +326,8 @@ internal val UiAccent.color: Color
         UiAccent.Lime -> OpenNowPalette.AccentLime
         UiAccent.Coral -> OpenNowPalette.AccentCoral
         UiAccent.Violet -> OpenNowPalette.AccentViolet
+        UiAccent.AbsoluteCinema -> OpenNowPalette.AccentCinemaOrange
+        UiAccent.Switch -> OpenNowPalette.AccentSwitchRed
     }
 
 @Composable
@@ -332,10 +338,59 @@ internal fun uiAccentLabel(accent: UiAccent): String = when (accent) {
     UiAccent.Lime -> stringResource(R.string.accent_lime)
     UiAccent.Coral -> stringResource(R.string.accent_coral)
     UiAccent.Violet -> stringResource(R.string.accent_violet)
+    UiAccent.AbsoluteCinema -> stringResource(R.string.accent_absolute_cinema)
+    UiAccent.Switch -> stringResource(R.string.accent_switch)
 }
 
+internal val UiAccent.secondaryColor: Color
+    get() = when (this) {
+        UiAccent.OpenNow -> OpenNowPalette.AccentDefaultSecondary
+        UiAccent.AbsoluteCinema -> OpenNowPalette.AccentCinemaBlue
+        UiAccent.Switch -> OpenNowPalette.AccentSwitchBlue
+        else -> color
+    }
+
+internal data class ActiveSelectionEffectStyle(
+    val color: Color,
+    val secondaryColor: Color,
+    val enabled: Boolean,
+    val absoluteCinemaActive: Boolean,
+)
+
+/**
+ * Absolute Cinema is a controller-focus treatment, not a default theme. Its preference may stay
+ * saved while no controller is connected, but none of its colors or animations become active
+ * until Android reports a physical controller. Other explicitly selected accent effects retain
+ * their existing behavior.
+ */
+internal fun AppSettings.activeSelectionEffectStyle(
+    physicalControllerConnected: Boolean,
+): ActiveSelectionEffectStyle {
+    val cinemaActive = absoluteCinemaEffects && physicalControllerConnected
+    val baseColor = if (uiAccent == UiAccent.OpenNow) Color.White else uiAccent.color
+    val baseSecondaryColor = if (uiAccent == UiAccent.OpenNow) Color.White else uiAccent.secondaryColor
+    return ActiveSelectionEffectStyle(
+        color = if (cinemaActive) OpenNowPalette.AccentCinemaOrange else baseColor,
+        secondaryColor = if (cinemaActive) OpenNowPalette.AccentCinemaBlue else baseSecondaryColor,
+        enabled = cinemaActive || (liveSelectedOutlines && uiAccent != UiAccent.OpenNow),
+        absoluteCinemaActive = cinemaActive,
+    )
+}
+
+internal val LocalActiveSelectionColor = staticCompositionLocalOf { Color.White }
+internal val LocalActiveSelectionSecondaryColor = staticCompositionLocalOf { Color.White }
+internal val LocalActiveSelectionEnabled = staticCompositionLocalOf { true }
+internal val LocalAbsoluteCinemaEffects = staticCompositionLocalOf { false }
+// Leave a full control-height runway below the last item so mobile focus/hover frames do not
+// collide with the viewport edge in Settings, Library, or Store.
+internal val AppScrollEndSpacing = 72.dp
+
 @Composable
-fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
+fun OpenNowTheme(
+    settings: AppSettings,
+    physicalControllerConnected: Boolean,
+    content: @Composable () -> Unit,
+) {
     val context = LocalContext.current
     val accent = settings.uiAccent.color
     val fallbackScheme = darkColorScheme(
@@ -347,6 +402,7 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
         onBackground = TextPrimary,
         onSurface = TextPrimary,
         onSurfaceVariant = TextMuted,
+        secondary = settings.uiAccent.secondaryColor,
         errorContainer = OpenNowPalette.ErrorContainer,
         onErrorContainer = OpenNowPalette.OnErrorContainer,
     )
@@ -354,7 +410,7 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
         dynamicDarkColorScheme(context).copy(
             primary = accent,
             onPrimary = OpenNowPalette.OnAccent,
-            secondary = accent,
+            secondary = settings.uiAccent.secondaryColor,
             tertiary = Green,
             errorContainer = OpenNowPalette.ErrorContainer,
             onErrorContainer = OpenNowPalette.OnErrorContainer,
@@ -374,7 +430,14 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
         }.getOrDefault(1f)
         systemScale == 0f || !settings.controllerBackgroundAnimations
     }
-    CompositionLocalProvider(LocalReduceMotion provides reduceMotion) {
+    val selectionEffectStyle = settings.activeSelectionEffectStyle(physicalControllerConnected)
+    CompositionLocalProvider(
+        LocalReduceMotion provides reduceMotion,
+        LocalActiveSelectionColor provides selectionEffectStyle.color,
+        LocalActiveSelectionSecondaryColor provides selectionEffectStyle.secondaryColor,
+        LocalActiveSelectionEnabled provides selectionEffectStyle.enabled,
+        LocalAbsoluteCinemaEffects provides selectionEffectStyle.absoluteCinemaActive,
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = OpenNowTypography,
@@ -392,7 +455,7 @@ fun OpenNowApp(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !state.androidTvProfile)
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = true)
     val controllerFocusEnabled = shouldShowControllerFocus(
         focused = true,
         tvProfile = state.androidTvProfile,
@@ -545,7 +608,10 @@ fun OpenNowApp(
         },
     )
 
-    OpenNowTheme(state.settings) {
+    OpenNowTheme(
+        settings = state.settings,
+        physicalControllerConnected = physicalControllerConnected,
+    ) {
         val primaryColor = MaterialTheme.colorScheme.primary
         CompositionLocalProvider(
             LocalTvLoadingProfile provides state.androidTvProfile,
@@ -704,6 +770,8 @@ private fun MainShell(
     var settingsDetailRouteOpen by remember { mutableStateOf(false) }
     var settingsBackRequestToken by remember { mutableStateOf(0) }
     val tvStreamReturnFocusRequester = remember { FocusRequester() }
+    val topBarProfileFocusRequester = remember { FocusRequester() }
+    val catalogFilterFocusRequester = remember { FocusRequester() }
     var previouslyInStream by remember { mutableStateOf(inStream) }
     val navigationToneEnabled = state.settings.controllerUiSounds && !inStream
     val showMinimizedQueueDock = state.streamLaunchMinimized && shouldShowQueueLaunchStatus(state)
@@ -764,6 +832,7 @@ private fun MainShell(
         enabled = (tvProfile || physicalControllerConnected) &&
             !inStream &&
             state.selectedGame == null &&
+            !modalPickerOpen &&
             state.page != AppPage.Home,
     ) {
         viewModel.setPage(AppPage.Home)
@@ -776,8 +845,9 @@ private fun MainShell(
         val showNavigationRail = !inStream && (tvProfile || phoneLandscapeChrome)
         val scrollChromePage = state.page == AppPage.Home || state.page == AppPage.Library
         val tvCatalogChrome = tvProfile && scrollChromePage
-        val storeControlsInTopBar = (phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Home
-        val libraryControlsInTopBar = (phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Library
+        val mobileCatalogControlsInTopBar = !tvProfile && portraitChrome
+        val storeControlsInTopBar = (mobileCatalogControlsInTopBar || phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Home
+        val libraryControlsInTopBar = (mobileCatalogControlsInTopBar || phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Library
         val screenEdgePadding = appContentEdgePaddingDp(
             settings = state.settings,
             inStream = inStream,
@@ -812,7 +882,7 @@ private fun MainShell(
                             )
                         }
                         NavigationBar(
-                            containerColor = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
+                            containerColor = MaterialTheme.colorScheme.background,
                             tonalElevation = 0.dp,
                         ) {
                             BottomNavItem(
@@ -874,6 +944,7 @@ private fun MainShell(
                             state = state,
                             activeSearchTarget = visibleSearchTarget,
                             largeIcons = phoneLandscapeChrome,
+                            darkenForCatalogBackground = state.settings.nerdCatalogBackground && scrollChromePage,
                             showSettingsBack = shouldShowSettingsBackRail(
                                 tvProfile = tvProfile,
                                 settingsPageOpen = state.page == AppPage.Settings,
@@ -903,23 +974,56 @@ private fun MainShell(
                             if (!inStream) {
                                 TopStatusBar(
                                     state = state,
+                                    profileFocusRequester = topBarProfileFocusRequester,
+                                    catalogControlFocusRequester = catalogFilterFocusRequester.takeIf {
+                                        !tvProfile && (storeControlsInTopBar || libraryControlsInTopBar)
+                                    },
                                     onResumeActiveSession = viewModel::resumeActiveSession,
-                                    onOpenAccountSettings = viewModel::openAccountSettings,
+                                    onOpenSettings = { navigateFromAppChrome(AppPage.Settings) },
+                                    onOpenLocalApps = {
+                                        if (!state.settings.localAppsEnabled) {
+                                            viewModel.updateSettings(state.settings.copy(localAppsEnabled = true))
+                                        }
+                                        visibleSearchTarget = null
+                                        viewModel.setPage(AppPage.Library)
+                                    },
                                     onOpenStreamSettings = viewModel::openStreamSettings,
                                     musicControl = musicControl,
                                     showChromeScrim = portraitChrome,
                                 ) {
                                     if (storeControlsInTopBar) {
-                                        StoreCatalogToolbar(
-                                            state = state,
-                                            onSortChange = viewModel::setCatalogSort,
-                                            onFilterToggle = viewModel::toggleCatalogFilter,
-                                            modifier = Modifier.widthIn(max = 220.dp),
-                                            compact = true,
-                                        )
+                                        if (tvProfile) {
+                                            StoreCatalogToolbar(
+                                                state = state,
+                                                onSortChange = viewModel::setCatalogSort,
+                                                onFilterToggle = viewModel::toggleCatalogFilter,
+                                                modifier = Modifier.widthIn(max = 220.dp),
+                                                compact = true,
+                                            )
+                                        } else {
+                                            Spacer(Modifier.weight(1f))
+                                            val filterGroups = catalogVisibleFilterGroups(state.catalogResult.filterGroups)
+                                            CatalogSortFilterMenu(
+                                                sortOptions = state.catalogResult.sortOptions,
+                                                selectedSortId = state.catalogSortId,
+                                                filterOptions = catalogFilterOptions(filterGroups),
+                                                selectedFilterIds = state.catalogFilterIds,
+                                                onSortChange = viewModel::setCatalogSort,
+                                                onFilterToggle = viewModel::toggleCatalogFilter,
+                                                focusRequester = catalogFilterFocusRequester,
+                                                leadingFocusRequester = topBarProfileFocusRequester,
+                                            )
+                                        }
                                     } else if (libraryControlsInTopBar) {
-                                        val orderedLibraryGames = remember(state.libraryGames, state.settings.favoriteGameIds) {
-                                            favoriteOrderedGames(state.libraryGames, state.settings.favoriteGameIds)
+                                        val orderedLibraryGames = remember(
+                                            state.libraryGames,
+                                            state.settings.favoriteGameIds,
+                                            state.librarySortId,
+                                        ) {
+                                            sortLibraryGames(
+                                                favoriteOrderedGames(state.libraryGames, state.settings.favoriteGameIds),
+                                                state.librarySortId,
+                                            )
                                         }
                                         val visibleLibraryGames = remember(orderedLibraryGames, state.librarySearch, state.libraryFilterIds) {
                                             orderedLibraryGames.filter { game ->
@@ -927,19 +1031,34 @@ private fun MainShell(
                                                     gameMatchesLibraryFilters(game, state.libraryFilterIds)
                                             }
                                         }
-                                        val libraryFilterOptions = remember(orderedLibraryGames) {
-                                            libraryStoreFilterOptions(orderedLibraryGames)
+                                        val touchFilterLabel = stringResource(R.string.catalog_filter_touch_controls)
+                                        val libraryFilterOptions = remember(orderedLibraryGames, touchFilterLabel) {
+                                            libraryStoreFilterOptions(orderedLibraryGames, touchFilterLabel)
                                         }
-                                        LibraryFilterControls(
-                                            gameCount = visibleLibraryGames.size,
-                                            totalCount = state.libraryGames.size,
-                                            options = libraryFilterOptions,
-                                            selectedIds = state.libraryFilterIds,
-                                            onToggle = viewModel::toggleLibraryFilter,
-                                            modifier = Modifier.widthIn(max = 190.dp),
-                                            compact = true,
-                                            showSelectedChips = false,
-                                        )
+                                        if (tvProfile) {
+                                            LibraryFilterControls(
+                                                gameCount = visibleLibraryGames.size,
+                                                totalCount = state.libraryGames.size,
+                                                options = libraryFilterOptions,
+                                                selectedIds = state.libraryFilterIds,
+                                                onToggle = viewModel::toggleLibraryFilter,
+                                                modifier = Modifier.widthIn(max = 190.dp),
+                                                compact = true,
+                                                showSelectedChips = false,
+                                            )
+                                        } else {
+                                            Spacer(Modifier.weight(1f))
+                                            CatalogSortFilterMenu(
+                                                sortOptions = librarySortOptions(),
+                                                selectedSortId = state.librarySortId,
+                                                filterOptions = libraryFilterOptions,
+                                                selectedFilterIds = state.libraryFilterIds,
+                                                onSortChange = viewModel::setLibrarySort,
+                                                onFilterToggle = viewModel::toggleLibraryFilter,
+                                                focusRequester = catalogFilterFocusRequester,
+                                                leadingFocusRequester = topBarProfileFocusRequester,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -949,51 +1068,59 @@ private fun MainShell(
                                 .weight(1f)
                                 .fillMaxWidth(),
                         ) {
-                            when (state.page) {
-                                AppPage.Home -> HomeScreen(
-                                    state = state,
-                                    viewModel = viewModel,
-                                    tvProfile = tvProfile,
-                                    hideChromeWhenScrolled = phoneLandscapeChrome,
-                                    controlsInTopBar = storeControlsInTopBar,
-                                    searchRequested = visibleSearchTarget == SearchTarget.Store,
-                                    onSearchDismissed = {
-                                        if (visibleSearchTarget == SearchTarget.Store) visibleSearchTarget = null
-                                    },
-                                    onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
-                                )
-                                AppPage.Library -> LibraryScreen(
-                                    state = state,
-                                    viewModel = viewModel,
-                                    tvProfile = tvProfile,
-                                    hideChromeWhenScrolled = phoneLandscapeChrome,
-                                    controlsInTopBar = libraryControlsInTopBar,
-                                    searchRequested = visibleSearchTarget == SearchTarget.Library,
-                                    onSearchDismissed = {
-                                        if (visibleSearchTarget == SearchTarget.Library) visibleSearchTarget = null
-                                    },
-                                    onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
-                                )
-                                AppPage.Settings -> SettingsScreen(
-                                    state = state,
-                                    viewModel = viewModel,
-                                    tvProfile = tvProfile,
-                                    searchRequested = visibleSearchTarget == SearchTarget.Settings,
-                                    searchQuery = settingsSearchQuery,
-                                    backRequestToken = settingsBackRequestToken,
-                                    onSearchQueryChange = { next ->
-                                        settingsSearchQuery = next
-                                        if (next.isBlank() && visibleSearchTarget == SearchTarget.Settings) {
-                                            visibleSearchTarget = null
-                                        }
-                                    },
-                                    onDetailRouteChange = { settingsDetailRouteOpen = it },
-                                )
-                                AppPage.Stream -> StreamScreen(
-                                    state = state,
-                                    viewModel = viewModel,
-                                    onMicrophoneCaptureActiveChange = onMicrophoneCaptureActiveChange,
-                                )
+                            CompositionLocalProvider(LocalSelectedCatalogGameId provides state.selectedGame?.id) {
+                                when (state.page) {
+                                    AppPage.Home -> HomeScreen(
+                                        state = state,
+                                        viewModel = viewModel,
+                                        tvProfile = tvProfile,
+                                        hideChromeWhenScrolled = phoneLandscapeChrome,
+                                        controlsInTopBar = storeControlsInTopBar,
+                                        topBarFocusRequester = catalogFilterFocusRequester.takeIf {
+                                            storeControlsInTopBar && !tvProfile
+                                        },
+                                        searchRequested = visibleSearchTarget == SearchTarget.Store,
+                                        onSearchDismissed = {
+                                            if (visibleSearchTarget == SearchTarget.Store) visibleSearchTarget = null
+                                        },
+                                        onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
+                                    )
+                                    AppPage.Library -> LibraryScreen(
+                                        state = state,
+                                        viewModel = viewModel,
+                                        tvProfile = tvProfile,
+                                        hideChromeWhenScrolled = phoneLandscapeChrome,
+                                        controlsInTopBar = libraryControlsInTopBar,
+                                        topBarFocusRequester = catalogFilterFocusRequester.takeIf {
+                                            libraryControlsInTopBar && !tvProfile
+                                        },
+                                        searchRequested = visibleSearchTarget == SearchTarget.Library,
+                                        onSearchDismissed = {
+                                            if (visibleSearchTarget == SearchTarget.Library) visibleSearchTarget = null
+                                        },
+                                        onScrollChromeHiddenChange = { phoneLandscapeScrollChromeHidden = it },
+                                    )
+                                    AppPage.Settings -> SettingsScreen(
+                                        state = state,
+                                        viewModel = viewModel,
+                                        tvProfile = tvProfile,
+                                        searchRequested = visibleSearchTarget == SearchTarget.Settings,
+                                        searchQuery = settingsSearchQuery,
+                                        backRequestToken = settingsBackRequestToken,
+                                        onSearchQueryChange = { next ->
+                                            settingsSearchQuery = next
+                                            if (next.isBlank() && visibleSearchTarget == SearchTarget.Settings) {
+                                                visibleSearchTarget = null
+                                            }
+                                        },
+                                        onDetailRouteChange = { settingsDetailRouteOpen = it },
+                                    )
+                                    AppPage.Stream -> StreamScreen(
+                                        state = state,
+                                        viewModel = viewModel,
+                                        onMicrophoneCaptureActiveChange = onMicrophoneCaptureActiveChange,
+                                    )
+                                }
                             }
                         }
                         if (showMinimizedQueueDock && showNavigationRail) {
@@ -1005,46 +1132,77 @@ private fun MainShell(
                         }
                     }
                 }
-                AnimatedVisibility(
-                    visible = state.selectedGame != null && !inStream && !modalPickerOpen,
-                    enter = fadeIn() + slideInVertically(initialOffsetY = { it / 3 }) + scaleIn(initialScale = 0.96f),
-                    exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 3 }) + scaleOut(targetScale = 0.96f),
-                    modifier = Modifier.align(Alignment.Center),
-                ) {
-                    state.selectedGame?.let { game ->
-                        GameDetailsSheet(
-                            game = game,
-                            favorite = game.id in state.settings.favoriteGameIds,
-                            defaultVariantId = state.settings.defaultGameVariantIds[game.id],
-                            fullScreen = tvProfile,
-                            safeAreaPadding = screenEdgePadding,
-                            liveSelectedOutlines = state.settings.liveSelectedOutlines,
-                            onPlay = viewModel::play,
-                            onChooseStore = viewModel::chooseStore,
-                            onFavorite = viewModel::updateFavorites,
-                            connectedTvName = state.localTvConnector.connectedTvName,
-                            onPlayOnTv = viewModel::playOnLocalTv,
-                            onDismiss = viewModel::clearSelectedGame,
-                        )
+                state.selectedGame?.takeIf { !inStream && !modalPickerOpen }?.let { game ->
+                    ControllerModalDialog(onDismissRequest = viewModel::clearSelectedGame) {
+                        AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
+                            GameDetailsSheet(
+                                game = game,
+                                favorite = game.id in state.settings.favoriteGameIds,
+                                defaultVariantId = state.settings.defaultGameVariantIds[game.id],
+                                fullScreen = tvProfile,
+                                safeAreaPadding = screenEdgePadding,
+                                onPlay = viewModel::play,
+                                onChooseStore = viewModel::chooseStore,
+                                onFavorite = viewModel::updateFavorites,
+                                connectedTvName = state.localTvConnector.connectedTvName,
+                                onPlayOnTv = viewModel::playOnLocalTv,
+                                onDismiss = viewModel::clearSelectedGame,
+                            )
+                        }
                     }
                 }
                 state.pendingPrintedWasteGame?.let { game ->
-                    AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
-                        PrintedWasteSelector(state, game, viewModel)
+                    ControllerModalDialog(onDismissRequest = viewModel::dismissPrintedWasteSelector) {
+                        AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
+                            PrintedWasteSelector(state, game, viewModel)
+                        }
                     }
                 }
                 state.pendingStoreChoiceGame?.let { game ->
-                    AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
-                        StoreLaunchSelector(
-                            game = game,
-                            defaultVariantId = state.settings.defaultGameVariantIds[game.id],
-                            onLaunch = viewModel::playVariant,
-                            onSetDefaultStore = viewModel::setDefaultGameVariant,
-                            onDismiss = viewModel::dismissStoreChoice,
-                        )
+                    ControllerModalDialog(onDismissRequest = viewModel::dismissStoreChoice) {
+                        AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
+                            StoreLaunchSelector(
+                                game = game,
+                                defaultVariantId = state.settings.defaultGameVariantIds[game.id],
+                                onLaunch = viewModel::playVariant,
+                                onSetDefaultStore = viewModel::setDefaultGameVariant,
+                                onDismiss = viewModel::dismissStoreChoice,
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ControllerModalDialog(
+    onDismissRequest: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+        ),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .onPreviewKeyEvent { event ->
+                    if (event.key == Key.ButtonB || event.key == Key.Back || event.key == Key.Escape) {
+                        if (event.type == KeyEventType.KeyUp) onDismissRequest()
+                        true
+                    } else {
+                        false
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            content()
         }
     }
 }
@@ -1060,6 +1218,7 @@ private fun AppNavigationRail(
     state: OpenNowUiState,
     activeSearchTarget: SearchTarget?,
     largeIcons: Boolean,
+    darkenForCatalogBackground: Boolean,
     showSettingsBack: Boolean,
     showCatalogControllerActions: Boolean,
     onNavigate: (AppPage) -> Unit,
@@ -1076,7 +1235,7 @@ private fun AppNavigationRail(
         Surface(
             modifier = Modifier.fillMaxSize(),
             shape = RoundedCornerShape(26.dp),
-            color = ChromeScrim,
+            color = navigationRailScrim(darkenForCatalogBackground),
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
         ) {
@@ -1155,6 +1314,9 @@ private fun AppNavigationRail(
     }
 }
 
+internal fun navigationRailScrim(darkenForCatalogBackground: Boolean): Color =
+    if (darkenForCatalogBackground) Color.Black.copy(alpha = 0.76f) else ChromeScrim
+
 internal fun shouldShowLocalTvConnectionDot(tvProfile: Boolean, pairedDeviceName: String?): Boolean =
     tvProfile && !pairedDeviceName.isNullOrBlank()
 
@@ -1186,57 +1348,81 @@ private fun AppNavigationRailItem(
     showConnectionDot: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val accent = MaterialTheme.colorScheme.primary
+    val haptics = LocalHapticFeedback.current
+    val accent = LocalActiveSelectionColor.current
+    val secondaryAccent = LocalActiveSelectionSecondaryColor.current
+    val showActiveFrame =
+        (selected && LocalActiveSelectionEnabled.current) ||
+            (focused && LocalAbsoluteCinemaEffects.current)
     val contentColor = when {
         focused -> Color.White
         selected -> accent
         else -> TextMuted
     }
-    Surface(
-        onClick = onClick,
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 5.dp, vertical = 2.dp)
-            .onFocusChanged { focused = it.isFocused }
-            .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier),
-        shape = RoundedCornerShape(18.dp),
-        color = if (selected && !focused) accent.copy(alpha = 0.10f) else Color.Transparent,
-        border = if (focused) BorderStroke(2.dp, Color.White.copy(alpha = 0.96f)) else null,
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
+            .padding(horizontal = 5.dp, vertical = 2.dp),
     ) {
-        Column(
+        Surface(
+            onClick = {
+                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                onClick()
+            },
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 58.dp)
-                .padding(horizontal = 4.dp, vertical = 6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+                .onFocusChanged { focused = it.isFocused }
+                .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier),
+            shape = RoundedCornerShape(18.dp),
+            color = if (selected && !focused) accent.copy(alpha = 0.12f) else Color.Transparent,
+            border = when {
+                focused -> BorderStroke(2.dp, Color.White.copy(alpha = 0.96f))
+                selected -> BorderStroke(3.dp, accent)
+                else -> null
+            },
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
         ) {
-            Icon(
-                painter = painterResource(iconRes),
-                contentDescription = label,
-                tint = contentColor,
-                modifier = Modifier.size(iconSize),
-            )
-            if (showConnectionDot) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 58.dp)
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(
+                    painter = painterResource(iconRes),
+                    contentDescription = label,
+                    tint = contentColor,
+                    modifier = Modifier.size(if (selected) iconSize + 2.dp else iconSize),
+                )
+                if (showConnectionDot) {
+                    Spacer(Modifier.height(2.dp))
+                    Box(
+                        Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xffb56cff)),
+                    )
+                }
                 Spacer(Modifier.height(2.dp))
-                Box(
-                    Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xffb56cff)),
+                Text(
+                    label,
+                    color = contentColor,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            Spacer(Modifier.height(2.dp))
-            Text(
-                label,
-                color = contentColor,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
+        ControllerFocusFrame(
+            visible = showActiveFrame,
+            cornerRadius = 18.dp,
+            tint = accent,
+            secondaryTint = secondaryAccent,
+        )
     }
 }
 
@@ -1253,31 +1439,53 @@ private fun RowScope.BottomNavItem(
     onClick: () -> Unit,
     iconRes: Int,
     label: String,
-) = NavigationBarItem(
-    selected = selected,
-    onClick = onClick,
-    colors = NavigationBarItemDefaults.colors(
-        selectedIconColor = MaterialTheme.colorScheme.primary,
-        selectedTextColor = MaterialTheme.colorScheme.primary,
-        indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-        unselectedIconColor = TextMuted,
-        unselectedTextColor = TextMuted,
-    ),
-    icon = {
-        Icon(
-            painter = painterResource(iconRes),
-            contentDescription = null,
-            modifier = Modifier.size(24.dp),
-        )
-    },
-    label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-)
+) {
+    val haptics = LocalHapticFeedback.current
+    val accent = LocalActiveSelectionColor.current
+    NavigationBarItem(
+        selected = selected,
+        onClick = {
+            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+            onClick()
+        },
+        colors = NavigationBarItemDefaults.colors(
+            selectedIconColor = accent,
+            selectedTextColor = accent,
+            indicatorColor = accent.copy(alpha = 0.20f),
+            unselectedIconColor = TextMuted,
+            unselectedTextColor = TextMuted,
+        ),
+        icon = {
+            Box(
+                modifier = Modifier.size(width = 46.dp, height = 34.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painter = painterResource(iconRes),
+                    contentDescription = null,
+                    modifier = Modifier.size(if (selected) 27.dp else 24.dp),
+                )
+            }
+        },
+        label = {
+            Text(
+                label,
+                fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+    )
+}
 
 @Composable
 private fun TopStatusBar(
     state: OpenNowUiState,
+    profileFocusRequester: FocusRequester,
+    catalogControlFocusRequester: FocusRequester?,
     onResumeActiveSession: () -> Unit,
-    onOpenAccountSettings: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenLocalApps: () -> Unit,
     onOpenStreamSettings: () -> Unit,
     musicControl: TopBarMusicControl,
     showChromeScrim: Boolean = true,
@@ -1299,7 +1507,10 @@ private fun TopStatusBar(
         ) {
             TopBarProfileMenu(
                 state = state,
-                onOpenAccountSettings = onOpenAccountSettings,
+                focusRequester = profileFocusRequester,
+                nextFocusRequester = catalogControlFocusRequester,
+                onOpenSettings = onOpenSettings,
+                onOpenLocalApps = onOpenLocalApps,
             )
             Spacer(Modifier.width(8.dp))
             Row(
@@ -1307,10 +1518,13 @@ private fun TopStatusBar(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                content()
                 if (state.settings.nerdMode) {
                     TopStatusDetails(state, onOpenStreamSettings)
                 }
+                // Mobile catalogue controls include their own weighted spacer. Keeping them last
+                // makes the merged filter button occupy the slot immediately before Music, or the
+                // Music slot itself when music controls are disabled.
+                content()
             }
             if (musicControl.visible) {
                 Spacer(Modifier.width(6.dp))
@@ -1332,7 +1546,10 @@ private fun TopStatusBar(
 @Composable
 private fun TopBarProfileMenu(
     state: OpenNowUiState,
-    onOpenAccountSettings: () -> Unit,
+    focusRequester: FocusRequester,
+    nextFocusRequester: FocusRequester?,
+    onOpenSettings: () -> Unit,
+    onOpenLocalApps: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     BackHandler(enabled = expanded) { expanded = false }
@@ -1352,17 +1569,28 @@ private fun TopBarProfileMenu(
         ?: stringResource(R.string.profile_not_available)
     val profileDescription = stringResource(R.string.profile_menu_description)
     val shape = RoundedCornerShape(14.dp)
+    val haptics = LocalHapticFeedback.current
+    val launcherControl = rememberDefaultLauncherControl()
 
     Box {
         Box(
             modifier = Modifier
                 .size(40.dp)
+                .focusRequester(focusRequester)
+                .then(
+                    nextFocusRequester?.let { next ->
+                        Modifier.focusProperties { right = next }
+                    } ?: Modifier,
+                )
                 .onFocusChanged { focused = it.isFocused }
                 .semantics {
                     contentDescription = profileDescription
                     role = Role.Button
                 }
-                .clickable { expanded = true },
+                .clickable {
+                    haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                    expanded = true
+                },
             contentAlignment = Alignment.Center,
         ) {
             Box(
@@ -1384,7 +1612,8 @@ private fun TopBarProfileMenu(
             ControllerFocusFrame(
                 visible = focused,
                 cornerRadius = 14.dp,
-                tint = Color.White,
+                tint = if (LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
+                secondaryTint = if (LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
             )
         }
         DropdownMenu(
@@ -1396,45 +1625,71 @@ private fun TopBarProfileMenu(
         ) {
             Column(
                 Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                ProfileMenuValue(stringResource(R.string.profile_username), displayName)
-                ProfileMenuValue(stringResource(R.string.profile_tier), tier)
-                ProfileMenuValue(stringResource(R.string.profile_email), email)
+                Text(
+                    stringResource(R.string.profile_identity, displayName, tier),
+                    color = TextPrimary,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    email,
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
+            if (BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            stringResource(
+                                if (launcherControl.isDefault) R.string.settings_default_launcher_selected
+                                else R.string.settings_default_launcher,
+                            ),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                        launcherControl.request()
+                    },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            stringResource(R.string.settings_local_apps),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                        onOpenLocalApps()
+                    },
+                )
+            }
+            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
             DropdownMenuItem(
                 text = {
                     Text(
-                        stringResource(R.string.profile_account_options),
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold,
+                        stringResource(R.string.nav_settings),
+                        color = LocalActiveSelectionColor.current,
+                        fontWeight = FontWeight.Bold,
                     )
                 },
                 onClick = {
                     expanded = false
-                    onOpenAccountSettings()
+                    haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                    onOpenSettings()
                 },
             )
         }
-    }
-}
-
-@Composable
-private fun ProfileMenuValue(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            label,
-            color = TextMuted,
-            style = MaterialTheme.typography.labelSmall,
-        )
-        Text(
-            value,
-            color = TextPrimary,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
     }
 }
 

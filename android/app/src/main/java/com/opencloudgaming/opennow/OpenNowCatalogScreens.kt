@@ -137,6 +137,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -144,6 +145,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -169,21 +171,37 @@ internal fun HomeScreen(
     tvProfile: Boolean,
     hideChromeWhenScrolled: Boolean,
     controlsInTopBar: Boolean,
+    topBarFocusRequester: FocusRequester?,
     searchRequested: Boolean,
     onSearchDismissed: () -> Unit,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
 ) {
-    val visibleGames = state.games.ifEmpty { state.catalogResult.games }
+    val catalogGames = state.games.ifEmpty { state.catalogResult.games }
+    val visibleGames = remember(catalogGames, state.catalogFilterIds) {
+        filterCatalogGamesForLocalControls(catalogGames, state.catalogFilterIds)
+    }
     val searchingCatalog = state.loadingGames && state.catalogSearch.isNotBlank()
     val gridState = rememberLazyGridState()
     val searchFocusRequester = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val selectGameWithHaptic: (GameInfo) -> Unit = { game ->
+        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        viewModel.selectGame(game)
+    }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val showSearch = searchRequested || state.catalogSearch.isNotBlank()
+    val physicalControllerConnected = rememberPhysicalControllerConnected(
+        enabled = hideChromeWhenScrolled && !tvProfile,
+    )
     val showScrollActions = gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 80
     val scrolledAwayFromTop = gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0
-    val hideScrollChrome = hideChromeWhenScrolled && scrolledAwayFromTop
+    val hideScrollChrome = shouldHideStoreChromeOnScroll(
+        hideChromeWhenScrolled = hideChromeWhenScrolled,
+        scrolledAwayFromTop = scrolledAwayFromTop,
+        physicalControllerConnected = physicalControllerConnected,
+    )
     LaunchedEffect(hideScrollChrome) {
         onScrollChromeHiddenChange(hideScrollChrome)
     }
@@ -253,10 +271,16 @@ internal fun HomeScreen(
                                 onFilterToggle = viewModel::toggleCatalogFilter,
                                 showToolbar = !controlsInTopBar,
                             )
+                            if (showSearch) {
+                                SectionHeader(
+                                    title = stringResource(R.string.store_results),
+                                    modifier = Modifier.padding(top = OpenNowSpacing.lg, bottom = OpenNowSpacing.sm),
+                                )
+                            }
                             RefreshingGamesPlaceholder(
                                 settings = state.settings,
                                 tvProfile = tvProfile,
-                                storeLayout = true,
+                                storeLayout = !showSearch,
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -267,7 +291,7 @@ internal fun HomeScreen(
                             settings = state.settings,
                             tvProfile = tvProfile,
                             state = state,
-                            onSelect = viewModel::selectGame,
+                            onSelect = selectGameWithHaptic,
                             onFavorite = viewModel::updateFavorites,
                             onPlay = viewModel::play,
                             onChooseStore = viewModel::chooseStore,
@@ -280,6 +304,8 @@ internal fun HomeScreen(
                             onClearFilters = viewModel::clearCatalogFilters,
                             gridState = gridState,
                             showToolbar = !controlsInTopBar,
+                            topFocusRequester = topBarFocusRequester,
+                            searchActive = showSearch,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
@@ -421,15 +447,25 @@ internal fun LibraryScreen(
     tvProfile: Boolean,
     hideChromeWhenScrolled: Boolean,
     controlsInTopBar: Boolean,
+    topBarFocusRequester: FocusRequester?,
     searchRequested: Boolean,
     onSearchDismissed: () -> Unit,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
 ) {
-    val orderedGames = remember(state.libraryGames, state.settings.favoriteGameIds) {
-        favoriteOrderedGames(state.libraryGames, state.settings.favoriteGameIds)
+    val haptics = LocalHapticFeedback.current
+    val selectGameWithHaptic: (GameInfo) -> Unit = { game ->
+        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        viewModel.selectGame(game)
     }
-    val filterOptions = remember(orderedGames) {
-        libraryStoreFilterOptions(orderedGames)
+    val orderedGames = remember(state.libraryGames, state.settings.favoriteGameIds, state.librarySortId) {
+        sortLibraryGames(
+            favoriteOrderedGames(state.libraryGames, state.settings.favoriteGameIds),
+            state.librarySortId,
+        )
+    }
+    val touchFilterLabel = stringResource(R.string.catalog_filter_touch_controls)
+    val filterOptions = remember(orderedGames, touchFilterLabel) {
+        libraryStoreFilterOptions(orderedGames, touchFilterLabel)
     }
     val games = remember(orderedGames, state.librarySearch, state.libraryFilterIds) {
         orderedGames.filter { game ->
@@ -438,6 +474,7 @@ internal fun LibraryScreen(
     }
     val gridState = rememberLazyGridState()
     val searchFocusRequester = remember { FocusRequester() }
+    val localAppsFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val showSearch = searchRequested || state.librarySearch.isNotBlank()
     val scrolledAwayFromTop = gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0
@@ -485,6 +522,15 @@ internal fun LibraryScreen(
                         focusRequester = searchFocusRequester,
                     )
                 }
+                if (BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED && state.settings.localAppsEnabled) {
+                    LocalAppsShelf(
+                        packageNames = state.settings.localAppPackageNames,
+                        onAddPackage = viewModel::addLocalApp,
+                        onRemovePackage = viewModel::removeLocalApp,
+                        focusRequester = localAppsFocusRequester,
+                        topFocusRequester = topBarFocusRequester,
+                    )
+                }
                 LibraryFilterControls(
                     gameCount = games.size,
                     totalCount = state.libraryGames.size,
@@ -505,10 +551,15 @@ internal fun LibraryScreen(
                         state.settings.favoriteGameIds,
                         state.settings,
                         tvProfile,
-                        viewModel::selectGame,
+                        selectGameWithHaptic,
                         viewModel::updateFavorites,
                         viewModel::play,
                         viewModel::chooseStore,
+                        topFocusRequester = if (BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED && state.settings.localAppsEnabled) {
+                            localAppsFocusRequester
+                        } else {
+                            topBarFocusRequester
+                        },
                         modifier = Modifier.weight(1f),
                         gridState = gridState,
                         emptyContent = {
@@ -546,6 +597,28 @@ internal fun LibraryScreen(
         }
     }
 }
+
+internal const val LIBRARY_SORT_DEFAULT = "library"
+internal const val LIBRARY_SORT_RECENT = "recent"
+internal const val LIBRARY_SORT_TITLE = "title"
+
+@Composable
+internal fun librarySortOptions(): List<CatalogSortOption> = listOf(
+    CatalogSortOption(LIBRARY_SORT_DEFAULT, stringResource(R.string.library_sort_default), ""),
+    CatalogSortOption(LIBRARY_SORT_RECENT, stringResource(R.string.library_sort_recent), ""),
+    CatalogSortOption(LIBRARY_SORT_TITLE, stringResource(R.string.library_sort_title), ""),
+)
+
+internal fun sortLibraryGames(games: List<GameInfo>, sortId: String): List<GameInfo> =
+    when (sortId) {
+        LIBRARY_SORT_TITLE -> games.sortedBy { it.title.lowercase(Locale.US) }
+        LIBRARY_SORT_RECENT -> games.sortedWith(
+            compareByDescending<GameInfo> { it.recentPlaySortKey() != null }
+                .thenByDescending { it.recentPlaySortKey() }
+                .thenBy { it.title.lowercase(Locale.US) },
+        )
+        else -> games
+    }
 
 @Composable
 internal fun LibraryFilterControls(
@@ -592,14 +665,17 @@ internal fun LibraryFilterControls(
     }
 }
 
-internal fun libraryStoreFilterOptions(games: List<GameInfo>): List<CatalogFilterOption> {
+internal fun libraryStoreFilterOptions(
+    games: List<GameInfo>,
+    touchFilterLabel: String = "Touch controls",
+): List<CatalogFilterOption> {
     val labelsById = linkedMapOf<String, String>()
     games.forEach { game ->
         libraryStoreFilterIds(game).forEach { (id, label) ->
             labelsById.putIfAbsent(id, label)
         }
     }
-    return labelsById.entries
+    val storeOptions = labelsById.entries
         .sortedBy { it.value.lowercase(Locale.US) }
         .map { (id, label) ->
             CatalogFilterOption(
@@ -610,13 +686,33 @@ internal fun libraryStoreFilterOptions(games: List<GameInfo>): List<CatalogFilte
                 groupLabel = "Launcher",
             )
         }
+    val touchOption = if (games.any(::catalogClaimsTouchSupport)) {
+        listOf(
+            CatalogFilterOption(
+                id = CATALOG_FILTER_TOUCHSCREEN,
+                rawId = SUPPORTED_CONTROL_TOUCHSCREEN,
+                label = touchFilterLabel,
+                groupId = "supported_controls",
+                groupLabel = "Controls",
+            ),
+        )
+    } else {
+        emptyList()
+    }
+    return touchOption + storeOptions
 }
 
 internal fun gameMatchesLibraryFilters(game: GameInfo, selectedIds: List<String>): Boolean {
     if (selectedIds.isEmpty()) return true
+    if (CATALOG_FILTER_TOUCHSCREEN in selectedIds && !catalogClaimsTouchSupport(game)) return false
+    val selectedStoreIds = selectedIds.filter { it.startsWith(LIBRARY_STORE_FILTER_PREFIX) }
+    if (selectedStoreIds.isEmpty()) return true
     val gameFilterIds = libraryStoreFilterIds(game).map { it.first }.toSet()
-    return selectedIds.any { it in gameFilterIds }
+    return selectedStoreIds.any { it in gameFilterIds }
 }
+
+internal fun filterCatalogGamesForLocalControls(games: List<GameInfo>, selectedIds: List<String>): List<GameInfo> =
+    if (CATALOG_FILTER_TOUCHSCREEN in selectedIds) games.filter(::catalogClaimsTouchSupport) else games
 
 private fun libraryStoreFilterIds(game: GameInfo): List<Pair<String, String>> {
     val labels = libraryStoreDisplayNames(game)
@@ -765,6 +861,7 @@ internal val LocalShimmerOffset = staticCompositionLocalOf<State<Float>?> { null
 internal val LocalTvLoadingPulse = staticCompositionLocalOf<State<Float>?> { null }
 internal val LocalTvLoadingProfile = staticCompositionLocalOf { false }
 internal val LocalTouchControllerStyle = staticCompositionLocalOf { TouchControllerStyle.V1 }
+internal val LocalSelectedCatalogGameId = staticCompositionLocalOf<String?> { null }
 internal const val SHIMMER_CYCLE_DURATION_MS = 760
 
 @Composable
@@ -1077,6 +1174,7 @@ private fun GameGrid(
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
+    topFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState = rememberLazyGridState(),
     emptyContent: (@Composable () -> Unit)? = null,
@@ -1099,6 +1197,9 @@ private fun GameGrid(
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
+        val firstRowGameIds = remember(games, gridSpec.estimatedColumns) {
+            games.take(gridSpec.estimatedColumns).mapTo(mutableSetOf()) { it.id }
+        }
         CatalogFocusScope {
             LazyVerticalGrid(
                 modifier = Modifier.fillMaxSize(),
@@ -1114,6 +1215,7 @@ private fun GameGrid(
                         favorite = game.id in favoriteIds,
                         tvProfile = tvProfile,
                         expressiveUi = settings.expressiveUi,
+                        liveSelectedOutlines = settings.liveSelectionEffectsEnabled,
                         showGameStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -1125,6 +1227,7 @@ private fun GameGrid(
                         squareCard = gridSpec.squareCards,
                         thumbnailFavoriteOverlay = shouldShowCatalogFavoriteIcon(settings),
                         controllerActionMode = controllerActionMode,
+                        upFocusRequester = topFocusRequester.takeIf { game.id in firstRowGameIds },
                         onSelect = onSelect,
                         onFavorite = onFavorite,
                         onPlay = onPlay,
@@ -1153,11 +1256,19 @@ private fun StoreGameGrid(
     onClearFilters: () -> Unit,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
     showToolbar: Boolean = true,
+    topFocusRequester: FocusRequester? = null,
+    searchActive: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     if (games.isEmpty()) {
         Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar = showToolbar)
+            if (searchActive) {
+                SectionHeader(
+                    title = stringResource(R.string.store_results),
+                    modifier = Modifier.padding(top = OpenNowSpacing.lg, bottom = OpenNowSpacing.sm),
+                )
+            }
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 val hasSearch = state.catalogSearch.isNotBlank()
                 val hasFilters = state.catalogFilterIds.isNotEmpty()
@@ -1186,8 +1297,12 @@ private fun StoreGameGrid(
     val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
     val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank()
+    val showDiscoverySections = shouldShowStoreDiscoverySections(searchActive)
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
+        val firstRowGameIds = remember(games, gridSpec.estimatedColumns) {
+            games.take(gridSpec.estimatedColumns).mapTo(mutableSetOf()) { it.id }
+        }
         CatalogFocusScope {
             LazyVerticalGrid(
                 modifier = Modifier.fillMaxSize(),
@@ -1202,26 +1317,30 @@ private fun StoreGameGrid(
                         StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar = showToolbar)
                     }
                 }
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    StoreStartRails(
-                        games = games,
-                        libraryGames = state.libraryGames,
-                        favoriteIds = favoriteIds,
-                        queuedGameKeys = state.queuedGameKeys,
-                        showInQueue = shouldShowStoreInQueueRail(state.catalogSearch),
-                        settings = settings,
-                        tvProfile = tvProfile,
-                        controllerActionMode = controllerActionMode,
-                        onSelect = onSelect,
-                        onFavorite = onFavorite,
-                        onPlay = onPlay,
-                        onChooseStore = onChooseStore,
-                    )
+                if (showDiscoverySections) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        StoreStartRails(
+                            games = games,
+                            libraryGames = state.libraryGames,
+                            favoriteIds = favoriteIds,
+                            queuedGameKeys = state.queuedGameKeys,
+                            settings = settings,
+                            tvProfile = tvProfile,
+                            controllerActionMode = controllerActionMode,
+                            topFocusRequester = topFocusRequester,
+                            onSelect = onSelect,
+                            onFavorite = onFavorite,
+                            onPlay = onPlay,
+                            onChooseStore = onChooseStore,
+                        )
+                    }
                 }
                 if (games.isNotEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         SectionHeader(
-                            title = stringResource(R.string.store_recommendations),
+                            title = stringResource(
+                                if (showDiscoverySections) R.string.store_recommendations else R.string.store_results,
+                            ),
                             modifier = Modifier.padding(top = OpenNowSpacing.lg, bottom = OpenNowSpacing.sm),
                         )
                     }
@@ -1232,6 +1351,7 @@ private fun StoreGameGrid(
                         favorite = game.id in favoriteIds,
                         tvProfile = tvProfile,
                         expressiveUi = settings.expressiveUi,
+                        liveSelectedOutlines = settings.liveSelectionEffectsEnabled,
                         showGameStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -1243,6 +1363,9 @@ private fun StoreGameGrid(
                         squareCard = gridSpec.squareCards,
                         thumbnailFavoriteOverlay = shouldShowCatalogFavoriteIcon(settings),
                         controllerActionMode = controllerActionMode,
+                        upFocusRequester = topFocusRequester.takeIf {
+                            !showDiscoverySections && game.id in firstRowGameIds
+                        },
                         onSelect = onSelect,
                         onFavorite = onFavorite,
                         onPlay = onPlay,
@@ -1260,10 +1383,10 @@ private fun StoreStartRails(
     libraryGames: List<GameInfo>,
     favoriteIds: List<String>,
     queuedGameKeys: List<String>,
-    showInQueue: Boolean,
     settings: AppSettings,
     tvProfile: Boolean,
     controllerActionMode: Boolean,
+    topFocusRequester: FocusRequester?,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -1293,21 +1416,64 @@ private fun StoreStartRails(
                 settings = settings,
                 tvProfile = tvProfile,
                 controllerActionMode = controllerActionMode,
+                upFocusRequester = topFocusRequester,
                 onSelect = onSelect,
                 onFavorite = onFavorite,
                 onPlay = onPlay,
                 onChooseStore = onChooseStore,
             )
         }
-        StoreStartRail(R.string.store_continue_playing, startRails.continuePlaying, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
-        if (showInQueue) {
-            StoreStartRail(R.string.store_in_queue, startRails.inQueue, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
-        }
-        StoreStartRail(R.string.store_favorites, startRails.favorites, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
+        StoreStartRail(
+            R.string.store_continue_playing,
+            startRails.continuePlaying,
+            favoriteIds,
+            settings,
+            tvProfile,
+            controllerActionMode,
+            topFocusRequester,
+            onSelect,
+            onFavorite,
+            onPlay,
+            onChooseStore,
+        )
+        StoreStartRail(
+            R.string.store_in_queue,
+            startRails.inQueue,
+            favoriteIds,
+            settings,
+            tvProfile,
+            controllerActionMode,
+            topFocusRequester.takeIf { featured.isEmpty() && startRails.continuePlaying.isEmpty() },
+            onSelect,
+            onFavorite,
+            onPlay,
+            onChooseStore,
+        )
+        StoreStartRail(
+            R.string.store_favorites,
+            startRails.favorites,
+            favoriteIds,
+            settings,
+            tvProfile,
+            controllerActionMode,
+            topFocusRequester.takeIf {
+                featured.isEmpty() && startRails.continuePlaying.isEmpty() && startRails.inQueue.isEmpty()
+            },
+            onSelect,
+            onFavorite,
+            onPlay,
+            onChooseStore,
+        )
     }
 }
 
-internal fun shouldShowStoreInQueueRail(catalogSearch: String): Boolean = catalogSearch.isBlank()
+internal fun shouldShowStoreDiscoverySections(searchActive: Boolean): Boolean = !searchActive
+
+internal fun shouldHideStoreChromeOnScroll(
+    hideChromeWhenScrolled: Boolean,
+    scrolledAwayFromTop: Boolean,
+    physicalControllerConnected: Boolean,
+): Boolean = hideChromeWhenScrolled && scrolledAwayFromTop && !physicalControllerConnected
 
 /** Small wrapper so the three start rails don't repeat an eleven-argument call three times. */
 @Composable
@@ -1318,6 +1484,7 @@ private fun StoreStartRail(
     settings: AppSettings,
     tvProfile: Boolean,
     controllerActionMode: Boolean,
+    upFocusRequester: FocusRequester?,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -1331,6 +1498,7 @@ private fun StoreStartRail(
         settings = settings,
         tvProfile = tvProfile,
         controllerActionMode = controllerActionMode,
+        upFocusRequester = upFocusRequester,
         onSelect = onSelect,
         onFavorite = onFavorite,
         onPlay = onPlay,
@@ -1385,6 +1553,7 @@ private fun StoreComingNextCarousel(
     settings: AppSettings,
     tvProfile: Boolean,
     controllerActionMode: Boolean,
+    upFocusRequester: FocusRequester?,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -1400,6 +1569,7 @@ private fun StoreComingNextCarousel(
         tvProfile = tvProfile,
         controllerActionMode = controllerActionMode,
     )
+    val selectedGameId = LocalSelectedCatalogGameId.current
     val reduceMotion = LocalReduceMotion.current
     LaunchedEffect(games, page, focused, reduceMotion) {
         // Never auto-advance under the reader's hands: not while focused, and not at all when the
@@ -1440,6 +1610,8 @@ private fun StoreComingNextCarousel(
             label = "coming-next-carousel",
         ) { targetPage ->
             val featured = games[targetPage.coerceIn(games.indices)]
+            val selected = featured.id == selectedGameId
+            val selectedOutline = shouldShowActiveSelectionOutline(selected, settings.liveSelectionEffectsEnabled)
             val shape = RoundedCornerShape(if (settings.expressiveUi) 24.dp else 16.dp)
             Box(
                 Modifier
@@ -1451,13 +1623,19 @@ private fun StoreComingNextCarousel(
                 Surface(
                     modifier = Modifier
                         .matchParentSize()
+                        .then(
+                            upFocusRequester?.let { requester ->
+                                Modifier.focusProperties { up = requester }
+                            } ?: Modifier,
+                        )
                         .onFocusChanged { focused = it.isFocused || it.hasFocus }
                         .border(
-                            width = if (focused) 3.dp else 1.dp,
+                            width = if (focused) 3.dp else 2.dp,
                             color = when {
                                 enhancedControllerFocus -> Color.Transparent
                                 focused -> Color.White
-                                else -> Color.White.copy(alpha = 0.14f)
+                                selected -> LocalActiveSelectionColor.current
+                                else -> Color.White.copy(alpha = 0.9f)
                             },
                             shape = shape,
                         )
@@ -1559,9 +1737,10 @@ private fun StoreComingNextCarousel(
                     }
                 }
                 ControllerFocusFrame(
-                    visible = enhancedControllerFocus,
+                    visible = enhancedControllerFocus || selectedOutline || (focused && LocalAbsoluteCinemaEffects.current),
                     cornerRadius = if (settings.expressiveUi) 24.dp else 16.dp,
-                    tint = Color.White,
+                    tint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
+                    secondaryTint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
                 )
             }
         }
@@ -1576,6 +1755,7 @@ private fun StoreRailSection(
     settings: AppSettings,
     tvProfile: Boolean,
     controllerActionMode: Boolean,
+    upFocusRequester: FocusRequester?,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -1613,9 +1793,11 @@ private fun StoreRailSection(
                             favorite = game.id in favoriteIds,
                             tvProfile = tvProfile,
                             expressiveUi = settings.expressiveUi,
+                            liveSelectedOutlines = settings.liveSelectionEffectsEnabled,
                             showFavoriteIcon = shouldShowCatalogFavoriteIcon(settings),
                             width = cardWidth,
                             controllerActionMode = controllerActionMode,
+                            upFocusRequester = upFocusRequester,
                             onSelect = onSelect,
                             onFavorite = onFavorite,
                             onPlay = onPlay,
@@ -1635,9 +1817,11 @@ private fun StoreRailGameCard(
     favorite: Boolean,
     tvProfile: Boolean,
     expressiveUi: Boolean,
+    liveSelectedOutlines: Boolean,
     showFavoriteIcon: Boolean,
     width: Dp,
     controllerActionMode: Boolean,
+    upFocusRequester: FocusRequester?,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -1652,6 +1836,8 @@ private fun StoreRailGameCard(
         tvProfile = tvProfile,
         controllerActionMode = controllerActionMode,
     )
+    val selected = LocalSelectedCatalogGameId.current == game.id
+    val selectedOutline = shouldShowActiveSelectionOutline(selected, liveSelectedOutlines)
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val hovered by interaction.collectIsHoveredAsState()
@@ -1691,13 +1877,19 @@ private fun StoreRailGameCard(
         Surface(
             modifier = Modifier
                 .matchParentSize()
+                .then(
+                    upFocusRequester?.let { requester ->
+                        Modifier.focusProperties { up = requester }
+                    } ?: Modifier,
+                )
                 .onFocusChanged { focused = it.isFocused || it.hasFocus }
                 .border(
-                    width = if (focused) 3.dp else 1.dp,
+                    width = if (focused) 3.dp else 2.dp,
                     color = when {
                         enhancedControllerFocus -> Color.Transparent
-                        focused -> MaterialTheme.colorScheme.primary
-                        else -> Color.White.copy(alpha = 0.14f)
+                        focused -> Color.White
+                        selected -> LocalActiveSelectionColor.current
+                        else -> Color.White.copy(alpha = 0.9f)
                     },
                     shape = shape,
                 )
@@ -1751,9 +1943,10 @@ private fun StoreRailGameCard(
             }
         }
         ControllerFocusFrame(
-            visible = enhancedControllerFocus,
+            visible = enhancedControllerFocus || selectedOutline || ((focused || hovered) && LocalAbsoluteCinemaEffects.current),
             cornerRadius = if (expressiveUi) 12.dp else 8.dp,
-            tint = Color.White,
+            tint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
+            secondaryTint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
         )
     }
 }
@@ -2002,7 +2195,12 @@ private fun gameGridSpec(
         estimatedColumns = estimatedColumns,
         horizontalSpacing = horizontalSpacing,
         verticalSpacing = verticalSpacing,
-        contentPadding = PaddingValues(horizontal = horizontalPadding, vertical = OpenNowSpacing.md),
+        contentPadding = PaddingValues(
+            start = horizontalPadding,
+            top = OpenNowSpacing.md,
+            end = horizontalPadding,
+            bottom = AppScrollEndSpacing,
+        ),
         // TV grid cards match the TV rail cards, which have always been square — this is the shape
         // NVIDIA's tvCardImageUrl assets are cut for.
         squareCards = !handheldLayout,
@@ -2034,11 +2232,13 @@ private fun GameCard(
     favorite: Boolean,
     tvProfile: Boolean,
     expressiveUi: Boolean,
+    liveSelectedOutlines: Boolean,
     showGameStoreLabels: Boolean,
     showCardTitles: Boolean,
     squareCard: Boolean,
     thumbnailFavoriteOverlay: Boolean,
     controllerActionMode: Boolean,
+    upFocusRequester: FocusRequester? = null,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -2056,6 +2256,8 @@ private fun GameCard(
         tvProfile = tvProfile,
         controllerActionMode = controllerActionMode,
     )
+    val selected = LocalSelectedCatalogGameId.current == game.id
+    val selectedOutline = shouldShowActiveSelectionOutline(selected, liveSelectedOutlines)
     // Touch-handheld captions live outside the poster, so the artwork stays visually clean.
     val showCaption = handheldPosterCard && (showCardTitles || showGameStoreLabels)
 
@@ -2110,13 +2312,19 @@ private fun GameCard(
             Card(
                 modifier = Modifier
                     .matchParentSize()
+                    .then(
+                        upFocusRequester?.let { requester ->
+                            Modifier.focusProperties { up = requester }
+                        } ?: Modifier,
+                    )
                     .onFocusChanged { focused = it.isFocused || it.hasFocus }
                     .border(
-                        width = if (focused) 3.dp else 1.dp,
+                        width = if (focused) 3.dp else 2.dp,
                         color = when {
                             enhancedControllerFocus -> Color.Transparent
-                            focused -> MaterialTheme.colorScheme.primary
-                            else -> Color.White.copy(alpha = 0.14f)
+                            focused -> Color.White
+                            selected -> LocalActiveSelectionColor.current
+                            else -> Color.White.copy(alpha = 0.9f)
                         },
                         shape = cardShape,
                     )
@@ -2176,9 +2384,10 @@ private fun GameCard(
                 }
             }
             ControllerFocusFrame(
-                visible = enhancedControllerFocus,
+                visible = enhancedControllerFocus || selectedOutline || ((focused || hovered) && LocalAbsoluteCinemaEffects.current),
                 cornerRadius = if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm,
-                tint = Color.White,
+                tint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
+                secondaryTint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
             )
         }
         if (showCaption) {
@@ -2409,6 +2618,20 @@ internal fun AnimatedLaunchOverlay(
     }
 }
 
+internal suspend fun requestFocusWithRetry(
+    focusRequester: FocusRequester,
+    initialDelayMs: Long = 80L,
+    retryDelayMs: Long = 70L,
+    attempts: Int = 4,
+): Boolean {
+    if (initialDelayMs > 0L) delay(initialDelayMs)
+    repeat(attempts.coerceAtLeast(1)) { attempt ->
+        if (runCatching { focusRequester.requestFocus() }.getOrDefault(false)) return true
+        if (attempt + 1 < attempts) delay(retryDelayMs.coerceAtLeast(0L))
+    }
+    return false
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun GameDetailsSheet(
@@ -2417,7 +2640,6 @@ internal fun GameDetailsSheet(
     defaultVariantId: String?,
     fullScreen: Boolean,
     safeAreaPadding: Dp,
-    liveSelectedOutlines: Boolean,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
@@ -2428,13 +2650,12 @@ internal fun GameDetailsSheet(
     val gameFocusRequester = remember(game.id) { FocusRequester() }
     val playFocusRequester = remember(game.id) { FocusRequester() }
     LaunchedEffect(game.id, fullScreen) {
-        delay(80)
         val initialRequester = if (shouldInitiallyFocusGameDetailsPlay(tvProfile = fullScreen)) {
             playFocusRequester
         } else {
             gameFocusRequester
         }
-        runCatching { initialRequester.requestFocus() }
+        requestFocusWithRetry(initialRequester)
     }
     BackHandler(onBack = onDismiss)
     // Drag-to-dismiss for the phone sheet. Everyone reaches for this gesture on a bottom sheet and
@@ -2522,7 +2743,6 @@ internal fun GameDetailsSheet(
                         playFocusRequester = playFocusRequester,
                         shortHeight = maxHeight <= 620.dp,
                         imageActionsOverlay = phoneLandscapeLayout,
-                        liveSelectedOutlines = liveSelectedOutlines,
                     )
                 } else {
                     GameDetailsScrollableContent(
@@ -2537,7 +2757,6 @@ internal fun GameDetailsSheet(
                         onDismiss = onDismiss,
                         gameFocusRequester = gameFocusRequester,
                         playFocusRequester = playFocusRequester,
-                        liveSelectedOutlines = liveSelectedOutlines,
                     )
                 }
             }
@@ -2568,7 +2787,6 @@ private fun GameDetailsLandscapeContent(
     playFocusRequester: FocusRequester,
     shortHeight: Boolean,
     imageActionsOverlay: Boolean,
-    liveSelectedOutlines: Boolean,
 ) {
     val description = gameDescriptionForDetails(game)
     val context = LocalContext.current
@@ -2599,12 +2817,8 @@ private fun GameDetailsLandscapeContent(
                 Modifier
                     .fillMaxSize()
                     .border(
-                        width = if (gameFocused && !liveSelectedOutlines) 3.dp else 1.dp,
-                        color = when {
-                            liveSelectedOutlines -> Color.Transparent
-                            gameFocused -> MaterialTheme.colorScheme.primary
-                            else -> Color.White.copy(alpha = 0.12f)
-                        },
+                        width = if (gameFocused) 3.dp else 1.dp,
+                        color = if (gameFocused) Color.White else Color.White.copy(alpha = 0.12f),
                         shape = imageShape,
                     )
                     .clip(imageShape),
@@ -2653,17 +2867,12 @@ private fun GameDetailsLandscapeContent(
                                 onChooseStore(game)
                             },
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(playFocusRequester),
+                                .fillMaxWidth(),
+                            focusRequester = playFocusRequester,
                         )
                     }
                 }
             }
-            ControllerFocusFrame(
-                visible = liveSelectedOutlines,
-                cornerRadius = 20.dp,
-                tint = Color.White,
-            )
         }
 
         Column(
@@ -2683,7 +2892,6 @@ private fun GameDetailsLandscapeContent(
                         game = game,
                         defaultVariantId = defaultVariantId,
                         description = description,
-                        liveSelectedOutlines = liveSelectedOutlines,
                     )
                 }
             } else {
@@ -2698,7 +2906,6 @@ private fun GameDetailsLandscapeContent(
                         game = game,
                         defaultVariantId = defaultVariantId,
                         description = description,
-                        liveSelectedOutlines = liveSelectedOutlines,
                     )
                 }
                 Row(
@@ -2732,9 +2939,8 @@ private fun GameDetailsLandscapeContent(
                             onDismiss()
                             onChooseStore(game)
                         },
-                        modifier = Modifier
-                            .weight(1f)
-                            .focusRequester(playFocusRequester),
+                        modifier = Modifier.weight(1f),
+                        focusRequester = playFocusRequester,
                     )
                     connectedTvName?.let {
                         OutlinedButton(
@@ -2758,7 +2964,6 @@ private fun GameDetailsCompactInfoContent(
     game: GameInfo,
     defaultVariantId: String?,
     description: String?,
-    liveSelectedOutlines: Boolean,
 ) {
     OwnershipStatusRow(game = game, compact = true)
     GameGenreChips(game = game, compact = true)
@@ -2766,7 +2971,6 @@ private fun GameDetailsCompactInfoContent(
     GameDescriptionDisclosure(
         description = description,
         compact = true,
-        liveSelectedOutlines = liveSelectedOutlines,
     )
     CompactDetailRows(game)
     LaunchOptionsList(
@@ -2790,7 +2994,6 @@ private fun GameDetailsScrollableContent(
     onDismiss: () -> Unit,
     gameFocusRequester: FocusRequester,
     playFocusRequester: FocusRequester,
-    liveSelectedOutlines: Boolean,
 ) {
     val context = LocalContext.current
     var gameFocused by remember(game.id) { mutableStateOf(false) }
@@ -2821,12 +3024,8 @@ private fun GameDetailsScrollableContent(
                         Modifier
                             .fillMaxSize()
                             .border(
-                                width = if (gameFocused && !liveSelectedOutlines) 3.dp else 1.dp,
-                                color = when {
-                                    liveSelectedOutlines -> Color.Transparent
-                                    gameFocused -> MaterialTheme.colorScheme.primary
-                                    else -> Color.White.copy(alpha = 0.12f)
-                                },
+                                width = if (gameFocused) 3.dp else 1.dp,
+                                color = if (gameFocused) Color.White else Color.White.copy(alpha = 0.12f),
                                 shape = imageShape,
                             )
                             .clip(imageShape),
@@ -2853,11 +3052,6 @@ private fun GameDetailsScrollableContent(
                             modifier = Modifier.align(Alignment.BottomStart),
                         )
                     }
-                    ControllerFocusFrame(
-                        visible = liveSelectedOutlines,
-                        cornerRadius = OpenNowRadius.lg,
-                        tint = Color.White,
-                    )
                 }
             }
             item {
@@ -2869,7 +3063,6 @@ private fun GameDetailsScrollableContent(
                     GameDescriptionDisclosure(
                         description = description,
                         compact = false,
-                        liveSelectedOutlines = liveSelectedOutlines,
                     )
                     DetailRows(game)
                     LaunchOptionsList(
@@ -2921,9 +3114,8 @@ private fun GameDetailsScrollableContent(
                         onDismiss()
                         onChooseStore(game)
                     },
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(playFocusRequester),
+                    modifier = Modifier.weight(1f),
+                    focusRequester = playFocusRequester,
                 )
                 connectedTvName?.let { tvName ->
                     IconButton(
@@ -2952,7 +3144,7 @@ private fun LaunchOptionsList(
     compact: Boolean,
 ) {
     val variants = launchableGameVariants(game.variants)
-    if (variants.size <= 1) return
+    if (variants.isEmpty()) return
     Column(verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)) {
         Text(
             stringResource(R.string.store_selector_launchers),
@@ -2973,6 +3165,9 @@ private fun LaunchOptionsList(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    ConnectorStoreIcon(
+                        launcherBadgeForStoreKey(splitGameStoreKeys(variant.store).firstOrNull()),
+                    )
                     Column(Modifier.weight(1f)) {
                         Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val details = variantDetailsText(variant)
@@ -3000,6 +3195,7 @@ private fun LongPressPlayButton(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null,
 ) {
     val controllerFocusEnabled = LocalControllerFocusEnabled.current
     var focused by remember { mutableStateOf(false) }
@@ -3016,62 +3212,76 @@ private fun LongPressPlayButton(
         animationSpec = tween(durationMillis = 120),
         label = "game-details-play-focus-color",
     )
-    Surface(
-        modifier = modifier
-            .height(48.dp)
-            .onFocusChanged { focusState -> focused = focusState.isFocused }
-            .graphicsLayer {
-                scaleX = focusScale
-                scaleY = focusScale
-            }
-            .onPreviewKeyEvent { event ->
-                if (isTvActivateKey(event)) {
-                    onClick()
-                    true
-                } else {
-                    false
-                }
-            }
-            .focusable()
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick,
-                onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
-            )
-            .then(
-                if (controllerFocused) {
-                    Modifier.border(
-                        width = gameDetailsPlayFocusBorderWidthDp(controllerFocused).dp,
-                        color = accent,
-                        shape = shape,
-                    )
-                } else {
-                    Modifier
-                },
-            ),
-        shape = shape,
-        color = containerColor,
-        tonalElevation = 0.dp,
-        shadowElevation = if (controllerFocused) 12.dp else 0.dp,
+    Box(
+        modifier = modifier.graphicsLayer {
+            scaleX = focusScale
+            scaleY = focusScale
+        },
     ) {
-        Row(
-            Modifier.fillMaxSize().padding(horizontal = 18.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .then(
+                    focusRequester?.let { requester -> Modifier.focusRequester(requester) }
+                        ?: Modifier,
+                )
+                .onFocusChanged { focusState -> focused = focusState.isFocused }
+                .onPreviewKeyEvent { event ->
+                    if (isTvActivateKey(event)) {
+                        onClick()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                .focusable()
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                    onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                )
+                .then(
+                    if (controllerFocused) {
+                        Modifier.border(
+                            width = gameDetailsPlayFocusBorderWidthDp(controllerFocused).dp,
+                            color = accent,
+                            shape = shape,
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
+            shape = shape,
+            color = containerColor,
+            tonalElevation = 0.dp,
+            shadowElevation = if (controllerFocused) 12.dp else 0.dp,
         ) {
-            ZortosPlayMark(
-                modifier = Modifier.size(20.dp),
-                ringColor = Color.Black,
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                stringResource(R.string.action_play),
-                color = Color.Black,
-                fontWeight = if (controllerFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(
+                Modifier.fillMaxSize().padding(horizontal = 18.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ZortosPlayMark(
+                    modifier = Modifier.size(20.dp),
+                    ringColor = Color.Black,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    stringResource(R.string.action_play),
+                    color = Color.Black,
+                    fontWeight = if (controllerFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
+        ControllerFocusFrame(
+            visible = controllerFocused && LocalAbsoluteCinemaEffects.current,
+            cornerRadius = 24.dp,
+            tint = LocalActiveSelectionColor.current,
+            secondaryTint = LocalActiveSelectionSecondaryColor.current,
+        )
     }
 }
 
@@ -3384,12 +3594,10 @@ private fun GameScreenshotGallery(game: GameInfo, compact: Boolean) {
 private fun GameDescriptionDisclosure(
     description: String?,
     compact: Boolean,
-    liveSelectedOutlines: Boolean,
 ) {
     var expanded by remember(description) { mutableStateOf(true) }
     val text = description?.takeIf { it.isNotBlank() } ?: stringResource(R.string.catalog_no_description)
     var focused by remember { mutableStateOf(false) }
-    val accent = MaterialTheme.colorScheme.primary
     val shape = RoundedCornerShape(if (compact) 12.dp else 14.dp)
     Box(Modifier.fillMaxWidth()) {
         Surface(
@@ -3399,7 +3607,7 @@ private fun GameDescriptionDisclosure(
                 .clickable { expanded = !expanded },
             shape = shape,
             color = if (focused) PanelAlt.copy(alpha = 0.85f) else PanelAlt,
-            border = if (focused && !liveSelectedOutlines) BorderStroke(1.dp, accent) else null,
+            border = if (focused) BorderStroke(1.dp, Color.White) else null,
             tonalElevation = 0.dp,
         ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = if (compact) 8.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3437,11 +3645,6 @@ private fun GameDescriptionDisclosure(
                 }
             }
         }
-        ControllerFocusFrame(
-            visible = liveSelectedOutlines,
-            cornerRadius = if (compact) 12.dp else 14.dp,
-            tint = Color.White,
-        )
     }
 }
 
@@ -3511,11 +3714,31 @@ private data class GameDetailRow(
 private fun gameDetailRows(game: GameInfo): List<GameDetailRow> =
     listOfNotNull(
         game.playabilityState?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Status", formatGameMetadataLabel(it)) },
-        gameAppIdForDetails(game)?.let { GameDetailRow("App ID", it, copyValue = it) },
+        game.publisherName?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Publisher", it) },
+        game.playType?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Play type", formatGameMetadataLabel(it)) },
+        supportedControlLabels(game).takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { GameDetailRow("Controls", it) },
+        game.featureLabels
+            .map(::formatGameMetadataLabel)
+            .filterNot(::isNoisyGameTag)
+            .filterNot { feature -> game.genres.any { genre -> feature.equals(formatGameMetadataLabel(genre), ignoreCase = true) } }
+            .distinctBy { it.lowercase(Locale.US) }
+            .take(8)
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString(", ")
+            ?.let { GameDetailRow("Features", it) },
+        game.membershipTierLabel?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Membership", formatGameMetadataLabel(it)) },
         game.contentRatings.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { GameDetailRow("Rating", it) },
         game.lastPlayed?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Last played", it) },
         game.availableStores.takeIf { it.isNotEmpty() }?.map(::gameStoreDisplayName)?.distinct()?.joinToString(", ")?.let { GameDetailRow("Stores", it) },
+        gameAppIdForDetails(game)?.let { GameDetailRow("App ID", it, copyValue = it) },
     )
+
+internal fun supportedControlLabels(game: GameInfo): List<String> =
+    game.variants
+        .flatMap { it.supportedControls }
+        .map(::formatGameMetadataLabel)
+        .filter(String::isNotBlank)
+        .distinctBy { it.lowercase(Locale.US) }
 
 private fun gameAppIdForDetails(game: GameInfo): String? =
     game.launchAppId?.takeIf { it.isNotBlank() }
@@ -3609,7 +3832,7 @@ internal fun StoreLaunchSelector(
     BackHandler(onBack = onDismiss)
     LaunchedEffect(game.id, variants.size) {
         if (variants.isNotEmpty()) {
-            runCatching { continueFocusRequester.requestFocus() }
+            requestFocusWithRetry(continueFocusRequester)
         }
     }
     BoxWithConstraints(
@@ -3829,45 +4052,63 @@ private fun StoreLaunchVariantRow(
 ) {
     val badge = launcherBadgeForStoreKey(splitGameStoreKeys(variant.store).firstOrNull())
     var focused by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .onFocusChanged { focused = it.isFocused }
-            .border(
-                width = 2.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(14.dp)
-            )
-            .clickable { onClick() },
-        shape = RoundedCornerShape(14.dp),
-        color = if (focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else PanelAlt,
-        contentColor = TextPrimary,
-    ) {
-        Row(
-            Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+    val shape = RoundedCornerShape(14.dp)
+    Box(Modifier.fillMaxWidth()) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { focused = it.isFocused }
+                .border(
+                    width = if (focused || selected) 2.dp else 1.dp,
+                    color = when {
+                        focused -> Color.White
+                        selected -> LocalActiveSelectionColor.current
+                        else -> Color.White.copy(alpha = 0.1f)
+                    },
+                    shape = shape,
+                )
+                .clickable { onClick() },
+            shape = shape,
+            color = if (focused) Color.White.copy(alpha = 0.12f) else if (selected) LocalActiveSelectionColor.current.copy(alpha = 0.18f) else PanelAlt,
+            contentColor = TextPrimary,
         ) {
-            ConnectorStoreIcon(badge)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(gameStoreDisplayName(variant.store), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val details = listOf(
-                    if (savedDefault) stringResource(R.string.store_selector_default) else "",
-                    variantDetailsText(variant),
-                ).filter { it.isNotBlank() }.joinToString(" - ")
-                if (details.isNotBlank()) {
-                    Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(
+                Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                ConnectorStoreIcon(badge)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        gameStoreDisplayName(variant.store),
+                        fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val details = listOf(
+                        if (savedDefault) stringResource(R.string.store_selector_default) else "",
+                        variantDetailsText(variant),
+                    ).filter { it.isNotBlank() }.joinToString(" - ")
+                    if (details.isNotBlank()) {
+                        Text(details, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                if (selected) {
+                    Text(
+                        stringResource(R.string.store_selector_selected),
+                        color = LocalActiveSelectionColor.current,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                    )
                 }
             }
-            if (selected) {
-                Text(
-                    stringResource(R.string.store_selector_selected),
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                )
-            }
         }
+        ControllerFocusFrame(
+            visible = selected && LocalActiveSelectionEnabled.current,
+            cornerRadius = 14.dp,
+            tint = LocalActiveSelectionColor.current,
+            secondaryTint = LocalActiveSelectionSecondaryColor.current,
+        )
     }
 }

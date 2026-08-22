@@ -1,6 +1,9 @@
 package com.opencloudgaming.opennow
 
+import android.view.KeyEvent
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamKeyboardBehaviorTest {
@@ -37,5 +40,18 @@ class StreamKeyboardBehaviorTest {
     @Test
     fun editingInTheMiddleReplacesTheRemoteField() {
         assertEquals(StreamKeyboardEdit.Replace("hallo"), streamKeyboardEdit("hello", "hallo"))
+    }
+
+    @Test
+    fun hardwareKeyboardRepeatsAreSuppressedAfterInitialKeyDown() {
+        assertFalse(shouldSuppressHardwareKeyboardRepeat(true, KeyEvent.ACTION_DOWN, repeatCount = 0))
+        assertTrue(shouldSuppressHardwareKeyboardRepeat(true, KeyEvent.ACTION_DOWN, repeatCount = 1))
+        assertTrue(shouldSuppressHardwareKeyboardRepeat(true, KeyEvent.ACTION_DOWN, repeatCount = 200))
+    }
+
+    @Test
+    fun keyUpAndNonHardwareSourcesAreNotSuppressed() {
+        assertFalse(shouldSuppressHardwareKeyboardRepeat(true, KeyEvent.ACTION_UP, repeatCount = 1))
+        assertFalse(shouldSuppressHardwareKeyboardRepeat(false, KeyEvent.ACTION_DOWN, repeatCount = 1))
     }
 }

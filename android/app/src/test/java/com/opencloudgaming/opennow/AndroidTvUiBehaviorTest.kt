@@ -1,5 +1,7 @@
 package com.opencloudgaming.opennow
 
+import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
+import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -7,6 +9,69 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidTvUiBehaviorTest {
+    @Test
+    fun settingsFocusScrollLeavesRoomBelowTheWholeFocusedCard() {
+        assertEquals(
+            30f,
+            settingsFocusScrollDistance(
+                itemOffsetPx = 650f,
+                itemSizePx = 60f,
+                containerSizePx = 720f,
+                topClearancePx = 16f,
+                bottomClearancePx = 40f,
+            ),
+            0f,
+        )
+        assertEquals(
+            0f,
+            settingsFocusScrollDistance(
+                itemOffsetPx = 100f,
+                itemSizePx = 60f,
+                containerSizePx = 720f,
+                topClearancePx = 16f,
+                bottomClearancePx = 40f,
+            ),
+            0f,
+        )
+    }
+
+    @Test
+    fun defaultThemeUsesNvidiaStyleGreenAndWhiteSelectionEnergy() {
+        assertEquals(OpenNowPalette.AccentDefault, UiAccent.OpenNow.color)
+        assertEquals(OpenNowPalette.AccentDefaultSecondary, UiAccent.OpenNow.secondaryColor)
+        assertEquals(Color.White, AppSettings().activeSelectionColor)
+        assertEquals(Color.White, AppSettings().activeSelectionSecondaryColor)
+    }
+
+    @Test
+    fun absoluteCinemaOverridesOnlyTheRingsAndKeepsTheSelectedAccent() {
+        val hotPink = AppSettings(uiAccent = UiAccent.HotPink)
+        val cinema = hotPink.copy(absoluteCinemaEffects = true)
+        val switch = AppSettings(uiAccent = UiAccent.Switch)
+
+        assertEquals(OpenNowPalette.AccentHotPink, hotPink.uiAccent.color)
+        assertEquals(OpenNowPalette.AccentHotPink, hotPink.activeSelectionColor)
+        assertEquals(OpenNowPalette.AccentCinemaOrange, cinema.activeSelectionColor)
+        assertEquals(OpenNowPalette.AccentCinemaBlue, cinema.activeSelectionSecondaryColor)
+        assertEquals(OpenNowPalette.AccentHotPink, cinema.uiAccent.color)
+        assertEquals(OpenNowPalette.AccentSwitchRed, switch.activeSelectionColor)
+        assertEquals(OpenNowPalette.AccentSwitchBlue, switch.activeSelectionSecondaryColor)
+    }
+
+    @Test
+    fun liveSelectionEffectsStayOffForDefaultAndRespectCustomThemeOptOut() {
+        assertFalse(AppSettings().liveSelectionEffectsEnabled)
+        assertTrue(AppSettings(uiAccent = UiAccent.Pixel).liveSelectionEffectsEnabled)
+        assertFalse(AppSettings(uiAccent = UiAccent.Pixel, liveSelectedOutlines = false).liveSelectionEffectsEnabled)
+        assertTrue(AppSettings(liveSelectedOutlines = false, absoluteCinemaEffects = true).liveSelectionEffectsEnabled)
+    }
+
+    @Test
+    fun catalogueWallpaperMakesTheHorizontalRailSubstantiallyDarker() {
+        assertEquals(OpenNowPalette.ChromeScrim, navigationRailScrim(darkenForCatalogBackground = false))
+        assertEquals(Color.Black.copy(alpha = 0.76f), navigationRailScrim(darkenForCatalogBackground = true))
+    }
+
     @Test
     fun gameDetailsPreferCleanShortDescription() {
         val game = GameInfo(
@@ -115,11 +180,15 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun activeLogoSpinsQuicklyThenRestsForTheRemainderOfItsCycle() {
+    fun activeLogoFloatsBeforeItsQuickFlip() {
         assertEquals(0f, activeLogoSpinProgress(0f), 0f)
-        assertEquals(0.5f, activeLogoSpinProgress(0.09f), 0.0001f)
-        assertEquals(1f, activeLogoSpinProgress(0.18f), 0f)
+        assertEquals(0f, activeLogoSpinProgress(0.30f), 0.0001f)
+        assertEquals(0.5f, activeLogoSpinProgress(0.39f), 0.0001f)
+        assertEquals(1f, activeLogoSpinProgress(0.48f), 0.0001f)
         assertEquals(1f, activeLogoSpinProgress(0.9f), 0f)
+        assertEquals(0f, activeLogoFloatOffsetDp(0f), 0.0001f)
+        assertEquals(2.5f, activeLogoFloatOffsetDp(0.25f), 0.0001f)
+        assertEquals(-2.5f, activeLogoFloatOffsetDp(0.75f), 0.0001f)
     }
 
     @Test
@@ -240,10 +309,27 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun storeSearchHidesTheInQueueRail() {
-        assertTrue(shouldShowStoreInQueueRail(""))
-        assertTrue(shouldShowStoreInQueueRail("   "))
-        assertFalse(shouldShowStoreInQueueRail("Fortnite"))
+    fun storeSearchHidesDiscoverySections() {
+        assertTrue(shouldShowStoreDiscoverySections(searchActive = false))
+        assertFalse(shouldShowStoreDiscoverySections(searchActive = true))
+    }
+
+    @Test
+    fun storeKeepsTopControlsMountedWhileControllerIsConnected() {
+        assertTrue(
+            shouldHideStoreChromeOnScroll(
+                hideChromeWhenScrolled = true,
+                scrolledAwayFromTop = true,
+                physicalControllerConnected = false,
+            ),
+        )
+        assertFalse(
+            shouldHideStoreChromeOnScroll(
+                hideChromeWhenScrolled = true,
+                scrolledAwayFromTop = true,
+                physicalControllerConnected = true,
+            ),
+        )
     }
 
     @Test

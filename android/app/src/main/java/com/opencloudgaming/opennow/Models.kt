@@ -68,6 +68,8 @@ enum class UiAccent {
     Lime,
     Coral,
     Violet,
+    AbsoluteCinema,
+    Switch,
 }
 
 @Serializable
@@ -332,10 +334,21 @@ data class AppSettings(
     /** Optional favorite affordance over catalogue artwork on mobile, handheld, and TV layouts. */
     val showFavoriteIconOnGameCards: Boolean = false,
     val expressiveUi: Boolean = true,
-    /** Animated active-state frames across navigation, game details, server choice, and themes. */
+    /** Animated active-state frames for non-default interface themes. */
     val liveSelectedOutlines: Boolean = true,
+    /** Orange/blue live focus rings, independent of the selected interface accent. */
+    val absoluteCinemaEffects: Boolean = false,
     val dynamicColor: Boolean = false,
     val uiAccent: UiAccent = UiAccent.OpenNow,
+    /** Shows a user-managed shelf of installed Android apps above the cloud Library. */
+    val localAppsEnabled: Boolean = false,
+    /** Package names are stable across app updates and avoid persisting labels or icons. */
+    val localAppPackageNames: List<String> = emptyList(),
+    /** Catalogue presentation is user preference, not disposable screen state. */
+    val catalogSortId: String = "relevance",
+    val catalogFilterIds: List<String> = emptyList(),
+    val librarySortId: String = "library",
+    val libraryFilterIds: List<String> = emptyList(),
     val launchPage: AppLaunchPage = AppLaunchPage.Store,
     val nerdMode: Boolean = false,
     val hideStreamButtons: Boolean = false,

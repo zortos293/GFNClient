@@ -25,11 +25,16 @@ object OpenNowPalette {
 
     // Accents (mirrors UiAccent in Models.kt)
     val AccentDefault = Color(0xff6af0a0)
+    val AccentDefaultSecondary = Color(0xfff4fff7)
     val AccentPixel = Color(0xff8ab4f8)
     val AccentHotPink = Color(0xffff4fb8)
     val AccentLime = Color(0xffc7ef6b)
     val AccentCoral = Color(0xffff8d7a)
     val AccentViolet = Color(0xffc7a4ff)
+    val AccentCinemaOrange = Color(0xffff6a2b)
+    val AccentCinemaBlue = Color(0xff42c9ff)
+    val AccentSwitchRed = Color(0xffff4554)
+    val AccentSwitchBlue = Color(0xff66d9ff)
 
     // Chrome
     /** Translucent wash behind the top bar so content scrolls under it legibly. */

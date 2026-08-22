@@ -46,9 +46,11 @@ val postHogHost = firstNonBlankValue(
     localPropertyValue("posthog.host"),
     defaultPostHogHost,
 )
-val buildingPlayReleaseBundle = gradle.startParameter.taskNames.any { taskName ->
-    taskName.substringAfterLast(":").equals("bundleRelease", ignoreCase = true)
-}
+val buildingPlayReleaseBundle =
+    providers.gradleProperty("distribution").orNull.equals("play-store", ignoreCase = true) ||
+        gradle.startParameter.taskNames.any { taskName ->
+            taskName.substringAfterLast(":").equals("bundleRelease", ignoreCase = true)
+        }
 
 android {
     namespace = "com.opencloudgaming.opennow"
@@ -58,13 +60,14 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 23
         targetSdk = 36
-        versionCode = 86
-        versionName = "1.3.0"
+        versionCode = 91
+        versionName = "1.3.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
         buildConfigField("String", "POSTHOG_HOST", buildConfigString(postHogHost))
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")
+        buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", "true")
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -80,6 +83,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             buildConfigField("boolean", "APK_UPDATES_SUPPORTED", (!buildingPlayReleaseBundle).toString())
+            buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", (!buildingPlayReleaseBundle).toString())
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -88,9 +92,14 @@ android {
     }
 
     sourceSets {
-        if (buildingPlayReleaseBundle) {
-            getByName("release").manifest.srcFile("src/playBundle/AndroidManifest.xml")
-        }
+        getByName("debug").manifest.srcFile("src/sideload/AndroidManifest.xml")
+        getByName("release").manifest.srcFile(
+            if (buildingPlayReleaseBundle) {
+                "src/playBundle/AndroidManifest.xml"
+            } else {
+                "src/sideload/AndroidManifest.xml"
+            },
+        )
     }
 
     buildFeatures {

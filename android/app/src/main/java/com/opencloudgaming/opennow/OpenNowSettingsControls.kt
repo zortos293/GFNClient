@@ -174,6 +174,7 @@ internal fun ChoiceRow(
     options: List<String>,
     selected: String,
     activeOutlineColor: Color? = null,
+    activeOutlineSecondaryColor: Color? = null,
     onSelect: (String) -> Unit,
 ) {
     ChoiceMenuRow(
@@ -181,6 +182,7 @@ internal fun ChoiceRow(
         options = options.map { ChoiceMenuOption(value = it, label = it) },
         selectedLabel = selected,
         activeOutlineColor = activeOutlineColor,
+        activeOutlineSecondaryColor = activeOutlineSecondaryColor,
         onSelect = onSelect,
     )
 }
@@ -192,6 +194,7 @@ internal fun ChoiceMenuRow(
     selectedLabel: String,
     description: String? = null,
     activeOutlineColor: Color? = null,
+    activeOutlineSecondaryColor: Color? = null,
     onSelect: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -228,6 +231,10 @@ internal fun ChoiceMenuRow(
                 visible = activeOutlineColor != null,
                 cornerRadius = 20.dp,
                 tint = activeOutlineColor,
+                secondaryTint = activeOutlineSecondaryColor,
+                // Material's button keeps a 48 dp touch target around its visible 40 dp pill.
+                // Follow the pill so the Cinema orbit is vertically centered on the border.
+                verticalInset = 4.dp,
             )
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 options.forEach { option ->
@@ -267,6 +274,7 @@ internal fun ChoiceMenuRow(
                             visible = option.label == selectedLabel && activeOutlineColor != null,
                             cornerRadius = 4.dp,
                             tint = activeOutlineColor,
+                            secondaryTint = activeOutlineSecondaryColor,
                         )
                     }
                 }

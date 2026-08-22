@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -206,6 +208,7 @@ private fun PortraitTouchControls(
         val scale = buttonScale * layoutScale
         val triggerWidth = 64.dp * scale
         val bumperHeight = 32.dp * scale
+        val triggerTouchHeight = if (bumperHeight < 48.dp) 48.dp else bumperHeight
 
         TouchControlGroup(
             id = "portrait-lt",
@@ -233,7 +236,7 @@ private fun PortraitTouchControls(
             offsetX = getLocalOffset("lb").x.dp,
             offsetY = getLocalOffset("lb").y.dp,
             onOffsetChange = { x, y -> onLocalOffsetChange("lb", x, y) },
-            modifier = Modifier.align(Alignment.TopStart).padding(top = bumperHeight + 6.dp),
+            modifier = Modifier.align(Alignment.TopStart).padding(top = triggerTouchHeight + 6.dp),
         ) {
             GamepadBumperButton(
                 label = "LB",
@@ -316,7 +319,7 @@ private fun PortraitTouchControls(
             offsetX = getLocalOffset("rb").x.dp,
             offsetY = getLocalOffset("rb").y.dp,
             onOffsetChange = { x, y -> onLocalOffsetChange("rb", x, y) },
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = bumperHeight + 6.dp),
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = triggerTouchHeight + 6.dp),
         ) {
             GamepadBumperButton(
                 label = "RB",
@@ -433,6 +436,7 @@ private fun BoxScope.LandscapeTouchControls(
         }
         val triggerWidth = 76.dp * controlScale
         val bumperHeight = 36.dp * controlScale
+        val triggerTouchHeight = if (bumperHeight < 48.dp) 48.dp else bumperHeight
 
         TouchControlGroup(
             id = "landscape-lt",
@@ -460,7 +464,7 @@ private fun BoxScope.LandscapeTouchControls(
             offsetX = getLocalOffset("lb").x.dp,
             offsetY = getLocalOffset("lb").y.dp,
             onOffsetChange = { x, y -> onLocalOffsetChange("lb", x, y) },
-            modifier = Modifier.align(Alignment.TopStart).padding(top = topControlClearance + bumperHeight + 6.dp),
+            modifier = Modifier.align(Alignment.TopStart).padding(top = topControlClearance + triggerTouchHeight + 6.dp),
         ) {
             GamepadBumperButton(
                 label = "LB",
@@ -502,7 +506,7 @@ private fun BoxScope.LandscapeTouchControls(
             offsetX = getLocalOffset("rb").x.dp,
             offsetY = getLocalOffset("rb").y.dp,
             onOffsetChange = { x, y -> onLocalOffsetChange("rb", x, y) },
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = topControlClearance + bumperHeight + 6.dp),
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = topControlClearance + triggerTouchHeight + 6.dp),
         ) {
             GamepadBumperButton(
                 label = "RB",
@@ -1287,14 +1291,21 @@ private fun GamepadTriggerButton(
     Box(
         Modifier
             .width(width)
-            .height(height)
-            .clip(shape)
-            .background(if (pressed) pressedColor else buttonColor)
-            .border(borderWidth, borderColor, shape)
+            .heightIn(min = 48.dp)
             .virtualPressInput(client, left, currentOnPressedChange),
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Text(label, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = opacity * 0.9f))
+        Box(
+            Modifier
+                .width(width)
+                .height(height)
+                .clip(shape)
+                .background(if (pressed) pressedColor else buttonColor)
+                .border(borderWidth, borderColor, shape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(label, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = opacity * 0.9f))
+        }
     }
     DisposableEffect(client, left) {
         onDispose {
@@ -1395,18 +1406,24 @@ private fun GamepadButton(
     val borderWidth = if (style == TouchControllerStyle.V2 && pressed) 2.dp else 1.dp
     Box(
         Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(if (pressed) pressedColor else buttonColor)
-            .border(borderWidth, borderColor, CircleShape)
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .virtualPressInput(client, mask, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = label,
-            fontWeight = FontWeight.SemiBold,
-            color = Color.White.copy(alpha = opacity * 0.9f),
-        )
+        Box(
+            Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(if (pressed) pressedColor else buttonColor)
+                .border(borderWidth, borderColor, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = label,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White.copy(alpha = opacity * 0.9f),
+            )
+        }
     }
     DisposableEffect(client, mask) {
         onDispose {

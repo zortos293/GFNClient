@@ -1,0 +1,421 @@
+mod audio;
+mod decoder;
+mod graphics;
+
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use ::windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_LITE, MFShutdown, MFStartup};
+use ::windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+
+use crate::{
+    BackendConfig, BackendError, BackendEvent, CapabilityProbe, Control, LifecycleState, Shared,
+    Subsystem,
+};
+
+use self::audio::AudioRenderer;
+use self::decoder::Decoder;
+use self::graphics::Graphics;
+
+const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+
+struct MediaRuntime;
+
+impl MediaRuntime {
+    fn initialize() -> Result<Self, BackendError> {
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED)
+                .ok()
+                .map_err(|error| BackendError::Startup(format!("CoInitializeEx: {error}")))?;
+            if let Err(error) = MFStartup(MF_VERSION, MFSTARTUP_LITE) {
+                CoUninitialize();
+                return Err(BackendError::Startup(format!("MFStartup: {error}")));
+            }
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for MediaRuntime {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = MFShutdown();
+            CoUninitialize();
+        }
+    }
+}
+
+pub(super) fn probe() -> CapabilityProbe {
+    let _runtime = match MediaRuntime::initialize() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return CapabilityProbe {
+                available: false,
+                h264_hardware_decode: false,
+                d3d11_presentation: false,
+                wasapi_render: false,
+                reason: Some(error.to_string()),
+            };
+        }
+    };
+
+    let graphics = Graphics::probe();
+    let decoder = graphics
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|graphics| Decoder::probe(graphics).map_err(|error| error.to_string()));
+    let audio = AudioRenderer::probe().map_err(|error| error.to_string());
+    let h264_hardware_decode = decoder.is_ok();
+    let d3d11_presentation = graphics.is_ok();
+    let wasapi_render = audio.is_ok();
+    let available = h264_hardware_decode && d3d11_presentation && wasapi_render;
+    let reason = if available {
+        None
+    } else {
+        Some(
+            [
+                graphics.err().map(|error| format!("D3D11: {error}")),
+                decoder.err().map(|error| format!("H.264: {error}")),
+                audio.err().map(|error| format!("WASAPI: {error}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("; "),
+        )
+    };
+
+    CapabilityProbe {
+        available,
+        h264_hardware_decode,
+        d3d11_presentation,
+        wasapi_render,
+        reason,
+    }
+}
+
+pub(super) fn spawn(
+    config: BackendConfig,
+    shared: Arc<Shared>,
+    controls: mpsc::Receiver<Control>,
+) -> Result<JoinHandle<()>, BackendError> {
+    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+    let worker_shared = Arc::clone(&shared);
+    let worker = thread::Builder::new()
+        .name("opennow-windows-media".to_owned())
+        .spawn(move || {
+            let runtime = match Worker::new(config, worker_shared, controls) {
+                Ok(worker) => {
+                    let _ = ready_sender.send(Ok(()));
+                    worker
+                }
+                Err(error) => {
+                    let _ = ready_sender.send(Err(error));
+                    return;
+                }
+            };
+            runtime.run();
+        })
+        .map_err(|error| BackendError::Startup(format!("failed to spawn media thread: {error}")))?;
+
+    match ready_receiver.recv() {
+        Ok(Ok(())) => Ok(worker),
+        Ok(Err(error)) => {
+            let _ = worker.join();
+            Err(error)
+        }
+        Err(_) => {
+            let _ = worker.join();
+            Err(BackendError::Startup(
+                "media thread exited during initialization".to_owned(),
+            ))
+        }
+    }
+}
+
+struct Worker {
+    config: BackendConfig,
+    shared: Arc<Shared>,
+    controls: mpsc::Receiver<Control>,
+    graphics: Graphics,
+    decoder: Decoder,
+    audio: AudioRenderer,
+    _runtime: MediaRuntime,
+}
+
+impl Worker {
+    fn new(
+        config: BackendConfig,
+        shared: Arc<Shared>,
+        controls: mpsc::Receiver<Control>,
+    ) -> Result<Self, BackendError> {
+        let runtime = MediaRuntime::initialize()?;
+        let graphics = Graphics::new(config.surface, config.video)
+            .map_err(|error| BackendError::Startup(format!("D3D11 presentation: {error}")))?;
+        let decoder = Decoder::new(&graphics, config.video)
+            .map_err(|error| BackendError::Startup(format!("Media Foundation H.264: {error}")))?;
+        let audio = AudioRenderer::new(config.audio)
+            .map_err(|error| BackendError::Startup(format!("WASAPI: {error}")))?;
+        shared.set_state(LifecycleState::Running);
+        Ok(Self {
+            config,
+            shared,
+            controls,
+            graphics,
+            decoder,
+            audio,
+            _runtime: runtime,
+        })
+    }
+
+    fn run(mut self) {
+        let mut stopping = false;
+        while !stopping {
+            self.graphics.pump_window_messages();
+            while let Ok(control) = self.controls.try_recv() {
+                match control {
+                    Control::Stop => {
+                        stopping = true;
+                        break;
+                    }
+                    Control::ReconfigureVideo(format) => {
+                        self.config.video = format;
+                        self.shared.video.clear();
+                        if let Err(error) = self.rebuild_video(
+                            Subsystem::VideoDecode,
+                            error_label("video reconfiguration"),
+                        ) {
+                            self.fail(error);
+                            return;
+                        }
+                    }
+                    Control::ReconfigureAudio(format) => {
+                        self.config.audio = format;
+                        self.shared.audio.clear();
+                        if let Err(error) = self.rebuild_audio(error_label("audio reconfiguration"))
+                        {
+                            self.fail(error);
+                            return;
+                        }
+                    }
+                    Control::SetSurface(surface) => {
+                        self.config.surface = surface;
+                        if let Err(error) = self.graphics.set_surface(surface, self.config.video) {
+                            if let Err(error) = self.recover_video(
+                                Subsystem::VideoPresentation,
+                                format!("surface reconfiguration failed: {error}"),
+                            ) {
+                                self.fail(error);
+                                return;
+                            }
+                        } else {
+                            self.shared.set_state(LifecycleState::Running);
+                        }
+                    }
+                    Control::SetPaused(paused) => {
+                        if let Err(error) = self.audio.set_paused(paused) {
+                            if let Err(error) = self.rebuild_audio(format!(
+                                "audio {} failed: {error}",
+                                if paused { "pause" } else { "resume" }
+                            )) {
+                                self.fail(error);
+                                return;
+                            }
+                        }
+                        if !paused {
+                            if let Err(error) = self
+                                .rebuild_video(Subsystem::VideoDecode, "video resume".to_owned())
+                            {
+                                self.fail(error);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            if stopping {
+                break;
+            }
+            if self
+                .shared
+                .paused
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+
+            if let Err(error) = self
+                .decoder
+                .poll_output(&mut self.graphics, &self.shared.events)
+            {
+                if let Err(error) = self.recover_video(Subsystem::VideoDecode, error) {
+                    self.fail(error);
+                    return;
+                }
+                continue;
+            }
+            let decoded_format = self.decoder.format();
+            if decoded_format != self.config.video {
+                self.config.video = decoded_format;
+                *self
+                    .shared
+                    .video_format
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = decoded_format;
+            }
+            if self.decoder.wants_input() {
+                if let Some(frame) = self.shared.video.try_pop() {
+                    if let Err(error) = self.decoder.submit(frame) {
+                        if let Err(error) = self.recover_video(Subsystem::VideoDecode, error) {
+                            self.fail(error);
+                            return;
+                        }
+                        continue;
+                    }
+                }
+            }
+            match self.audio.render(&self.shared.audio) {
+                Ok(true) => {
+                    let _ = self
+                        .shared
+                        .events
+                        .push(BackendEvent::QueueOverflow(Subsystem::Audio));
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    if let Err(error) = self.rebuild_audio(error) {
+                        self.fail(error);
+                        return;
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        self.decoder.stop();
+        self.audio.stop();
+    }
+
+    fn recover_video(&mut self, subsystem: Subsystem, message: String) -> Result<(), BackendError> {
+        let _ = self.shared.events.push(BackendEvent::DeviceLost {
+            subsystem,
+            message: message.clone(),
+        });
+        self.shared.set_state(LifecycleState::Recovering);
+        self.shared.video.clear();
+        let start = Instant::now();
+        loop {
+            if self.shared.state() == LifecycleState::Stopping {
+                return Ok(());
+            }
+            self.config.video = *self
+                .shared
+                .video_format
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            self.config.surface = *self
+                .shared
+                .surface
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            match Graphics::new(self.config.surface, self.config.video).and_then(|graphics| {
+                Decoder::new(&graphics, self.config.video).map(|decoder| (graphics, decoder))
+            }) {
+                Ok((graphics, decoder)) => {
+                    self.graphics = graphics;
+                    self.decoder = decoder;
+                    let _ = self
+                        .shared
+                        .events
+                        .push(BackendEvent::DeviceRecovered(subsystem));
+                    let _ = self.shared.events.push(BackendEvent::KeyFrameRequired);
+                    self.shared.set_state(LifecycleState::Running);
+                    return Ok(());
+                }
+                Err(error) if start.elapsed() < RECOVERY_TIMEOUT => {
+                    let _ = error;
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => {
+                    return Err(BackendError::DeviceLost {
+                        subsystem,
+                        message: format!("{message}; recovery timed out: {error}"),
+                    });
+                }
+            }
+        }
+    }
+
+    fn rebuild_video(&mut self, subsystem: Subsystem, message: String) -> Result<(), BackendError> {
+        self.decoder.stop();
+        match Decoder::new(&self.graphics, self.config.video) {
+            Ok(decoder) => {
+                self.decoder = decoder;
+                self.graphics
+                    .reconfigure_video(self.config.video)
+                    .map_err(|error| {
+                        BackendError::Reconfigure(format!("D3D11 presenter: {error}"))
+                    })?;
+                let _ = self.shared.events.push(BackendEvent::KeyFrameRequired);
+                self.shared.set_state(LifecycleState::Running);
+                Ok(())
+            }
+            Err(error) => self.recover_video(subsystem, format!("{message}: {error}")),
+        }
+    }
+
+    fn rebuild_audio(&mut self, message: String) -> Result<(), BackendError> {
+        let _ = self.shared.events.push(BackendEvent::DeviceLost {
+            subsystem: Subsystem::Audio,
+            message: message.clone(),
+        });
+        self.shared.set_state(LifecycleState::Recovering);
+        self.shared.audio.clear();
+        self.audio.stop();
+        let start = Instant::now();
+        loop {
+            if self.shared.state() == LifecycleState::Stopping {
+                return Ok(());
+            }
+            self.config.audio = *self
+                .shared
+                .audio_format
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            match AudioRenderer::new(self.config.audio) {
+                Ok(audio) => {
+                    self.audio = audio;
+                    let _ = self
+                        .shared
+                        .events
+                        .push(BackendEvent::DeviceRecovered(Subsystem::Audio));
+                    self.shared.set_state(LifecycleState::Running);
+                    return Ok(());
+                }
+                Err(error) if start.elapsed() < RECOVERY_TIMEOUT => {
+                    let _ = error;
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => {
+                    return Err(BackendError::DeviceLost {
+                        subsystem: Subsystem::Audio,
+                        message: format!("{message}; recovery timed out: {error}"),
+                    });
+                }
+            }
+        }
+    }
+
+    fn fail(&self, error: BackendError) {
+        self.shared.set_state(LifecycleState::Failed);
+        let _ = self.shared.events.push(BackendEvent::Fatal(error));
+        self.shared.video.close();
+        self.shared.audio.close();
+    }
+}
+
+fn error_label(value: &str) -> String {
+    value.to_owned()
+}

@@ -1,0 +1,454 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+
+mod format;
+mod queue;
+
+#[cfg(windows)]
+mod windows;
+
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
+
+use crate::queue::BoundedQueue;
+
+pub use format::{
+    AudioFormat, BackendConfig, Bounds, EncodedVideoFrame, ExistingWindow, OwnedWindow, PcmFrame,
+    SurfaceTarget, VideoFormat, WindowHandle,
+};
+pub use queue::PushOutcome;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LifecycleState {
+    Starting = 0,
+    Running = 1,
+    Reconfiguring = 2,
+    Recovering = 3,
+    Stopping = 4,
+    Stopped = 5,
+    Failed = 6,
+}
+
+impl LifecycleState {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::Starting,
+            1 => Self::Running,
+            2 => Self::Reconfiguring,
+            3 => Self::Recovering,
+            4 => Self::Stopping,
+            5 => Self::Stopped,
+            _ => Self::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subsystem {
+    VideoDecode,
+    VideoPresentation,
+    Audio,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendEvent {
+    StateChanged(LifecycleState),
+    FirstFramePresented,
+    QueueOverflow(Subsystem),
+    VideoFormatChanged(VideoFormat),
+    DeviceLost {
+        subsystem: Subsystem,
+        message: String,
+    },
+    DeviceRecovered(Subsystem),
+    KeyFrameRequired,
+    Fatal(BackendError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityProbe {
+    pub available: bool,
+    pub h264_hardware_decode: bool,
+    pub d3d11_presentation: bool,
+    pub wasapi_render: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendError {
+    UnsupportedPlatform,
+    InvalidConfig(String),
+    InvalidFrame(String),
+    NotRunning(LifecycleState),
+    Startup(String),
+    Reconfigure(String),
+    DeviceLost {
+        subsystem: Subsystem,
+        message: String,
+    },
+    WorkerDisconnected,
+}
+
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedPlatform => {
+                formatter.write_str("the Windows media backend is unavailable on this platform")
+            }
+            Self::InvalidConfig(message) => {
+                write!(formatter, "invalid backend configuration: {message}")
+            }
+            Self::InvalidFrame(message) => write!(formatter, "invalid media frame: {message}"),
+            Self::NotRunning(state) => write!(formatter, "backend is not running ({state:?})"),
+            Self::Startup(message) => write!(formatter, "backend startup failed: {message}"),
+            Self::Reconfigure(message) => {
+                write!(formatter, "backend reconfiguration failed: {message}")
+            }
+            Self::DeviceLost { subsystem, message } => {
+                write!(formatter, "{subsystem:?} device was lost: {message}")
+            }
+            Self::WorkerDisconnected => formatter.write_str("backend worker disconnected"),
+        }
+    }
+}
+
+impl std::error::Error for BackendError {}
+
+#[derive(Debug)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum Control {
+    ReconfigureVideo(VideoFormat),
+    ReconfigureAudio(AudioFormat),
+    SetSurface(SurfaceTarget),
+    SetPaused(bool),
+    Stop,
+}
+
+#[derive(Debug)]
+struct Shared {
+    video: BoundedQueue<EncodedVideoFrame>,
+    audio: BoundedQueue<PcmFrame>,
+    video_format: Mutex<VideoFormat>,
+    audio_format: Mutex<AudioFormat>,
+    surface: Mutex<SurfaceTarget>,
+    state: AtomicU8,
+    paused: std::sync::atomic::AtomicBool,
+    events: BoundedQueue<BackendEvent>,
+}
+
+impl Shared {
+    fn state(&self) -> LifecycleState {
+        LifecycleState::from_raw(self.state.load(Ordering::Acquire))
+    }
+
+    fn set_state(&self, state: LifecycleState) {
+        self.state.store(state as u8, Ordering::Release);
+        let _ = self.events.push(BackendEvent::StateChanged(state));
+    }
+}
+
+pub struct WindowsBackend {
+    shared: Arc<Shared>,
+    control: mpsc::Sender<Control>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl WindowsBackend {
+    pub fn probe() -> CapabilityProbe {
+        #[cfg(windows)]
+        {
+            windows::probe()
+        }
+        #[cfg(not(windows))]
+        {
+            CapabilityProbe {
+                available: false,
+                h264_hardware_decode: false,
+                d3d11_presentation: false,
+                wasapi_render: false,
+                reason: Some("the current target is not Windows".to_owned()),
+            }
+        }
+    }
+
+    pub fn start(config: BackendConfig) -> Result<Self, BackendError> {
+        config.validate()?;
+
+        #[cfg(not(windows))]
+        {
+            let _ = config;
+            Err(BackendError::UnsupportedPlatform)
+        }
+
+        #[cfg(windows)]
+        {
+            let shared = Arc::new(Shared {
+                video: BoundedQueue::new(config.video_queue_capacity),
+                audio: BoundedQueue::new(config.audio_queue_capacity),
+                video_format: Mutex::new(config.video),
+                audio_format: Mutex::new(config.audio),
+                surface: Mutex::new(config.surface),
+                state: AtomicU8::new(LifecycleState::Starting as u8),
+                paused: std::sync::atomic::AtomicBool::new(false),
+                events: BoundedQueue::new(64),
+            });
+            let (control_sender, control_receiver) = mpsc::channel();
+            let worker = windows::spawn(config, Arc::clone(&shared), control_receiver)?;
+            Ok(Self {
+                shared,
+                control: control_sender,
+                worker: Mutex::new(Some(worker)),
+            })
+        }
+    }
+
+    pub fn state(&self) -> LifecycleState {
+        self.shared.state()
+    }
+
+    pub fn submit_video(&self, frame: EncodedVideoFrame) -> Result<PushOutcome, BackendError> {
+        frame.validate()?;
+        self.ensure_running()?;
+        if self.shared.paused.load(Ordering::Acquire) {
+            return Ok(PushOutcome::Paused);
+        }
+        let outcome = self
+            .shared
+            .video
+            .push(frame)
+            .map_err(|_| BackendError::NotRunning(self.state()))?;
+        if outcome == PushOutcome::DroppedOldest {
+            let _ = self
+                .shared
+                .events
+                .push(BackendEvent::QueueOverflow(Subsystem::VideoDecode));
+        }
+        Ok(outcome)
+    }
+
+    pub fn submit_audio(&self, frame: PcmFrame) -> Result<PushOutcome, BackendError> {
+        frame.validate()?;
+        self.ensure_running()?;
+        if self.shared.paused.load(Ordering::Acquire) {
+            return Ok(PushOutcome::Paused);
+        }
+        let expected_format = *self
+            .shared
+            .audio_format
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if frame.format != expected_format {
+            return Err(BackendError::InvalidFrame(format!(
+                "PCM packet format {:?} does not match active format {:?}",
+                frame.format, expected_format
+            )));
+        }
+        let outcome = self
+            .shared
+            .audio
+            .push(frame)
+            .map_err(|_| BackendError::NotRunning(self.state()))?;
+        if outcome == PushOutcome::DroppedOldest {
+            let _ = self
+                .shared
+                .events
+                .push(BackendEvent::QueueOverflow(Subsystem::Audio));
+        }
+        Ok(outcome)
+    }
+
+    pub fn reconfigure_video(&self, format: VideoFormat) -> Result<(), BackendError> {
+        format.validate()?;
+        self.ensure_controllable()?;
+        self.shared.video.clear();
+        *self
+            .shared
+            .video_format
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = format;
+        self.shared.set_state(LifecycleState::Reconfiguring);
+        self.control
+            .send(Control::ReconfigureVideo(format))
+            .map_err(|_| BackendError::WorkerDisconnected)
+    }
+
+    pub fn reconfigure_audio(&self, format: AudioFormat) -> Result<(), BackendError> {
+        format.validate()?;
+        self.ensure_controllable()?;
+        self.shared.audio.clear();
+        *self
+            .shared
+            .audio_format
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = format;
+        self.shared.set_state(LifecycleState::Reconfiguring);
+        self.control
+            .send(Control::ReconfigureAudio(format))
+            .map_err(|_| BackendError::WorkerDisconnected)
+    }
+
+    pub fn set_surface(&self, surface: SurfaceTarget) -> Result<(), BackendError> {
+        surface.validate()?;
+        self.ensure_controllable()?;
+        *self
+            .shared
+            .surface
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = surface;
+        self.shared.set_state(LifecycleState::Reconfiguring);
+        self.control
+            .send(Control::SetSurface(surface))
+            .map_err(|_| BackendError::WorkerDisconnected)
+    }
+
+    pub fn set_paused(&self, paused: bool) -> Result<(), BackendError> {
+        self.ensure_controllable()?;
+        if self.shared.paused.swap(paused, Ordering::AcqRel) == paused {
+            return Ok(());
+        }
+        self.shared.video.clear();
+        self.shared.audio.clear();
+        self.control
+            .send(Control::SetPaused(paused))
+            .map_err(|_| BackendError::WorkerDisconnected)
+    }
+
+    pub fn try_event(&self) -> Option<BackendEvent> {
+        self.shared.events.try_pop()
+    }
+
+    pub fn stop(&self) {
+        let state = self.state();
+        if matches!(state, LifecycleState::Stopped | LifecycleState::Stopping) {
+            return;
+        }
+        let was_failed = state == LifecycleState::Failed;
+        if !was_failed {
+            self.shared.set_state(LifecycleState::Stopping);
+        }
+        self.shared.video.close();
+        self.shared.audio.close();
+        let _ = self.control.send(Control::Stop);
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = worker.join();
+        }
+        if !was_failed && self.state() != LifecycleState::Failed {
+            self.shared.set_state(LifecycleState::Stopped);
+        }
+    }
+
+    fn ensure_running(&self) -> Result<(), BackendError> {
+        let state = self.state();
+        if state == LifecycleState::Running {
+            Ok(())
+        } else {
+            Err(BackendError::NotRunning(state))
+        }
+    }
+
+    fn ensure_controllable(&self) -> Result<(), BackendError> {
+        let state = self.state();
+        if matches!(
+            state,
+            LifecycleState::Running | LifecycleState::Reconfiguring | LifecycleState::Recovering
+        ) {
+            Ok(())
+        } else {
+            Err(BackendError::NotRunning(state))
+        }
+    }
+}
+
+impl Drop for WindowsBackend {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_windows_probe_never_advertises_capabilities() {
+        if !cfg!(windows) {
+            let probe = WindowsBackend::probe();
+            assert!(!probe.available);
+            assert!(!probe.h264_hardware_decode);
+            assert!(!probe.d3d11_presentation);
+            assert!(!probe.wasapi_render);
+        }
+    }
+
+    #[test]
+    fn lifecycle_state_round_trips_atomic_values() {
+        for state in [
+            LifecycleState::Starting,
+            LifecycleState::Running,
+            LifecycleState::Reconfiguring,
+            LifecycleState::Recovering,
+            LifecycleState::Stopping,
+            LifecycleState::Stopped,
+            LifecycleState::Failed,
+        ] {
+            assert_eq!(LifecycleState::from_raw(state as u8), state);
+        }
+    }
+
+    #[test]
+    fn stop_closes_media_queues_and_is_idempotent() {
+        let (control_sender, _control_receiver) = mpsc::channel();
+        let shared = Arc::new(Shared {
+            video: BoundedQueue::new(2),
+            audio: BoundedQueue::new(2),
+            video_format: Mutex::new(VideoFormat {
+                width: 1920,
+                height: 1080,
+                frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
+                frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
+                average_bitrate: 10_000_000,
+            }),
+            audio_format: Mutex::new(AudioFormat {
+                sample_rate: 48_000,
+                channels: 2,
+            }),
+            surface: Mutex::new(SurfaceTarget::Owned(OwnedWindow {
+                parent: None,
+                bounds: Bounds {
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                },
+                visible: false,
+            })),
+            state: AtomicU8::new(LifecycleState::Running as u8),
+            paused: std::sync::atomic::AtomicBool::new(false),
+            events: BoundedQueue::new(8),
+        });
+        let backend = WindowsBackend {
+            shared: Arc::clone(&shared),
+            control: control_sender,
+            worker: Mutex::new(None),
+        };
+
+        backend.stop();
+        backend.stop();
+
+        assert_eq!(backend.state(), LifecycleState::Stopped);
+        assert!(shared.video.is_closed());
+        assert!(shared.audio.is_closed());
+
+        shared
+            .state
+            .store(LifecycleState::Failed as u8, Ordering::Release);
+        backend.stop();
+        assert_eq!(backend.state(), LifecycleState::Failed);
+    }
+}

@@ -23,6 +23,7 @@ import {
 import {
   NATIVE_STREAMER_PROTOCOL_VERSION,
   type NativeStreamerCapabilities,
+  type NativeStreamerActiveTransportCapabilities,
   type NativeStreamerCommand,
   type NativeStreamerEvent,
   type NativeStreamerInputPacket,
@@ -106,6 +107,8 @@ export class NativeStreamerManager {
   private capabilities: NativeStreamerCapabilities | null = null;
   private activeSessionId: string | null = null;
   private activeTransport: "webrtc" | "nvst" | null = null;
+  private activeTransportCapabilities: NativeStreamerActiveTransportCapabilities | null = null;
+  private inputReady = false;
   private inputBackpressureWarned = false;
   private answerInFlight = false;
   private queuedLocalIce: IceCandidatePayload[] = [];
@@ -235,6 +238,18 @@ export class NativeStreamerManager {
     }
     this.activeSessionId = context.session.sessionId;
     this.activeTransport = response.transport === "nvst" ? "nvst" : "webrtc";
+    this.activeTransportCapabilities = response.capabilities ?? {
+      supportsOfferAnswer: this.activeTransport === "webrtc"
+        && this.capabilities?.supportsOfferAnswer === true,
+      supportsRemoteIce: this.activeTransport === "webrtc"
+        && this.capabilities?.supportsRemoteIce === true,
+      supportsLocalIce: this.activeTransport === "webrtc"
+        && this.capabilities?.supportsLocalIce === true,
+      supportsInput: this.capabilities?.supportsInput === true,
+      supportsAudioDecode: this.capabilities?.supportsAudioDecode === true,
+      supportsAudioOutput: this.capabilities?.supportsAudioOutput === true,
+    };
+    this.inputReady = false;
     this.retainDiagnosticState({ sessionState: "ready" });
     await this.flushQueuedRemoteIce(context.session.sessionId);
   }
@@ -264,7 +279,7 @@ export class NativeStreamerManager {
       negotiatedCodec: negotiatedProfile?.codec ?? context.settings.codec,
     });
 
-    if (!this.capabilities?.supportsOfferAnswer) {
+    if (!(this.activeTransportCapabilities?.supportsOfferAnswer ?? this.capabilities?.supportsOfferAnswer)) {
       throw new Error(
         `Native streamer backend "${this.capabilities?.backend ?? "unknown"}" does not support offer/answer.`,
       );
@@ -332,7 +347,11 @@ export class NativeStreamerManager {
 
   async addRemoteIce(candidate: IceCandidatePayload, context: NativeStreamerSessionContext): Promise<void> {
     const sessionId = context.session.sessionId;
-    if (this.capabilities && !this.capabilities.supportsRemoteIce) {
+    if (
+      this.activeTransportCapabilities
+        ? !this.activeTransportCapabilities.supportsRemoteIce
+        : this.capabilities && !this.capabilities.supportsRemoteIce
+    ) {
       return;
     }
     if (!this.child || this.activeSessionId !== sessionId) {
@@ -364,6 +383,8 @@ export class NativeStreamerManager {
       || child.stdin.writableEnded
       || !this.activeSessionId
       || !this.capabilities?.supportsInput
+      || !this.activeTransportCapabilities?.supportsInput
+      || !this.inputReady
     ) {
       return;
     }
@@ -472,6 +493,8 @@ export class NativeStreamerManager {
     });
     this.activeSessionId = null;
     this.activeTransport = null;
+    this.activeTransportCapabilities = null;
+    this.inputReady = false;
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -509,6 +532,8 @@ export class NativeStreamerManager {
     });
     this.activeSessionId = null;
     this.activeTransport = null;
+    this.activeTransportCapabilities = null;
+    this.inputReady = false;
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -811,6 +836,11 @@ export class NativeStreamerManager {
     }
 
     if (message.type === "input-ready") {
+      if (!this.activeTransportCapabilities?.supportsInput) {
+        console.warn("[NativeStreamer] Ignoring input readiness from an active transport that does not advertise input.");
+        return;
+      }
+      this.inputReady = true;
       console.log(`[NativeStreamer] Input protocol ready: v${message.protocolVersion}`);
       this.options.emit({ type: "native-input-ready", protocolVersion: message.protocolVersion });
       return;
@@ -922,6 +952,7 @@ export class NativeStreamerManager {
       if (message.status === "streaming") {
         this.options.emit({ type: "native-stream-started", message: message.message });
       } else if (message.status === "stopped") {
+        this.inputReady = false;
         if (this.suppressNextStoppedEvent) {
           this.suppressNextStoppedEvent = false;
           return;
@@ -1003,6 +1034,8 @@ export class NativeStreamerManager {
     this.stderrTail = [];
     this.activeSessionId = null;
     this.activeTransport = null;
+    this.activeTransportCapabilities = null;
+    this.inputReady = false;
     this.capabilities = null;
     this.inputBackpressureWarned = false;
     this.surfaceUpdates.markNotReady();

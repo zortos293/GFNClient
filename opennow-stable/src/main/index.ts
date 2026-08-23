@@ -89,6 +89,15 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const linuxOzonePlatform = app.commandLine.getSwitchValue("ozone-platform")
+  || app.commandLine.getSwitchValue("ozone-platform-hint");
+if (
+  process.platform === "linux"
+  && (!linuxOzonePlatform || linuxOzonePlatform === "auto")
+) {
+  app.commandLine.appendSwitch("ozone-platform", "x11");
+}
+
 const appInstanceProfile = resolveAppInstanceProfile(
   process.argv,
   app.getPath("userData"),

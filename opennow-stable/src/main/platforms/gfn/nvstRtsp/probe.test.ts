@@ -91,6 +91,9 @@ const DESCRIBE_SDP = [
   "m=video 0 RTP/AVP 96",
   "a=control:tracks/actual-video-track",
   "m=audio 0 RTP/AVP 97",
+  "a=mid:audio-main",
+  "a=rtpmap:97 opus/48000/2",
+  "a=ssrc:424242 cname:audio",
   "a=control:tracks/actual-audio-track",
   "m=application 0 RTP/AVP 98",
   "a=control:streamid=control/0",
@@ -264,6 +267,14 @@ test("negotiation retains RTSPS control and video UDP until native rebind", asyn
   assert.equal(negotiated.videoSession.codec, "H265");
   assert.equal(negotiated.videoSession.srtpSaltHex, "00000000000000000000002A");
   assert.equal(negotiated.videoSession.srtpProfile, undefined);
+  assert.deepEqual(negotiated.videoSession.audioTrack, {
+    payloadType: 97,
+    codec: "opus",
+    clockRateHz: 48_000,
+    channels: 2,
+    mid: "audio-main",
+    ssrc: 424242,
+  });
   assert.equal(negotiated.srtp.saltHex, "00000000000000000000002A");
   assert.equal(negotiated.srtp.profile, undefined);
   assert.equal(
@@ -441,7 +452,7 @@ test("negotiation arms native receive after video SETUP and before ANNOUNCE", as
 
 test("negotiation starts native WebRtcTransport after ANNOUNCE and before PLAY", async () => {
   const events: string[] = [];
-  const { client, dependencies } = createNegotiationHarness(events, (method) => {
+  const { dependencies } = createNegotiationHarness(events, (method) => {
     if (method === "DESCRIBE") {
       return response(
         { session: "rtsp-session;timeout=60" },

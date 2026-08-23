@@ -13,6 +13,7 @@ opus.workspace = true
 sdl2.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
+opennow-streamer-platform-windows = { path = "../opennow-streamer-platform-windows" }
 raw-window-handle = "0.6"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -20,6 +21,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+opennow-streamer-platform-linux = { path = "../opennow-streamer-platform-linux" }
 raw-window-handle = "0.6"
 x11-dl = "2.21"
 

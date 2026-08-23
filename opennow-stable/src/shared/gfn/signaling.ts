@@ -88,8 +88,18 @@ export interface NvstVideoSession {
   /** SHA-256 colon hex advertised by DESCRIBE (`dtlsFingerprint` / `V2`). */
   remoteDtlsFingerprint?: string;
   codec?: string;
+  audioTrack?: NvstAudioTrack;
   /** Idle receive timeout. Handshake needs longer than the 5s media default. */
   timeoutMs?: number;
+}
+
+export interface NvstAudioTrack {
+  payloadType: number;
+  codec: "opus";
+  clockRateHz: number;
+  channels: number;
+  mid?: string;
+  ssrc?: number;
 }
 
 export function buildNativeStreamerSessionContext(

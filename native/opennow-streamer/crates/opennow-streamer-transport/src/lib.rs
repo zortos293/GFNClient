@@ -9,29 +9,29 @@ use std::time::{Duration, Instant};
 
 use opennow_streamer_protocol::{IceCandidate, IceServer, MediaConnectionInfo, Session};
 use str0m::change::SdpOffer;
-use str0m::channel::{ChannelConfig, ChannelId, Reliability};
 use str0m::crypto::from_feature_flags;
 use str0m::media::{KeyframeRequestKind, Mid};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 use thiserror::Error;
 
+mod input;
 pub mod nvst;
+
+use input::{InputChannelState, InputChannels, next_input_heartbeat};
 
 pub use nvst::{
     BoundedFrameQueue, EncodedH264Frame, NvstBundleIdentity, NvstConfigError, NvstDropReason,
     NvstFallbackReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstSrtpProfile,
-    NvstUdpReceiverError, NvstUdpReceiverSession, NvstUnsupportedFeature, NvstVideoCodec,
-    NvstVideoConfig, NvstVideoReceiver, PreferredVideoTransport, ReservedNvstBundle,
-    advertised_nvst_ipv4, nack_transmission_support, parse_nvst_video_handoff,
-    reserve_nvst_mjolnir_udp_socket, reserve_nvst_udp_socket, select_preferred_video_transport,
-    spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver, spawn_nvst_udp_receiver_with_socket,
+    NvstUdpReceiverControl, NvstUdpReceiverError, NvstUdpReceiverSession, NvstUnsupportedFeature,
+    NvstVideoCodec, NvstVideoConfig, NvstVideoReceiver, PreferredVideoTransport,
+    ReservedNvstBundle, SharedNvstFeedback, advertised_nvst_ipv4, nack_transmission_support,
+    parse_nvst_video_handoff, reserve_nvst_mjolnir_udp_socket, reserve_nvst_udp_socket,
+    select_preferred_video_transport, spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver,
+    spawn_nvst_udp_receiver_with_socket,
 };
 
 static INSTALL_CRYPTO: Once = Once::new();
-const RELIABLE_INPUT_LABEL: &str = "input_channel_v1";
-const PARTIAL_INPUT_LABEL: &str = "input_channel_partially_reliable";
-const STATS_LABEL: &str = "stats_channel";
 
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -104,6 +104,7 @@ pub struct EncodedMediaFrame {
     pub payload: Arc<[u8]>,
     pub rtp_timestamp: u64,
     pub clock_rate_hz: u32,
+    pub channels: Option<u8>,
     pub received_at_us: u64,
     pub keyframe: bool,
     pub contiguous: bool,
@@ -243,24 +244,7 @@ pub fn negotiate(
         .accept_offer(offer)
         .map_err(|error| TransportError::Offer(error.to_string()))?;
 
-    let reliable = rtc.direct_api().create_data_channel(ChannelConfig {
-        label: RELIABLE_INPUT_LABEL.to_owned(),
-        ..Default::default()
-    });
-    let partial = rtc.direct_api().create_data_channel(ChannelConfig {
-        label: PARTIAL_INPUT_LABEL.to_owned(),
-        ordered: false,
-        reliability: Reliability::MaxPacketLifetime {
-            lifetime: partial_reliable_lifetime_ms,
-        },
-        ..Default::default()
-    });
-    let stats = rtc.direct_api().create_data_channel(ChannelConfig {
-        label: STATS_LABEL.to_owned(),
-        ordered: false,
-        reliability: Reliability::MaxRetransmits { retransmits: 0 },
-        ..Default::default()
-    });
+    let channels = InputChannels::create(&mut rtc, partial_reliable_lifetime_ms);
 
     let answer_sdp = answer.to_sdp_string();
     let candidate_text = local_candidate.to_sdp_string();
@@ -279,11 +263,7 @@ pub fn negotiate(
                     events,
                     media_consumer,
                 },
-                TransportChannels {
-                    reliable,
-                    partial,
-                    stats,
-                },
+                channels,
                 worker_input_ready,
                 transport_origin,
             );
@@ -500,12 +480,6 @@ fn bind_routed_socket(server_ip: IpAddr) -> std::io::Result<UdpSocket> {
     UdpSocket::bind(SocketAddr::new(local_ip, 0))
 }
 
-struct TransportChannels {
-    reliable: ChannelId,
-    partial: ChannelId,
-    stats: ChannelId,
-}
-
 struct TransportOutputs {
     events: Sender<TransportEvent>,
     media_consumer: MediaConsumer,
@@ -516,7 +490,7 @@ fn run_transport(
     socket: UdpSocket,
     commands: Receiver<TransportCommand>,
     outputs: TransportOutputs,
-    channels: TransportChannels,
+    channels: InputChannels,
     input_ready_state: Arc<AtomicBool>,
     transport_origin: Instant,
 ) {
@@ -530,8 +504,8 @@ fn run_transport(
 
     let _reset_input_ready = ResetInputReady(input_ready_state.clone());
     let mut receive_buffer = vec![0_u8; 65_536];
-    let mut input_ready = false;
-    let mut next_heartbeat = Instant::now() + Duration::from_secs(2);
+    let mut input_state = InputChannelState::default();
+    let mut next_heartbeat = next_input_heartbeat(Instant::now());
 
     loop {
         loop {
@@ -543,15 +517,8 @@ fn run_transport(
                     bytes,
                     partially_reliable,
                 }) => {
-                    if input_ready {
-                        let channel_id = if partially_reliable {
-                            channels.partial
-                        } else {
-                            channels.reliable
-                        };
-                        if let Some(mut channel) = rtc.channel(channel_id) {
-                            let _ = channel.write(true, &bytes);
-                        }
+                    if input_state.is_ready() {
+                        let _ = channels.send(&mut rtc, &bytes, partially_reliable);
                     }
                 }
                 Ok(TransportCommand::RequestKeyframe { mid }) => {
@@ -588,11 +555,9 @@ fn run_transport(
             }
         }
 
-        if input_ready && Instant::now() >= next_heartbeat {
-            if let Some(mut channel) = rtc.channel(channels.reliable) {
-                let _ = channel.write(true, &[2, 0, 0, 0]);
-            }
-            next_heartbeat = Instant::now() + Duration::from_secs(2);
+        if input_state.is_ready() && Instant::now() >= next_heartbeat {
+            let _ = channels.send_heartbeat(&mut rtc);
+            next_heartbeat = next_input_heartbeat(Instant::now());
         }
 
         let timeout = loop {
@@ -611,14 +576,20 @@ fn run_transport(
                             .send(TransportEvent::Disconnected("ICE disconnected".to_owned()));
                         return;
                     }
-                    Event::ChannelData(data) if data.id == channels.reliable => {
-                        if let Some(version) = input_protocol_version(&data.data) {
-                            input_ready = true;
+                    Event::ChannelOpen(id, _) => {
+                        if let Some(version) = input_state.channel_opened(channels, id) {
                             input_ready_state.store(true, Ordering::Release);
                             let _ = outputs.events.send(TransportEvent::InputReady(version));
                         }
                     }
-                    Event::ChannelData(data) if data.id == channels.stats => {}
+                    Event::ChannelData(data) => {
+                        if let Some(version) =
+                            input_state.channel_data(channels, data.id, &data.data)
+                        {
+                            input_ready_state.store(true, Ordering::Release);
+                            let _ = outputs.events.send(TransportEvent::InputReady(version));
+                        }
+                    }
                     Event::MediaData(data) => {
                         let keyframe = data.is_keyframe();
                         let received_at_us = data
@@ -633,6 +604,7 @@ fn run_transport(
                             payload: data.data,
                             rtp_timestamp: data.time.numer(),
                             clock_rate_hz: data.time.denom(),
+                            channels: data.params.spec().channels,
                             received_at_us,
                             keyframe,
                             contiguous: data.contiguous,
@@ -713,21 +685,6 @@ fn run_transport(
     }
 }
 
-fn input_protocol_version(bytes: &[u8]) -> Option<u16> {
-    if bytes.len() < 2 {
-        return None;
-    }
-    let first = u16::from_le_bytes([bytes[0], bytes[1]]);
-    if first == 526 {
-        return Some(if bytes.len() >= 4 {
-            u16::from_le_bytes([bytes[2], bytes[3]])
-        } else {
-            2
-        });
-    }
-    (bytes[0] == 0x0e).then_some(first)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,13 +700,6 @@ mod tests {
             "mediaConnectionInfo": media_connection_info,
         }))
         .expect("synthetic session")
-    }
-
-    #[test]
-    fn parses_both_input_handshake_layouts() {
-        assert_eq!(input_protocol_version(&[0x0e, 0x02, 0x03, 0x00]), Some(3));
-        assert_eq!(input_protocol_version(&[0x0e, 0x03]), Some(0x030e));
-        assert_eq!(input_protocol_version(&[1]), None);
     }
 
     #[test]
@@ -899,6 +849,7 @@ mod tests {
             payload: payload.clone(),
             rtp_timestamp: 180_000,
             clock_rate_hz: 90_000,
+            channels: None,
             received_at_us: 2_500,
             keyframe: true,
             contiguous: true,
@@ -910,6 +861,7 @@ mod tests {
         assert!(Arc::ptr_eq(&delivered.payload, &payload));
         assert_eq!(delivered.rtp_timestamp, 180_000);
         assert_eq!(delivered.clock_rate_hz, 90_000);
+        assert_eq!(delivered.channels, None);
         assert_eq!(delivered.received_at_us, 2_500);
     }
 
@@ -922,6 +874,7 @@ mod tests {
             payload: Arc::from([1_u8, 2, 3, 4]),
             rtp_timestamp: 180_000,
             clock_rate_hz: 90_000,
+            channels: None,
             received_at_us: 2_500,
             keyframe: true,
             contiguous: true,

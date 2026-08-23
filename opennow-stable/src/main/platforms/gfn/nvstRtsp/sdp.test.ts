@@ -9,6 +9,7 @@ import {
   extractNvstIceCredentials,
   extractNvstSdpAttribute,
   extractMediaControl,
+  extractNvstOpusAudioTrack,
   extractRuntimeEncryptionKey,
   generateNvstIceCredentials,
   packSrtpMasterKeySalt,
@@ -228,4 +229,38 @@ test("extractMediaControl reads the advertised video track instead of session co
   assert.equal(extractMediaControl(sdp, "video"), "tracks/server-selected-video");
   assert.equal(extractMediaControl(sdp, "audio"), "streamid=audio/0/0");
   assert.equal(extractMediaControl(sdp, "control"), null);
+});
+
+test("extractNvstOpusAudioTrack returns only standard negotiated Opus metadata", () => {
+  const sdp = [
+    "v=0",
+    "m=video 0 RTP/AVP 96",
+    "a=rtpmap:96 H264/90000",
+    "m=audio 0 RTP/AVP 97 0",
+    "a=mid:audio-main",
+    "a=rtpmap:97 opus/48000/2",
+    "a=rtpmap:0 PCMU/8000/1",
+    "a=ssrc:123456 cname:audio",
+    "",
+  ].join("\r\n");
+
+  assert.deepEqual(extractNvstOpusAudioTrack(sdp), {
+    payloadType: 97,
+    codec: "opus",
+    clockRateHz: 48_000,
+    channels: 2,
+    mid: "audio-main",
+    ssrc: 123456,
+  });
+});
+
+test("extractNvstOpusAudioTrack does not guess omitted or unsupported codec metadata", () => {
+  assert.equal(
+    extractNvstOpusAudioTrack("m=audio 0 RTP/AVP 97\r\na=control:audio\r\n"),
+    null,
+  );
+  assert.equal(
+    extractNvstOpusAudioTrack("m=audio 0 RTP/AVP 97\r\na=rtpmap:97 proprietary/48000/2\r\n"),
+    null,
+  );
 });

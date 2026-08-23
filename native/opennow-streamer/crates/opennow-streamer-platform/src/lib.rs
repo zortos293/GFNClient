@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod linux_backend;
 #[cfg(target_os = "macos")]
 mod macos_backend;
 mod media;
@@ -6,7 +8,10 @@ mod output;
 mod queue;
 mod runtime;
 
-pub use media::{EncodedFrame, MediaCodec, MediaFeedback, MediaSession, MediaSink, PushOutcome};
+pub use media::{
+    EncodedFrame, MediaCodec, MediaControl, MediaFeedback, MediaSession, MediaSink,
+    MediaStreamConfig, PushOutcome,
+};
 pub use runtime::{MainThreadHost, MediaRuntime, create_runtime};
 
 /// Shows a standalone overlay window through the exact production creation path.
@@ -19,7 +24,16 @@ pub fn debug_show_overlay_window() {
 use opennow_streamer_protocol::{CodecCapability, VideoBackendCapability};
 
 pub fn video_backends() -> Vec<VideoBackendCapability> {
-    vec![hardware_backend(), software_backend()]
+    #[cfg(target_os = "linux")]
+    {
+        let mut backends = linux_backend::video_backends();
+        backends.push(software_backend());
+        backends
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        vec![hardware_backend(), software_backend()]
+    }
 }
 
 pub const fn supports_audio_decode() -> bool {
@@ -32,11 +46,37 @@ pub const fn supports_audio_output() -> bool {
 
 #[cfg(target_os = "windows")]
 fn hardware_backend() -> VideoBackendCapability {
-    unavailable_backend(
-        "d3d11",
-        "windows",
-        "D3D11 hardware decode is not built into this binary",
-    )
+    let probe = opennow_streamer_platform_windows::WindowsBackend::probe();
+    let available = probe.h264_hardware_decode && probe.d3d11_presentation;
+    let reason = if available {
+        None
+    } else {
+        Some("D3D11 H.264 hardware decode or presentation is unavailable")
+    };
+    VideoBackendCapability {
+        backend: "d3d11",
+        platform: "windows",
+        codecs: vec![
+            CodecCapability {
+                codec: "h264",
+                available,
+                reason,
+            },
+            CodecCapability {
+                codec: "h265",
+                available: false,
+                reason: Some("H.265 Media Foundation decode is not implemented"),
+            },
+            CodecCapability {
+                codec: "av1",
+                available: false,
+                reason: Some("AV1 Media Foundation decode is not implemented"),
+            },
+        ],
+        zero_copy_modes: available.then_some(vec!["d3d11-nv12"]).unwrap_or_default(),
+        available,
+        reason,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -71,15 +111,6 @@ fn hardware_backend() -> VideoBackendCapability {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn hardware_backend() -> VideoBackendCapability {
-    unavailable_backend(
-        "vaapi",
-        "linux",
-        "VA-API/V4L2 hardware decode is not built into this binary",
-    )
-}
-
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 fn hardware_backend() -> VideoBackendCapability {
     unavailable_backend("unsupported", "other", "Unsupported operating system")
@@ -112,7 +143,7 @@ fn software_backend() -> VideoBackendCapability {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 fn unavailable_backend(
     backend: &'static str,
     platform: &'static str,
@@ -162,13 +193,32 @@ mod tests {
                 .filter(|codec| codec.codec != "h264")
                 .all(|codec| !codec.available)
         );
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         assert!(
             backends
                 .iter()
                 .filter(|backend| backend.backend != "software")
                 .all(|backend| !backend.available)
         );
+        #[cfg(target_os = "windows")]
+        {
+            let hardware = backends
+                .iter()
+                .find(|backend| backend.backend == "d3d11")
+                .expect("D3D11 backend");
+            let probe = opennow_streamer_platform_windows::WindowsBackend::probe();
+            assert_eq!(
+                hardware.available,
+                probe.h264_hardware_decode && probe.d3d11_presentation
+            );
+            assert!(
+                hardware
+                    .codecs
+                    .iter()
+                    .filter(|codec| codec.codec != "h264")
+                    .all(|codec| !codec.available)
+            );
+        }
         #[cfg(target_os = "macos")]
         {
             let hardware = backends

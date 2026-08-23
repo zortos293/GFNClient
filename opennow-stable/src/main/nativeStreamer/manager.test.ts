@@ -5,6 +5,7 @@ import test from "node:test";
 
 import type {
   NativeStreamerCapabilities,
+  NativeStreamerActiveTransportCapabilities,
   NativeStreamerEvent,
   NativeStreamerResponse,
 } from "@shared/nativeStreamer";
@@ -40,6 +41,8 @@ interface ManagerInternals {
   stdoutBuffer: string;
   activeSessionId: string | null;
   capabilities: NativeStreamerCapabilities | null;
+  activeTransportCapabilities: NativeStreamerActiveTransportCapabilities | null;
+  inputReady: boolean;
   pending: Map<string, unknown>;
   request(
     input: NativeStreamerCommandInput,
@@ -196,6 +199,8 @@ test("input writes tolerate a child exit race but still throw unrelated failures
     supportsVideoDecode: true,
     supportsVideoPresent: true,
   };
+  internals.activeTransportCapabilities = activeInputCapabilities();
+  internals.inputReady = true;
   fake.stdin.writeImpl = () => {
     throw writeError("ERR_STREAM_DESTROYED");
   };
@@ -223,12 +228,55 @@ test("input writes tolerate a child exit race but still throw unrelated failures
     supportsVideoDecode: true,
     supportsVideoPresent: true,
   };
+  internals.activeTransportCapabilities = activeInputCapabilities();
+  internals.inputReady = true;
 
   assert.throws(
     () => manager.sendInput({ payloadBase64: "AQ==" }),
     (error) => error === programmingFailure,
   );
   assert.equal(internals.child, secondFake.child);
+});
+
+function activeInputCapabilities(): NativeStreamerActiveTransportCapabilities {
+  return {
+    supportsOfferAnswer: false,
+    supportsRemoteIce: false,
+    supportsLocalIce: false,
+    supportsInput: true,
+    supportsAudioDecode: true,
+    supportsAudioOutput: true,
+  };
+}
+
+test("input is suppressed until the active transport reports its channels ready", () => {
+  const { manager, internals } = createManager();
+  const fake = createFakeChild();
+  let writes = 0;
+  fake.stdin.writeImpl = () => {
+    writes += 1;
+    return true;
+  };
+  internals.child = fake.child;
+  internals.activeSessionId = "session";
+  internals.capabilities = {
+    protocolVersion: 4,
+    backend: "native",
+    supportsOfferAnswer: true,
+    supportsRemoteIce: true,
+    supportsLocalIce: true,
+    supportsInput: true,
+    supportsVideoDecode: true,
+    supportsVideoPresent: true,
+  };
+  internals.activeTransportCapabilities = activeInputCapabilities();
+
+  manager.sendInput({ payloadBase64: "AQ==" });
+  assert.equal(writes, 0);
+
+  internals.handleEvent({ type: "input-ready", protocolVersion: 3 });
+  manager.sendInput({ payloadBase64: "AQ==" });
+  assert.equal(writes, 1);
 });
 
 test("unrelated synchronous command write failures reject only their request", async () => {

@@ -2,9 +2,8 @@
 //!
 //! This module only implements the receive side of the classic NVST video handoff:
 //! authenticated SRTP video datagrams from the negotiated peer become bounded H.264
-//! Annex-B access units. It deliberately does not implement NVST audio, control, input,
-//! FEC repair, or NACK transmission because the current handoff does not contain enough
-//! wire information to implement those features safely.
+//! Annex-B access units. Standard Opus RTP and the existing input data-channel contract
+//! use the negotiated DTLS bundle. Proprietary FEC repair remains deliberately unsupported.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
@@ -34,6 +33,7 @@ use str0m::net::{Protocol as RtcProtocol, Receive};
 use str0m::rtp::Ssrc;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
+use super::input::{InputChannelState, InputChannels, next_input_heartbeat};
 use super::{
     EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame, install_crypto,
 };
@@ -58,6 +58,7 @@ const SRTCP_RR_INTERVAL: Duration = Duration::from_secs(1);
 /// How many even SCTP stream ids to try for the `rtcp1` feedback channel. The
 /// server resets the DCEP open on the wrong id, so we probe the low even ids.
 const RTCP_STREAM_CANDIDATES: usize = 8;
+const NVST_PARTIAL_RELIABLE_LIFETIME_MS: u16 = 300;
 const NV_VIDEO_PACKET_LEN: usize = 16;
 const DEFAULT_REORDER_WINDOW: usize = 32;
 const MAX_REORDER_WINDOW: usize = 128;
@@ -175,6 +176,8 @@ pub enum NvstConfigError {
     UnsupportedSrtpProfile(String),
     #[error("NVST video codec {0} is not implemented; only H264 Annex-B is available")]
     UnsupportedCodec(String),
+    #[error("nvstVideo.audioTrack must contain standard negotiated Opus RTP metadata")]
+    InvalidAudioTrack,
     #[error("nvstTransport.tracks is not implemented yet; retain the legacy nvstVideo handoff")]
     RichHandoffUnsupported,
 }
@@ -182,8 +185,6 @@ pub enum NvstConfigError {
 /// Explicitly records transport features that cannot be sent correctly from current wire data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvstUnsupportedFeature {
-    Audio,
-    Input,
     Nack,
     FecRepair,
 }
@@ -191,8 +192,6 @@ pub enum NvstUnsupportedFeature {
 impl fmt::Display for NvstUnsupportedFeature {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            Self::Audio => "audio",
-            Self::Input => "input",
             Self::Nack => "NACK transmission",
             Self::FecRepair => "FEC repair",
         };
@@ -226,7 +225,7 @@ impl NvstFeedbackState {
             .fetch_max(highest_sequence, Ordering::AcqRel);
     }
 
-    fn request_keyframe(&self) {
+    pub fn request_keyframe(&self) {
         self.keyframe_needed.store(true, Ordering::Release);
     }
 
@@ -263,6 +262,7 @@ pub struct NvstVideoConfig {
     /// ICE/DTLS bundle socket only carries control/audio keepalive traffic.
     mjolnir_udp_port: Option<u16>,
     codec: NvstVideoCodec,
+    audio_track: Option<NvstAudioTrack>,
     expected_payload_type: Option<u8>,
     expected_ssrc: Option<u32>,
     reorder_window_packets: usize,
@@ -288,6 +288,7 @@ impl fmt::Debug for NvstVideoConfig {
             )
             .field("mjolnir_udp_port", &self.mjolnir_udp_port)
             .field("codec", &self.codec)
+            .field("audio_track", &self.audio_track)
             .field("expected_payload_type", &self.expected_payload_type)
             .field("expected_ssrc", &self.expected_ssrc)
             .field("reorder_window_packets", &self.reorder_window_packets)
@@ -295,6 +296,15 @@ impl fmt::Debug for NvstVideoConfig {
             .field("timeout", &self.timeout)
             .finish()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NvstAudioTrack {
+    pub payload_type: u8,
+    pub clock_rate_hz: u32,
+    pub channels: u8,
+    pub mid: String,
+    pub ssrc: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -479,6 +489,10 @@ impl NvstVideoConfig {
             .or(settings_codec)
             .ok_or(NvstConfigError::MissingField("codec"))?;
         let codec = NvstVideoCodec::parse(codec_name)?;
+        let audio_track = object
+            .get("audioTrack")
+            .map(parse_audio_track)
+            .transpose()?;
         let ping_payload = optional_string(object, "pingPayload")?
             .map_or_else(|| b"PING".to_vec(), |payload| payload.as_bytes().to_vec());
         if ping_payload.is_empty() || ping_payload.len() > MAX_PING_BYTES {
@@ -546,6 +560,7 @@ impl NvstVideoConfig {
             remote_dtls_fingerprint,
             mjolnir_udp_port,
             codec,
+            audio_track,
             expected_payload_type,
             expected_ssrc,
             reorder_window_packets,
@@ -572,6 +587,10 @@ impl NvstVideoConfig {
         self.codec
     }
 
+    pub fn audio_track(&self) -> Option<&NvstAudioTrack> {
+        self.audio_track.as_ref()
+    }
+
     pub fn srtp_profile(&self) -> NvstSrtpProfile {
         self.srtp.profile()
     }
@@ -587,6 +606,57 @@ impl NvstVideoConfig {
     pub fn mjolnir_udp_port(&self) -> Option<u16> {
         self.mjolnir_udp_port
     }
+}
+
+fn parse_audio_track(value: &Value) -> Result<NvstAudioTrack, NvstConfigError> {
+    let object = value
+        .as_object()
+        .ok_or(NvstConfigError::InvalidAudioTrack)?;
+    let payload_type = object
+        .get("payloadType")
+        .and_then(Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|value| *value <= 127)
+        .ok_or(NvstConfigError::InvalidAudioTrack)?;
+    object
+        .get("codec")
+        .and_then(Value::as_str)
+        .filter(|value| value.eq_ignore_ascii_case("opus"))
+        .ok_or(NvstConfigError::InvalidAudioTrack)?;
+    let clock_rate_hz = object
+        .get("clockRateHz")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value == 48_000)
+        .ok_or(NvstConfigError::InvalidAudioTrack)?;
+    let channels = object
+        .get("channels")
+        .and_then(Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|value| matches!(*value, 1 | 2))
+        .ok_or(NvstConfigError::InvalidAudioTrack)?;
+    let mid = match object.get("mid") {
+        Some(Value::String(value)) if !value.is_empty() && value.len() <= 64 => value.clone(),
+        Some(_) => return Err(NvstConfigError::InvalidAudioTrack),
+        None => "audio".to_owned(),
+    };
+    let ssrc = match object.get("ssrc") {
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value != 0)
+                .ok_or(NvstConfigError::InvalidAudioTrack)?,
+        ),
+        None => None,
+    };
+    Ok(NvstAudioTrack {
+        payload_type,
+        clock_rate_hz,
+        channels,
+        mid,
+        ssrc,
+    })
 }
 
 fn required_ice_credential(
@@ -885,6 +955,7 @@ pub enum NvstRecovery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NvstReceiveEvent {
     Frame(EncodedH264Frame),
+    InputReady(u16),
     Dropped(NvstDropReason),
     RecoveryNeeded(NvstRecovery),
     Lifecycle(NvstReceiverState),
@@ -2373,6 +2444,10 @@ enum UdpReceiverCommand {
     Pause,
     Resume,
     Recover,
+    SendInput {
+        bytes: Vec<u8>,
+        partially_reliable: bool,
+    },
     Stop,
 }
 
@@ -2381,6 +2456,13 @@ enum UdpReceiverCommand {
 pub struct NvstUdpReceiverSession {
     commands: Sender<UdpReceiverCommand>,
     join: Option<JoinHandle<()>>,
+    input_ready: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub struct NvstUdpReceiverControl {
+    commands: Sender<UdpReceiverCommand>,
+    input_ready: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Error)]
@@ -2398,6 +2480,42 @@ pub enum NvstUdpReceiverError {
 }
 
 impl NvstUdpReceiverSession {
+    pub fn control(&self) -> NvstUdpReceiverControl {
+        NvstUdpReceiverControl {
+            commands: self.commands.clone(),
+            input_ready: Arc::clone(&self.input_ready),
+        }
+    }
+
+    pub fn pause(&self) -> Result<(), NvstUdpReceiverError> {
+        self.control().pause()
+    }
+
+    pub fn resume(&self) -> Result<(), NvstUdpReceiverError> {
+        self.control().resume()
+    }
+
+    pub fn recover(&self) -> Result<(), NvstUdpReceiverError> {
+        self.control().recover()
+    }
+
+    pub fn send_input(
+        &self,
+        bytes: Vec<u8>,
+        partially_reliable: bool,
+    ) -> Result<(), TransportError> {
+        self.control().send_input(bytes, partially_reliable)
+    }
+
+    pub fn stop(mut self) {
+        let _ = self.commands.send(UdpReceiverCommand::Stop);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+impl NvstUdpReceiverControl {
     pub fn pause(&self) -> Result<(), NvstUdpReceiverError> {
         self.send(UdpReceiverCommand::Pause)
     }
@@ -2410,11 +2528,24 @@ impl NvstUdpReceiverSession {
         self.send(UdpReceiverCommand::Recover)
     }
 
-    pub fn stop(mut self) {
-        let _ = self.commands.send(UdpReceiverCommand::Stop);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
+    pub fn send_input(
+        &self,
+        bytes: Vec<u8>,
+        partially_reliable: bool,
+    ) -> Result<(), TransportError> {
+        if !self.input_ready.load(Ordering::Acquire) {
+            return Err(TransportError::InputNotReady);
         }
+        self.commands
+            .send(UdpReceiverCommand::SendInput {
+                bytes,
+                partially_reliable,
+            })
+            .map_err(|_| TransportError::Closed)
+    }
+
+    pub fn stop(&self) -> Result<(), NvstUdpReceiverError> {
+        self.send(UdpReceiverCommand::Stop)
     }
 
     fn send(&self, command: UdpReceiverCommand) -> Result<(), NvstUdpReceiverError> {
@@ -2715,6 +2846,12 @@ pub fn spawn_nvst_mjolnir_receiver(
     )
 }
 
+struct NvstReceiverOutputs {
+    media_consumer: MediaConsumer,
+    event_sender: Sender<NvstReceiveEvent>,
+    input_ready: Arc<AtomicBool>,
+}
+
 fn spawn_receiver_thread(
     name: &str,
     socket: UdpSocket,
@@ -2727,6 +2864,8 @@ fn spawn_receiver_thread(
         .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
         .map_err(NvstUdpReceiverError::Configure)?;
     let (commands, receiver) = mpsc::channel();
+    let input_ready = Arc::new(AtomicBool::new(false));
+    let worker_input_ready = input_ready.clone();
     let transport_origin = Instant::now();
     let join = thread::Builder::new()
         .name(name.to_owned())
@@ -2735,16 +2874,21 @@ fn spawn_receiver_thread(
                 socket,
                 config,
                 receiver,
-                media_consumer,
-                event_sender,
+                NvstReceiverOutputs {
+                    media_consumer,
+                    event_sender,
+                    input_ready: worker_input_ready.clone(),
+                },
                 transport_origin,
                 rtc,
-            )
+            );
+            worker_input_ready.store(false, Ordering::Release);
         })
         .map_err(NvstUdpReceiverError::Spawn)?;
     Ok(NvstUdpReceiverSession {
         commands,
         join: Some(join),
+        input_ready,
     })
 }
 
@@ -2786,6 +2930,9 @@ fn prepare_nvst_webrtc_bundle(
         });
         api.set_remote_fingerprint(remote_fingerprint);
         api.declare_media(Mid::from("0"), MediaKind::Video);
+        if let Some(audio) = config.audio_track() {
+            api.declare_media(Mid::from(audio.mid.as_str()), MediaKind::Audio);
+        }
         api.start_dtls(true)
             .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
     }
@@ -2835,15 +2982,27 @@ fn peek_rtp_ssrc(datagram: &[u8]) -> Option<u32> {
         .then(|| u32::from_be_bytes([datagram[8], datagram[9], datagram[10], datagram[11]]))
 }
 
+fn peek_rtp_payload_type(datagram: &[u8]) -> Option<u8> {
+    looks_like_rtp(datagram).then(|| datagram[1] & 0x7f)
+}
+
+fn matches_audio_track(track: &NvstAudioTrack, payload_type: u8, ssrc: u32) -> bool {
+    payload_type == track.payload_type && track.ssrc.is_none_or(|expected| expected == ssrc)
+}
+
 fn run_nvst_webrtc_bundle(
     socket: UdpSocket,
     config: NvstVideoConfig,
     commands: Receiver<UdpReceiverCommand>,
-    media_consumer: MediaConsumer,
-    event_sender: Sender<NvstReceiveEvent>,
+    outputs: NvstReceiverOutputs,
     transport_origin: Instant,
     mut rtc: Rtc,
 ) {
+    let NvstReceiverOutputs {
+        media_consumer,
+        event_sender,
+        input_ready,
+    } = outputs;
     let video_peer = config.video_peer;
     let stun_credentials = config.stun_credentials.clone();
     let ping_payload = config.ping_payload.clone();
@@ -2851,6 +3010,7 @@ fn run_nvst_webrtc_bundle(
     // stream SSRC/sequence and keyframe requests; this bundle sends the RTCP
     // Receiver Reports / PLI over the `rtcp1` SCTP data channel.
     let feedback = config.feedback();
+    let audio_track = config.audio_track().cloned();
     // With a dedicated Mjolnir video socket the bundle only carries
     // control/audio keepalive traffic; the Mjolnir receiver owns the media
     // timeout, so the bundle must not raise a spurious media recovery.
@@ -2882,6 +3042,10 @@ fn run_nvst_webrtc_bundle(
     // video would deadlock.
     let mut rtcp_create_attempted = false;
     let mut sctp_started_at: Option<Instant> = None;
+    let mut input_channels: Option<InputChannels> = None;
+    let mut input_state = InputChannelState::default();
+    let mut input_heartbeat_at = next_input_heartbeat(Instant::now());
+    let mut last_audio_sequence: Option<(u32, u16)> = None;
     loop {
         loop {
             match commands.try_recv() {
@@ -2891,6 +3055,16 @@ fn run_nvst_webrtc_bundle(
                 }
                 Ok(UdpReceiverCommand::Recover) => {
                     forward_optional(&event_sender, receiver.recover())
+                }
+                Ok(UdpReceiverCommand::SendInput {
+                    bytes,
+                    partially_reliable,
+                }) => {
+                    if input_state.is_ready()
+                        && let Some(channels) = input_channels
+                    {
+                        let _ = channels.send(&mut rtc, &bytes, partially_reliable);
+                    }
                 }
                 Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected) => {
                     rtc.disconnect();
@@ -2904,6 +3078,12 @@ fn run_nvst_webrtc_bundle(
         // Official first burst is three ICE Binding Requests, plus NATT
         // ping-string PING. After DTLS they keep pinging at 100ms.
         let now = Instant::now();
+        if input_state.is_ready() && now >= input_heartbeat_at {
+            if let Some(channels) = input_channels {
+                let _ = channels.send_heartbeat(&mut rtc);
+            }
+            input_heartbeat_at = next_input_heartbeat(now);
+        }
         let ping_interval = if dtls_ready {
             PING_INTERVAL_AFTER_CONNECTION
         } else {
@@ -3051,11 +3231,21 @@ fn run_nvst_webrtc_bundle(
                             sctp_started = true;
                             sctp_started_at = Some(Instant::now());
                             rtc.direct_api().start_sctp(true);
+                            input_channels = Some(InputChannels::create(
+                                &mut rtc,
+                                NVST_PARTIAL_RELIABLE_LIFETIME_MS,
+                            ));
                             eprintln!("NVST SCTP started; will open rtcp1 after handshake settles");
                         }
                     }
                     Event::ChannelOpen(id, label) => {
                         eprintln!("NVST data channel open: id={id:?} label={label}");
+                        if let Some(channels) = input_channels
+                            && let Some(version) = input_state.channel_opened(channels, id)
+                        {
+                            input_ready.store(true, Ordering::Release);
+                            let _ = event_sender.send(NvstReceiveEvent::InputReady(version));
+                        }
                         if label.contains("rtcp") {
                             rtcp_channel = Some(id);
                             rtcp_channel_open = true;
@@ -3064,32 +3254,83 @@ fn run_nvst_webrtc_bundle(
                         }
                     }
                     Event::ChannelData(data) => {
-                        // The server may send Sender Reports / control on rtcp1; log to
-                        // learn the exact on-wire format it expects back.
-                        eprintln!(
-                            "NVST rtcp1 inbound: id={:?} binary={} bytes={} data={:02x?}",
-                            data.id,
-                            data.binary,
-                            data.data.len(),
-                            &data.data[..data.data.len().min(16)]
-                        );
+                        if let Some(channels) = input_channels
+                            && let Some(version) =
+                                input_state.channel_data(channels, data.id, &data.data)
+                        {
+                            input_ready.store(true, Ordering::Release);
+                            let _ = event_sender.send(NvstReceiveEvent::InputReady(version));
+                        } else if Some(data.id) == rtcp_channel {
+                            eprintln!(
+                                "NVST rtcp1 inbound: id={:?} binary={} bytes={}",
+                                data.id,
+                                data.binary,
+                                data.data.len(),
+                            );
+                        }
                     }
                     Event::RtpPacket(packet) => {
-                        for event in receiver.process_mjolnir_payload(
-                            *packet.header.ssrc,
-                            packet.header.timestamp,
-                            &packet.payload,
-                            Instant::now(),
-                        ) {
-                            if !forward_receive_event(
-                                &media_consumer,
-                                &event_sender,
-                                transport_origin,
-                                event,
-                            ) {
+                        let is_audio = audio_track.as_ref().is_some_and(|audio| {
+                            matches_audio_track(
+                                audio,
+                                *packet.header.payload_type,
+                                *packet.header.ssrc,
+                            )
+                        });
+                        if is_audio {
+                            let audio = audio_track.as_ref().expect("audio track checked above");
+                            let audio_ssrc = *packet.header.ssrc;
+                            let contiguous = last_audio_sequence.is_none_or(|(ssrc, previous)| {
+                                ssrc != audio_ssrc
+                                    || previous.wrapping_add(1) == packet.header.sequence_number
+                            });
+                            last_audio_sequence = Some((audio_ssrc, packet.header.sequence_number));
+                            let received_at_us = packet
+                                .timestamp
+                                .saturating_duration_since(transport_origin)
+                                .as_micros()
+                                .try_into()
+                                .unwrap_or(u64::MAX);
+                            let frame = EncodedMediaFrame {
+                                mid: audio.mid.clone(),
+                                codec: "opus".to_owned(),
+                                payload: packet.payload,
+                                rtp_timestamp: u64::from(packet.header.timestamp),
+                                clock_rate_hz: audio.clock_rate_hz,
+                                channels: Some(audio.channels),
+                                received_at_us,
+                                keyframe: false,
+                                contiguous,
+                            };
+                            if let Err(error) = deliver_media_frame(&media_consumer, frame) {
+                                let reason = match error {
+                                    TransportError::MediaConsumerBackpressured => {
+                                        NvstDropReason::MediaConsumerBackpressured
+                                    }
+                                    _ => NvstDropReason::MediaConsumerClosed,
+                                };
+                                let _ = event_sender.send(NvstReceiveEvent::Dropped(reason));
                                 rtc.disconnect();
                                 forward_optional(&event_sender, receiver.stop());
                                 return;
+                            }
+                        } else {
+                            for event in receiver.process_mjolnir_payload(
+                                *packet.header.ssrc,
+                                packet.header.timestamp,
+                                &packet.payload,
+                                Instant::now(),
+                            ) {
+                                if !forward_receive_event(
+                                    &media_consumer,
+                                    &event_sender,
+                                    transport_origin,
+                                    event,
+                                ) {
+                                    rtc.disconnect();
+                                    forward_optional(&event_sender, receiver.stop());
+                                    return;
+                                }
                             }
                         }
                     }
@@ -3125,13 +3366,17 @@ fn run_nvst_webrtc_bundle(
                     if let Some(ssrc) = peek_rtp_ssrc(&datagram[..length])
                         && seen_ssrcs.insert(ssrc)
                     {
-                        rtc.direct_api().expect_stream_rx(
-                            Ssrc::from(ssrc),
-                            None,
-                            Mid::from("0"),
-                            None,
-                        );
-                        eprintln!("NVST expecting SSRC {ssrc} on bundle mid=0");
+                        let mid = audio_track
+                            .as_ref()
+                            .filter(|audio| {
+                                peek_rtp_payload_type(&datagram[..length]).is_some_and(
+                                    |payload_type| matches_audio_track(audio, payload_type, ssrc),
+                                )
+                            })
+                            .map_or_else(|| Mid::from("0"), |audio| Mid::from(audio.mid.as_str()));
+                        rtc.direct_api()
+                            .expect_stream_rx(Ssrc::from(ssrc), None, mid, None);
+                        eprintln!("NVST expecting SSRC {ssrc} on bundle mid={mid}");
                     }
                     let destination = receive_destination;
                     let contents = match datagram[..length].try_into() {
@@ -3188,23 +3433,19 @@ fn run_nvst_udp_receiver(
     socket: UdpSocket,
     config: NvstVideoConfig,
     commands: Receiver<UdpReceiverCommand>,
-    media_consumer: MediaConsumer,
-    event_sender: Sender<NvstReceiveEvent>,
+    outputs: NvstReceiverOutputs,
     transport_origin: Instant,
     rtc: Option<Rtc>,
 ) {
     if let Some(rtc) = rtc {
-        run_nvst_webrtc_bundle(
-            socket,
-            config,
-            commands,
-            media_consumer,
-            event_sender,
-            transport_origin,
-            rtc,
-        );
+        run_nvst_webrtc_bundle(socket, config, commands, outputs, transport_origin, rtc);
         return;
     }
+    let NvstReceiverOutputs {
+        media_consumer,
+        event_sender,
+        ..
+    } = outputs;
     let mut receiver = NvstVideoReceiver::new(config);
     let stun_credentials = receiver.config.stun_credentials.clone();
     let mut datagram = vec![0_u8; 65_536];
@@ -3229,6 +3470,7 @@ fn run_nvst_udp_receiver(
                 Ok(UdpReceiverCommand::Recover) => {
                     forward_optional(&event_sender, receiver.recover())
                 }
+                Ok(UdpReceiverCommand::SendInput { .. }) => {}
                 Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected) => {
                     forward_optional(&event_sender, receiver.stop());
                     return;
@@ -3357,6 +3599,7 @@ fn forward_receive_event(
             payload: Arc::from(frame.bytes),
             rtp_timestamp: u64::from(frame.timestamp),
             clock_rate_hz: 90_000,
+            channels: None,
             received_at_us: transport_origin
                 .elapsed()
                 .as_micros()
@@ -3540,6 +3783,35 @@ mod tests {
             decode_fixed_hex::<12>("00000000000000009ECA935E", NvstConfigError::InvalidSrtpSalt)
                 .expect("salt"),
         );
+    }
+
+    #[test]
+    fn handoff_accepts_only_explicit_standard_opus_track_metadata() {
+        let mut handoff = legacy_handoff();
+        handoff["audioTrack"] = json!({
+            "payloadType": 97,
+            "codec": "opus",
+            "clockRateHz": 48_000,
+            "channels": 2,
+            "mid": "audio-main",
+            "ssrc": 424242,
+        });
+        let config =
+            NvstVideoConfig::from_legacy_handoff(&handoff, None).expect("standard Opus track");
+        let audio = config.audio_track().expect("audio track");
+        assert_eq!(audio.payload_type, 97);
+        assert_eq!(audio.clock_rate_hz, 48_000);
+        assert_eq!(audio.channels, 2);
+        assert_eq!(audio.mid, "audio-main");
+        assert!(matches_audio_track(audio, 97, 424242));
+        assert!(!matches_audio_track(audio, 96, 424242));
+        assert!(!matches_audio_track(audio, 97, 7));
+
+        handoff["audioTrack"]["codec"] = json!("proprietary");
+        assert!(matches!(
+            NvstVideoConfig::from_legacy_handoff(&handoff, None),
+            Err(NvstConfigError::InvalidAudioTrack)
+        ));
     }
 
     #[test]

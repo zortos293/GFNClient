@@ -35,6 +35,15 @@ export interface NativeStreamerInputPacket {
   partiallyReliable?: boolean;
 }
 
+export interface NativeStreamerActiveTransportCapabilities {
+  supportsOfferAnswer: boolean;
+  supportsRemoteIce: boolean;
+  supportsLocalIce: boolean;
+  supportsInput: boolean;
+  supportsAudioDecode: boolean;
+  supportsAudioOutput: boolean;
+}
+
 export type NativeStreamerCommand =
   | {
       id: string;
@@ -109,6 +118,7 @@ export type NativeStreamerResponse =
       id: string;
       type: "ok";
       transport?: "webrtc" | "nvst";
+      capabilities?: NativeStreamerActiveTransportCapabilities;
     }
   | {
       id: string;

@@ -49,18 +49,8 @@ fn parse_handle(value: &str) -> Result<usize, String> {
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-fn physical_rect(rect: RenderSurfaceRect, scale: f32) -> (i32, i32, u32, u32) {
-    let scale = if scale.is_finite() {
-        scale.clamp(0.25, 8.0)
-    } else {
-        1.0
-    };
-    (
-        (rect.x as f32 * scale).round() as i32,
-        (rect.y as f32 * scale).round() as i32,
-        ((rect.width as f32 * scale).round() as u32).max(2),
-        ((rect.height as f32 * scale).round() as u32).max(2),
-    )
+fn physical_rect(rect: RenderSurfaceRect, _scale: f32) -> (i32, i32, u32, u32) {
+    (rect.x, rect.y, rect.width.max(2), rect.height.max(2))
 }
 
 #[cfg(target_os = "windows")]
@@ -101,10 +91,10 @@ mod platform {
             parent_handle: &str,
             rect: RenderSurfaceRect,
             _screen_rect: Option<RenderSurfaceRect>,
-            scale: f32,
+            _scale: f32,
         ) -> Result<(), String> {
             let parent = parse_handle(parent_handle)? as _;
-            let (x, y, width, height) = physical_rect(rect, scale);
+            let (x, y, width, height) = physical_rect(rect, _scale);
             unsafe {
                 if self.parent != parent {
                     SetLastError(0);
@@ -153,12 +143,57 @@ mod platform {
     }
 }
 
+#[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renderer_rect_is_already_physical_at_common_dpi_scales() {
+        let rect = RenderSurfaceRect {
+            x: 120,
+            y: 80,
+            width: 1280,
+            height: 720,
+        };
+
+        for scale in [1.0, 1.5, 2.0] {
+            assert_eq!(physical_rect(rect, scale), (120, 80, 1280, 720));
+        }
+    }
+
+    #[test]
+    fn physical_rect_only_clamps_empty_dimensions() {
+        let rect = RenderSurfaceRect {
+            x: -10,
+            y: 20,
+            width: 0,
+            height: 1,
+        };
+
+        assert_eq!(physical_rect(rect, 2.0), (-10, 20, 2, 2));
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod platform {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
     use x11_dl::xlib;
 
     use super::*;
+
+    static X11_ERROR_CODE: AtomicI32 = AtomicI32::new(0);
+
+    unsafe extern "C" fn record_x11_error(
+        _display: *mut xlib::Display,
+        event: *mut xlib::XErrorEvent,
+    ) -> i32 {
+        if !event.is_null() {
+            X11_ERROR_CODE.store(unsafe { (*event).error_code.into() }, Ordering::Release);
+        }
+        0
+    }
 
     pub(crate) struct Surface {
         xlib: xlib::Xlib,
@@ -211,11 +246,14 @@ mod platform {
             parent_handle: &str,
             rect: RenderSurfaceRect,
             _screen_rect: Option<RenderSurfaceRect>,
-            scale: f32,
+            _scale: f32,
         ) -> Result<(), String> {
             let parent = parse_handle(parent_handle)? as xlib::Window;
-            let (x, y, width, height) = physical_rect(rect, scale);
-            unsafe {
+            let (x, y, width, height) = physical_rect(rect, _scale);
+            let error_code = unsafe {
+                (self.xlib.XSync)(self.display, xlib::False);
+                X11_ERROR_CODE.store(0, Ordering::Release);
+                let previous = (self.xlib.XSetErrorHandler)(Some(record_x11_error));
                 if self.parent != parent {
                     (self.xlib.XUnmapWindow)(self.display, self.child);
                     (self.xlib.XReparentWindow)(self.display, self.child, parent, x, y);
@@ -225,15 +263,27 @@ mod platform {
                 (self.xlib.XMoveResizeWindow)(self.display, self.child, x, y, width, height);
                 (self.xlib.XLowerWindow)(self.display, self.child);
                 (self.xlib.XMapWindow)(self.display, self.child);
-                (self.xlib.XFlush)(self.display);
+                (self.xlib.XSync)(self.display, xlib::False);
+                (self.xlib.XSetErrorHandler)(previous);
+                X11_ERROR_CODE.load(Ordering::Acquire)
+            };
+            if error_code != 0 {
+                self.parent = 0;
+                return Err(format!(
+                    "X11 could not attach the native child surface (error {error_code})"
+                ));
             }
             Ok(())
         }
 
         pub(crate) fn hide(&mut self) {
             unsafe {
+                (self.xlib.XSync)(self.display, xlib::False);
+                X11_ERROR_CODE.store(0, Ordering::Release);
+                let previous = (self.xlib.XSetErrorHandler)(Some(record_x11_error));
                 (self.xlib.XUnmapWindow)(self.display, self.child);
-                (self.xlib.XFlush)(self.display);
+                (self.xlib.XSync)(self.display, xlib::False);
+                (self.xlib.XSetErrorHandler)(previous);
             }
         }
 

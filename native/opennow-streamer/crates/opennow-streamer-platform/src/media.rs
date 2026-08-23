@@ -1,5 +1,5 @@
 use std::sync::Arc;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -10,14 +10,38 @@ use openh264::decoder::{Decoder as OpenH264Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 use opus::{Channels, Decoder as OpusNativeDecoder};
 
+#[cfg(target_os = "windows")]
+use crate::output::WindowsBridge;
 use crate::output::{DecodedVideoFrame, OutputBuffers};
 use crate::queue::{BoundedQueue, PushResult};
 use crate::runtime::HostCommand;
+
+#[cfg(target_os = "linux")]
+use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 
 const VIDEO_QUEUE_CAPACITY: usize = 3;
 const AUDIO_QUEUE_CAPACITY: usize = 12;
 const OPUS_SAMPLE_RATE: u32 = 48_000;
 const MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL: usize = 5_760;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaStreamConfig {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate_bps: u32,
+}
+
+impl Default for MediaStreamConfig {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_bps: 10_000_000,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaCodec {
@@ -62,6 +86,11 @@ pub enum MediaFeedback {
     OutputError {
         message: String,
     },
+    DeviceLost {
+        subsystem: &'static str,
+        recovered: bool,
+        message: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +115,14 @@ struct SharedPipeline {
     mac_sink: Mutex<Option<opennow_streamer_platform_macos::StreamSink>>,
     #[cfg(target_os = "macos")]
     mac_software_fallback: AtomicBool,
+    #[cfg(target_os = "windows")]
+    windows_bridge: Arc<WindowsBridge>,
+    #[cfg(target_os = "linux")]
+    linux_session: Mutex<Option<opennow_streamer_platform_linux::LinuxSession>>,
+    #[cfg(target_os = "linux")]
+    linux_software_fallback: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
+    linux_video_mid: Mutex<String>,
 }
 
 #[derive(Clone)]
@@ -158,6 +195,14 @@ pub struct MediaSession {
     sink: MediaSink,
     video_worker: Option<JoinHandle<()>>,
     audio_worker: Option<JoinHandle<()>>,
+    #[cfg(target_os = "linux")]
+    linux_monitor: Option<JoinHandle<()>>,
+    host_commands: Sender<HostCommand>,
+}
+
+#[derive(Clone)]
+pub struct MediaControl {
+    shared: Arc<SharedPipeline>,
     host_commands: Sender<HostCommand>,
 }
 
@@ -166,14 +211,44 @@ impl MediaSession {
         output: Arc<OutputBuffers>,
         feedback: Sender<MediaFeedback>,
         host_commands: Sender<HostCommand>,
-        use_macos_hardware: bool,
+        use_hardware: bool,
+        stream: MediaStreamConfig,
+        #[cfg(target_os = "windows")] windows_bridge: Arc<WindowsBridge>,
+        #[cfg(target_os = "linux")] linux_selection: LinuxVideoSelection,
+        #[cfg(target_os = "linux")] linux_software_fallback: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         #[cfg(target_os = "macos")]
-        if use_macos_hardware {
+        if use_hardware {
             return Self::spawn_macos(output, feedback, host_commands);
         }
-        let _ = use_macos_hardware;
-        let video_decoder = H264Decoder::new()?;
+        #[cfg(target_os = "windows")]
+        let use_windows_hardware = use_hardware && windows_bridge.backend().is_some();
+        #[cfg(not(target_os = "windows"))]
+        let use_windows_hardware = false;
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let _ = use_hardware;
+        #[cfg(target_os = "linux")]
+        if !linux_software_fallback.load(Ordering::Acquire)
+            && let LinuxVideoPath::Hardware(decoder_preference) = linux_selection.path
+        {
+            match Self::spawn_linux(
+                Arc::clone(&output),
+                feedback.clone(),
+                host_commands.clone(),
+                stream,
+                decoder_preference,
+                Arc::clone(&linux_software_fallback),
+            ) {
+                Ok(session) => return Ok(session),
+                Err(reason) => {
+                    linux_software_fallback.store(true, Ordering::Release);
+                    let _ = host_commands.send(HostCommand::FallbackLinux {
+                        reason: format!("Linux hardware media startup failed: {reason}"),
+                    });
+                }
+            }
+        }
+        let video_decoder = (!use_windows_hardware).then(H264Decoder::new).transpose()?;
         let audio_decoder = OpusDecoder::new(2)?;
         let shared = Arc::new(SharedPipeline {
             video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
@@ -188,11 +263,29 @@ impl MediaSession {
             mac_sink: Mutex::new(None),
             #[cfg(target_os = "macos")]
             mac_software_fallback: AtomicBool::new(false),
+            #[cfg(target_os = "windows")]
+            windows_bridge,
+            #[cfg(target_os = "linux")]
+            linux_session: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            linux_software_fallback,
+            #[cfg(target_os = "linux")]
+            linux_video_mid: Mutex::new(String::new()),
         });
         let video_shared = Arc::clone(&shared);
         let video_worker = thread::Builder::new()
             .name("opennow-h264-decode".to_owned())
-            .spawn(move || run_video_decoder(video_shared, video_decoder))
+            .spawn(move || {
+                #[cfg(target_os = "windows")]
+                if use_windows_hardware {
+                    run_windows_video(video_shared);
+                    return;
+                }
+                run_video_decoder(
+                    video_shared,
+                    video_decoder.expect("software decoder was initialized"),
+                );
+            })
             .map_err(|error| format!("failed to start H.264 decoder worker: {error}"))?;
         let audio_shared = Arc::clone(&shared);
         let audio_worker = match thread::Builder::new()
@@ -210,6 +303,8 @@ impl MediaSession {
             sink: MediaSink { shared },
             video_worker: Some(video_worker),
             audio_worker: Some(audio_worker),
+            #[cfg(target_os = "linux")]
+            linux_monitor: None,
             host_commands,
         })
     }
@@ -254,6 +349,85 @@ impl MediaSession {
             sink: MediaSink { shared },
             video_worker: Some(video_worker),
             audio_worker: Some(audio_worker),
+            #[cfg(target_os = "linux")]
+            linux_monitor: None,
+            host_commands,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn spawn_linux(
+        output: Arc<OutputBuffers>,
+        feedback: Sender<MediaFeedback>,
+        host_commands: Sender<HostCommand>,
+        stream: MediaStreamConfig,
+        decoder_preference: opennow_streamer_platform_linux::DecoderPreference,
+        software_fallback: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        let format = opennow_streamer_platform_linux::StreamFormat::h264_default(
+            stream.width,
+            stream.height,
+        )
+        .map_err(|error| error.to_string())?;
+        let mut config = opennow_streamer_platform_linux::SessionConfig::new(format);
+        config.decoder_preference = decoder_preference;
+        config.audio = None;
+        let session = opennow_streamer_platform_linux::LinuxSession::start(config)
+            .map_err(|error| error.to_string())?;
+        let shared = Arc::new(SharedPipeline {
+            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
+            output,
+            feedback,
+            paused: AtomicBool::new(false),
+            video_desynced: AtomicBool::new(true),
+            keyframe_requested: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            linux_session: Mutex::new(Some(session)),
+            linux_software_fallback: software_fallback,
+            linux_video_mid: Mutex::new(String::new()),
+        });
+        let video_shared = Arc::clone(&shared);
+        let video_commands = host_commands.clone();
+        let video_worker = thread::Builder::new()
+            .name("opennow-linux-video-submit".to_owned())
+            .spawn(move || run_linux_video(video_shared, video_commands))
+            .map_err(|error| format!("failed to start Linux video submit worker: {error}"))?;
+        let audio_decoder = OpusDecoder::new(2)?;
+        let audio_shared = Arc::clone(&shared);
+        let audio_worker = match thread::Builder::new()
+            .name("opennow-opus-decode".to_owned())
+            .spawn(move || run_audio_decoder(audio_shared, audio_decoder))
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                shared.video.close();
+                let _ = video_worker.join();
+                return Err(format!(
+                    "failed to start Linux audio submit worker: {error}"
+                ));
+            }
+        };
+        let monitor_shared = Arc::clone(&shared);
+        let monitor_commands = host_commands.clone();
+        let linux_monitor = match thread::Builder::new()
+            .name("opennow-linux-media-events".to_owned())
+            .spawn(move || run_linux_monitor(monitor_shared, monitor_commands))
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                shared.video.close();
+                shared.audio.close();
+                let _ = video_worker.join();
+                let _ = audio_worker.join();
+                return Err(format!("failed to start Linux media monitor: {error}"));
+            }
+        };
+        Ok(Self {
+            sink: MediaSink { shared },
+            video_worker: Some(video_worker),
+            audio_worker: Some(audio_worker),
+            linux_monitor: Some(linux_monitor),
             host_commands,
         })
     }
@@ -262,11 +436,29 @@ impl MediaSession {
         self.sink.clone()
     }
 
+    pub fn control(&self) -> MediaControl {
+        MediaControl {
+            shared: Arc::clone(&self.sink.shared),
+            host_commands: self.host_commands.clone(),
+        }
+    }
+
     pub fn set_paused(&self, paused: bool) {
         self.sink.shared.paused.store(paused, Ordering::Release);
         self.sink.shared.video.clear();
         self.sink.shared.audio.clear();
         self.sink.shared.output.clear();
+        #[cfg(target_os = "linux")]
+        if let Some(session) = self
+            .sink
+            .shared
+            .linux_session
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            let _ = session.set_paused(paused);
+        }
         if !paused {
             self.sink
                 .shared
@@ -288,15 +480,15 @@ impl MediaSession {
     }
 
     fn stop_inner(&mut self) {
-        if self.sink.shared.stopped.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        self.sink.shared.video.close();
-        self.sink.shared.audio.close();
+        self.control().stop();
         if let Some(worker) = self.video_worker.take() {
             let _ = worker.join();
         }
         if let Some(worker) = self.audio_worker.take() {
+            let _ = worker.join();
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(worker) = self.linux_monitor.take() {
             let _ = worker.join();
         }
         #[cfg(target_os = "macos")]
@@ -308,8 +500,116 @@ impl MediaSession {
                 .unwrap_or_else(|error| error.into_inner())
                 .take();
         }
-        self.sink.shared.output.clear();
+    }
+}
+
+impl MediaControl {
+    pub fn stop(&self) {
+        if self.shared.stopped.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.shared.video.close();
+        self.shared.audio.close();
+        self.shared.output.clear();
         let _ = self.host_commands.send(HostCommand::Stop);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_video(shared: Arc<SharedPipeline>) {
+    use opennow_streamer_platform_windows::{EncodedVideoFrame, PushOutcome as WindowsPushOutcome};
+
+    let mut previous_timestamp = None;
+    while let Some(frame) = shared.video.pop() {
+        if shared.paused.load(Ordering::Acquire) {
+            continue;
+        }
+        if shared.windows_bridge.use_software() {
+            shared.video_desynced.store(true, Ordering::Release);
+            match H264Decoder::new() {
+                Ok(decoder) => run_video_decoder_from(shared, decoder, Some(frame)),
+                Err(message) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "h264",
+                        message,
+                    });
+                }
+            }
+            return;
+        }
+        if (shared.video_desynced.load(Ordering::Acquire)
+            || shared.windows_bridge.keyframe_required())
+            && !frame.keyframe
+        {
+            continue;
+        }
+        let Some(backend) = shared.windows_bridge.backend() else {
+            shared.video_desynced.store(true, Ordering::Release);
+            request_keyframe(&shared, &frame.mid, "D3D11 backend is unavailable");
+            continue;
+        };
+        shared.windows_bridge.set_last_video_mid(&frame.mid);
+        let timestamp_100ns = media_timestamp_100ns(frame.timestamp, frame.clock_rate_hz);
+        let duration_100ns = previous_timestamp
+            .replace(timestamp_100ns)
+            .and_then(|previous: i64| timestamp_100ns.checked_sub(previous))
+            .filter(|duration| *duration > 0)
+            .unwrap_or(166_667);
+        match backend.submit_video(EncodedVideoFrame {
+            annex_b: frame.data.to_vec(),
+            timestamp_100ns,
+            duration_100ns,
+            key_frame: frame.keyframe,
+        }) {
+            Ok(WindowsPushOutcome::Queued) => {
+                if frame.keyframe {
+                    shared.video_desynced.store(false, Ordering::Release);
+                    shared.keyframe_requested.store(false, Ordering::Release);
+                    shared.windows_bridge.accept_keyframe();
+                }
+            }
+            Ok(WindowsPushOutcome::Paused) => {}
+            Ok(WindowsPushOutcome::DroppedOldest) => {
+                shared.video_desynced.store(true, Ordering::Release);
+                shared.windows_bridge.require_keyframe();
+                let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                    media: "d3d11-video",
+                    count: 1,
+                });
+                request_keyframe(&shared, &frame.mid, "D3D11 input queue overflow");
+            }
+            Err(error) => {
+                shared.video_desynced.store(true, Ordering::Release);
+                shared.windows_bridge.require_keyframe();
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: "h264",
+                    message: error.to_string(),
+                });
+                request_keyframe(&shared, &frame.mid, "D3D11 decoder rejected an access unit");
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn media_timestamp_100ns(timestamp: u64, clock_rate_hz: u32) -> i64 {
+    if clock_rate_hz == 0 {
+        return 0;
+    }
+    let value = u128::from(timestamp)
+        .saturating_mul(10_000_000)
+        .checked_div(u128::from(clock_rate_hz))
+        .unwrap_or(0);
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+#[cfg(target_os = "windows")]
+fn request_keyframe(shared: &SharedPipeline, mid: &str, reason: &str) {
+    if !shared.keyframe_requested.swap(true, Ordering::AcqRel) {
+        let _ = shared.feedback.send(MediaFeedback::RequestKeyframe {
+            mid: mid.to_owned(),
+            reason: reason.to_owned(),
+        });
     }
 }
 
@@ -481,6 +781,44 @@ fn run_audio_decoder_from(
         }
         match decoder.decode(&frame.data) {
             Ok(samples) => {
+                #[cfg(target_os = "windows")]
+                if !shared.windows_bridge.use_software()
+                    && let Some(backend) = shared.windows_bridge.backend()
+                {
+                    use opennow_streamer_platform_windows::{
+                        AudioFormat, PcmFrame, PushOutcome as WindowsPushOutcome,
+                    };
+                    let samples = if configured_channels == 1 {
+                        samples
+                            .iter()
+                            .flat_map(|sample| [*sample, *sample])
+                            .collect()
+                    } else {
+                        samples.to_vec()
+                    };
+                    match backend.submit_audio(PcmFrame {
+                        samples,
+                        format: AudioFormat {
+                            sample_rate: OPUS_SAMPLE_RATE,
+                            channels: 2,
+                        },
+                    }) {
+                        Ok(WindowsPushOutcome::DroppedOldest) => {
+                            let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                                media: "wasapi",
+                                count: 1,
+                            });
+                        }
+                        Ok(WindowsPushOutcome::Queued | WindowsPushOutcome::Paused) => {}
+                        Err(error) => {
+                            let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                                codec: "opus",
+                                message: error.to_string(),
+                            });
+                        }
+                    }
+                    continue;
+                }
                 if configured_channels == 1 {
                     let mut stereo = Vec::with_capacity(samples.len() * 2);
                     for sample in samples {
@@ -511,6 +849,255 @@ fn run_audio_decoder_from(
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostCommand>) {
+    while let Some(frame) = shared.video.pop() {
+        if shared.linux_software_fallback.load(Ordering::Acquire) {
+            match H264Decoder::new() {
+                Ok(decoder) => run_video_decoder_from(shared, decoder, Some(frame)),
+                Err(message) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "h264",
+                        message,
+                    });
+                }
+            }
+            return;
+        }
+        if shared.paused.load(Ordering::Acquire) {
+            continue;
+        }
+        *shared
+            .linux_video_mid
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = frame.mid.clone();
+        let timestamp_us = media_timestamp_us(frame.timestamp, frame.clock_rate_hz);
+        let encoded = match opennow_streamer_platform_linux::EncodedVideoFrame::new(
+            Arc::clone(&frame.data),
+            timestamp_us,
+            frame.keyframe,
+        ) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                trigger_linux_fallback(
+                    &shared,
+                    &host_commands,
+                    format!("Linux hardware decoder rejected H.264 framing: {error}"),
+                );
+                continue;
+            }
+        };
+        let result = shared
+            .linux_session
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .ok_or_else(|| "Linux hardware session is unavailable".to_owned())
+            .and_then(|session| {
+                session
+                    .submit_video(encoded)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(opennow_streamer_platform_linux::PushOutcome::Queued) => {
+                if frame.keyframe {
+                    shared.video_desynced.store(false, Ordering::Release);
+                    shared.keyframe_requested.store(false, Ordering::Release);
+                }
+            }
+            Ok(opennow_streamer_platform_linux::PushOutcome::DroppedOldest) => {
+                if frame.keyframe {
+                    shared.video_desynced.store(false, Ordering::Release);
+                    shared.keyframe_requested.store(false, Ordering::Release);
+                } else {
+                    shared.video_desynced.store(true, Ordering::Release);
+                }
+            }
+            Ok(opennow_streamer_platform_linux::PushOutcome::Paused) => {}
+            Err(reason) => trigger_linux_fallback(
+                &shared,
+                &host_commands,
+                format!("Linux hardware video submission failed: {reason}"),
+            ),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_monitor(shared: Arc<SharedPipeline>, host_commands: Sender<HostCommand>) {
+    use std::time::Duration;
+
+    while !shared.stopped.load(Ordering::Acquire) {
+        if shared.linux_software_fallback.load(Ordering::Acquire) {
+            request_linux_keyframe(
+                &shared,
+                "Linux hardware fallback requires a fresh H.264 keyframe",
+            );
+            stop_linux_session(&shared);
+            return;
+        }
+        let (frames, events) = {
+            let session = shared
+                .linux_session
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(session) = session.as_ref() else {
+                return;
+            };
+            let mut frames = Vec::new();
+            while let Some(frame) = session.try_recv_frame() {
+                frames.push(frame);
+            }
+            let mut events = Vec::new();
+            while let Some(event) = session.try_recv_event() {
+                events.push(event);
+            }
+            (frames, events)
+        };
+        if !shared.paused.load(Ordering::Acquire) {
+            for frame in frames {
+                if shared.output.replace_linux_video(frame) {
+                    let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                        media: "linux-present",
+                        count: 1,
+                    });
+                }
+            }
+        }
+        for event in events {
+            match event {
+                opennow_streamer_platform_linux::BackendEvent::DecoderChanged {
+                    from,
+                    to,
+                    reason,
+                } => {
+                    let _ = shared.feedback.send(MediaFeedback::BackendFallback {
+                        from: linux_decoder_name(from),
+                        to: linux_decoder_name(to),
+                        reason,
+                    });
+                }
+                opennow_streamer_platform_linux::BackendEvent::NeedKeyframe => {
+                    request_linux_keyframe(&shared, "Linux decoder requires a fresh keyframe");
+                }
+                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media } => {
+                    let _ = shared
+                        .feedback
+                        .send(MediaFeedback::QueueDropped { media, count: 1 });
+                }
+                opennow_streamer_platform_linux::BackendEvent::DeviceLost { subsystem, reason } => {
+                    let _ = shared.feedback.send(MediaFeedback::DeviceLost {
+                        subsystem: linux_subsystem_name(subsystem),
+                        recovered: false,
+                        message: Some(reason.clone()),
+                    });
+                    trigger_linux_fallback(
+                        &shared,
+                        &host_commands,
+                        format!("{subsystem:?} device was lost: {reason}"),
+                    );
+                }
+                opennow_streamer_platform_linux::BackendEvent::Error(reason) => {
+                    trigger_linux_fallback(&shared, &host_commands, reason)
+                }
+                opennow_streamer_platform_linux::BackendEvent::StateChanged(
+                    opennow_streamer_platform_linux::LifecycleState::Failed,
+                ) => trigger_linux_fallback(
+                    &shared,
+                    &host_commands,
+                    "Linux hardware media session failed".to_owned(),
+                ),
+                opennow_streamer_platform_linux::BackendEvent::StateChanged(_)
+                | opennow_streamer_platform_linux::BackendEvent::DecoderSelected(_)
+                | opennow_streamer_platform_linux::BackendEvent::AudioSelected(_)
+                | opennow_streamer_platform_linux::BackendEvent::FormatChanged(_) => {}
+            }
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    stop_linux_session(&shared);
+}
+
+#[cfg(target_os = "linux")]
+fn trigger_linux_fallback(
+    shared: &SharedPipeline,
+    host_commands: &Sender<HostCommand>,
+    reason: String,
+) {
+    if shared.linux_software_fallback.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    request_linux_keyframe(
+        shared,
+        "Linux hardware fallback requires a fresh H.264 keyframe",
+    );
+    let _ = host_commands.send(HostCommand::FallbackLinux { reason });
+}
+
+#[cfg(target_os = "linux")]
+fn request_linux_keyframe(shared: &SharedPipeline, reason: &str) {
+    shared.video_desynced.store(true, Ordering::Release);
+    if shared.keyframe_requested.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let mid = shared
+        .linux_video_mid
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    if !mid.is_empty() {
+        let _ = shared.feedback.send(MediaFeedback::RequestKeyframe {
+            mid,
+            reason: reason.to_owned(),
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stop_linux_session(shared: &SharedPipeline) {
+    if let Some(mut session) = shared
+        .linux_session
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+    {
+        let _ = session.stop();
+    }
+}
+
+#[cfg(target_os = "linux")]
+const fn linux_decoder_name(
+    backend: opennow_streamer_platform_linux::DecoderBackend,
+) -> &'static str {
+    match backend {
+        opennow_streamer_platform_linux::DecoderBackend::VaApi => "VA-API/Vulkan",
+        opennow_streamer_platform_linux::DecoderBackend::V4l2 => "V4L2/Vulkan",
+    }
+}
+
+#[cfg(target_os = "linux")]
+const fn linux_subsystem_name(
+    subsystem: opennow_streamer_platform_linux::Subsystem,
+) -> &'static str {
+    match subsystem {
+        opennow_streamer_platform_linux::Subsystem::VaApi => "VA-API",
+        opennow_streamer_platform_linux::Subsystem::V4l2 => "V4L2",
+        opennow_streamer_platform_linux::Subsystem::Vulkan => "Vulkan",
+        opennow_streamer_platform_linux::Subsystem::Opus => "Opus",
+        opennow_streamer_platform_linux::Subsystem::PipeWire => "PipeWire",
+        opennow_streamer_platform_linux::Subsystem::Alsa => "ALSA",
+        opennow_streamer_platform_linux::Subsystem::Session => "Linux media session",
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn media_timestamp_us(timestamp: u64, clock_rate_hz: u32) -> u64 {
+    if clock_rate_hz == 0 {
+        return 0;
+    }
+    timestamp.saturating_mul(1_000_000) / u64::from(clock_rate_hz)
 }
 
 #[cfg(target_os = "macos")]
@@ -816,6 +1403,14 @@ mod tests {
             mac_sink: Mutex::new(None),
             #[cfg(target_os = "macos")]
             mac_software_fallback: AtomicBool::new(true),
+            #[cfg(target_os = "windows")]
+            windows_bridge: Arc::new(WindowsBridge::new()),
+            #[cfg(target_os = "linux")]
+            linux_session: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            linux_software_fallback: Arc::new(AtomicBool::new(true)),
+            #[cfg(target_os = "linux")]
+            linux_video_mid: Mutex::new(String::new()),
         });
         shared.video.close();
         run_video_decoder_from(
@@ -854,12 +1449,34 @@ mod tests {
     }
 
     #[test]
+    fn converts_rtp_video_timestamps_to_media_foundation_time() {
+        assert_eq!(media_timestamp_100ns(0, 90_000), 0);
+        assert_eq!(media_timestamp_100ns(90_000, 90_000), 10_000_000);
+        assert_eq!(media_timestamp_100ns(45_000, 90_000), 5_000_000);
+        assert_eq!(media_timestamp_100ns(90_000, 0), 0);
+    }
+
+    #[test]
     fn paused_and_stopped_sessions_reject_frames() {
         let (feedback, _receiver) = std::sync::mpsc::channel();
         let (commands, _host) = std::sync::mpsc::channel();
-        let session =
-            MediaSession::spawn(Arc::new(OutputBuffers::new()), feedback, commands, false)
-                .expect("session");
+        let session = MediaSession::spawn(
+            Arc::new(OutputBuffers::new()),
+            feedback,
+            commands,
+            false,
+            MediaStreamConfig::default(),
+            #[cfg(target_os = "windows")]
+            Arc::new(WindowsBridge::new()),
+            #[cfg(target_os = "linux")]
+            LinuxVideoSelection {
+                path: LinuxVideoPath::Software,
+                fallback_reason: None,
+            },
+            #[cfg(target_os = "linux")]
+            Arc::new(AtomicBool::new(true)),
+        )
+        .expect("session");
         let sink = session.sink();
         session.set_paused(true);
         assert_eq!(
@@ -893,9 +1510,23 @@ mod tests {
     fn requests_a_keyframe_when_video_starts_mid_gop() {
         let (feedback, receiver) = std::sync::mpsc::channel();
         let (commands, _host) = std::sync::mpsc::channel();
-        let session =
-            MediaSession::spawn(Arc::new(OutputBuffers::new()), feedback, commands, false)
-                .expect("session");
+        let session = MediaSession::spawn(
+            Arc::new(OutputBuffers::new()),
+            feedback,
+            commands,
+            false,
+            MediaStreamConfig::default(),
+            #[cfg(target_os = "windows")]
+            Arc::new(WindowsBridge::new()),
+            #[cfg(target_os = "linux")]
+            LinuxVideoSelection {
+                path: LinuxVideoPath::Software,
+                fallback_reason: None,
+            },
+            #[cfg(target_os = "linux")]
+            Arc::new(AtomicBool::new(true)),
+        )
+        .expect("session");
         assert_eq!(
             session.sink().push(EncodedFrame {
                 mid: "video".to_owned(),
@@ -913,5 +1544,14 @@ mod tests {
             Ok(MediaFeedback::RequestKeyframe { mid, .. }) if mid == "video"
         ));
         session.stop();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn converts_rtp_timestamps_to_microseconds_without_overflow() {
+        assert_eq!(media_timestamp_us(180_000, 90_000), 2_000_000);
+        assert_eq!(media_timestamp_us(48_000, 48_000), 1_000_000);
+        assert_eq!(media_timestamp_us(u64::MAX, 90_000), u64::MAX / 90_000);
+        assert_eq!(media_timestamp_us(42, 0), 0);
     }
 }

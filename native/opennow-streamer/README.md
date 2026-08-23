@@ -12,6 +12,7 @@ The executable retains the versioned JSON-lines process contract used by OpenNOW
 - `opennow-streamer-core`: session lifecycle and command routing.
 - `opennow-streamer-transport`: ICE, DTLS-SRTP, RTP/RTCP, and SCTP data channels.
 - `opennow-streamer-platform`: bounded media queues, OpenH264/Opus decode, SDL audio/video output, and platform-native Electron surface ownership.
+- `opennow-streamer-platform-windows`: Media Foundation H.264 hardware decode, D3D11 NV12 presentation, and WASAPI PCM output for Windows x64 and ARM64.
 - `opennow-streamer`: process entry point.
 
 ## Checks
@@ -29,7 +30,7 @@ npm --prefix opennow-stable run native:build
 
 ## Platform integration
 
-The SDL presentation window is created hidden on the process main thread. Windows and X11/XWayland reparent it as an input-transparent child of the Electron native window. macOS keeps it as a non-activating, mouse-ignoring child `NSWindow` and converts renderer-relative surface rectangles through the Electron `NSView`. The executable runs `MainThreadHost` on its real main thread; stdin, WebRTC, and codec work run on named workers. This is required by AppKit and is checked with `pthread_main_np()` on macOS.
+The SDL presentation window is created hidden on the process main thread. Windows uses the Media Foundation/D3D11/WASAPI backend when D3D11 is selected and its runtime probe succeeds; it creates a non-activating, input-transparent Electron child HWND and falls back to OpenH264/SDL after startup or unrecoverable device loss. `OPENNOW_NATIVE_VIDEO_BACKEND=software` forces the software path and `d3d11` selects the Windows hardware path. Renderer surface rectangles are already physical pixels and are never scaled again by `deviceScaleFactor`. X11/XWayland reparents the SDL window as an input-transparent child. macOS keeps it as a non-activating, mouse-ignoring child `NSWindow` and converts renderer-relative surface rectangles through the Electron `NSView`. The executable runs `MainThreadHost` on its real main thread; stdin, WebRTC, and codec work run on named workers. This is required by AppKit and is checked with `pthread_main_np()` on macOS.
 
 Wayland does not provide a portable foreign-surface parenting protocol, so native presentation requires Electron's X11/XWayland mode on Linux. Hardware decoder entries remain unavailable until their implementations are linked; the built software backend advertises H.264 only.
 

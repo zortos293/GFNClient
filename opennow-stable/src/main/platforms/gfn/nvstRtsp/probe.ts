@@ -24,6 +24,7 @@ import {
   buildAnnounceSdp,
   extractHmacSeed,
   extractNvstIceCredentials,
+  extractNvstOpusAudioTrack,
   extractNvstSdpAttribute,
   extractMediaControl,
   extractRuntimeEncryptionKey,
@@ -215,6 +216,8 @@ export function buildNvstStunBindingRequest(
   let packet = Buffer.concat(parts);
   header.writeUInt16BE(packet.length - 20 + 24, 2);
   packet = Buffer.concat(parts);
+  // RFC 5389 MESSAGE-INTEGRITY requires HMAC-SHA1.
+  // lgtm [js/weak-cryptographic-algorithm]
   appendStunAttribute(parts, 0x0008, createHmac("sha1", remotePassword).update(packet).digest());
   packet = Buffer.concat(parts);
   header.writeUInt16BE(packet.length - 20 + 8, 2);
@@ -377,6 +380,8 @@ export function buildNvstStunBindingSuccess(
   let packet = Buffer.concat(parts);
   header.writeUInt16BE(packet.length - 20 + 24, 2);
   packet = Buffer.concat(parts);
+  // RFC 5389 MESSAGE-INTEGRITY requires HMAC-SHA1.
+  // lgtm [js/weak-cryptographic-algorithm]
   appendStunAttribute(parts, 0x0008, createHmac("sha1", localPassword).update(packet).digest());
   packet = Buffer.concat(parts);
   header.writeUInt16BE(packet.length - 20 + 8, 2);
@@ -533,7 +538,6 @@ export async function negotiateNvstRtspSession(
   let audioUdp: NvstUdpPortReservation | null = null;
   const auxiliaryUdp: NvstUdpPortReservation[] = [];
   const holePunchTimers: NodeJS.Timeout[] = [];
-  let videoHolePunchTimer: NodeJS.Timeout | null = null;
   let session: string | null = null;
 
   const reserveBundle = (): Promise<NvstUdpPortReservation> =>
@@ -591,6 +595,7 @@ export async function negotiateNvstRtspSession(
         "DESCRIBE response did not advertise an audio media control URI",
       );
     }
+    const audioTrack = extractNvstOpusAudioTrack(describe.body);
     const describedControls = [...describe.body.matchAll(/^a=control:(.+)$/gm)]
       .map((match) => match[1]?.trim())
       .filter((control): control is string => Boolean(control));
@@ -806,7 +811,7 @@ export async function negotiateNvstRtspSession(
       return timer;
     };
     if (iceCredentials && localIceCredentials && !officialCloudPath) {
-      videoHolePunchTimer = startAuthenticatedHolePunch(
+      startAuthenticatedHolePunch(
         udp,
         videoPeer,
         { nattUsername: "PING" },
@@ -853,6 +858,7 @@ export async function negotiateNvstRtspSession(
       localDtlsFingerprint,
       remoteDtlsFingerprint: dtlsFingerprint ?? undefined,
       codec: input.codec,
+      ...(audioTrack ? { audioTrack } : {}),
       timeoutMs: 60_000,
     };
     if (input.onVideoReady) {
@@ -1007,7 +1013,7 @@ export async function negotiateNvstRtspSession(
         input.onLog,
         `Starting official bundle STUN after ANNOUNCE (clientUdp ${clientPort}, iceRemote=${iceRemoteUfrag ?? "absent"})`,
       );
-      videoHolePunchTimer = startAuthenticatedHolePunch(
+      startAuthenticatedHolePunch(
         udp,
         videoPeer,
         { nattUsername: "PING" },
@@ -1120,7 +1126,6 @@ export async function negotiateNvstRtspSession(
         for (const timer of holePunchTimers.splice(0)) {
           clearInterval(timer);
         }
-        videoHolePunchTimer = null;
         await udp?.release().catch(() => undefined);
         udp = null;
         await mjolnirUdp?.release().catch(() => undefined);

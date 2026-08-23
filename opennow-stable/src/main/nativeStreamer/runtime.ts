@@ -27,7 +27,9 @@ export interface NativeStreamerRuntimeEnvironment {
   runtimeStatus: NativeStreamerRuntimeStatus;
 }
 
-export function nativeStreamerExecutableName(platform = process.platform): string {
+export function nativeStreamerExecutableName(
+  platform = process.platform,
+): string {
   return platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
 }
 
@@ -66,19 +68,40 @@ export function isPathInside(
 ): boolean {
   const normalizedParent = normalizePathForComparison(parent, platform);
   const normalizedChild = normalizePathForComparison(child, platform);
-  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}${sep}`);
+  return (
+    normalizedChild === normalizedParent ||
+    normalizedChild.startsWith(`${normalizedParent}${sep}`)
+  );
 }
 
 export function createNativeStreamerRuntimeEnvironment(
   options: NativeStreamerRuntimeEnvironmentOptions,
 ): NativeStreamerRuntimeEnvironment {
+  if (
+    options.platform === "linux" &&
+    options.linuxOzonePlatform?.trim().toLowerCase() === "wayland"
+  ) {
+    throw new Error(
+      "Native Linux presentation requires Electron X11/XWayland child surfaces. Relaunch without --ozone-platform=wayland or use --ozone-platform=x11.",
+    );
+  }
   const env: NodeJS.ProcessEnv = {
     ...options.baseEnv,
     OPENNOW_NATIVE_STREAMER_PROTOCOL: String(options.protocolVersion),
-    OPENNOW_NATIVE_CLOUD_GSYNC: nativeStreamerFeatureModeToEnvValue(options.cloudGsyncMode),
-    OPENNOW_NATIVE_D3D_FULLSCREEN: nativeStreamerFeatureModeToEnvValue(options.d3dFullscreenMode),
-    OPENNOW_NATIVE_EXTERNAL_RENDERER: options.externalRendererEnabled ? "1" : "0",
+    OPENNOW_NATIVE_CLOUD_GSYNC: nativeStreamerFeatureModeToEnvValue(
+      options.cloudGsyncMode,
+    ),
+    OPENNOW_NATIVE_D3D_FULLSCREEN: nativeStreamerFeatureModeToEnvValue(
+      options.d3dFullscreenMode,
+    ),
+    OPENNOW_NATIVE_EXTERNAL_RENDERER: options.externalRendererEnabled
+      ? "1"
+      : "0",
+    OPENNOW_NATIVE_VIDEO_BACKEND: options.videoBackendPreference,
   };
+  if (options.platform === "linux") {
+    env.SDL_VIDEODRIVER = "x11";
+  }
   delete env.GST_PLUGIN_PATH;
   delete env.GST_PLUGIN_PATH_1_0;
   delete env.GST_PLUGIN_SYSTEM_PATH;
@@ -87,17 +110,14 @@ export function createNativeStreamerRuntimeEnvironment(
   delete env.GST_PLUGIN_SCANNER_1_0;
   delete env.GST_REGISTRY;
 
-  if (options.videoBackendPreference !== "auto") {
-    env.OPENNOW_NATIVE_VIDEO_BACKEND = options.videoBackendPreference;
-  }
-
   return {
     env,
     runtimeStatus: {
       source: "self-contained",
       selfContained: true,
       path: options.executablePath,
-      message: "Native streamer v2 is self-contained; no external media runtime is required.",
+      message:
+        "Native streamer v2 is self-contained; no external media runtime is required.",
     },
   };
 }

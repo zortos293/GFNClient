@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 
+import type { NvstAudioTrack } from "@shared/gfn";
 import { deriveSrtpSaltHex } from "./srtp";
 
 /** Minimal ANNOUNCE attrs from docs/research/nvst-announce-allowlist-1080p60.json */
@@ -350,6 +351,81 @@ export function extractMediaControl(sdp: string, mediaType: string): string | nu
     }
   }
 
+  return null;
+}
+
+export function extractNvstOpusAudioTrack(sdp: string): NvstAudioTrack | null {
+  let inAudioSection = false;
+  let offeredPayloadTypes: number[] = [];
+  let mid: string | undefined;
+  let ssrc: number | undefined;
+  const codecs = new Map<number, { codec: string; clockRateHz: number; channels: number }>();
+
+  for (const rawLine of sdp.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.startsWith("m=")) {
+      if (inAudioSection) {
+        break;
+      }
+      const parts = line.slice(2).split(/\s+/);
+      inAudioSection = parts[0]?.toLowerCase() === "audio";
+      offeredPayloadTypes = inAudioSection
+        ? parts.slice(3).map(Number).filter((value) => Number.isInteger(value) && value >= 0 && value <= 127)
+        : [];
+      continue;
+    }
+    if (!inAudioSection) {
+      continue;
+    }
+    if (line.startsWith("a=mid:")) {
+      mid = line.slice("a=mid:".length).trim() || undefined;
+      continue;
+    }
+    if (line.startsWith("a=ssrc:")) {
+      const value = Number(line.slice("a=ssrc:".length).split(/\s+/, 1)[0]);
+      if (Number.isInteger(value) && value > 0 && value <= 0xffff_ffff) {
+        ssrc = value;
+      }
+      continue;
+    }
+    const rtpmap = /^a=rtpmap:(\d+)\s+([^/\s]+)\/(\d+)\/(\d+)$/i.exec(line);
+    if (!rtpmap) {
+      continue;
+    }
+    const payloadType = Number(rtpmap[1]);
+    const clockRateHz = Number(rtpmap[3]);
+    const channels = Number(rtpmap[4]);
+    if (
+      Number.isInteger(payloadType)
+      && payloadType >= 0
+      && payloadType <= 127
+      && Number.isInteger(clockRateHz)
+      && clockRateHz > 0
+      && Number.isInteger(channels)
+      && channels > 0
+    ) {
+      codecs.set(payloadType, {
+        codec: rtpmap[2]!.toLowerCase(),
+        clockRateHz,
+        channels,
+      });
+    }
+  }
+
+  for (const payloadType of offeredPayloadTypes) {
+    const track = codecs.get(payloadType);
+    if (track?.codec !== "opus" || track.clockRateHz !== 48_000 || track.channels > 2) {
+      continue;
+    }
+    return {
+      payloadType,
+      codec: "opus",
+      clockRateHz: track.clockRateHz,
+      channels: track.channels,
+      ...(mid ? { mid } : {}),
+      ...(ssrc ? { ssrc } : {}),
+    };
+  }
   return null;
 }
 

@@ -7,8 +7,13 @@ use std::time::Duration;
 
 use opennow_streamer_protocol::RenderSurface;
 
-use crate::media::{MediaFeedback, MediaSession};
-use crate::output::{ActiveOutput, OutputBuffers};
+use crate::media::{MediaFeedback, MediaSession, MediaStreamConfig};
+#[cfg(target_os = "windows")]
+use crate::output::WindowsBridge;
+use crate::output::{ActiveOutput, OutputBuffers, OutputEvent};
+
+#[cfg(target_os = "linux")]
+use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 
 const HOST_POLL_INTERVAL: Duration = Duration::from_millis(2);
 const HOST_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -24,6 +29,7 @@ pub(crate) enum HostCommand {
     Start {
         reply: Sender<Result<(), String>>,
         feedback: Sender<MediaFeedback>,
+        stream: MediaStreamConfig,
     },
     Pause {
         paused: bool,
@@ -38,6 +44,10 @@ pub(crate) enum HostCommand {
         parameter_sets: opennow_streamer_platform_macos::H264ParameterSets,
         reply: Sender<Result<MacH264Configuration, String>>,
     },
+    #[cfg(target_os = "linux")]
+    FallbackLinux {
+        reason: String,
+    },
     Stop,
     Shutdown,
 }
@@ -47,26 +57,52 @@ pub struct MediaRuntime {
     commands: Sender<HostCommand>,
     output: Arc<OutputBuffers>,
     paused: Arc<AtomicBool>,
-    use_macos_hardware: Arc<AtomicBool>,
+    use_hardware: Arc<AtomicBool>,
+    #[cfg(target_os = "windows")]
+    windows_bridge: Arc<WindowsBridge>,
+    #[cfg(target_os = "linux")]
+    linux_selection: LinuxVideoSelection,
+    #[cfg(target_os = "linux")]
+    linux_software_fallback: Arc<AtomicBool>,
 }
 
 impl MediaRuntime {
-    pub fn start(&self, feedback: Sender<MediaFeedback>) -> Result<MediaSession, String> {
+    pub fn start(
+        &self,
+        feedback: Sender<MediaFeedback>,
+        stream: MediaStreamConfig,
+    ) -> Result<MediaSession, String> {
         let (reply, response) = mpsc::channel();
         self.commands
             .send(HostCommand::Start {
                 reply,
                 feedback: feedback.clone(),
+                stream,
             })
             .map_err(|_| "native media host is no longer running".to_owned())?;
         response
             .recv_timeout(HOST_START_TIMEOUT)
             .map_err(|_| "native media host did not start on the UI thread".to_owned())??;
+        #[cfg(target_os = "linux")]
+        if let Some(reason) = self.linux_selection.fallback_reason.clone() {
+            let _ = feedback.send(MediaFeedback::BackendFallback {
+                from: "requested Linux hardware video",
+                to: "OpenH264/SDL",
+                reason,
+            });
+        }
         match MediaSession::spawn(
             Arc::clone(&self.output),
             feedback,
             self.commands.clone(),
-            self.use_macos_hardware.load(Ordering::Acquire),
+            self.use_hardware.load(Ordering::Acquire),
+            stream,
+            #[cfg(target_os = "windows")]
+            Arc::clone(&self.windows_bridge),
+            #[cfg(target_os = "linux")]
+            self.linux_selection.clone(),
+            #[cfg(target_os = "linux")]
+            Arc::clone(&self.linux_software_fallback),
         ) {
             Ok(session) => {
                 if self.paused.load(Ordering::Acquire) {
@@ -115,6 +151,12 @@ pub struct MainThreadHost {
     output: Arc<OutputBuffers>,
     _not_send: PhantomData<Rc<()>>,
     use_macos_hardware: Arc<AtomicBool>,
+    #[cfg(target_os = "windows")]
+    windows_bridge: Arc<WindowsBridge>,
+    #[cfg(target_os = "linux")]
+    linux_selection: LinuxVideoSelection,
+    #[cfg(target_os = "linux")]
+    linux_software_fallback: Arc<AtomicBool>,
 }
 
 impl MainThreadHost {
@@ -129,32 +171,64 @@ impl MainThreadHost {
                 Ok(HostCommand::Start {
                     reply,
                     feedback: session_feedback,
+                    stream,
                 }) => {
                     if let Some(output) = active.as_mut() {
                         output.stop();
                     }
-                    match ActiveOutput::initialize(
+                    let requested_hardware = self.use_macos_hardware.load(Ordering::Acquire);
+                    #[cfg(target_os = "linux")]
+                    let requested_linux_hardware =
+                        matches!(self.linux_selection.path, LinuxVideoPath::Hardware(_))
+                            && !self.linux_software_fallback.load(Ordering::Acquire);
+                    #[cfg(not(target_os = "linux"))]
+                    let requested_linux_hardware = false;
+                    let mut startup_fallback = None;
+                    let initialized = match initialize_output(
                         Arc::clone(&self.output),
-                        self.use_macos_hardware.load(Ordering::Acquire),
+                        surface.as_ref(),
+                        paused,
+                        requested_hardware,
+                        stream,
+                        requested_linux_hardware,
+                        #[cfg(target_os = "windows")]
+                        Arc::clone(&self.windows_bridge),
                     ) {
-                        Ok(mut output) => {
-                            if let Err(error) = output.start(surface.as_ref()) {
-                                output.stop();
-                                active = None;
-                                feedback = None;
-                                let _ = reply.send(Err(error));
-                                continue;
-                            }
-                            if let Err(error) = output.set_paused(paused) {
-                                output.stop();
-                                active = None;
-                                feedback = None;
-                                let _ = reply.send(Err(error));
-                                continue;
-                            }
+                        Ok(output) => Ok(output),
+                        Err(hardware_error) if requested_hardware || requested_linux_hardware => {
+                            self.use_macos_hardware.store(false, Ordering::Release);
+                            #[cfg(target_os = "windows")]
+                            self.windows_bridge.fall_back_to_software();
+                            #[cfg(target_os = "linux")]
+                            self.linux_software_fallback.store(true, Ordering::Release);
+                            startup_fallback = Some(hardware_error);
+                            initialize_output(
+                                Arc::clone(&self.output),
+                                surface.as_ref(),
+                                paused,
+                                false,
+                                stream,
+                                false,
+                                #[cfg(target_os = "windows")]
+                                Arc::clone(&self.windows_bridge),
+                            )
+                        }
+                        Err(error) => Err(error),
+                    };
+                    match initialized {
+                        Ok(output) => {
                             active = Some(output);
                             feedback = Some(session_feedback);
                             software_playback_started = false;
+                            if let (Some(reason), Some(feedback)) =
+                                (startup_fallback, feedback.as_ref())
+                            {
+                                let _ = feedback.send(MediaFeedback::BackendFallback {
+                                    from: hardware_backend_label(),
+                                    to: "OpenH264/SDL",
+                                    reason,
+                                });
+                            }
                             let _ = reply.send(Ok(()));
                         }
                         Err(error) => {
@@ -194,11 +268,45 @@ impl MainThreadHost {
                             new_surface.visible, new_surface.screen_rect
                         );
                     }
-                    let result = if let Some(output) = active.as_mut() {
+                    #[cfg(target_os = "linux")]
+                    let linux_hardware =
+                        active.as_ref().is_some_and(ActiveOutput::is_linux_hardware);
+                    let mut result = if let Some(output) = active.as_mut() {
                         output.update_surface(&new_surface)
                     } else {
                         Ok(())
                     };
+                    #[cfg(target_os = "linux")]
+                    if linux_hardware && let Err(reason) = &result {
+                        self.linux_software_fallback.store(true, Ordering::Release);
+                        match initialize_output(
+                            Arc::clone(&self.output),
+                            Some(&new_surface),
+                            paused,
+                            false,
+                            MediaStreamConfig::default(),
+                            false,
+                        ) {
+                            Ok(output) => {
+                                if let Some(current) = active.as_mut() {
+                                    current.stop();
+                                }
+                                active = Some(output);
+                                software_playback_started = false;
+                                if let Some(feedback) = feedback.as_ref() {
+                                    let _ = feedback.send(MediaFeedback::BackendFallback {
+                                        from: "VA-API/V4L2/Vulkan",
+                                        to: "OpenH264/SDL",
+                                        reason: format!(
+                                            "Linux surface reconfiguration failed: {reason}"
+                                        ),
+                                    });
+                                }
+                                result = Ok(());
+                            }
+                            Err(error) => result = Err(error),
+                        }
+                    }
                     if let Err(message) = &result {
                         if let Some(output) = active.as_mut() {
                             if let Some(feedback) = feedback.as_ref() {
@@ -233,14 +341,17 @@ impl MainThreadHost {
                             if let Some(output) = active.as_mut() {
                                 output.stop();
                             }
-                            let fallback =
-                                ActiveOutput::initialize(Arc::clone(&self.output), false).and_then(
-                                    |mut output| {
-                                        output.start(surface.as_ref())?;
-                                        output.set_paused(paused)?;
-                                        Ok(output)
-                                    },
-                                );
+                            let fallback = ActiveOutput::initialize(
+                                Arc::clone(&self.output),
+                                false,
+                                MediaStreamConfig::default(),
+                                false,
+                            )
+                            .and_then(|mut output| {
+                                output.start(surface.as_ref())?;
+                                output.set_paused(paused)?;
+                                Ok(output)
+                            });
                             match fallback {
                                 Ok(output) => {
                                     active = Some(output);
@@ -256,6 +367,45 @@ impl MainThreadHost {
                                     )));
                                 }
                             }
+                        }
+                    }
+                }
+                #[cfg(target_os = "linux")]
+                Ok(HostCommand::FallbackLinux { reason }) => {
+                    self.linux_software_fallback.store(true, Ordering::Release);
+                    let replacement = initialize_output(
+                        Arc::clone(&self.output),
+                        surface.as_ref(),
+                        paused,
+                        false,
+                        MediaStreamConfig::default(),
+                        false,
+                    );
+                    match replacement {
+                        Ok(output) => {
+                            if let Some(current) = active.as_mut() {
+                                current.stop();
+                            }
+                            active = Some(output);
+                            software_playback_started = false;
+                            if let Some(feedback) = feedback.as_ref() {
+                                let _ = feedback.send(MediaFeedback::BackendFallback {
+                                    from: "VA-API/V4L2/Vulkan",
+                                    to: "OpenH264/SDL",
+                                    reason,
+                                });
+                            }
+                        }
+                        Err(fallback_error) => {
+                            if let Some(feedback) = feedback.as_ref() {
+                                let _ = feedback.send(MediaFeedback::OutputError {
+                                    message: format!(
+                                        "Linux hardware fallback failed: {fallback_error}"
+                                    ),
+                                });
+                            }
+                            active = None;
+                            feedback = None;
                         }
                     }
                 }
@@ -277,16 +427,126 @@ impl MainThreadHost {
             }
             if let Some(output) = active.as_mut() {
                 match output.pump() {
-                    Ok(true) if !software_playback_started => {
+                    Ok(OutputEvent::Presented(backend)) if !software_playback_started => {
                         software_playback_started = true;
                         if let Some(feedback) = feedback.as_ref() {
-                            let _ = feedback.send(MediaFeedback::PlaybackStarted {
-                                backend: "OpenH264/SDL",
+                            let _ = feedback.send(MediaFeedback::PlaybackStarted { backend });
+                        }
+                    }
+                    #[cfg(target_os = "windows")]
+                    Ok(OutputEvent::RequestKeyframe) => {
+                        if let Some(feedback) = feedback.as_ref() {
+                            let _ = feedback.send(MediaFeedback::RequestKeyframe {
+                                mid: current_video_mid(
+                                    #[cfg(target_os = "windows")]
+                                    &self.windows_bridge,
+                                ),
+                                reason: "D3D11 decoder recovery requires a fresh keyframe"
+                                    .to_owned(),
                             });
                         }
                     }
-                    Ok(_) => {}
+                    #[cfg(target_os = "windows")]
+                    Ok(OutputEvent::DeviceLost {
+                        subsystem,
+                        recovered,
+                        message,
+                    }) => {
+                        if let Some(feedback) = feedback.as_ref() {
+                            let _ = feedback.send(MediaFeedback::DeviceLost {
+                                subsystem,
+                                recovered,
+                                message,
+                            });
+                        }
+                    }
+                    #[cfg(target_os = "windows")]
+                    Ok(OutputEvent::QueueDropped(media)) => {
+                        if let Some(feedback) = feedback.as_ref() {
+                            let _ = feedback.send(MediaFeedback::QueueDropped { media, count: 1 });
+                        }
+                    }
+                    #[cfg(target_os = "windows")]
+                    Ok(OutputEvent::Fatal(message)) => {
+                        let fallback = (|| {
+                            output.stop();
+                            self.use_macos_hardware.store(false, Ordering::Release);
+                            #[cfg(target_os = "windows")]
+                            self.windows_bridge.fall_back_to_software();
+                            let mut replacement = ActiveOutput::initialize(
+                                Arc::clone(&self.output),
+                                false,
+                                MediaStreamConfig::default(),
+                                false,
+                                #[cfg(target_os = "windows")]
+                                Arc::clone(&self.windows_bridge),
+                            )?;
+                            replacement.start(surface.as_ref())?;
+                            replacement.set_paused(paused)?;
+                            Ok::<_, String>(replacement)
+                        })();
+                        match fallback {
+                            Ok(replacement) => {
+                                *output = replacement;
+                                software_playback_started = false;
+                                if let Some(feedback) = feedback.as_ref() {
+                                    let _ = feedback.send(MediaFeedback::BackendFallback {
+                                        from: "Media Foundation/D3D11/WASAPI",
+                                        to: "OpenH264/SDL",
+                                        reason: message,
+                                    });
+                                    let _ = feedback.send(MediaFeedback::RequestKeyframe {
+                                        mid: current_video_mid(
+                                            #[cfg(target_os = "windows")]
+                                            &self.windows_bridge,
+                                        ),
+                                        reason: "D3D11 device recovery failed".to_owned(),
+                                    });
+                                }
+                            }
+                            Err(fallback_error) => {
+                                if let Some(feedback) = feedback.as_ref() {
+                                    let _ = feedback.send(MediaFeedback::OutputError {
+                                        message: format!(
+                                            "D3D11 output failed ({message}); software fallback failed: {fallback_error}"
+                                        ),
+                                    });
+                                }
+                                active = None;
+                                feedback = None;
+                                software_playback_started = false;
+                            }
+                        }
+                    }
+                    Ok(OutputEvent::None | OutputEvent::Presented(_)) => {}
                     Err(message) => {
+                        #[cfg(target_os = "linux")]
+                        if output.is_linux_hardware() {
+                            self.linux_software_fallback.store(true, Ordering::Release);
+                            output.stop();
+                            let fallback = initialize_output(
+                                Arc::clone(&self.output),
+                                surface.as_ref(),
+                                paused,
+                                false,
+                                MediaStreamConfig::default(),
+                                false,
+                            );
+                            if let Ok(replacement) = fallback {
+                                *output = replacement;
+                                software_playback_started = false;
+                                if let Some(feedback) = feedback.as_ref() {
+                                    let _ = feedback.send(MediaFeedback::BackendFallback {
+                                        from: "VA-API/V4L2/Vulkan",
+                                        to: "OpenH264/SDL",
+                                        reason: format!(
+                                            "Linux Vulkan presentation failed: {message}"
+                                        ),
+                                    });
+                                }
+                                continue;
+                            }
+                        }
                         if let Some(feedback) = feedback.as_ref() {
                             let _ = feedback.send(MediaFeedback::OutputError { message });
                         }
@@ -307,34 +567,129 @@ impl MainThreadHost {
 
 pub fn create_runtime() -> Result<(MainThreadHost, MediaRuntime), String> {
     ensure_macos_main_thread()?;
-    let use_macos_hardware = Arc::new(AtomicBool::new(use_macos_hardware()));
+    let use_macos_hardware = Arc::new(AtomicBool::new(use_hardware_backend()));
+    #[cfg(target_os = "linux")]
+    let linux_selection = crate::linux_backend::select_video_path();
+    #[cfg(target_os = "linux")]
+    let linux_software_fallback = Arc::new(AtomicBool::new(matches!(
+        linux_selection.path,
+        LinuxVideoPath::Software
+    )));
     let (commands, receiver) = mpsc::channel();
     let output = Arc::new(OutputBuffers::new());
     let paused = Arc::new(AtomicBool::new(false));
+    #[cfg(target_os = "windows")]
+    let windows_bridge = Arc::new(WindowsBridge::new());
     Ok((
         MainThreadHost {
             commands: receiver,
             output: Arc::clone(&output),
             _not_send: PhantomData,
             use_macos_hardware: Arc::clone(&use_macos_hardware),
+            #[cfg(target_os = "windows")]
+            windows_bridge: Arc::clone(&windows_bridge),
+            #[cfg(target_os = "linux")]
+            linux_selection: linux_selection.clone(),
+            #[cfg(target_os = "linux")]
+            linux_software_fallback: Arc::clone(&linux_software_fallback),
         },
         MediaRuntime {
             commands,
             output,
             paused,
-            use_macos_hardware,
+            use_hardware: use_macos_hardware,
+            #[cfg(target_os = "windows")]
+            windows_bridge,
+            #[cfg(target_os = "linux")]
+            linux_selection,
+            #[cfg(target_os = "linux")]
+            linux_software_fallback,
         },
     ))
 }
 
-#[cfg(target_os = "macos")]
-fn use_macos_hardware() -> bool {
-    crate::macos_backend::available()
+fn initialize_output(
+    output: Arc<OutputBuffers>,
+    surface: Option<&RenderSurface>,
+    paused: bool,
+    use_hardware: bool,
+    stream: MediaStreamConfig,
+    use_linux_hardware: bool,
+    #[cfg(target_os = "windows")] windows_bridge: Arc<WindowsBridge>,
+) -> Result<ActiveOutput, String> {
+    let mut output = ActiveOutput::initialize(
+        output,
+        use_hardware,
+        stream,
+        use_linux_hardware,
+        #[cfg(target_os = "windows")]
+        windows_bridge,
+    )?;
+    if let Err(error) = output.start(surface) {
+        output.stop();
+        return Err(error);
+    }
+    if let Err(error) = output.set_paused(paused) {
+        output.stop();
+        return Err(error);
+    }
+    Ok(output)
 }
 
-#[cfg(not(target_os = "macos"))]
-const fn use_macos_hardware() -> bool {
+#[cfg(target_os = "macos")]
+fn use_hardware_backend() -> bool {
+    backend_preference_allows("videotoolbox") && crate::macos_backend::available()
+}
+
+#[cfg(target_os = "windows")]
+fn use_hardware_backend() -> bool {
+    backend_preference_allows("d3d11")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const fn use_hardware_backend() -> bool {
     false
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn backend_preference_allows(hardware_backend: &str) -> bool {
+    backend_preference_allows_value(
+        std::env::var("OPENNOW_NATIVE_VIDEO_BACKEND")
+            .ok()
+            .as_deref(),
+        hardware_backend,
+    )
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+fn backend_preference_allows_value(value: Option<&str>, hardware_backend: &str) -> bool {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none_or(|value| {
+            let value = value.to_ascii_lowercase();
+            value == "auto" || value == hardware_backend
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn current_video_mid(bridge: &WindowsBridge) -> String {
+    bridge.last_video_mid()
+}
+
+#[cfg(target_os = "windows")]
+const fn hardware_backend_label() -> &'static str {
+    "Media Foundation/D3D11/WASAPI"
+}
+
+#[cfg(target_os = "macos")]
+const fn hardware_backend_label() -> &'static str {
+    "VideoToolbox/Metal/CoreAudio"
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const fn hardware_backend_label() -> &'static str {
+    "VA-API/V4L2/Vulkan"
 }
 
 #[cfg(target_os = "macos")]
@@ -352,4 +707,19 @@ fn ensure_macos_main_thread() -> Result<(), String> {
 #[cfg(not(target_os = "macos"))]
 fn ensure_macos_main_thread() -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::backend_preference_allows_value;
+
+    #[test]
+    fn video_backend_preference_selects_only_auto_or_the_requested_hardware() {
+        assert!(backend_preference_allows_value(None, "d3d11"));
+        assert!(backend_preference_allows_value(Some(""), "d3d11"));
+        assert!(backend_preference_allows_value(Some("AUTO"), "d3d11"));
+        assert!(backend_preference_allows_value(Some("d3d11"), "d3d11"));
+        assert!(!backend_preference_allows_value(Some("software"), "d3d11"));
+        assert!(!backend_preference_allows_value(Some("d3d12"), "d3d11"));
+    }
 }

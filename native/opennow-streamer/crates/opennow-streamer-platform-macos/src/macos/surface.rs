@@ -123,7 +123,11 @@ impl SurfaceOwner {
                     let visible = config.visible;
                     eprintln!(
                         "NVST overlay-attach rect=({},{} {}x{}) config.visible={} parent_pid={parent_pid} frontmost={frontmost} visible={visible}",
-                        config.screen_rect.x, config.screen_rect.y, config.screen_rect.width, config.screen_rect.height, config.visible,
+                        config.screen_rect.x,
+                        config.screen_rect.y,
+                        config.screen_rect.width,
+                        config.screen_rect.height,
+                        config.visible,
                     );
                     let styles = NSWindowStyleMask::Titled
                         | NSWindowStyleMask::Closable

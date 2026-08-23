@@ -26,6 +26,6 @@ test("normalizes renderer bounds into absolute screen coordinates", () => {
     visible: true,
     showStats: false,
     rect: { x: 12, y: 25, width: 640, height: 360 },
-    screenRect: { x: 112, y: 225, width: 640, height: 360 },
+    screenRect: { x: 106, y: 212, width: 320, height: 180 },
   });
 });

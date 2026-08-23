@@ -297,10 +297,19 @@ export function useSignalingEvents({
           }
         } else if (event.type === "native-stream-started") {
           console.log("[App] Native streamer started:", event.message ?? "");
+          setLaunchError(null);
+          setStreamStatus("streaming");
           diagnosticsStore.set({
             ...diagnosticsStore.getSnapshot(),
             nativeRendererActive: true,
           });
+          const activeSession = sessionRef.current;
+          if (!activeSession) {
+            console.warn("[App] Native streamer started without an active session");
+            return;
+          }
+          markDiscordStreamStarted();
+          scheduleStableRecoveryReset(activeSession.sessionId);
           activateNativeInputForCurrentSession(nativeInputProtocolVersionRef.current ?? undefined);
         } else if (event.type === "native-input-ready") {
           console.log("[App] Native input protocol ready:", event.protocolVersion);

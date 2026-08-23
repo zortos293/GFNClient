@@ -16,9 +16,8 @@ use opennow_streamer_protocol::{
 use opennow_streamer_transport::{
     NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstUdpReceiverSession,
     PreferredVideoTransport, ReservedNvstBundle, TransportControl, TransportEvent,
-    TransportSession, negotiate, reserve_nvst_mjolnir_udp_socket,
-    select_preferred_video_transport, spawn_nvst_mjolnir_receiver,
-    spawn_nvst_udp_receiver_with_socket,
+    TransportSession, negotiate, reserve_nvst_mjolnir_udp_socket, select_preferred_video_transport,
+    spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver_with_socket,
 };
 use serde_json::{Value, json};
 
@@ -328,7 +327,7 @@ impl Engine {
         })?;
         let (nvst_config, fallback_note) =
             match select_preferred_video_transport(&transport_context) {
-                PreferredVideoTransport::Nvst(config) => (Some(config), None),
+                PreferredVideoTransport::Nvst(config) => (Some(*config), None),
                 PreferredVideoTransport::WebRtcFallback(reason) => (
                     None,
                     Some(format!(
@@ -397,29 +396,31 @@ impl Engine {
                     None => (None, None, None),
                 };
             let mjolnir_udp_port = config.mjolnir_udp_port();
-            let transport = spawn_nvst_udp_receiver_with_socket(
+            let transport = match spawn_nvst_udp_receiver_with_socket(
                 config.clone(),
                 media_consumer.clone(),
                 event_sender.clone(),
                 reserved_socket,
                 reserved_rtc,
-            )
-            .map_err(|transport_error| {
-                self.stop_media_resources();
-                error(
-                    Some(&command.id),
-                    "nvst-start-failed",
-                    transport_error.to_string(),
-                )
-            })?;
+            ) {
+                Ok(transport) => transport,
+                Err(transport_error) => {
+                    drop(media_consumer);
+                    self.stop_media_resources();
+                    return Err(error(
+                        Some(&command.id),
+                        "nvst-start-failed",
+                        transport_error.to_string(),
+                    ));
+                }
+            };
             self.nvst_transport = Some(transport);
             if let Some(expected_port) = mjolnir_udp_port {
                 // Official two-socket model: video RTP/SRTP arrives on the
                 // dedicated NATT-only Mjolnir socket, not on the ICE/DTLS bundle.
                 let mjolnir_socket = match reserved_mjolnir {
                     Some(socket) => {
-                        let actual_port =
-                            socket.local_addr().map(|addr| addr.port()).unwrap_or(0);
+                        let actual_port = socket.local_addr().map(|addr| addr.port()).unwrap_or(0);
                         if actual_port != expected_port {
                             eprintln!(
                                 "NVST Mjolnir socket port mismatch: reserved {actual_port}, handoff expects {expected_port}; NATT keepalive determines routing"
@@ -1186,10 +1187,10 @@ fn forward_nvst_media_feedback(
     match feedback {
         MediaFeedback::PlaybackStarted { backend } => {
             let _ = output.send(event(
-                "log",
+                "status",
                 json!({
-                    "level": "info",
-                    "message": format!("{backend} presented the first video frame")
+                    "status": "streaming",
+                    "message": format!("{backend} presented the first NVST video frame")
                 }),
             ));
         }

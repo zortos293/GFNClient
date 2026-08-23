@@ -245,7 +245,7 @@ impl SoftwareOutput {
         Ok(())
     }
 
-    fn pump(&mut self) -> Result<(), String> {
+    fn pump(&mut self) -> Result<bool, String> {
         if let Ok(surface) = self.native_surface.as_mut() {
             surface.refresh_ordering()?;
         }
@@ -259,10 +259,10 @@ impl SoftwareOutput {
         }
         if self.paused || !self.visible {
             self.output.take_video();
-            return Ok(());
+            return Ok(false);
         }
         let Some(frame) = self.output.take_video() else {
-            return Ok(());
+            return Ok(false);
         };
         if self.texture_size != Some((frame.width, frame.height)) {
             self.texture = Some(
@@ -283,7 +283,7 @@ impl SoftwareOutput {
         self.canvas.clear();
         self.canvas.copy(texture, None, target)?;
         self.canvas.present();
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -341,11 +341,11 @@ impl ActiveOutput {
         }
     }
 
-    pub(crate) fn pump(&mut self) -> Result<(), String> {
+    pub(crate) fn pump(&mut self) -> Result<bool, String> {
         match self {
             Self::Software(output) => output.pump(),
             #[cfg(target_os = "macos")]
-            Self::Mac(output) => output.pump(),
+            Self::Mac(output) => output.pump().map(|_| false),
         }
     }
 

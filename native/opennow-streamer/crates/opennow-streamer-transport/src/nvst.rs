@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use aes::cipher::{BlockEncrypt, KeyIvInit, StreamCipher};
 use aes::{Aes128, Aes256};
 use crc32fast::hash as crc32;
-use ctr::{Ctr128BE, Ctr32BE};
+use ctr::{Ctr32BE, Ctr128BE};
 use ghash::{GHash, universal_hash::UniversalHash};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
@@ -83,6 +83,7 @@ const MAX_ICE_CREDENTIAL_BYTES: usize = 256;
 
 /// The independently documented `NV_VIDEO_PACKET` flag values used by an earlier OpenNOW
 /// implementation. This module does not borrow code or binaries from NVIDIA.
+#[cfg(test)]
 const FLAG_CONTAINS_PIC_DATA: u8 = 0x01;
 const FLAG_EOF: u8 = 0x02;
 const FLAG_SOF: u8 = 0x04;
@@ -618,7 +619,7 @@ pub fn parse_nvst_video_handoff(
 /// incomplete or unsupported handoff a typed WebRTC fallback instead of an optimistic start.
 #[derive(Debug)]
 pub enum PreferredVideoTransport {
-    Nvst(NvstVideoConfig),
+    Nvst(Box<NvstVideoConfig>),
     WebRtcFallback(NvstFallbackReason),
 }
 
@@ -630,7 +631,7 @@ pub enum NvstFallbackReason {
 
 pub fn select_preferred_video_transport(context: &Value) -> PreferredVideoTransport {
     match parse_nvst_video_handoff(context) {
-        Ok(Some(config)) => PreferredVideoTransport::Nvst(config),
+        Ok(Some(config)) => PreferredVideoTransport::Nvst(Box::new(config)),
         Ok(None) => PreferredVideoTransport::WebRtcFallback(NvstFallbackReason::NoNvstHandoff),
         Err(error) => {
             PreferredVideoTransport::WebRtcFallback(NvstFallbackReason::InvalidNvstHandoff(error))
@@ -1017,8 +1018,16 @@ impl SrtpReceiver {
                 master_salt,
                 authentication_tag_len,
             } => SrtpCipher::AeadAes128Gcm {
-                encryption_key: derive_aes128_cm_key::<16>(master_key, master_salt, GFN_SRTP_KEY_LABEL),
-                session_salt: derive_aes128_cm_key::<12>(master_key, master_salt, GFN_SRTP_SALT_LABEL),
+                encryption_key: derive_aes128_cm_key::<16>(
+                    master_key,
+                    master_salt,
+                    GFN_SRTP_KEY_LABEL,
+                ),
+                session_salt: derive_aes128_cm_key::<12>(
+                    master_key,
+                    master_salt,
+                    GFN_SRTP_SALT_LABEL,
+                ),
                 authentication_tag_len: *authentication_tag_len,
             },
             NvstSrtpMaterial::AeadAes256Gcm {
@@ -1026,7 +1035,11 @@ impl SrtpReceiver {
                 master_salt,
                 authentication_tag_len,
             } => SrtpCipher::AeadAes256Gcm {
-                encryption_key: derive_aes_cm_key::<32>(master_key, master_salt, GFN_SRTP_KEY_LABEL),
+                encryption_key: derive_aes_cm_key::<32>(
+                    master_key,
+                    master_salt,
+                    GFN_SRTP_KEY_LABEL,
+                ),
                 session_salt: derive_aes_cm_key::<12>(master_key, master_salt, GFN_SRTP_SALT_LABEL),
                 authentication_tag_len: *authentication_tag_len,
             },
@@ -1166,8 +1179,8 @@ fn unprotect_aes_gcm(
 }
 
 enum GcmCtr {
-    Aes128(Ctr32BE<Aes128>),
-    Aes256(Ctr32BE<Aes256>),
+    Aes128(Box<Ctr32BE<Aes128>>),
+    Aes256(Box<Ctr32BE<Aes256>>),
 }
 
 impl GcmCtr {
@@ -1197,7 +1210,7 @@ fn aes_gcm_tag_and_ctr(
             aes.encrypt_block((&mut hash_key).into());
             let mut ctr = Ctr32BE::<Aes128>::new(key.into(), (&j0).into());
             ctr.apply_keystream(&mut tag_mask);
-            GcmCtr::Aes128(ctr)
+            GcmCtr::Aes128(Box::new(ctr))
         }
         32 => {
             let key: &[u8; 32] = encryption_key.try_into().expect("32-byte GCM key");
@@ -1205,7 +1218,7 @@ fn aes_gcm_tag_and_ctr(
             aes.encrypt_block((&mut hash_key).into());
             let mut ctr = Ctr32BE::<Aes256>::new(key.into(), (&j0).into());
             ctr.apply_keystream(&mut tag_mask);
-            GcmCtr::Aes256(ctr)
+            GcmCtr::Aes256(Box::new(ctr))
         }
         _ => unreachable!("AES-GCM key is 16 or 32 bytes"),
     };
@@ -1236,12 +1249,7 @@ fn protect_aes_gcm(
     let aad_owned = packet[..payload_offset].to_vec();
     let (_, mut ctr) = aes_gcm_tag_and_ctr(encryption_key, iv, &aad_owned, &[]);
     ctr.apply_keystream(&mut packet[payload_offset..]);
-    let (tag, _) = aes_gcm_tag_and_ctr(
-        encryption_key,
-        iv,
-        &aad_owned,
-        &packet[payload_offset..],
-    );
+    let (tag, _) = aes_gcm_tag_and_ctr(encryption_key, iv, &aad_owned, &packet[payload_offset..]);
     packet.extend_from_slice(&tag[..tag_len]);
 }
 
@@ -1502,6 +1510,8 @@ struct NvVideoPacket {
     stream_packet_index: u32,
     frame_index: u32,
     flags: u8,
+    fec_current_block: u8,
+    fec_last_block: u8,
     is_fec: bool,
 }
 
@@ -1509,7 +1519,8 @@ impl NvVideoPacket {
     /// Reads the Mjolnir video metadata from the `0x4753` ("GS") RTP extension:
     /// a 16-byte little-endian block holding the stream packet index, frame index,
     /// the packet-type nibble (picture data / SOF / EOF), and FEC group
-    /// coordinates. The RTP payload itself is pure H.264 access-unit data.
+    /// coordinates. The RTP payload starts with the GameStream frame header on an
+    /// SOF packet and otherwise continues the H.264 access-unit data directly.
     fn parse<'a>(header: &RtpHeader, payload: &'a [u8]) -> Result<(Self, &'a [u8]), RtpParseError> {
         let Some(extension) = header.gs_video_header else {
             return Err(RtpParseError::MissingNvVideoHeader);
@@ -1517,27 +1528,27 @@ impl NvVideoPacket {
         let packet_word = u32::from_le_bytes(extension[0..4].try_into().expect("length checked"));
         let flags_word = u32::from_le_bytes(extension[8..12].try_into().expect("length checked"));
         let fec_word = u32::from_le_bytes(extension[12..16].try_into().expect("length checked"));
+        let multi_fec_blocks = extension[11];
+        let fec_percentage = (fec_word >> 4) & 0xff;
         let fec_index = (fec_word >> 12) & 0x3ff;
         let fec_source_packets = (fec_word >> 22) & 0x3ff;
         let packet = Self {
             stream_packet_index: (packet_word >> 8) & STREAM_PACKET_INDEX_MASK,
             frame_index: u32::from_le_bytes(extension[4..8].try_into().expect("length checked")),
             flags: (flags_word & 0x0f) as u8,
-            is_fec: (fec_word >> 8) & 0xff != 0 && fec_index >= fec_source_packets,
+            fec_current_block: (multi_fec_blocks >> 4) & 0x03,
+            fec_last_block: (multi_fec_blocks >> 6) & 0x03,
+            is_fec: fec_percentage != 0 && fec_index >= fec_source_packets,
         };
         Ok((packet, payload))
     }
 
-    fn contains_picture_data(self) -> bool {
-        self.flags & FLAG_CONTAINS_PIC_DATA != 0
-    }
-
     fn is_start_of_frame(self) -> bool {
-        self.flags & FLAG_SOF != 0
+        self.flags & FLAG_SOF != 0 && self.fec_current_block == 0
     }
 
     fn is_end_of_frame(self) -> bool {
-        self.flags & FLAG_EOF != 0
+        self.flags & FLAG_EOF != 0 && self.fec_current_block == self.fec_last_block
     }
 }
 
@@ -1570,7 +1581,7 @@ impl H264AccessUnitAssembler {
         timestamp: u32,
         payload: &[u8],
     ) -> Result<Option<EncodedH264Frame>, NvstDropReason> {
-        if header.is_fec || !header.contains_picture_data() {
+        if header.is_fec {
             return Err(NvstDropReason::Unsupported(
                 NvstUnsupportedFeature::FecRepair,
             ));
@@ -1607,7 +1618,8 @@ impl H264AccessUnitAssembler {
             return Ok(None);
         }
 
-        let bytes = std::mem::take(&mut self.bytes);
+        let mut bytes = std::mem::take(&mut self.bytes);
+        strip_trailing_access_unit_delimiter(&mut bytes);
         self.current_frame = None;
         let first_stream_packet_index = self
             .first_stream_packet_index
@@ -1623,60 +1635,23 @@ impl H264AccessUnitAssembler {
     }
 }
 
-static NVST_DEBUG_DUMP_REMAINING: AtomicU64 = AtomicU64::new(96);
-
-/// Temporary ground-truth dump of decrypted Mjolnir video packets so the
-/// RTP extension + NV_VIDEO_PACKET layout can be verified against live traffic.
-fn debug_dump_nv_packet(path: &str, packet: &[u8], payload_offset: usize) {
-    use std::fmt::Write as _;
-    if NVST_DEBUG_DUMP_REMAINING
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
-            remaining.checked_sub(1)
-        })
-        .is_err()
+fn strip_trailing_access_unit_delimiter(bytes: &mut Vec<u8>) {
+    let mut offset = 0;
+    let mut last_nal = None;
+    while let Some((start, prefix_len)) = find_annex_b_start_code(&bytes[offset..]) {
+        let start = offset + start;
+        let nal_start = start + prefix_len;
+        last_nal = Some((start, nal_start));
+        offset = nal_start + 1;
+    }
+    if let Some((start, nal_start)) = last_nal
+        && bytes
+            .get(nal_start)
+            .is_some_and(|header| header & 0x1f == 9)
     {
-        return;
+        bytes.truncate(start);
     }
-    let dump_len = packet.len().min(56);
-    let mut packet_hex = String::with_capacity(dump_len * 2 + 8);
-    for (index, byte) in packet[..dump_len].iter().enumerate() {
-        if index == 12 || index == payload_offset {
-            let _ = write!(packet_hex, "|");
-        }
-        let _ = write!(packet_hex, "{byte:02x}");
-    }
-        eprintln!(
-            "NVST pkt-dump[{path}] len={} payloadOff={payload_offset} bytes={packet_hex}",
-            packet.len(),
-        );
-    }
-
-    static NVST_DEBUG_FRAME_DUMP_REMAINING: AtomicU64 = AtomicU64::new(24);
-
-    /// Temporary dump of assembled access units to verify NAL layout/keyframe
-    /// detection against live traffic.
-    fn debug_dump_frame(frame: &EncodedH264Frame) {
-        use std::fmt::Write as _;
-        if NVST_DEBUG_FRAME_DUMP_REMAINING
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_err()
-        {
-            return;
-        }
-        let dump_len = frame.bytes.len().min(40);
-        let mut hex = String::with_capacity(dump_len * 2);
-        for byte in &frame.bytes[..dump_len] {
-            let _ = write!(hex, "{byte:02x}");
-        }
-        eprintln!(
-            "NVST frame-dump len={} keyframe={} ts={} bytes={hex}",
-            frame.bytes.len(),
-            frame.keyframe,
-            frame.timestamp,
-        );
-    }
+}
 
 fn h264_picture_payload(payload: &[u8]) -> Option<&[u8]> {
     let search_len = payload.len().min(MAX_GS_FRAME_HEADER_BYTES + 4);
@@ -1699,18 +1674,14 @@ fn h264_access_unit_is_keyframe(bytes: &[u8]) -> bool {
 }
 
 fn find_annex_b_start_code(bytes: &[u8]) -> Option<(usize, usize)> {
-    bytes
-        .windows(4)
-        .position(|window| window == [0, 0, 0, 1])
-        .map_or_else(
-            || {
-                bytes
-                    .windows(3)
-                    .position(|window| window == [0, 0, 1])
-                    .map(|position| (position, 3))
-            },
-            |position| Some((position, 4)),
-        )
+    let four_byte = bytes.windows(4).position(|window| window == [0, 0, 0, 1]);
+    let three_byte = bytes.windows(3).position(|window| window == [0, 0, 1]);
+    match (four_byte, three_byte) {
+        (Some(four_byte), Some(three_byte)) if four_byte <= three_byte => Some((four_byte, 4)),
+        (_, Some(three_byte)) => Some((three_byte, 3)),
+        (Some(four_byte), None) => Some((four_byte, 4)),
+        (None, None) => None,
+    }
 }
 
 struct RtpReorderBuffer {
@@ -2036,7 +2007,6 @@ impl NvstVideoReceiver {
             Ok(packet) => packet,
             Err(reason) => return vec![NvstReceiveEvent::Dropped(reason)],
         };
-        debug_dump_nv_packet("raw", &packet.plaintext, packet.header.payload_offset);
         if let Some(expected) = self.config.expected_payload_type
             && packet.header.payload_type != expected
         {
@@ -2102,13 +2072,14 @@ impl NvstVideoReceiver {
             {
                 Ok(Some(frame)) => {
                     self.frames_emitted += 1;
-                    debug_dump_frame(&frame);
                     events.push(NvstReceiveEvent::Frame(frame));
                 }
                 Ok(None) => {}
                 Err(reason) => {
-                    if matches!(reason, NvstDropReason::Unsupported(NvstUnsupportedFeature::FecRepair))
-                    {
+                    if matches!(
+                        reason,
+                        NvstDropReason::Unsupported(NvstUnsupportedFeature::FecRepair)
+                    ) {
                         self.fec_packets += 1;
                     }
                     events.push(NvstReceiveEvent::Dropped(reason));
@@ -2148,7 +2119,7 @@ impl NvstVideoReceiver {
         &mut self,
         ssrc: u32,
         rtp_timestamp: u32,
-        payload: &[u8],
+        _payload: &[u8],
         now: Instant,
     ) -> Vec<NvstReceiveEvent> {
         match self.state {
@@ -2165,7 +2136,6 @@ impl NvstVideoReceiver {
         }
         self.bound_ssrc.get_or_insert(ssrc);
         self.last_authenticated_packet = Some(now);
-        debug_dump_nv_packet("bundle", payload, 0);
         // The bundle path cannot assemble video: the Mjolnir frame metadata lives
         // in the `0x4753` RTP extension, which str0m does not surface. The official
         // cloud path delivers video exclusively on the raw Mjolnir socket, so bundle
@@ -3005,7 +2975,9 @@ fn run_nvst_webrtc_bundle(
                 };
                 let _ = rtc.direct_api().create_data_channel(config);
             }
-            eprintln!("NVST creating rtcp_on_sctp_private across {RTCP_STREAM_CANDIDATES} stream-id candidates");
+            eprintln!(
+                "NVST creating rtcp_on_sctp_private across {RTCP_STREAM_CANDIDATES} stream-id candidates"
+            );
         }
 
         // Send RTCP feedback over the rtcp1 SCTP channel once it is open and the
@@ -3456,7 +3428,14 @@ mod tests {
         }
     }
 
-    fn build_plaintext_rtp(sequence: u16, flags: u8, frame_index: u32, media: &[u8]) -> Vec<u8> {
+    fn build_plaintext_rtp_with_fec_blocks(
+        sequence: u16,
+        flags: u8,
+        frame_index: u32,
+        fec_current_block: u8,
+        fec_last_block: u8,
+        media: &[u8],
+    ) -> Vec<u8> {
         let mut packet = vec![0x90, 0xe0];
         packet.extend_from_slice(&sequence.to_be_bytes());
         packet.extend_from_slice(&0x01020304u32.to_be_bytes());
@@ -3466,10 +3445,18 @@ mod tests {
         packet.extend_from_slice(&(u32::from(sequence) << 8).to_le_bytes());
         packet.extend_from_slice(&frame_index.to_le_bytes());
         packet.push(flags);
-        packet.extend_from_slice(&[0, 0, 0]);
+        packet.extend_from_slice(&[
+            0,
+            0,
+            (fec_current_block & 0x03) << 4 | (fec_last_block & 0x03) << 6,
+        ]);
         packet.extend_from_slice(&[0; 4]);
         packet.extend_from_slice(media);
         packet
+    }
+
+    fn build_plaintext_rtp(sequence: u16, flags: u8, frame_index: u32, media: &[u8]) -> Vec<u8> {
+        build_plaintext_rtp_with_fec_blocks(sequence, flags, frame_index, 0, 0, media)
     }
 
     fn test_srtp(config: &NvstVideoConfig) -> SrtpReceiver {
@@ -3541,76 +3528,6 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_captured_official_packet() {
-        // Diagnostic: decrypt a real captured official GFN video packet with the
-        // session's master key/salt, comparing the KDF-derived session key (the
-        // current SrtpReceiver path) against using the master key/salt directly.
-        let master_key = decode_fixed_hex::<32>(
-            "D3CB0D52DC2D9CFFE439CB69DBDCEB8725D0F5230145D92D360F17505B7F0520",
-            NvstConfigError::InvalidAesKey,
-        )
-        .expect("key");
-        let master_salt = decode_fixed_hex::<12>(
-            "0000000000000000D4818BDE",
-            NvstConfigError::InvalidSrtpSalt,
-        )
-        .expect("salt");
-
-        // Diagnostic harness for live captures; skip when no dump was captured this run.
-        let dump = match std::fs::read("/tmp/opennow-video-dump.bin") {
-            Ok(dump) => dump,
-            Err(_) => {
-                eprintln!("no /tmp/opennow-video-dump.bin capture; skipping");
-                return;
-            }
-        };
-        assert!(dump.len() > 12 && &dump[0..4] == b"NVST", "dump has a packet");
-        let pkt_len = u16::from_be_bytes([dump[10], dump[11]]) as usize;
-        let packet = &dump[12..12 + pkt_len];
-        let header = RtpHeader::parse(packet).expect("header");
-        eprintln!(
-            "packet: len={} pt={} seq={} ssrc={:08x} payload_offset={}",
-            packet.len(),
-            header.payload_type,
-            header.sequence_number,
-            header.ssrc,
-            header.payload_offset
-        );
-
-        // Path A: KDF-derived session key (current SrtpReceiver code).
-        let material = NvstSrtpMaterial::AeadAes256Gcm {
-            master_key,
-            master_salt,
-            authentication_tag_len: SRTP_AEAD_AES_GCM_8_TAG_LEN,
-        };
-        let mut receiver = SrtpReceiver::from_material(&material);
-        match receiver.unprotect(packet) {
-            Ok(p) => eprintln!(
-                "KDF-path DECRYPT OK: plaintext={} payload[0..16]={:02x?}",
-                p.plaintext.len(),
-                &p.plaintext[header.payload_offset..header.payload_offset + 16]
-            ),
-            Err(e) => eprintln!("KDF-path DECRYPT FAIL: {:?}", e),
-        }
-
-        // Path B: master key/salt used directly as the session key/salt (no KDF).
-        match unprotect_aes_gcm(
-            packet,
-            header,
-            0,
-            &master_key,
-            &master_salt,
-            SRTP_AEAD_AES_GCM_8_TAG_LEN,
-        ) {
-            Ok(pt) => eprintln!(
-                "NO-KDF-path DECRYPT OK: payload[0..16]={:02x?}",
-                &pt[header.payload_offset..header.payload_offset + 16]
-            ),
-            Err(error) => eprintln!("NO-KDF-path DECRYPT FAIL: {error:?}"),
-        }
-    }
-
-    #[test]
     fn legacy_schema_defaults_to_aes_256_gcm_8_with_explicit_salt() {
         let config = config();
         assert_eq!(config.video_peer(), peer());
@@ -3665,8 +3582,7 @@ mod tests {
             &credentials.remote_password,
             &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
         );
-        let (_, username) =
-            find_stun_attribute(&packet, STUN_ATTR_USERNAME).expect("USERNAME");
+        let (_, username) = find_stun_attribute(&packet, STUN_ATTR_USERNAME).expect("USERNAME");
         assert_eq!(username, b"srv1:loc1");
         assert_ne!(
             username,
@@ -3914,7 +3830,8 @@ mod tests {
         // Frozen plaintext so the crypto known-answer vector stays independent of
         // the RTP packet-layout helper: 12-byte header + 16-byte inline metadata
         // + 6 bytes of media.
-        let plaintext = hex_bytes("80E01234010203041122334434120000070000000700000000000000000000016588");
+        let plaintext =
+            hex_bytes("80E01234010203041122334434120000070000000700000000000000000000016588");
         let protected = protect_for_test(&crypto, plaintext.clone(), 0);
         assert_eq!(
             protected,
@@ -4044,12 +3961,7 @@ mod tests {
 
     #[test]
     fn parses_the_wire_stream_packet_index_as_a_24_bit_value() {
-        let packet = build_plaintext_rtp(
-            1,
-            FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
-            7,
-            &[],
-        );
+        let packet = build_plaintext_rtp(1, FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA, 7, &[]);
         // Point the packet index at a 24-bit value to verify the wire shift.
         let mut packet = packet;
         packet[16..20].copy_from_slice(&(0x12_34_56_u32 << 8).to_le_bytes());
@@ -4088,10 +4000,14 @@ mod tests {
             stream_packet_index: 1,
             frame_index: 9,
             flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            fec_current_block: 0,
+            fec_last_block: 0,
             is_fec: false,
         };
         let mut payload = vec![0x01, 0, 0, 2, 0, 0, 0, 0];
-        payload.extend_from_slice(&[0, 0, 0, 1, 0x67, 0xaa, 0, 0, 1, 0x65, 0xbb]);
+        payload.extend_from_slice(&[
+            0, 0, 1, 0x67, 0xaa, 0, 0, 0, 1, 0x68, 0xbb, 0, 0, 1, 0x65, 0xcc,
+        ]);
 
         let mut assembler = H264AccessUnitAssembler::new(4096);
         let frame = assembler
@@ -4099,8 +4015,54 @@ mod tests {
             .expect("valid frame")
             .expect("complete frame");
 
-        assert_eq!(frame.bytes, [0, 0, 0, 1, 0x67, 0xaa, 0, 0, 1, 0x65, 0xbb]);
+        assert_eq!(
+            frame.bytes,
+            [
+                0, 0, 0, 1, 0x67, 0xaa, 0, 0, 0, 1, 0x68, 0xbb, 0, 0, 1, 0x65, 0xcc,
+            ]
+        );
         assert!(frame.keyframe);
+    }
+
+    #[test]
+    fn annex_b_scanner_returns_the_earliest_mixed_width_start_code() {
+        assert_eq!(
+            find_annex_b_start_code(&[0, 0, 1, 0x67, 0, 0, 0, 1, 0x68]),
+            Some((0, 3))
+        );
+        assert_eq!(
+            find_annex_b_start_code(&[0, 0, 0, 1, 0x67, 0, 0, 1, 0x68]),
+            Some((0, 4))
+        );
+    }
+
+    #[test]
+    fn strips_a_terminal_access_unit_delimiter_before_decoder_submission() {
+        let mut bytes = vec![0, 0, 0, 1, 0x65, 0xaa, 0, 0, 0, 1, 0x09, 0xf0];
+        strip_trailing_access_unit_delimiter(&mut bytes);
+        assert_eq!(bytes, [0, 0, 0, 1, 0x65, 0xaa]);
+
+        let mut bytes = vec![0, 0, 0, 1, 0x09, 0xf0, 0, 0, 1, 0x61, 0xbb];
+        strip_trailing_access_unit_delimiter(&mut bytes);
+        assert_eq!(bytes, [0, 0, 0, 1, 0x09, 0xf0, 0, 0, 1, 0x61, 0xbb]);
+    }
+
+    #[test]
+    fn assembles_a_single_packet_frame_without_the_picture_data_flag() {
+        let header = NvVideoPacket {
+            stream_packet_index: 25,
+            frame_index: 12,
+            flags: FLAG_SOF | FLAG_EOF,
+            fec_current_block: 0,
+            fec_last_block: 0,
+            is_fec: false,
+        };
+        let mut assembler = H264AccessUnitAssembler::new(4096);
+        let frame = assembler
+            .push(header, 90_000, &[0x81, 0x08, 0, 0, 0, 1, 0x61, 0xaa])
+            .expect("source packet")
+            .expect("complete frame");
+        assert_eq!(frame.bytes, [0, 0, 0, 1, 0x61, 0xaa]);
     }
 
     #[test]
@@ -4109,6 +4071,8 @@ mod tests {
             stream_packet_index: 1,
             frame_index: 9,
             flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            fec_current_block: 0,
+            fec_last_block: 0,
             is_fec: false,
         };
         let payload = vec![0x81; MAX_GS_FRAME_HEADER_BYTES + 8];
@@ -4163,6 +4127,75 @@ mod tests {
         assert_eq!(frame.frame_index, 9);
         assert!(frame.keyframe);
         assert_eq!(frame.bytes, [0, 0, 0, 1, 0x65, 0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn receiver_assembles_one_frame_across_multiple_fec_blocks() {
+        let config = config();
+        let crypto = test_srtp(&config);
+        let block_zero_start = protect_for_test(
+            &crypto,
+            build_plaintext_rtp_with_fec_blocks(
+                20,
+                FLAG_SOF | FLAG_CONTAINS_PIC_DATA,
+                9,
+                0,
+                1,
+                &[0, 0, 0, 1, 0x65],
+            ),
+            0,
+        );
+        let block_zero_end = protect_for_test(
+            &crypto,
+            build_plaintext_rtp_with_fec_blocks(
+                21,
+                FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                9,
+                0,
+                1,
+                &[0xaa],
+            ),
+            0,
+        );
+        let block_one_start = protect_for_test(
+            &crypto,
+            build_plaintext_rtp_with_fec_blocks(
+                22,
+                FLAG_SOF | FLAG_CONTAINS_PIC_DATA,
+                9,
+                1,
+                1,
+                &[0xbb],
+            ),
+            0,
+        );
+        let block_one_end = protect_for_test(
+            &crypto,
+            build_plaintext_rtp_with_fec_blocks(
+                23,
+                FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                9,
+                1,
+                1,
+                &[0xcc],
+            ),
+            0,
+        );
+        let mut receiver = NvstVideoReceiver::new(config);
+        for packet in [&block_zero_start, &block_zero_end, &block_one_start] {
+            assert!(
+                receiver
+                    .process_datagram(peer(), packet, Instant::now())
+                    .is_empty()
+            );
+        }
+        let events = receiver.process_datagram(peer(), &block_one_end, Instant::now());
+        let [NvstReceiveEvent::Frame(frame)] = events.as_slice() else {
+            panic!("expected one complete frame, got {events:?}");
+        };
+        assert_eq!(frame.frame_index, 9);
+        assert!(frame.keyframe);
+        assert_eq!(frame.bytes, [0, 0, 0, 1, 0x65, 0xaa, 0xbb, 0xcc]);
     }
 
     #[test]

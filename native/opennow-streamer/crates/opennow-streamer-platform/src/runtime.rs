@@ -123,6 +123,7 @@ impl MainThreadHost {
         let mut surface: Option<RenderSurface> = None;
         let mut paused = false;
         let mut feedback: Option<Sender<MediaFeedback>> = None;
+        let mut software_playback_started = false;
         loop {
             match self.commands.recv_timeout(HOST_POLL_INTERVAL) {
                 Ok(HostCommand::Start {
@@ -153,6 +154,7 @@ impl MainThreadHost {
                             }
                             active = Some(output);
                             feedback = Some(session_feedback);
+                            software_playback_started = false;
                             let _ = reply.send(Ok(()));
                         }
                         Err(error) => {
@@ -263,6 +265,7 @@ impl MainThreadHost {
                     }
                     active = None;
                     feedback = None;
+                    software_playback_started = false;
                 }
                 Ok(HostCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                     if let Some(output) = active.as_mut() {
@@ -272,15 +275,27 @@ impl MainThreadHost {
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if let Some(output) = active.as_mut()
-                && let Err(message) = output.pump()
-            {
-                if let Some(feedback) = feedback.as_ref() {
-                    let _ = feedback.send(MediaFeedback::OutputError { message });
+            if let Some(output) = active.as_mut() {
+                match output.pump() {
+                    Ok(true) if !software_playback_started => {
+                        software_playback_started = true;
+                        if let Some(feedback) = feedback.as_ref() {
+                            let _ = feedback.send(MediaFeedback::PlaybackStarted {
+                                backend: "OpenH264/SDL",
+                            });
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(message) => {
+                        if let Some(feedback) = feedback.as_ref() {
+                            let _ = feedback.send(MediaFeedback::OutputError { message });
+                        }
+                        output.stop();
+                        active = None;
+                        feedback = None;
+                        software_playback_started = false;
+                    }
                 }
-                output.stop();
-                active = None;
-                feedback = None;
             }
             // The host loop replaces `NSApplication.run()`; without draining AppKit's queue the
             // overlay window never finishes ordering in and its controls stay dead.

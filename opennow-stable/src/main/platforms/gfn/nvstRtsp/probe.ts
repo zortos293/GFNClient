@@ -220,7 +220,7 @@ export function buildNvstStunBindingRequest(
   header.writeUInt16BE(packet.length - 20 + 24, 2);
   packet = Buffer.concat(parts);
   // RFC 5389 MESSAGE-INTEGRITY requires HMAC-SHA1.
-  // lgtm [js/weak-cryptographic-algorithm]
+  // lgtm[js/weak-cryptographic-algorithm]
   appendStunAttribute(parts, 0x0008, createHmac("sha1", remotePassword).update(packet).digest());
   packet = Buffer.concat(parts);
   header.writeUInt16BE(packet.length - 20 + 8, 2);

@@ -93,7 +93,7 @@ if (!nativeTarget || platformKey === hostPlatformKey) {
     encoding: "utf8",
     env: {
       ...process.env,
-      OPENNOW_NATIVE_VIDEO_BACKEND: "software",
+      ...(process.platform === "darwin" ? {} : { OPENNOW_NATIVE_VIDEO_BACKEND: "software" }),
       SDL_AUDIODRIVER: "dummy",
       SDL_VIDEODRIVER: "dummy",
     },

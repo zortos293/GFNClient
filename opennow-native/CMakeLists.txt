@@ -25,6 +25,8 @@ qt_standard_project_setup()
 
 qt_add_executable(opennow-native
     src/main.cpp
+    src/appstate.cpp
+    src/appstate.h
     src/controllerinput.cpp
     src/controllerinput.h
     src/authengine.cpp
@@ -49,6 +51,8 @@ qt_add_qml_module(opennow-native
         qml/components/KeyHint.qml
         qml/components/NavigationRail.qml
         qml/components/SettingRow.qml
+        qml/components/ToastBanner.qml
+        qml/components/ServerSelectorDialog.qml
         qml/pages/SignInPage.qml
         qml/pages/HomePage.qml
         qml/pages/LibraryPage.qml
@@ -57,6 +61,7 @@ qt_add_qml_module(opennow-native
         qml/pages/SettingsPage.qml
         qml/pages/GameDetailPage.qml
         qml/pages/StreamPage.qml
+        qml/pages/ProfilePickerPage.qml
     RESOURCES
         assets/opennow-mark.png
 )

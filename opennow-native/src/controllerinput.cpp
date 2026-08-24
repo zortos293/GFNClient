@@ -40,8 +40,9 @@ void ControllerInput::refreshController()
     }
     SDL_free(gamepads);
 
-    if (connected != m_connected || name != m_controllerName) {
+    if (connected != m_connected || name != m_controllerName || count != m_controllerCount) {
         m_connected = connected;
+        m_controllerCount = count;
         m_controllerName = name;
         emit connectedChanged();
     }
@@ -65,6 +66,25 @@ void ControllerInput::pollEvents()
         if (event.type == SDL_EVENT_GAMEPAD_ADDED || event.type == SDL_EVENT_GAMEPAD_REMOVED
             || event.type == SDL_EVENT_GAMEPAD_REMAPPED) {
             refreshController();
+            continue;
+        }
+        if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+            constexpr Sint16 Deadzone = 18000;
+            if (event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX) {
+                const int direction = event.gaxis.value > Deadzone ? 1 : (event.gaxis.value < -Deadzone ? -1 : 0);
+                if (direction != 0 && direction != m_axisXDirection) {
+                    postKey(direction > 0 ? Qt::Key_Right : Qt::Key_Left, true);
+                    postKey(direction > 0 ? Qt::Key_Right : Qt::Key_Left, false);
+                }
+                m_axisXDirection = direction;
+            } else if (event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) {
+                const int direction = event.gaxis.value > Deadzone ? 1 : (event.gaxis.value < -Deadzone ? -1 : 0);
+                if (direction != 0 && direction != m_axisYDirection) {
+                    postKey(direction > 0 ? Qt::Key_Down : Qt::Key_Up, true);
+                    postKey(direction > 0 ? Qt::Key_Down : Qt::Key_Up, false);
+                }
+                m_axisYDirection = direction;
+            }
             continue;
         }
         if (event.type != SDL_EVENT_GAMEPAD_BUTTON_DOWN

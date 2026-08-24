@@ -8,6 +8,7 @@ FocusScope {
     required property var games
     signal openGame(var game)
     signal startGame(var game)
+    signal chooseServer()
 
     function browseRows(delta) {
         if (delta > 0)
@@ -32,7 +33,7 @@ FocusScope {
     Text {
         x: Theme.pageMargin
         y: 60
-        text: "Good evening, Zortos"
+        text: "Good evening, " + appState.profileName
         color: Theme.ink
         font.family: Theme.displayFont.family
         font.pixelSize: 48
@@ -55,12 +56,13 @@ FocusScope {
             anchors.leftMargin: 24
             anchors.rightMargin: 24
             Rectangle { width: 8; height: 8; radius: 4; color: Theme.accent }
-            Text { text: "EU-WEST"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
+            Text { text: appState.serverRegion; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
             Rectangle { width: 1; height: 24; color: Theme.divider }
             Text { text: "RTX 4080 rig"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 12 }
             Rectangle { width: 1; height: 24; color: Theme.divider }
-            Text { text: "9 ms"; color: Theme.accent; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
+            Text { text: appState.serverLatency + " ms"; color: Theme.accent; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
         }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: page.chooseServer() }
     }
 
     Rectangle {

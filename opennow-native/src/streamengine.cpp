@@ -114,6 +114,14 @@ void StreamEngine::setQuality(const QString &quality)
     });
 }
 
+void StreamEngine::setBitrate(int bitrateKbps)
+{
+    sendCommand({
+        {QStringLiteral("type"), QStringLiteral("set-bitrate")},
+        {QStringLiteral("bitrateKbps"), qBound(1000, bitrateKbps, 100000)},
+    });
+}
+
 void StreamEngine::ping()
 {
     sendCommand({{QStringLiteral("type"), QStringLiteral("ping")}});

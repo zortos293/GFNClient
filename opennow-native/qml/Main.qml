@@ -16,9 +16,16 @@ ApplicationWindow {
 
     property int currentPage: 0
     property var selectedGame: games[0]
+    property string pendingQuality: "720p60"
     property bool showingDetails: false
     property bool showingStream: false
+    property bool showingProfilePicker: false
+    property bool showingServerSelector: false
+    property bool launchAfterProfile: false
     property bool reducedMotion: false
+    property string toastMessage: ""
+    property string toastDetail: ""
+    property string toastTone: "success"
     property bool signedIn: Qt.application.arguments.indexOf("--demo-signed-in") >= 0
     readonly property var games: [
         { title: "Cyber Drift 2088", subtitle: "Last played 2 h ago", badge: "CONTINUE", variant: 0, progress: 0.64, genre: "Open-world racing", store: "Steam", description: "Return to the neon megacity with your latest cloud save and a low-latency performance profile." },
@@ -29,6 +36,13 @@ ApplicationWindow {
         { title: "Ashen Kingdom", subtitle: "Ubisoft · 51 h played", badge: "NEW", variant: 5, progress: 0, genre: "Role-playing", store: "Ubisoft", description: "Return to the kingdom with every save synchronized." }
     ]
 
+    function showToast(message, detail, tone) {
+        toastMessage = message
+        toastDetail = detail || ""
+        toastTone = tone || "success"
+        toastTimer.restart()
+    }
+
     function openGame(game) {
         selectedGame = game
         showingDetails = true
@@ -37,22 +51,63 @@ ApplicationWindow {
 
     function startStream(quality) {
         showingDetails = false
+        showingServerSelector = false
         showingStream = true
         streamEngine.startDemo(quality || "720p60")
+        streamEngine.setBitrate(Number(appState.preference("streaming.bitrate", 75)) * 1000)
+    }
+
+    function configuredQuality() {
+        var resolution = String(appState.preference("streaming.resolution", "1440p (QHD)"))
+        var fps = Number(appState.preference("streaming.frameRate", "120"))
+        if (resolution.indexOf("4K") >= 0)
+            return "4k60"
+        if (resolution.indexOf("1440p") >= 0)
+            return "1440p120"
+        if (resolution.indexOf("1080p") >= 0 && fps >= 120)
+            return "1080p120"
+        if (resolution.indexOf("1080p") >= 0)
+            return "1080p60"
+        return "720p60"
+    }
+
+    function requestLaunch(game, quality) {
+        selectedGame = game
+        var requestedQuality = quality || configuredQuality()
+        if (!Boolean(appState.preference("streaming.enableStressProfiles", false))
+                && (requestedQuality === "1440p120" || requestedQuality === "1080p120" || requestedQuality === "4k60"))
+            pendingQuality = "720p60"
+        else
+            pendingQuality = requestedQuality
+        showingDetails = false
+        if (appState.preference("account.console.profilePicker", true)) {
+            launchAfterProfile = true
+            showingProfilePicker = true
+        } else {
+            showingServerSelector = true
+        }
     }
 
     function closeOverlay() {
         if (showingStream) {
             streamEngine.stop()
             showingStream = false
+        } else if (showingServerSelector) {
+            showingServerSelector = false
         } else if (showingDetails) {
             showingDetails = false
+        } else if (showingProfilePicker) {
+            showingProfilePicker = false
         }
     }
 
     function focusCurrentView() {
         if (!signedIn)
             signInPage.forceActiveFocus()
+        else if (showingProfilePicker)
+            profilePicker.forceActiveFocus()
+        else if (showingServerSelector)
+            serverSelector.forceActiveFocus()
         else if (showingStream)
             streamPage.forceActiveFocus()
         else if (showingDetails)
@@ -70,26 +125,64 @@ ApplicationWindow {
     }
 
     function switchSection(delta) {
-        if (signedIn && !showingDetails && !showingStream)
+        if (signedIn && !showingProfilePicker && !showingServerSelector && !showingDetails && !showingStream)
             currentPage = (currentPage + delta + 5) % 5
     }
 
-    Component.onCompleted: Qt.callLater(focusCurrentView)
+    Component.onCompleted: {
+        var appArgs = Qt.application.arguments
+        if (!Boolean(appState.preference("video.fullscreenOnLaunch", true)))
+            visibility = Window.Windowed
+        if (appArgs.indexOf("--demo-profile-picker") >= 0) {
+            signedIn = true
+            showingProfilePicker = true
+        }
+        if (appArgs.indexOf("--demo-server-selector") >= 0) {
+            signedIn = true
+            showingServerSelector = true
+        }
+        for (var i = 0; i < appArgs.length; ++i) {
+            if (appArgs[i].indexOf("--demo-page=") !== 0)
+                continue
+            signedIn = true
+            var pageName = appArgs[i].substring(12)
+            currentPage = pageName === "library" ? 1 : (pageName === "search" ? 2 : (pageName === "sessions" ? 3 : (pageName === "settings" ? 4 : 0)))
+        }
+        Qt.callLater(focusCurrentView)
+    }
     onCurrentPageChanged: Qt.callLater(focusCurrentView)
     onShowingDetailsChanged: Qt.callLater(focusCurrentView)
     onShowingStreamChanged: Qt.callLater(focusCurrentView)
+    onShowingProfilePickerChanged: Qt.callLater(focusCurrentView)
+    onShowingServerSelectorChanged: Qt.callLater(focusCurrentView)
     onSignedInChanged: Qt.callLater(focusCurrentView)
 
-    Shortcut { sequence: "Escape"; onActivated: window.closeOverlay() }
-    Shortcut { sequence: "Alt+Left"; onActivated: window.closeOverlay() }
+    Shortcut { sequence: "Escape"; enabled: !window.showingStream; onActivated: window.closeOverlay() }
+    Shortcut { sequence: "Alt+Left"; enabled: !window.showingStream; onActivated: window.closeOverlay() }
     Shortcut { sequence: "Ctrl+Tab"; onActivated: window.switchSection(1) }
     Shortcut { sequence: "Ctrl+Shift+Tab"; onActivated: window.switchSection(-1) }
-    Shortcut { sequence: "Y"; onActivated: { if (window.signedIn && !window.showingDetails && !window.showingStream) window.currentPage = 2 } }
+    Shortcut { sequence: "F10"; onActivated: window.visibility = window.visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen }
+    Shortcut { sequence: "X"; enabled: window.signedIn && window.currentPage === 3 && !window.showingProfilePicker && !window.showingServerSelector && !window.showingDetails && !window.showingStream; onActivated: sessionsPage.exportSessions() }
+    Shortcut { sequence: "Y"; enabled: window.signedIn && window.currentPage <= 1 && !window.showingProfilePicker && !window.showingServerSelector && !window.showingDetails && !window.showingStream; onActivated: window.currentPage = 2 }
     Connections {
         target: controllerInput
+        function onConnectedChanged() {
+            if (controllerInput.connected)
+                window.showToast(controllerInput.controllerName + " connected", "Player 1 · Controller mode", "success")
+            else
+                window.showToast("Controller disconnected", "Keyboard controls remain active", "warning")
+        }
         function onSectionRequested(delta) {
+            if (window.showingProfilePicker || window.showingServerSelector || window.showingDetails || window.showingStream)
+                return
             if (homePage.visible)
                 homePage.browseRows(delta)
+            else if (libraryPage.visible)
+                libraryPage.cycleFilter(delta)
+            else if (sessionsPage.visible)
+                sessionsPage.cycleRange(delta)
+            else if (settingsPage.visible)
+                settingsPage.cycleSection(delta)
             else if (window.signedIn)
                 window.switchSection(delta)
             else
@@ -97,8 +190,38 @@ ApplicationWindow {
         }
     }
     Connections {
+        target: appState
+        function onExportCompleted(path) {
+            if (path.length > 0)
+                window.showToast("Session report exported", path, "success")
+            else
+                window.showToast("Session report could not be exported", "Check Downloads folder permissions", "error")
+        }
+    }
+    Connections {
+        target: streamEngine
+        function onRuntimeEvent(type, payload) {
+            if (type === "error")
+                window.showToast("Stream runtime error", payload.message || "The session stopped", "error")
+            else if (type === "state" && payload.phase === "streaming")
+                window.showToast("Session connected", appState.serverName + " · " + appState.serverLatency + " ms", "success")
+        }
+    }
+    Timer { id: toastTimer; interval: 4200; onTriggered: window.toastMessage = "" }
+    Connections {
         target: authEngine
-        function onAuthorized() { window.signedIn = true }
+        function onAuthorized() {
+            window.signedIn = true
+            window.showingProfilePicker = appState.preference("account.console.profilePicker", true)
+        }
+        function onSignedInChanged() {
+            if (!authEngine.signedIn && Qt.application.arguments.indexOf("--demo-signed-in") < 0) {
+                window.signedIn = false
+                window.showingProfilePicker = false
+                window.showingDetails = false
+                window.showingStream = false
+            }
+        }
     }
 
     Rectangle {
@@ -129,6 +252,7 @@ ApplicationWindow {
                 window.currentPage = index
                 window.showingDetails = false
             }
+            onProfileRequested: window.showingProfilePicker = true
         }
 
         Item {
@@ -145,7 +269,8 @@ ApplicationWindow {
                 focus: visible
                 games: window.games
                 onOpenGame: function(game) { window.openGame(game) }
-                onStartGame: function(game) { window.selectedGame = game; window.startStream("720p60") }
+                onStartGame: function(game) { window.requestLaunch(game, window.configuredQuality()) }
+                onChooseServer: { window.selectedGame = window.games[0]; window.showingServerSelector = true }
             }
             LibraryPage {
                 id: libraryPage
@@ -154,6 +279,7 @@ ApplicationWindow {
                 focus: visible
                 games: window.games
                 onOpenGame: function(game) { window.openGame(game) }
+                onStartGame: function(game) { window.requestLaunch(game, window.configuredQuality()) }
             }
             SearchPage {
                 id: searchPage
@@ -184,7 +310,7 @@ ApplicationWindow {
                 focus: visible
                 game: window.selectedGame
                 onBack: window.showingDetails = false
-                onPlay: function(quality) { window.startStream(quality) }
+                onPlay: function(quality) { window.requestLaunch(window.selectedGame, quality) }
             }
             StreamPage {
                 id: streamPage
@@ -192,8 +318,67 @@ ApplicationWindow {
                 visible: window.showingStream
                 focus: visible
                 game: window.selectedGame
+                qualityId: window.pendingQuality
                 onExit: window.closeOverlay()
+                onScreenshotRequested: {
+                    var path = appState.nextScreenshotPath()
+                    signedInShell.grabToImage(function(result) {
+                        if (!result.saveToFile(path))
+                            window.showToast("Screenshot could not be saved", path, "error")
+                    })
+                }
             }
+        }
+
+        ProfilePickerPage {
+            id: profilePicker
+            anchors.fill: parent
+            visible: window.showingProfilePicker
+            focus: visible
+            z: 80
+            onProfileSelected: function(name) {
+                appState.selectProfile(name)
+                window.showingProfilePicker = false
+                if (window.launchAfterProfile) {
+                    window.launchAfterProfile = false
+                    window.showingServerSelector = true
+                } else {
+                    window.currentPage = 0
+                }
+            }
+            onAddAccount: authEngine.signOut()
+            onManageProfiles: {
+                window.showingProfilePicker = false
+                window.currentPage = 4
+            }
+            onBack: {
+                window.showingProfilePicker = false
+                window.launchAfterProfile = false
+            }
+        }
+
+        ServerSelectorDialog {
+            id: serverSelector
+            anchors.fill: parent
+            visible: window.showingServerSelector
+            focus: visible
+            z: 90
+            game: window.selectedGame
+            onLaunch: function(serverId) {
+                window.startStream(window.pendingQuality)
+            }
+            onCancelled: window.showingServerSelector = false
+        }
+
+        ToastBanner {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.top
+            anchors.topMargin: 20
+            message: window.toastMessage
+            detail: window.toastDetail
+            tone: window.toastTone
+            z: 120
+            onDismissed: window.toastMessage = ""
         }
         }
     }

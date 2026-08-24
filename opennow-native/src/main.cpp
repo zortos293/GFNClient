@@ -1,3 +1,4 @@
+#include "appstate.h"
 #include "authengine.h"
 #include "controllerinput.h"
 #include "streamengine.h"
@@ -20,10 +21,12 @@ int main(int argc, char *argv[])
     StreamEngine streamEngine;
     ControllerInput controllerInput;
     AuthEngine authEngine;
+    AppState appState;
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("streamEngine"), &streamEngine);
     engine.rootContext()->setContextProperty(QStringLiteral("controllerInput"), &controllerInput);
     engine.rootContext()->setContextProperty(QStringLiteral("authEngine"), &authEngine);
+    engine.rootContext()->setContextProperty(QStringLiteral("appState"), &appState);
     engine.load(QUrl(QStringLiteral("qrc:/OpenNOW/qml/Main.qml")));
 
     if (engine.rootObjects().isEmpty()) {

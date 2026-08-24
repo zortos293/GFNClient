@@ -35,7 +35,7 @@ impl Session {
              videotestsrc is-live=true pattern=ball ! \
              video/x-raw,width={width},height={height},framerate={fps}/1 ! \
              queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! \
-             videoconvert n-threads=4 ! vp8enc deadline=1 cpu-used=8 threads=4 keyframe-max-dist={fps} target-bitrate={bitrate} ! \
+             videoconvert n-threads=4 ! vp8enc name=encoder deadline=1 cpu-used=8 threads=4 keyframe-max-dist={fps} target-bitrate={bitrate} ! \
              rtpvp8pay pt=96 picture-id-mode=15-bit ! \
              identity name=rtp-counter signal-handoffs=true ! \
              application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! sender. ",
@@ -107,6 +107,15 @@ impl Session {
             phase: "idle",
             message: "WebRTC session ended cleanly",
         });
+    }
+
+    pub fn set_bitrate(&self, bitrate_kbps: u32) -> Result<()> {
+        let encoder = self
+            .pipeline
+            .by_name("encoder")
+            .context("VP8 encoder missing")?;
+        encoder.set_property("target-bitrate", bitrate_kbps);
+        Ok(())
     }
 
     pub fn poll(&mut self, emitter: &Emitter) -> Result<()> {

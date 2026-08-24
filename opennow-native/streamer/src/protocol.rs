@@ -12,6 +12,10 @@ pub enum Command {
     SetQuality {
         quality: String,
     },
+    SetBitrate {
+        #[serde(rename = "bitrateKbps")]
+        bitrate_kbps: u32,
+    },
     Ping,
     Shutdown,
 }
@@ -41,6 +45,13 @@ impl Quality {
                 height: 1080,
                 fps: 60,
                 bitrate_kbps: 18_000,
+            },
+            "1440p120" => Self {
+                id: "1440p120",
+                width: 2560,
+                height: 1440,
+                fps: 120,
+                bitrate_kbps: 75_000,
             },
             "4k60" => Self {
                 id: "4k60",
@@ -123,5 +134,18 @@ mod tests {
     fn normalizes_unknown_quality_to_performance() {
         assert_eq!(Quality::parse("unexpected").id, "1080p120");
         assert_eq!(Quality::parse("4K60").width, 3840);
+        assert_eq!(Quality::parse("1440p120").height, 1440);
+    }
+
+    #[test]
+    fn parses_live_bitrate_updates() {
+        let command: Command =
+            serde_json::from_str(r#"{"type":"set-bitrate","bitrateKbps":75000}"#).unwrap();
+        assert_eq!(
+            command,
+            Command::SetBitrate {
+                bitrate_kbps: 75_000
+            }
+        );
     }
 }

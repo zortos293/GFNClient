@@ -99,6 +99,16 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            Ok(Command::SetBitrate { bitrate_kbps }) => {
+                if let Some(active) = session.as_ref() {
+                    if let Err(error) = active.set_bitrate(bitrate_kbps) {
+                        emitter.emit(&Event::Error {
+                            code: "bitrate-apply-failed",
+                            message: error.to_string(),
+                        });
+                    }
+                }
+            }
             Ok(Command::Ping) => emitter.emit(&Event::Pong {
                 monotonic_ms: started_at.elapsed().as_millis(),
             }),

@@ -8,20 +8,7 @@ FocusScope {
     signal signedIn()
     property int providerIndex: 0
     property int codeIndex: 0
-    readonly property var providers: [
-        { mark: "NV", name: "NVIDIA · GeForce NOW", detail: "Global · default provider", login: "NVIDIA", url: "login.nvidia.com/device" },
-        { mark: "LG", name: "LG U+", detail: "Korea · alliance partner", login: "LG U+", url: "gfn.lguplus.com/device" },
-        { mark: "TM", name: "Taiwan Mobile", detail: "Taiwan · alliance partner", login: "TAIWAN MOBILE", url: "gfn.taiwanmobile.com/device" },
-        { mark: "BG", name: "bro.game", detail: "Regional · alliance partner", login: "BRO.GAME", url: "bro.game/device" },
-        { mark: "G+", name: "GAME+", detail: "Türkiye · alliance partner", login: "GAME+", url: "gameplus.com.tr/device" },
-        { mark: "SB", name: "SoftBank", detail: "Japan · alliance partner", login: "SOFTBANK", url: "cloudgaming.mb.softbank.jp/device" },
-        { mark: "AU", name: "au", detail: "Japan · alliance partner", login: "AU", url: "cloudgame.auone.jp/device" },
-        { mark: "SH", name: "StarHub", detail: "Singapore · alliance partner", login: "STARHUB", url: "gfn.starhub.com/device" },
-        { mark: "PT", name: "Pentanet", detail: "Australia · alliance partner", login: "PENTANET", url: "cloud.gg/device" },
-        { mark: "ZN", name: "Zain", detail: "Middle East · alliance partner", login: "ZAIN", url: "gfn.zain.com/device" },
-        { mark: "RN", name: "Rain", detail: "South Africa · alliance partner", login: "RAIN", url: "gfn.rain.co.za/device" },
-        { mark: "YS", name: "Yes", detail: "Malaysia · alliance partner", login: "YES", url: "gfn.yes.my/device" }
-    ]
+    readonly property var providers: authEngine.providers
     readonly property var codes: [
         ["7", "K", "4", "—", "D", "9", "X"],
         ["M", "2", "R", "—", "8", "Q", "P"],
@@ -43,6 +30,7 @@ FocusScope {
     function cycleProvider(delta) {
         providerIndex = (providerIndex + delta + providers.length) % providers.length
         codeIndex = (codeIndex + 1) % codes.length
+        authEngine.selectProvider(providerIndex)
     }
 
     function refreshCode() {
@@ -53,9 +41,19 @@ FocusScope {
         authEngine.startLogin()
     }
 
+    function verificationHost() {
+        if (authEngine.verificationUrl.length === 0)
+            return providers[providerIndex].url
+        return authEngine.verificationUrl.replace(/^https?:\/\//, "").split(/[\/?#]/)[0]
+    }
+
     Shortcut { sequence: "Y"; enabled: page.visible; onActivated: page.refreshCode() }
     Shortcut { sequence: "Ctrl+Left"; enabled: page.visible; onActivated: page.cycleProvider(-1) }
     Shortcut { sequence: "Ctrl+Right"; enabled: page.visible; onActivated: page.cycleProvider(1) }
+    Connections {
+        target: authEngine
+        function onSelectedProviderChanged() { page.providerIndex = authEngine.selectedProviderIndex }
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -158,7 +156,7 @@ FocusScope {
                     Text { text: page.providers[page.providerIndex].detail; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 10 }
                 }
                 Item { Layout.fillWidth: true }
-                Text { text: "11 more ⌄"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 10 }
+                Text { text: Math.max(0, page.providers.length - 1) + " more ⌄"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 10 }
             }
             background: Rectangle {
                 radius: 12
@@ -189,6 +187,7 @@ FocusScope {
                     Keys.onReturnPressed: {
                         page.providerIndex = currentIndex
                         page.codeIndex = (page.codeIndex + 1) % page.codes.length
+                        authEngine.selectProvider(currentIndex)
                         providerPopup.close()
                         providerButton.forceActiveFocus()
                     }
@@ -205,6 +204,7 @@ FocusScope {
                         onClicked: {
                             page.providerIndex = index
                             page.codeIndex = (page.codeIndex + 1) % page.codes.length
+                            authEngine.selectProvider(index)
                             providerPopup.close()
                             providerButton.forceActiveFocus()
                         }
@@ -280,7 +280,7 @@ FocusScope {
                 }
                 Text {
                     width: parent.width
-                    text: "On any phone or PC, open " + page.providers[page.providerIndex].url + " and enter this code. Switching\nprovider issues a new code."
+                    text: "On any phone or PC, open " + page.verificationHost() + " and enter this code. Switching\nprovider issues a new code."
                     color: Theme.inkSoft
                     font.family: Theme.bodyFont.family
                     font.pixelSize: 14

@@ -6,6 +6,7 @@ Rectangle {
     id: rail
     property int currentIndex: 0
     signal navigate(int index)
+    signal profileRequested()
 
     width: Theme.railWidth
     color: Theme.canvas
@@ -60,22 +61,27 @@ Rectangle {
         }
     }
 
-    Rectangle {
+    Button {
+        id: profileButton
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottomMargin: 28
         width: 44
         height: 44
-        radius: 22
-        color: "#18211c"
-        border.color: "#344039"
-        Text {
+        onClicked: rail.profileRequested()
+        contentItem: Text {
             anchors.centerIn: parent
-            text: "Z"
+            text: appState.profileInitial
             color: Theme.ink
             font.family: Theme.bodyFont.family
             font.pixelSize: 14
             font.weight: Font.Bold
+        }
+        background: Rectangle {
+            radius: 22
+            color: profileButton.activeFocus ? "#213329" : "#18211c"
+            border.width: profileButton.activeFocus ? 2 : 1
+            border.color: profileButton.activeFocus ? Theme.accent : "#344039"
         }
     }
 }

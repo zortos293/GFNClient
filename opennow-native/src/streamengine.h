@@ -34,6 +34,7 @@ public:
     Q_INVOKABLE void startDemo(const QString &quality = QStringLiteral("720p60"));
     Q_INVOKABLE void stop();
     Q_INVOKABLE void setQuality(const QString &quality);
+    Q_INVOKABLE void setBitrate(int bitrateKbps);
     Q_INVOKABLE void ping();
 
 signals:

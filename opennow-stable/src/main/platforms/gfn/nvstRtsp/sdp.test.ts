@@ -61,6 +61,7 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   const sdp = buildAnnounceSdp({
     resolution: "1920x1080",
     fps: 60,
+    maxBitrateKbps: 100_000,
     videoPort: 5004,
     clientPorts: { video: 45000, audio: 45002, control: 45004 },
   });
@@ -71,7 +72,7 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   assert.match(sdp, /a=x-nv-video\[0\]\.framePacing\.mode:1/);
   assert.match(sdp, /a=x-nv-video\[0\]\.framePacing\.feedbackMode:1/);
   assert.match(sdp, /a=x-nv-video\[0\]\.framePacing\.pid\.minTargetFrameTimeUs:7936/);
-  assert.doesNotMatch(sdp, /a=x-nv-video\[0\]\.maxFPS:/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:60/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.video:45000/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.audio:45002/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.control:45004/);
@@ -80,10 +81,27 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bitStreamFormat:0/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bllFec\.enable:0/);
   assert.match(sdp, /a=x-nv-aqos\.enableRedundancy:0/);
-  assert.match(sdp, /a=x-nv-bwe\.useOwdCongestionControl:0/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.initialBitrateKbps:25000/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.initialPeakBitrateKbps:25000/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.bw\.maximumBitrateKbps:100000/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.bw\.minimumBitrateKbps:1000/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.dynamicStreamingMode:0/);
+  assert.match(sdp, /a=x-nv-bwe\.useOwdCongestionControl:1/);
   assert.doesNotMatch(sdp, /a=x-nv-general\.rtcpOnSctp:/);
   assert.match(sdp, /m=video 5004\r\ni=DeviceString, DeviceName/);
   assert.doesNotMatch(sdp, /RTP\/AVP|msid:video_0|clientTransport|nativeRtcOnBundlePort|iceUsernameFragment|dtlsFingerprint|controlProtocol/);
+});
+
+test("buildAnnounceSdp advertises the negotiated high-FPS ceiling", () => {
+  const sdp = buildAnnounceSdp({ fps: 120 });
+  assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:120/);
+});
+
+test("buildAnnounceSdp derives the adaptive startup rate from the selected ceiling", () => {
+  const sdp = buildAnnounceSdp({ maxBitrateKbps: 80_000 });
+  assert.match(sdp, /a=x-nv-video\[0\]\.initialBitrateKbps:20000/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.initialPeakBitrateKbps:20000/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.bw\.maximumBitrateKbps:80000/);
 });
 
 test("buildAnnounceSdp advertises RTCP over SCTP only when negotiated", () => {

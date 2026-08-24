@@ -64,7 +64,7 @@ const ANNOUNCE_ALLOWLIST = {
     redundancyLevel: "0",
   },
   bwe: {
-    useOwdCongestionControl: "0",
+    useOwdCongestionControl: "1",
   },
   general: {
     rtspWebSocketPerConnection: "1",
@@ -97,6 +97,8 @@ export function buildAnnounceSdp(
   options: {
     resolution?: string;
     fps?: number;
+    /** User-selected bitrate ceiling. Native GFN starts at 25% and adapts up to this value. */
+    maxBitrateKbps?: number;
     encryptionKeyHex?: string;
     encryptionKeyId?: number;
     iceCredentials?: { usernameFragment: string; password: string };
@@ -141,7 +143,15 @@ export function buildAnnounceSdp(
   } = {},
 ): string {
   const { width, height } = parseResolution(options.resolution);
+  const fps = options.fps && Number.isFinite(options.fps) && options.fps > 0
+    ? Math.round(options.fps)
+    : 60;
   const videoPort = options.videoPort && options.videoPort > 0 ? options.videoPort : 0;
+  const maximumBitrateKbps = Math.max(
+    1_000,
+    Math.min(150_000, Math.round(options.maxBitrateKbps ?? 100_000)),
+  );
+  const initialBitrateKbps = Math.max(1_000, Math.round(maximumBitrateKbps / 4));
 
   const lines: string[] = [
     "v=0",
@@ -168,7 +178,22 @@ export function buildAnnounceSdp(
   };
 
   pushGroup("video", true, ANNOUNCE_ALLOWLIST.video);
+  // CloudMatch provisions the requested profile, but NVST still requires the
+  // client frame-rate ceiling in ANNOUNCE. Without it, the server defaults to
+  // a 60 FPS video stream even when the negotiated session profile says 120.
+  lines.push(`a=x-nv-video[0].maxFPS:${fps}`);
+  lines.push(`a=x-nv-video[0].initialBitrateKbps:${initialBitrateKbps}`);
+  lines.push(`a=x-nv-video[0].initialPeakBitrateKbps:${initialBitrateKbps}`);
   pushGroup("vqos", true, ANNOUNCE_ALLOWLIST.vqos);
+  // Match the installed Windows client's native NVST policy: bitrate remains
+  // adaptive while dynamic resolution/framerate stay disabled. Omitting these
+  // fields leaves the server near its low default rate even when the UI ceiling
+  // is much higher.
+  lines.push(`a=x-nv-vqos[0].bw.maximumBitrateKbps:${maximumBitrateKbps}`);
+  lines.push("a=x-nv-vqos[0].bw.minimumBitrateKbps:1000");
+  lines.push("a=x-nv-vqos[0].drc.bitrateIirFilterFactor:128");
+  lines.push("a=x-nv-vqos[0].resControl.bitrateIirFilterFactor:128");
+  lines.push("a=x-nv-vqos[0].dynamicStreamingMode:0");
   pushGroup("packetPacing", false, ANNOUNCE_ALLOWLIST.packetPacing);
   pushGroup("ri", false, ANNOUNCE_ALLOWLIST.ri);
   pushGroup("aqos", false, ANNOUNCE_ALLOWLIST.aqos);

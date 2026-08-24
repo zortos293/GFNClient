@@ -188,7 +188,6 @@ export class SignalingCoordinator {
             shortcuts,
           };
         }
-        this.getNativeStreamerManager().updateShortcuts(shortcuts);
       },
     );
 
@@ -279,7 +278,6 @@ export class SignalingCoordinator {
       };
     }
 
-    this.nativeStreamerManager?.updateBitrateLimit(maxBitrateMbps * 1000);
   }
 
   applySettingsChange<K extends keyof Settings>(
@@ -452,22 +450,6 @@ export class SignalingCoordinator {
   private emitToRenderer(event: MainToRendererSignalingEvent): void {
     const mainWindow = this.deps.getMainWindow();
     if (mainWindow && !mainWindow.isDestroyed()) {
-      if (event.type === "native-stream-stats") {
-        const serverGpuType = event.stats.serverGpuType?.trim()
-          || this.nativeStreamerContext?.session.gpuType?.trim()
-          || undefined;
-        const serverLocation = event.stats.serverLocation?.trim()
-          || this.nativeStreamerContext?.session.serverLocation?.trim()
-          || undefined;
-        event = {
-          ...event,
-          stats: {
-            ...event.stats,
-            serverGpuType,
-            serverLocation,
-          },
-        };
-      }
       mainWindow.webContents.send(IPC_CHANNELS.SIGNALING_EVENT, event);
     }
   }

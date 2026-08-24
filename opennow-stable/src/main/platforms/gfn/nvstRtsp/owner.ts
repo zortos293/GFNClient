@@ -83,11 +83,15 @@ export class GfnNvstRtspSessionOwner implements GfnNvstRtspOwner {
       }
 
       const sessionId = context.session.sessionId;
-      if (this.active?.sessionId === sessionId) {
+      if (this.active?.sessionId === sessionId && this.active.rtsp.isHealthy()) {
         return {
           ...withoutNvstVideo(context),
           nvstVideo: this.active.rtsp.videoSession,
         };
+      }
+
+      if (this.active?.sessionId === sessionId) {
+        this.log(`Replacing unhealthy NVST RTSPS control session for GFN session ${sessionId}`);
       }
 
       await this.releaseActive(`replaced by GFN session ${sessionId}`);
@@ -106,7 +110,8 @@ export class GfnNvstRtspSessionOwner implements GfnNvstRtspOwner {
           rtspsEndpoints,
           resolution: context.settings.resolution,
           fps: context.settings.fps,
-          codec: context.session.negotiatedStreamProfile?.codec ?? context.settings.codec,
+          codec: "H264",
+          bundlePeer: context.session.mediaConnectionInfo,
           onLog: this.dependencies.onLog,
           onVideoReady: this.dependencies.onVideoReady,
           onAnnounceReady: this.dependencies.onAnnounceReady,

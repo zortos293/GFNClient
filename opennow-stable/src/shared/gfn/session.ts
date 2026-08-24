@@ -32,8 +32,7 @@ export interface StreamSettings {
   enableCloudGsync: boolean;
   /** Renderer-selected client path; main uses this to apply native-only Cloud G-Sync gating. */
   clientMode?: StreamClientMode;
-  /** Selected native streamer backend; stub cannot support Cloud G-Sync presentation. */
-  /** Native media transport; legacy NVST values normalize to WebRTC. */
+  /** Native media transport selected for the session. */
   transportMode?: StreamTransportMode;
   /** Native-only override for Cloud G-Sync display detection. */
   nativeCloudGsyncMode?: NativeStreamerFeatureMode;

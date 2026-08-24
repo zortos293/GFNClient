@@ -47,11 +47,11 @@ pub const fn supports_audio_output() -> bool {
 #[cfg(target_os = "windows")]
 fn hardware_backend() -> VideoBackendCapability {
     let probe = opennow_streamer_platform_windows::WindowsBackend::probe();
-    let available = probe.h264_hardware_decode && probe.d3d11_presentation;
+    let available = probe.bundled_backend_available();
     let reason = if available {
         None
     } else {
-        Some("D3D11 H.264 hardware decode or presentation is unavailable")
+        Some("D3D11 H.264 hardware decode, presentation, or WASAPI output is unavailable")
     };
     VideoBackendCapability {
         backend: "d3d11",
@@ -209,7 +209,7 @@ mod tests {
             let probe = opennow_streamer_platform_windows::WindowsBackend::probe();
             assert_eq!(
                 hardware.available,
-                probe.h264_hardware_decode && probe.d3d11_presentation
+                probe.h264_hardware_decode && probe.d3d11_presentation && probe.wasapi_render
             );
             assert!(
                 hardware

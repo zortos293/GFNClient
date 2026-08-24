@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -14,6 +14,7 @@ use objc2_quartz_core::{CALayer, CAMetalLayer};
 
 use crate::format::{RendererRect, ScreenRect, SurfaceTarget};
 use crate::lifecycle::AttachmentLifecycle;
+use crate::overlay_should_be_ordered;
 
 use super::{BackendError, NativeSurfaceHandle};
 
@@ -79,7 +80,7 @@ pub(super) fn debug_overlay_window(main_thread: MainThreadMarker) {
         ]
     };
     window.setTitle(&objc2_foundation::NSString::from_str("OpenNOW Video"));
-    window.orderFrontRegardless();
+    window.orderFront(None);
     eprintln!("NVST debug-overlay-window created");
     std::mem::forget(window);
 }
@@ -102,6 +103,7 @@ impl SurfaceOwner {
         target: SurfaceTarget,
         main_thread: MainThreadMarker,
     ) -> Result<Self, BackendError> {
+        let ordered_visible;
         let (window, view, owns_window, overlay, child_parent, requested_visible, parent_pid) =
             match target {
                 SurfaceTarget::OwnedOverlay(config) => {
@@ -113,22 +115,10 @@ impl SurfaceOwner {
                         objc2_app_kit::NSApplicationActivationPolicy::Accessory,
                     );
                     application.finishLaunching();
-                    application.activate();
                     config.validate()?;
                     let parent_pid = unsafe { libc::getppid() };
                     let frontmost = application_is_frontmost(parent_pid);
-                    // External-window mode: visibility is driven purely by the
-                    // renderer's requested state; the frontmost-app gate is
-                    // disabled so the video stays visible while debugging.
-                    let visible = config.visible;
-                    eprintln!(
-                        "NVST overlay-attach rect=({},{} {}x{}) config.visible={} parent_pid={parent_pid} frontmost={frontmost} visible={visible}",
-                        config.screen_rect.x,
-                        config.screen_rect.y,
-                        config.screen_rect.width,
-                        config.screen_rect.height,
-                        config.visible,
-                    );
+                    let ordered = overlay_should_be_ordered(config.visible, frontmost);
                     let styles = NSWindowStyleMask::Titled
                         | NSWindowStyleMask::Closable
                         | NSWindowStyleMask::Resizable;
@@ -154,11 +144,12 @@ impl SurfaceOwner {
                     let view = window
                         .contentView()
                         .ok_or(BackendError::MissingContentView)?;
-                    if visible {
-                        window.orderFrontRegardless();
+                    if ordered {
+                        window.orderFront(None);
                     } else {
                         window.orderOut(None);
                     }
+                    ordered_visible = ordered;
                     (
                         Some(window),
                         view,
@@ -173,6 +164,7 @@ impl SurfaceOwner {
                     let view = unsafe { Retained::retain(view.as_ptr().as_ptr().cast::<NSView>()) }
                         .ok_or(BackendError::MissingContentView)?;
                     let window = view.window();
+                    ordered_visible = true;
                     (window, view, false, false, None, true, None)
                 }
                 SurfaceTarget::NsWindow(config) => {
@@ -189,6 +181,7 @@ impl SurfaceOwner {
                         msg_send![main_thread.alloc::<PassiveSurfaceView>(), initWithFrame: frame]
                     };
                     child.setHidden(!config.visible);
+                    ordered_visible = config.visible;
                     (
                         Some(window),
                         child.into_super(),
@@ -226,9 +219,7 @@ impl SurfaceOwner {
             view,
             layer,
             attachment,
-            visible: Arc::new(AtomicBool::new(
-                requested_visible && parent_pid.is_none_or(application_is_frontmost),
-            )),
+            visible: Arc::new(AtomicBool::new(ordered_visible)),
             requested_visible,
             parent_pid,
             owns_window,
@@ -289,16 +280,13 @@ impl SurfaceOwner {
         self.layer.setContentsScale(window.backingScaleFactor());
         self.requested_visible = visible;
         let frontmost = self.parent_pid.is_some_and(application_is_frontmost);
-        let ordered = visible;
-        eprintln!(
-            "NVST overlay-update rect=({},{} {}x{}) requested_visible={visible} frontmost={frontmost} ordered={ordered}",
-            screen_rect.x, screen_rect.y, screen_rect.width, screen_rect.height,
-        );
-        self.visible.store(ordered, Ordering::Release);
-        if ordered {
-            window.orderFrontRegardless();
-        } else {
-            window.orderOut(None);
+        let ordered = overlay_should_be_ordered(visible, frontmost);
+        if self.visible.swap(ordered, Ordering::AcqRel) != ordered {
+            if ordered {
+                window.orderFront(None);
+            } else {
+                window.orderOut(None);
+            }
         }
         Ok(())
     }
@@ -308,34 +296,14 @@ impl SurfaceOwner {
             return Ok(());
         }
         let window = self.window.as_ref().ok_or(BackendError::Stopped)?;
-        let raw_frontmost = NSWorkspace::sharedWorkspace()
-            .frontmostApplication()
-            .map(|application| application.processIdentifier());
         let frontmost = self.parent_pid.is_some_and(application_is_frontmost);
-        let ordered = self.requested_visible;
-        static POLL_LOG: AtomicU64 = AtomicU64::new(0);
-        let tick = POLL_LOG.fetch_add(1, Ordering::Relaxed);
-        if tick % 20 == 0 {
-            eprintln!(
-                "NVST overlay-poll parent={:?} raw_frontmost={raw_frontmost:?} requested_visible={} visible={}",
-                self.parent_pid,
-                self.requested_visible,
-                self.visible.load(Ordering::Acquire),
-            );
-        }
-        // Re-assert ordering every poll: the initial orderFrontRegardless can be lost when it
-        // races the app's launch registration with the window server, and re-ordering is cheap.
-        if ordered {
-            window.orderFrontRegardless();
-        }
+        let ordered = overlay_should_be_ordered(self.requested_visible, frontmost);
         if self.visible.swap(ordered, Ordering::AcqRel) == ordered {
             return Ok(());
         }
-        eprintln!(
-            "NVST overlay-ordering-change requested_visible={} frontmost={frontmost} ordered={ordered}",
-            self.requested_visible,
-        );
-        if !ordered {
+        if ordered {
+            window.orderFront(None);
+        } else {
             window.orderOut(None);
         }
         Ok(())

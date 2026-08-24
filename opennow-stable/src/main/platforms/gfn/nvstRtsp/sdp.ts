@@ -29,11 +29,11 @@ const ANNOUNCE_ALLOWLIST = {
     enableAv1RcPrecisionFactor: "1",
   },
   vqos: {
-    "fec.enable": "1",
-    "fec.repairPercent": "20",
-    "fec.repairMinPercent": "5",
-    "fec.repairMaxPercent": "40",
-    "bllFec.enable": "1",
+    "fec.enable": "0",
+    "fec.repairPercent": "0",
+    "fec.repairMinPercent": "0",
+    "fec.repairMaxPercent": "0",
+    "bllFec.enable": "0",
     "grc.enable": "0",
     "drc.enable": "0",
     "dfc.adjustResAndFps": "0",
@@ -59,8 +59,8 @@ const ANNOUNCE_ALLOWLIST = {
     enablePartiallyReliableTransferHid: "-1",
   },
   aqos: {
-    enableRedundancy: "1",
-    redundancyLevel: "2",
+    enableRedundancy: "0",
+    redundancyLevel: "0",
   },
   general: {
     rtspWebSocketPerConnection: "1",

@@ -47,6 +47,7 @@ export interface NvstRtspProbeInput {
   resolution?: string;
   fps?: number;
   codec?: string;
+  bundlePeer?: { ip: string; port: number };
   timeoutMs?: number;
   onLog?: (message: string) => void;
   /** Official Bifrost has MjolnirVideoReceiver reading before later SETUP/ANNOUNCE/PLAY. */
@@ -57,6 +58,7 @@ export interface NvstRtspProbeInput {
 
 export interface NvstRtspClient {
   connect(sessionId?: string): Promise<void>;
+  isHealthy(): boolean;
   request(
     method: string,
     uri: string,
@@ -165,6 +167,7 @@ export interface NvstRtspSession {
   videoSession: NvstVideoSession;
   steps: string[];
   videoUdpFd?: number;
+  isHealthy(): boolean;
   /** Releases the video UDP reservation after native has rebound clientUdpPort. */
   handoffVideoUdp(): Promise<void>;
   release(reason?: string): Promise<void>;
@@ -217,7 +220,7 @@ export function buildNvstStunBindingRequest(
   header.writeUInt16BE(packet.length - 20 + 24, 2);
   packet = Buffer.concat(parts);
   // RFC 5389 MESSAGE-INTEGRITY requires HMAC-SHA1.
-  // lgtm [js/weak-cryptographic-algorithm]
+  // codeql[js/weak-cryptographic-algorithm]
   appendStunAttribute(parts, 0x0008, createHmac("sha1", remotePassword).update(packet).digest());
   packet = Buffer.concat(parts);
   header.writeUInt16BE(packet.length - 20 + 8, 2);
@@ -381,7 +384,7 @@ export function buildNvstStunBindingSuccess(
   header.writeUInt16BE(packet.length - 20 + 24, 2);
   packet = Buffer.concat(parts);
   // RFC 5389 MESSAGE-INTEGRITY requires HMAC-SHA1.
-  // lgtm [js/weak-cryptographic-algorithm]
+  // codeql[js/weak-cryptographic-algorithm]
   appendStunAttribute(parts, 0x0008, createHmac("sha1", localPassword).update(packet).digest());
   packet = Buffer.concat(parts);
   header.writeUInt16BE(packet.length - 20 + 8, 2);
@@ -844,6 +847,9 @@ export async function negotiateNvstRtspSession(
       mjolnirUdpPort: nativeMjolnirPort,
       videoPeerIp: videoPeer.ip,
       videoPeerPort: videoPeer.port,
+      ...(input.bundlePeer
+        ? { bundlePeerIp: input.bundlePeer.ip, bundlePeerPort: input.bundlePeer.port }
+        : {}),
       srtpAesKeyHex: srtp.aesKeyHex,
       srtpKeyId: srtp.keyId,
       srtpSaltHex: srtp.saltHex,
@@ -1111,6 +1117,7 @@ export async function negotiateNvstRtspSession(
       videoSession,
       steps,
       videoUdpFd: udp.fd,
+      isHealthy: () => client.isHealthy(),
       handoffVideoUdp: async () => {
         if (released || !udp) {
           return;

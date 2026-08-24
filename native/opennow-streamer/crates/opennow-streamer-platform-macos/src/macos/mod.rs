@@ -12,6 +12,7 @@ use objc2::MainThreadMarker;
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice};
 use thiserror::Error;
 
+use crate::failure::{BackendFailure, FailureReporter, VideoDecodeLoss};
 use crate::format::{
     AudioFormat, BackendConfig, FormatError, FrameTiming, H264Format, H264Framing, RendererRect,
     ScreenRect, access_unit_to_avcc,
@@ -283,6 +284,7 @@ impl StreamSink {
             &format,
             self.shared.video_queue.clone(),
             Arc::clone(&self.shared.counters),
+            Arc::clone(&self.shared.failures),
             self.shared.video_frames_in_flight,
         )?;
         let mut decoder = self
@@ -326,6 +328,7 @@ impl StreamSink {
             self.shared.opus_packets,
             self.shared.pcm_milliseconds,
             Arc::clone(&self.shared.counters),
+            Arc::clone(&self.shared.failures),
         )?);
         Ok(())
     }
@@ -337,12 +340,21 @@ impl StreamSink {
     pub fn stats(&self) -> BackendStats {
         self.shared.counters.snapshot()
     }
+
+    pub fn pop_video_decode_loss(&self) -> Option<VideoDecodeLoss> {
+        self.shared.failures.pop_video_decode_loss()
+    }
+
+    pub fn fatal_failure(&self) -> Option<BackendFailure> {
+        self.shared.failures.fatal_failure()
+    }
 }
 
 struct Shared {
     lifecycle: Lifecycle,
     paused: AtomicBool,
     counters: Arc<Counters>,
+    failures: Arc<FailureReporter>,
     video_queue: Arc<BoundedQueue<DecodedFrame>>,
     video: Mutex<Option<VideoDecoder>>,
     audio: Mutex<Option<AudioPipeline>>,
@@ -397,17 +409,20 @@ impl MacOsBackend {
         config.validate()?;
         let surface = SurfaceOwner::attach(config.surface, main_thread)?;
         let counters = Arc::new(Counters::default());
+        let failures = Arc::new(FailureReporter::default());
         let video_queue = Arc::new(BoundedQueue::new(config.queues.decoded_video_frames));
         let presenter = PresenterHandle::start(
             surface.metal_layer(),
             surface.presentation_visibility(),
             Arc::clone(&video_queue),
             Arc::clone(&counters),
+            Arc::clone(&failures),
         )?;
         let video = VideoDecoder::new(
             &config.video,
             Arc::clone(&video_queue),
             Arc::clone(&counters),
+            Arc::clone(&failures),
             config.queues.video_frames_in_flight,
         )?;
         let audio = AudioPipeline::start(
@@ -415,11 +430,13 @@ impl MacOsBackend {
             config.queues.opus_packets,
             config.queues.pcm_milliseconds,
             Arc::clone(&counters),
+            Arc::clone(&failures),
         )?;
         let shared = Arc::new(Shared {
             lifecycle: Lifecycle::running(),
             paused: AtomicBool::new(false),
             counters,
+            failures,
             video_queue,
             video: Mutex::new(Some(video)),
             audio: Mutex::new(Some(audio)),
@@ -500,6 +517,10 @@ impl MacOsBackend {
 
     pub fn stats(&self) -> BackendStats {
         self.shared.counters.snapshot()
+    }
+
+    pub fn fatal_failure(&self) -> Option<BackendFailure> {
+        self.shared.failures.fatal_failure()
     }
 
     pub fn set_paused(&mut self, paused: bool) -> Result<(), BackendError> {

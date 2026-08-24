@@ -8,9 +8,9 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -55,10 +55,13 @@ const GFN_SRTCP_KEY_LABEL: u8 = 0x03;
 const GFN_SRTCP_SALT_LABEL: u8 = 0x05;
 const SRTCP_ENCRYPTED_FLAG: u32 = 0x8000_0000;
 const SRTCP_RR_INTERVAL: Duration = Duration::from_secs(1);
-/// How many even SCTP stream ids to try for the `rtcp1` feedback channel. The
-/// server resets the DCEP open on the wrong id, so we probe the low even ids.
-const RTCP_STREAM_CANDIDATES: usize = 8;
+const RTCP_RECOVERY_INTERVAL: Duration = Duration::from_millis(20);
+const MAX_PENDING_NACK_RANGES: usize = 16;
+const MAX_NACK_PACKET_COUNT: usize = 64;
+const MAX_NACK_FCI_ENTRIES: usize = MAX_NACK_PACKET_COUNT.div_ceil(17);
+const RTCP_STREAM_CANDIDATES: usize = 1;
 const NVST_PARTIAL_RELIABLE_LIFETIME_MS: u16 = 300;
+const INPUT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const NV_VIDEO_PACKET_LEN: usize = 16;
 const DEFAULT_REORDER_WINDOW: usize = 32;
 const MAX_REORDER_WINDOW: usize = 128;
@@ -178,21 +181,19 @@ pub enum NvstConfigError {
     UnsupportedCodec(String),
     #[error("nvstVideo.audioTrack must contain standard negotiated Opus RTP metadata")]
     InvalidAudioTrack,
-    #[error("nvstTransport.tracks is not implemented yet; retain the legacy nvstVideo handoff")]
-    RichHandoffUnsupported,
+    #[error("nvstTransport cannot be used without the required nvstVideo handoff")]
+    MissingNvstVideoHandoff,
 }
 
 /// Explicitly records transport features that cannot be sent correctly from current wire data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvstUnsupportedFeature {
-    Nack,
     FecRepair,
 }
 
 impl fmt::Display for NvstUnsupportedFeature {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            Self::Nack => "NACK transmission",
             Self::FecRepair => "FEC repair",
         };
         formatter.write_str(name)
@@ -209,24 +210,129 @@ impl fmt::Display for NvstUnsupportedFeature {
 /// window. This state lets the bundle build accurate reports for the stream the
 /// Mjolnir receiver is actually seeing.
 #[derive(Debug, Default)]
+struct ReceptionTiming {
+    first_arrival: Option<Instant>,
+    first_rtp_timestamp: u32,
+    last_transit: i64,
+    jitter: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RtcpReportBlock {
+    media_ssrc: u32,
+    fraction_lost: u8,
+    cumulative_lost: i32,
+    highest_sequence: u32,
+    jitter: u32,
+}
+
+#[derive(Debug)]
 pub struct NvstFeedbackState {
     /// Bound video stream SSRC (0 until the first packet is authenticated).
     video_ssrc: AtomicU32,
     /// Highest extended sequence number received on the video stream.
     highest_sequence: AtomicU32,
+    base_sequence: AtomicU32,
+    received_packets: AtomicU32,
+    report_prior: Mutex<(u32, u32)>,
+    reception_timing: Mutex<ReceptionTiming>,
     /// Set when the receiver hits unrecoverable loss and needs a fresh keyframe.
     keyframe_needed: AtomicBool,
+    /// Missing extended RTP sequence ranges awaiting RFC 4585 generic NACK.
+    pending_nacks: Mutex<VecDeque<(u64, u64)>>,
+}
+
+impl Default for NvstFeedbackState {
+    fn default() -> Self {
+        Self {
+            video_ssrc: AtomicU32::new(0),
+            highest_sequence: AtomicU32::new(0),
+            base_sequence: AtomicU32::new(u32::MAX),
+            received_packets: AtomicU32::new(0),
+            report_prior: Mutex::new((0, 0)),
+            reception_timing: Mutex::new(ReceptionTiming::default()),
+            keyframe_needed: AtomicBool::new(false),
+            pending_nacks: Mutex::new(VecDeque::new()),
+        }
+    }
 }
 
 impl NvstFeedbackState {
-    fn publish_stream(&self, ssrc: u32, highest_sequence: u32) {
+    fn publish_stream(&self, ssrc: u32, highest_sequence: u32, rtp_timestamp: u32, now: Instant) {
         self.video_ssrc.store(ssrc, Ordering::Release);
+        let _ = self.base_sequence.compare_exchange(
+            u32::MAX,
+            highest_sequence,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         self.highest_sequence
             .fetch_max(highest_sequence, Ordering::AcqRel);
+        self.received_packets.fetch_add(1, Ordering::AcqRel);
+
+        let mut timing = self
+            .reception_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(first_arrival) = timing.first_arrival else {
+            timing.first_arrival = Some(now);
+            timing.first_rtp_timestamp = rtp_timestamp;
+            return;
+        };
+        let arrival_ticks = now
+            .saturating_duration_since(first_arrival)
+            .as_secs_f64()
+            .mul_add(90_000.0, 0.0) as i64;
+        let rtp_ticks = i64::from(rtp_timestamp.wrapping_sub(timing.first_rtp_timestamp));
+        let transit = arrival_ticks - rtp_ticks;
+        let delta = transit.abs_diff(timing.last_transit) as f64;
+        timing.last_transit = transit;
+        timing.jitter += (delta - timing.jitter) / 16.0;
     }
 
     pub fn request_keyframe(&self) {
         self.keyframe_needed.store(true, Ordering::Release);
+    }
+
+    fn request_nack(&self, first_missing_index: u64, last_missing_index: u64) {
+        if first_missing_index > last_missing_index {
+            return;
+        }
+        let mut pending = self
+            .pending_nacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, queued_last)) = pending.back_mut()
+            && first_missing_index <= queued_last.saturating_add(1)
+        {
+            *queued_last = (*queued_last).max(last_missing_index);
+            return;
+        }
+        if pending.len() == MAX_PENDING_NACK_RANGES {
+            pending.pop_front();
+        }
+        pending.push_back((first_missing_index, last_missing_index));
+    }
+
+    fn resolve_nack(&self, received_index: u64) {
+        let mut pending = self
+            .pending_nacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut updated = VecDeque::with_capacity(pending.len().saturating_add(1));
+        while let Some((first, last)) = pending.pop_front() {
+            if received_index < first || received_index > last {
+                updated.push_back((first, last));
+                continue;
+            }
+            if first < received_index {
+                updated.push_back((first, received_index - 1));
+            }
+            if received_index < last {
+                updated.push_back((received_index + 1, last));
+            }
+        }
+        *pending = updated;
     }
 
     /// SSRC + highest sequence for the next Receiver Report, if a stream is bound.
@@ -235,9 +341,66 @@ impl NvstFeedbackState {
         (ssrc != 0).then(|| (ssrc, self.highest_sequence.load(Ordering::Acquire)))
     }
 
+    fn report_snapshot(&self, update_interval: bool) -> Option<RtcpReportBlock> {
+        let media_ssrc = self.video_ssrc.load(Ordering::Acquire);
+        let base = self.base_sequence.load(Ordering::Acquire);
+        if media_ssrc == 0 || base == u32::MAX {
+            return None;
+        }
+        let highest_sequence = self.highest_sequence.load(Ordering::Acquire);
+        let received = self.received_packets.load(Ordering::Acquire);
+        let expected = highest_sequence.wrapping_sub(base).wrapping_add(1);
+        let cumulative_lost = i64::from(expected) - i64::from(received);
+        let cumulative_lost = cumulative_lost.clamp(-0x80_0000, 0x7f_ffff) as i32;
+        let fraction_lost = if update_interval {
+            let mut prior = self
+                .report_prior
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let expected_interval = expected.wrapping_sub(prior.0);
+            let received_interval = received.wrapping_sub(prior.1);
+            *prior = (expected, received);
+            let lost_interval = expected_interval.saturating_sub(received_interval);
+            if expected_interval == 0 {
+                0
+            } else {
+                ((u64::from(lost_interval) << 8) / u64::from(expected_interval)).min(255) as u8
+            }
+        } else {
+            0
+        };
+        let jitter = self
+            .reception_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .jitter
+            .clamp(0.0, f64::from(u32::MAX)) as u32;
+        Some(RtcpReportBlock {
+            media_ssrc,
+            fraction_lost,
+            cumulative_lost,
+            highest_sequence,
+            jitter,
+        })
+    }
+
     /// Atomically takes the pending keyframe request, returning true if one was set.
     fn take_keyframe_request(&self) -> bool {
         self.keyframe_needed.swap(false, Ordering::AcqRel)
+    }
+
+    fn take_nack(&self) -> Option<(u64, u64)> {
+        let mut pending = self
+            .pending_nacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (first, last) = pending.pop_front()?;
+        let send_last =
+            last.min(first.saturating_add((MAX_NACK_PACKET_COUNT.saturating_sub(1)) as u64));
+        if send_last < last {
+            pending.push_front((send_last + 1, last));
+        }
+        Some((first, send_last))
     }
 }
 
@@ -252,6 +415,7 @@ pub type SharedNvstFeedback = Arc<NvstFeedbackState>;
 pub struct NvstVideoConfig {
     client_udp_port: u16,
     video_peer: SocketAddr,
+    bundle_peer: Option<SocketAddr>,
     srtp: NvstSrtpMaterial,
     ping_payload: Vec<u8>,
     ping_version: Option<u8>,
@@ -278,6 +442,7 @@ impl fmt::Debug for NvstVideoConfig {
             .debug_struct("NvstVideoConfig")
             .field("client_udp_port", &self.client_udp_port)
             .field("video_peer", &self.video_peer)
+            .field("bundle_peer", &self.bundle_peer)
             .field("srtp", &self.srtp)
             .field("ping_payload_len", &self.ping_payload.len())
             .field("ping_version", &self.ping_version)
@@ -390,9 +555,7 @@ impl NvstSrtpMaterial {
 }
 
 impl NvstVideoConfig {
-    /// Parses the stable legacy `nvstVideo` object. The parsing boundary is intentionally
-    /// isolated here so a future `nvstTransport.tracks[]` handoff can normalize into this
-    /// same configuration without changing the SRTP/RTP receiver.
+    /// Parses the stable `nvstVideo` handoff supplied by the RTSP probe.
     pub fn from_legacy_handoff(
         handoff: &Value,
         settings_codec: Option<&str>,
@@ -420,6 +583,25 @@ impl NvstVideoConfig {
                 field: "videoPeerPort",
             });
         }
+        let bundle_peer =
+            if object.contains_key("bundlePeerIp") || object.contains_key("bundlePeerPort") {
+                let bundle_ip_text = required_string(object, "bundlePeerIp")?;
+                let bundle_ip: IpAddr = bundle_ip_text
+                    .parse()
+                    .map_err(|_| NvstConfigError::InvalidPeerIp(bundle_ip_text.to_owned()))?;
+                if !is_unicast_peer(bundle_ip) {
+                    return Err(NvstConfigError::InvalidPeerIp(bundle_ip_text.to_owned()));
+                }
+                let bundle_port = required_u16(object, "bundlePeerPort")?;
+                if bundle_port == 0 {
+                    return Err(NvstConfigError::OutOfRange {
+                        field: "bundlePeerPort",
+                    });
+                }
+                Some(SocketAddr::new(bundle_ip, bundle_port))
+            } else {
+                None
+            };
 
         let master_key = required_string(object, "srtpAesKeyHex")?;
         // Bifrost's SignalingHandler initializes Mjolnir video as
@@ -553,6 +735,7 @@ impl NvstVideoConfig {
         Ok(Self {
             client_udp_port,
             video_peer: SocketAddr::new(peer_ip, video_peer_port),
+            bundle_peer,
             srtp,
             ping_payload,
             ping_version,
@@ -581,6 +764,10 @@ impl NvstVideoConfig {
 
     pub fn video_peer(&self) -> SocketAddr {
         self.video_peer
+    }
+
+    pub fn bundle_peer(&self) -> SocketAddr {
+        self.bundle_peer.unwrap_or(self.video_peer)
     }
 
     pub fn codec(&self) -> NvstVideoCodec {
@@ -677,7 +864,7 @@ pub fn parse_nvst_video_handoff(
 ) -> Result<Option<NvstVideoConfig>, NvstConfigError> {
     let Some(handoff) = context.get("nvstVideo") else {
         if context.get("nvstTransport").is_some() {
-            return Err(NvstConfigError::RichHandoffUnsupported);
+            return Err(NvstConfigError::MissingNvstVideoHandoff);
         }
         return Ok(None);
     };
@@ -943,7 +1130,6 @@ pub enum NvstRecovery {
     PacketGap {
         first_missing_index: u64,
         last_missing_index: u64,
-        nack: NvstUnsupportedFeature,
     },
     Timeout {
         idle_for: Duration,
@@ -956,6 +1142,7 @@ pub enum NvstRecovery {
 pub enum NvstReceiveEvent {
     Frame(EncodedH264Frame),
     InputReady(u16),
+    InputUnavailable(String),
     Dropped(NvstDropReason),
     RecoveryNeeded(NvstRecovery),
     Lifecycle(NvstReceiverState),
@@ -1453,8 +1640,7 @@ fn srtcp_gcm_iv(session_salt: [u8; 12], ssrc: u32, srtcp_index: u32) -> [u8; 12]
 #[allow(clippy::too_many_arguments)]
 fn protect_srtcp_receiver_report_gcm(
     sender_ssrc: u32,
-    media_ssrc: u32,
-    highest_sequence: u32,
+    report: RtcpReportBlock,
     srtcp_index: u32,
     encryption_key: &[u8],
     session_salt: &[u8; 12],
@@ -1465,11 +1651,11 @@ fn protect_srtcp_receiver_report_gcm(
     packet.push(201); // PT=RR
     packet.extend_from_slice(&7_u16.to_be_bytes()); // length: 8 words - 1
     packet.extend_from_slice(&sender_ssrc.to_be_bytes());
-    packet.extend_from_slice(&media_ssrc.to_be_bytes());
-    packet.push(0); // fraction lost
-    packet.extend_from_slice(&[0, 0, 0]); // cumulative packets lost (24-bit)
-    packet.extend_from_slice(&highest_sequence.to_be_bytes());
-    packet.extend_from_slice(&0_u32.to_be_bytes()); // interarrival jitter
+    packet.extend_from_slice(&report.media_ssrc.to_be_bytes());
+    packet.push(report.fraction_lost);
+    packet.extend_from_slice(&(report.cumulative_lost as u32).to_be_bytes()[1..]);
+    packet.extend_from_slice(&report.highest_sequence.to_be_bytes());
+    packet.extend_from_slice(&report.jitter.to_be_bytes());
     packet.extend_from_slice(&0_u32.to_be_bytes()); // LSR
     packet.extend_from_slice(&0_u32.to_be_bytes()); // DLSR
 
@@ -1488,17 +1674,17 @@ fn protect_srtcp_receiver_report_gcm(
 /// Builds a plain (unencrypted) RTCP Receiver Report (RFC 3550 §6.4.1) with one
 /// report block for `media_ssrc`. Sent over the `rtcp1` SCTP data channel, which
 /// is already encrypted by DTLS, so no SRTCP layer is applied.
-fn build_rtcp_receiver_report(sender_ssrc: u32, media_ssrc: u32, highest_sequence: u32) -> Vec<u8> {
+fn build_rtcp_receiver_report(sender_ssrc: u32, report: RtcpReportBlock) -> Vec<u8> {
     let mut packet = Vec::with_capacity(32);
     packet.push(0x81); // V=2, P=0, RC=1 (one report block)
     packet.push(201); // PT=RR
     packet.extend_from_slice(&7_u16.to_be_bytes()); // length: 8 words - 1
     packet.extend_from_slice(&sender_ssrc.to_be_bytes());
-    packet.extend_from_slice(&media_ssrc.to_be_bytes());
-    packet.push(0); // fraction lost
-    packet.extend_from_slice(&[0, 0, 0]); // cumulative packets lost (24-bit)
-    packet.extend_from_slice(&highest_sequence.to_be_bytes());
-    packet.extend_from_slice(&0_u32.to_be_bytes()); // interarrival jitter
+    packet.extend_from_slice(&report.media_ssrc.to_be_bytes());
+    packet.push(report.fraction_lost);
+    packet.extend_from_slice(&(report.cumulative_lost as u32).to_be_bytes()[1..]);
+    packet.extend_from_slice(&report.highest_sequence.to_be_bytes());
+    packet.extend_from_slice(&report.jitter.to_be_bytes());
     packet.extend_from_slice(&0_u32.to_be_bytes()); // LSR
     packet.extend_from_slice(&0_u32.to_be_bytes()); // DLSR
     packet
@@ -1509,10 +1695,49 @@ fn build_rtcp_receiver_report(sender_ssrc: u32, media_ssrc: u32, highest_sequenc
 fn build_rtcp_pli(sender_ssrc: u32, media_ssrc: u32) -> Vec<u8> {
     let mut packet = Vec::with_capacity(12);
     packet.push(0x81); // V=2, P=0, FMT=1 (PLI)
-    packet.push(192); // PT=PSFB (payload-specific feedback)
+    packet.push(206); // PT=PSFB (payload-specific feedback)
     packet.extend_from_slice(&2_u16.to_be_bytes()); // length: 3 words - 1
     packet.extend_from_slice(&sender_ssrc.to_be_bytes());
     packet.extend_from_slice(&media_ssrc.to_be_bytes());
+    packet
+}
+
+/// Builds an RFC 4585 §6.2.1 generic NACK for a continuous range of missing
+/// extended RTP sequence numbers. Each FCI entry represents its PID plus up to
+/// 16 following packets in the bitmask; the packet is bounded to avoid turning
+/// a malicious sequence jump into an unbounded control message.
+fn build_rtcp_nack(
+    sender_ssrc: u32,
+    media_ssrc: u32,
+    first_missing_index: u64,
+    last_missing_index: u64,
+) -> Vec<u8> {
+    let mut entries = Vec::with_capacity(MAX_NACK_FCI_ENTRIES);
+    let mut current = first_missing_index;
+    let effective_last = last_missing_index
+        .min(first_missing_index.saturating_add((MAX_NACK_PACKET_COUNT.saturating_sub(1)) as u64));
+    while current <= effective_last && entries.len() < MAX_NACK_FCI_ENTRIES {
+        let pid = current as u16;
+        let represented_following = (effective_last - current).min(16) as u16;
+        let blp = if represented_following == 16 {
+            u16::MAX
+        } else {
+            ((1_u32 << represented_following) - 1) as u16
+        };
+        entries.push((pid, blp));
+        current = current.saturating_add(17);
+    }
+
+    let mut packet = Vec::with_capacity(12 + entries.len() * 4);
+    packet.push(0x81); // V=2, P=0, FMT=1 (generic NACK)
+    packet.push(205); // PT=RTPFB (transport-layer feedback)
+    packet.extend_from_slice(&(2_u16 + entries.len() as u16).to_be_bytes());
+    packet.extend_from_slice(&sender_ssrc.to_be_bytes());
+    packet.extend_from_slice(&media_ssrc.to_be_bytes());
+    for (pid, blp) in entries {
+        packet.extend_from_slice(&pid.to_be_bytes());
+        packet.extend_from_slice(&blp.to_be_bytes());
+    }
     packet
 }
 
@@ -1763,6 +1988,7 @@ struct RtpReorderBuffer {
 
 struct ReorderResult {
     ready: Vec<RtpPacket>,
+    nack: Option<(u64, u64)>,
     recovery: Option<NvstRecovery>,
     dropped: Option<NvstDropReason>,
 }
@@ -1787,6 +2013,7 @@ impl RtpReorderBuffer {
         if index < next_index {
             return ReorderResult {
                 ready: Vec::new(),
+                nack: None,
                 recovery: None,
                 dropped: Some(NvstDropReason::StaleRtpPacket { index }),
             };
@@ -1794,18 +2021,20 @@ impl RtpReorderBuffer {
         if self.packets.contains_key(&index) {
             return ReorderResult {
                 ready: Vec::new(),
+                nack: None,
                 recovery: None,
                 dropped: Some(NvstDropReason::DuplicateRtpPacket { index }),
             };
         }
 
         let mut recovery = None;
+        let mut nack = (index > next_index).then_some((next_index, index - 1));
         if index.saturating_sub(next_index) >= self.max_packets as u64 {
             recovery = Some(NvstRecovery::PacketGap {
                 first_missing_index: next_index,
                 last_missing_index: index - 1,
-                nack: NvstUnsupportedFeature::Nack,
             });
+            nack = None;
             self.packets.clear();
             self.next_index = Some(index);
         }
@@ -1822,7 +2051,6 @@ impl RtpReorderBuffer {
                 recovery = Some(NvstRecovery::PacketGap {
                     first_missing_index: expected,
                     last_missing_index: first_available - 1,
-                    nack: NvstUnsupportedFeature::Nack,
                 });
                 self.next_index = Some(first_available);
             }
@@ -1838,6 +2066,7 @@ impl RtpReorderBuffer {
         }
         ReorderResult {
             ready,
+            nack,
             recovery,
             dropped: None,
         }
@@ -1920,11 +2149,10 @@ impl SrtcpSender {
     /// SSRC is known. Returns `None` when it is not yet time or nothing to report on.
     fn poll_receiver_report(
         &mut self,
-        media_ssrc: Option<u32>,
-        highest_sequence: u32,
+        report: Option<RtcpReportBlock>,
         now: Instant,
     ) -> Option<Vec<u8>> {
-        let media_ssrc = media_ssrc?;
+        let report = report?;
         if let Some(last) = self.last_sent
             && now.duration_since(last) < SRTCP_RR_INTERVAL
         {
@@ -1935,8 +2163,7 @@ impl SrtcpSender {
         self.next_index = self.next_index.wrapping_add(1);
         Some(protect_srtcp_receiver_report_gcm(
             self.sender_ssrc,
-            media_ssrc,
-            highest_sequence,
+            report,
             index,
             self.encryption_key.as_bytes(),
             &self.session_salt,
@@ -2102,12 +2329,21 @@ impl NvstVideoReceiver {
         self.authenticated_packets += 1;
         let sequence = u32::try_from(packet.index & 0xffff_ffff).unwrap_or(u32::MAX);
         self.highest_sequence_received = self.highest_sequence_received.max(sequence);
-        self.config
-            .feedback
-            .publish_stream(packet.header.ssrc, self.highest_sequence_received);
+        self.config.feedback.publish_stream(
+            packet.header.ssrc,
+            self.highest_sequence_received,
+            packet.header.timestamp,
+            now,
+        );
+        self.config.feedback.resolve_nack(packet.index);
 
         let result = self.reorder.push(packet);
         let mut events = Vec::new();
+        if let Some((first_missing_index, last_missing_index)) = result.nack {
+            self.config
+                .feedback
+                .request_nack(first_missing_index, last_missing_index);
+        }
         if let Some(reason) = result.dropped {
             events.push(NvstReceiveEvent::Dropped(reason));
         }
@@ -2166,11 +2402,9 @@ impl NvstVideoReceiver {
         if self.state != NvstReceiverState::Running {
             return None;
         }
-        self.srtcp.as_mut()?.poll_receiver_report(
-            self.bound_ssrc,
-            self.highest_sequence_received,
-            now,
-        )
+        self.srtcp
+            .as_mut()?
+            .poll_receiver_report(self.config.feedback.report_snapshot(false), now)
     }
 
     /// Elapsed-since-start receive counters for ground-truth timing that does not
@@ -2647,20 +2881,20 @@ impl ReservedNvstBundle {
     }
 }
 
-fn generate_gfn_local_ice_credentials() -> IceCreds {
+fn generate_gfn_local_ice_credentials() -> Result<IceCreds, getrandom::Error> {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/";
     let mut random = [0_u8; 26];
-    let _ = getrandom::fill(&mut random);
+    getrandom::fill(&mut random)?;
     let encode = |start: usize, length: usize| {
         random[start..start + length]
             .iter()
             .map(|value| ALPHABET[usize::from(*value) & 0x3f] as char)
             .collect::<String>()
     };
-    IceCreds {
+    Ok(IceCreds {
         ufrag: encode(0, 4),
         pass: encode(4, 22),
-    }
+    })
 }
 
 fn create_nvst_bundle_rtc(socket: &UdpSocket) -> Result<Rtc, NvstUdpReceiverError> {
@@ -2669,8 +2903,9 @@ fn create_nvst_bundle_rtc(socket: &UdpSocket) -> Result<Rtc, NvstUdpReceiverErro
     // Official GenerateIceCredentials() is 4-char ufrag / 22-char password.
     // str0m's default 16-char ufrag is rejected by Bifrost length checks.
     let mut rtc = RtcConfig::new().set_rtp_mode(true).build(Instant::now());
-    rtc.direct_api()
-        .set_local_ice_credentials(generate_gfn_local_ice_credentials());
+    let credentials = generate_gfn_local_ice_credentials()
+        .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
+    rtc.direct_api().set_local_ice_credentials(credentials);
     Ok(rtc)
 }
 
@@ -2716,6 +2951,16 @@ fn routed_host_addr(peer: Option<SocketAddr>, local: SocketAddr) -> SocketAddr {
         }
     }
     local
+}
+
+fn logical_ice_addr(addr: SocketAddr, loopback_octet: u8) -> SocketAddr {
+    match addr.ip() {
+        IpAddr::V4(ip) if ip.is_link_local() => SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, loopback_octet)),
+            addr.port(),
+        ),
+        _ => addr,
+    }
 }
 
 fn parse_nvst_fingerprint(value: &str) -> Result<Fingerprint, String> {
@@ -2910,10 +3155,11 @@ fn prepare_nvst_webrtc_bundle(
     let local_addr = socket
         .local_addr()
         .map_err(NvstUdpReceiverError::Configure)?;
-    let local_candidate =
-        Candidate::host(routed_host_addr(Some(config.video_peer), local_addr), "udp")
-            .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
-    let remote_candidate = Candidate::host(config.video_peer, "udp")
+    let bundle_peer = config.bundle_peer();
+    let physical_local = routed_host_addr(Some(bundle_peer), local_addr);
+    let local_candidate = Candidate::host(logical_ice_addr(physical_local, 1), "udp")
+        .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
+    let remote_candidate = Candidate::host(logical_ice_addr(bundle_peer, 2), "udp")
         .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
     rtc.add_local_candidate(local_candidate);
     rtc.add_remote_candidate(remote_candidate);
@@ -2938,8 +3184,8 @@ fn prepare_nvst_webrtc_bundle(
     }
     eprintln!(
         "NVST WebRTC bundle armed (local={}, peer={}, remoteFingerprintBytes={})",
-        routed_host_addr(Some(config.video_peer), local_addr),
-        config.video_peer,
+        physical_local,
+        bundle_peer,
         fingerprint.len()
     );
     Ok(rtc)
@@ -2950,6 +3196,11 @@ fn looks_like_rtp(datagram: &[u8]) -> bool {
         && datagram[0] >> 6 == 2
         && !looks_like_stun(datagram)
         && !looks_like_dtls(datagram)
+        && !looks_like_rtcp(datagram)
+}
+
+fn looks_like_rtcp(datagram: &[u8]) -> bool {
+    datagram.len() >= 4 && datagram[0] >> 6 == 2 && matches!(datagram[1], 192..=223)
 }
 
 fn looks_like_stun(datagram: &[u8]) -> bool {
@@ -3003,22 +3254,24 @@ fn run_nvst_webrtc_bundle(
         event_sender,
         input_ready,
     } = outputs;
-    let video_peer = config.video_peer;
+    let bundle_peer = config.bundle_peer();
     let stun_credentials = config.stun_credentials.clone();
     let ping_payload = config.ping_payload.clone();
     // Feedback plane shared with the Mjolnir video receiver: it publishes the
-    // stream SSRC/sequence and keyframe requests; this bundle sends the RTCP
-    // Receiver Reports / PLI over the `rtcp1` SCTP data channel.
+    // stream SSRC/sequence and recovery requests; this bundle sends the RTCP
+    // Receiver Reports / NACK / PLI over the `rtcp1` SCTP data channel.
     let feedback = config.feedback();
     let audio_track = config.audio_track().cloned();
     // With a dedicated Mjolnir video socket the bundle only carries
     // control/audio keepalive traffic; the Mjolnir receiver owns the media
     // timeout, so the bundle must not raise a spurious media recovery.
     let owns_media_timeout = config.mjolnir_udp_port.is_none();
-    let receive_destination = socket.local_addr().ok().map_or_else(
-        || video_peer,
-        |local| routed_host_addr(Some(video_peer), local),
+    let physical_local = socket.local_addr().ok().map_or_else(
+        || bundle_peer,
+        |local| routed_host_addr(Some(bundle_peer), local),
     );
+    let receive_destination = logical_ice_addr(physical_local, 1);
+    let receive_source = logical_ice_addr(bundle_peer, 2);
     let mut receiver = NvstVideoReceiver::new(config);
     let mut datagram = vec![0_u8; 65_536];
     let mut inbound_datagrams = 0_u64;
@@ -3034,6 +3287,7 @@ fn run_nvst_webrtc_bundle(
     let mut rtcp_sender_ssrc = 0x4f4e_4f57_u32; // "ONOW"
     rtcp_sender_ssrc ^= (transport_origin.elapsed().subsec_nanos()) & 0xffff;
     let mut last_rtcp_send = Instant::now() - SRTCP_RR_INTERVAL;
+    let mut last_recovery_send = Instant::now();
     let mut rtcp_reports_sent = 0_u64;
     // The official client opens `rtcp1` once the RTSP session is established,
     // not cold during the SCTP handshake (which gets the stream reset). Defer
@@ -3045,6 +3299,7 @@ fn run_nvst_webrtc_bundle(
     let mut input_channels: Option<InputChannels> = None;
     let mut input_state = InputChannelState::default();
     let mut input_heartbeat_at = next_input_heartbeat(Instant::now());
+    let mut input_timeout_reported = false;
     let mut last_audio_sequence: Option<(u32, u16)> = None;
     loop {
         loop {
@@ -3062,8 +3317,12 @@ fn run_nvst_webrtc_bundle(
                 }) => {
                     if input_state.is_ready()
                         && let Some(channels) = input_channels
+                        && !channels.send(&mut rtc, &bytes, partially_reliable)
                     {
-                        let _ = channels.send(&mut rtc, &bytes, partially_reliable);
+                        input_ready.store(false, Ordering::Release);
+                        let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
+                            "input packet could not be queued".to_owned(),
+                        ));
                     }
                 }
                 Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected) => {
@@ -3079,10 +3338,25 @@ fn run_nvst_webrtc_bundle(
         // ping-string PING. After DTLS they keep pinging at 100ms.
         let now = Instant::now();
         if input_state.is_ready() && now >= input_heartbeat_at {
-            if let Some(channels) = input_channels {
-                let _ = channels.send_heartbeat(&mut rtc);
+            if let Some(channels) = input_channels
+                && !channels.send_heartbeat(&mut rtc)
+            {
+                input_ready.store(false, Ordering::Release);
+                let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
+                    "input heartbeat could not be queued".to_owned(),
+                ));
             }
             input_heartbeat_at = next_input_heartbeat(now);
+        }
+        if !input_timeout_reported
+            && !input_state.is_ready()
+            && sctp_started_at
+                .is_some_and(|started| now.duration_since(started) >= INPUT_HANDSHAKE_TIMEOUT)
+        {
+            input_timeout_reported = true;
+            let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
+                "input handshake timed out".to_owned(),
+            ));
         }
         let ping_interval = if dtls_ready {
             PING_INTERVAL_AFTER_CONNECTION
@@ -3099,7 +3373,11 @@ fn run_nvst_webrtc_bundle(
                     if getrandom::fill(&mut ice_tid).is_ok() {
                         let ice = build_stun_binding_request(credentials, &ice_tid);
                         ice_bytes = ice.len();
-                        let _ = socket.send_to(&ice, video_peer);
+                        if let Err(error) = socket.send_to(&ice, bundle_peer) {
+                            eprintln!("NVST ICE send failed: {error}");
+                            forward_optional(&event_sender, receiver.stop());
+                            return;
+                        }
                     }
                 }
             }
@@ -3111,7 +3389,11 @@ fn run_nvst_webrtc_bundle(
                     &credentials.remote_password,
                     &natt_tid,
                 );
-                let _ = socket.send_to(&natt, video_peer);
+                if let Err(error) = socket.send_to(&natt, bundle_peer) {
+                    eprintln!("NVST NATT send failed: {error}");
+                    forward_optional(&event_sender, receiver.stop());
+                    return;
+                }
                 Some(natt)
             } else {
                 None
@@ -3119,13 +3401,9 @@ fn run_nvst_webrtc_bundle(
             hole_punch_pings += 1;
             if hole_punch_pings == 1 || hole_punch_pings % 50 == 0 {
                 eprintln!(
-                    "NVST hole-punch ping={hole_punch_pings} dest={video_peer} iceBurst={} iceBytes={ice_bytes} iceUsername={}:{} nattBytes={} nattUsername={}:{}",
+                    "NVST hole-punch ping={hole_punch_pings} dest={bundle_peer} iceBurst={} iceBytes={ice_bytes} nattBytes={} credentials=redacted",
                     if dtls_ready { 0 } else { 3 },
-                    credentials.remote_username_fragment,
-                    credentials.local_username_fragment,
                     natt.as_ref().map_or(0, Vec::len),
-                    String::from_utf8_lossy(&ping_payload),
-                    credentials.local_username_fragment
                 );
             }
             last_hole_punch = now;
@@ -3140,11 +3418,7 @@ fn run_nvst_webrtc_bundle(
         {
             rtcp_create_attempted = true;
             // The official client's RTCP feedback channel is labelled
-            // `rtcp_on_sctp_private` (not `rtcp1`). The server resets a DCEP open
-            // whose label it doesn't recognize — which is why `rtcp1` was reset on
-            // every stream id. Open candidates across the low even stream ids (client
-            // parity) with the correct label; the server ACKs one with ChannelOpen and
-            // resets the rest, and we adopt whichever opens.
+            // `rtcp_on_sctp_private` (not `rtcp1`).
             for _ in 0..RTCP_STREAM_CANDIDATES {
                 let config = ChannelConfig {
                     label: "rtcp_on_sctp_private".to_string(),
@@ -3155,40 +3429,68 @@ fn run_nvst_webrtc_bundle(
                 };
                 let _ = rtc.direct_api().create_data_channel(config);
             }
-            eprintln!(
-                "NVST creating rtcp_on_sctp_private across {RTCP_STREAM_CANDIDATES} stream-id candidates"
-            );
+            eprintln!("NVST creating rtcp_on_sctp_private feedback channel");
         }
 
         // Send RTCP feedback over the rtcp1 SCTP channel once it is open and the
         // Mjolnir receiver has bound the video stream. A Receiver Report goes out
-        // every second; a PLI goes out whenever the receiver flags it needs a
-        // keyframe (rate-limited to the same cadence).
+        // every second.
         if rtcp_channel_open
             && now.duration_since(last_rtcp_send) >= SRTCP_RR_INTERVAL
             && let Some(channel_id) = rtcp_channel
-            && let Some((media_ssrc, highest_sequence)) = feedback.stream_snapshot()
+            && let Some(report_block) = feedback.report_snapshot(true)
         {
             let mut channel = rtc.channel(channel_id);
             if let Some(channel) = channel.as_mut() {
-                let report =
-                    build_rtcp_receiver_report(rtcp_sender_ssrc, media_ssrc, highest_sequence);
+                let report = build_rtcp_receiver_report(rtcp_sender_ssrc, report_block);
                 if channel.write(true, &report).unwrap_or(false) {
                     rtcp_reports_sent += 1;
                     if rtcp_reports_sent == 1 || rtcp_reports_sent % 10 == 0 {
                         eprintln!(
-                            "NVST rtcp1 RR sent={rtcp_reports_sent} mediaSsrc={media_ssrc} highestSeq={highest_sequence}"
+                            "NVST rtcp1 RR sent={rtcp_reports_sent} mediaSsrc={} highestSeq={}",
+                            report_block.media_ssrc, report_block.highest_sequence,
                         );
+                    }
+                }
+            }
+            last_rtcp_send = now;
+        }
+
+        // Loss feedback cannot wait for the one-second Receiver Report cadence:
+        // request retransmission while the reorder buffer still holds later
+        // packets, then request a keyframe if bounded recovery was exhausted.
+        if rtcp_channel_open
+            && now.duration_since(last_recovery_send) >= RTCP_RECOVERY_INTERVAL
+            && let Some(channel_id) = rtcp_channel
+            && let Some((media_ssrc, _)) = feedback.stream_snapshot()
+        {
+            let mut channel = rtc.channel(channel_id);
+            if let Some(channel) = channel.as_mut() {
+                if let Some((first_missing_index, last_missing_index)) = feedback.take_nack() {
+                    let nack = build_rtcp_nack(
+                        rtcp_sender_ssrc,
+                        media_ssrc,
+                        first_missing_index,
+                        last_missing_index,
+                    );
+                    if channel.write(true, &nack).unwrap_or(false) {
+                        eprintln!(
+                            "NVST rtcp1 NACK sent for mediaSsrc={media_ssrc} missing={first_missing_index}..={last_missing_index}"
+                        );
+                    } else {
+                        feedback.request_nack(first_missing_index, last_missing_index);
                     }
                 }
                 if feedback.take_keyframe_request() {
                     let pli = build_rtcp_pli(rtcp_sender_ssrc, media_ssrc);
                     if channel.write(true, &pli).unwrap_or(false) {
                         eprintln!("NVST rtcp1 PLI sent for mediaSsrc={media_ssrc}");
+                    } else {
+                        feedback.request_keyframe();
                     }
                 }
             }
-            last_rtcp_send = now;
+            last_recovery_send = now;
         }
 
         let timeout = loop {
@@ -3206,11 +3508,15 @@ fn run_nvst_webrtc_bundle(
                     if outbound_datagrams <= 8 || outbound_datagrams % 50 == 0 {
                         eprintln!(
                             "NVST WebRTC outbound={outbound_datagrams} kind={kind} dest={} bytes={}",
-                            transmit.destination,
+                            bundle_peer,
                             transmit.contents.len()
                         );
                     }
-                    let _ = socket.send_to(&transmit.contents, transmit.destination);
+                    if let Err(error) = socket.send_to(&transmit.contents, bundle_peer) {
+                        eprintln!("NVST WebRTC send failed: {error}");
+                        forward_optional(&event_sender, receiver.stop());
+                        return;
+                    }
                     // Official ICE-on WebRtcTransport skips setupDtls until a real
                     // inbound STUN. Do not synthesize Binding Success — that only
                     // unblocks str0m and sends ClientHello before GFN has a pair.
@@ -3255,6 +3561,22 @@ fn run_nvst_webrtc_bundle(
                     }
                     Event::ChannelData(data) => {
                         if let Some(channels) = input_channels
+                            && matches!(data.id, id if id == channels.reliable || id == channels.partial || id == channels.stats)
+                        {
+                            let preview = data
+                                .data
+                                .iter()
+                                .take(4)
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<Vec<_>>()
+                                .join("");
+                            eprintln!(
+                                "NVST input channel inbound: id={:?} bytes={} prefix={preview}",
+                                data.id,
+                                data.data.len(),
+                            );
+                        }
+                        if let Some(channels) = input_channels
                             && let Some(version) =
                                 input_state.channel_data(channels, data.id, &data.data)
                         {
@@ -3267,6 +3589,20 @@ fn run_nvst_webrtc_bundle(
                                 data.binary,
                                 data.data.len(),
                             );
+                        }
+                    }
+                    Event::ChannelClose(id) => {
+                        if let Some(channels) = input_channels
+                            && input_state.channel_closed(channels, id)
+                        {
+                            input_ready.store(false, Ordering::Release);
+                            let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
+                                "input data channel closed".to_owned(),
+                            ));
+                        }
+                        if Some(id) == rtcp_channel {
+                            rtcp_channel_open = false;
+                            rtcp_channel = None;
                         }
                     }
                     Event::RtpPacket(packet) => {
@@ -3348,9 +3684,17 @@ fn run_nvst_webrtc_bundle(
             .saturating_duration_since(Instant::now())
             .min(UDP_RECEIVE_POLL_INTERVAL);
         if wait.is_zero() {
-            let _ = rtc.handle_input(Input::Timeout(Instant::now()));
+            if let Err(error) = rtc.handle_input(Input::Timeout(Instant::now())) {
+                eprintln!("NVST WebRTC timer failed: {error}");
+                forward_optional(&event_sender, receiver.stop());
+                return;
+            }
         } else {
-            let _ = socket.set_read_timeout(Some(wait));
+            if let Err(error) = socket.set_read_timeout(Some(wait)) {
+                eprintln!("NVST UDP timeout configuration failed: {error}");
+                forward_optional(&event_sender, receiver.stop());
+                return;
+            }
             match socket.recv_from(&mut datagram) {
                 Ok((length, source)) => {
                     inbound_datagrams += 1;
@@ -3359,11 +3703,19 @@ fn run_nvst_webrtc_bundle(
                             "NVST WebRTC inbound={inbound_datagrams} source={source} bytes={length} dtlsReady={dtls_ready}"
                         );
                     }
-                    if datagram[..length] == *b"PING" {
-                        let _ = socket.send_to(b"PONG", source);
+                    if source != bundle_peer {
                         continue;
                     }
-                    if let Some(ssrc) = peek_rtp_ssrc(&datagram[..length])
+                    if datagram[..length] == *b"PING" {
+                        if let Err(error) = socket.send_to(b"PONG", source) {
+                            eprintln!("NVST PONG send failed: {error}");
+                            forward_optional(&event_sender, receiver.stop());
+                            return;
+                        }
+                        continue;
+                    }
+                    if looks_like_rtp(&datagram[..length])
+                        && let Some(ssrc) = peek_rtp_ssrc(&datagram[..length])
                         && seen_ssrcs.insert(ssrc)
                     {
                         let mid = audio_track
@@ -3390,7 +3742,7 @@ fn run_nvst_webrtc_bundle(
                         Instant::now(),
                         Receive {
                             proto: RtcProtocol::Udp,
-                            source,
+                            source: receive_source,
                             destination,
                             contents,
                         },
@@ -3488,18 +3840,31 @@ fn run_nvst_udp_receiver(
         if now.duration_since(last_ping) >= ping_interval {
             if let Some(credentials) = stun_credentials.as_ref() {
                 let mut transaction_id = [0_u8; 12];
-                if getrandom::fill(&mut transaction_id).is_ok() {
-                    let ping = build_natt_hole_punch_request(
-                        &credentials.local_username_fragment,
-                        &receiver.config.ping_payload,
-                        &credentials.remote_password,
-                        &transaction_id,
-                    );
-                    let _ = socket.send_to(&ping, receiver.config.video_peer);
-                    pings_sent += 1;
+                if let Err(error) = getrandom::fill(&mut transaction_id) {
+                    eprintln!("NVST NATT transaction generation failed: {error}");
+                    forward_optional(&event_sender, receiver.stop());
+                    return;
                 }
+                let ping = build_natt_hole_punch_request(
+                    &credentials.local_username_fragment,
+                    &receiver.config.ping_payload,
+                    &credentials.remote_password,
+                    &transaction_id,
+                );
+                if let Err(error) = socket.send_to(&ping, receiver.config.video_peer) {
+                    eprintln!("NVST NATT send failed: {error}");
+                    forward_optional(&event_sender, receiver.stop());
+                    return;
+                }
+                pings_sent += 1;
             } else {
-                let _ = socket.send_to(&receiver.config.ping_payload, receiver.config.video_peer);
+                if let Err(error) =
+                    socket.send_to(&receiver.config.ping_payload, receiver.config.video_peer)
+                {
+                    eprintln!("NVST ping send failed: {error}");
+                    forward_optional(&event_sender, receiver.stop());
+                    return;
+                }
                 pings_sent += 1;
             }
             last_ping = now;
@@ -3524,8 +3889,12 @@ fn run_nvst_udp_receiver(
                         StunDatagram::Handled(response) => {
                             handled_stun += 1;
                             peer_seen = true;
-                            if let Some(response) = response {
-                                let _ = socket.send_to(&response, source);
+                            if let Some(response) = response
+                                && let Err(error) = socket.send_to(&response, source)
+                            {
+                                eprintln!("NVST STUN response send failed: {error}");
+                                forward_optional(&event_sender, receiver.stop());
+                                return;
                             }
                             continue;
                         }
@@ -3559,9 +3928,12 @@ fn run_nvst_udp_receiver(
         }
         let now = Instant::now();
         if let Some(report) = receiver.poll_receiver_report(now) {
-            if socket.send_to(&report, receiver.config.video_peer).is_ok() {
-                receiver_reports_sent += 1;
+            if let Err(error) = socket.send_to(&report, receiver.config.video_peer) {
+                eprintln!("NVST receiver report send failed: {error}");
+                forward_optional(&event_sender, receiver.stop());
+                return;
             }
+            receiver_reports_sent += 1;
         }
         if now.duration_since(last_stats_log) >= Duration::from_secs(2) {
             last_stats_log = now;
@@ -3621,12 +3993,6 @@ fn forward_receive_event(
     }
     let _ = event_sender.send(event);
     true
-}
-
-/// There is no safe NVST NACK wire encoder in the current handoff. Expose this explicit answer
-/// rather than emitting an invented control datagram.
-pub fn nack_transmission_support() -> Result<(), NvstUnsupportedFeature> {
-    Err(NvstUnsupportedFeature::Nack)
 }
 
 #[cfg(test)]
@@ -3774,6 +4140,7 @@ mod tests {
     fn legacy_schema_defaults_to_aes_256_gcm_8_with_explicit_salt() {
         let config = config();
         assert_eq!(config.video_peer(), peer());
+        assert_eq!(config.bundle_peer(), peer());
         assert_eq!(config.srtp_profile(), NvstSrtpProfile::AeadAes256Gcm8);
         let NvstSrtpMaterial::AeadAes256Gcm { master_salt, .. } = config.srtp else {
             panic!("legacy handoff must choose AES-256-GCM");
@@ -3783,6 +4150,17 @@ mod tests {
             decode_fixed_hex::<12>("00000000000000009ECA935E", NvstConfigError::InvalidSrtpSalt)
                 .expect("salt"),
         );
+    }
+
+    #[test]
+    fn handoff_uses_distinct_routable_bundle_peer_when_supplied() {
+        let mut handoff = legacy_handoff();
+        handoff["videoPeerIp"] = json!("169.254.0.21");
+        handoff["bundlePeerIp"] = json!("198.51.100.20");
+        handoff["bundlePeerPort"] = json!(5006);
+        let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).expect("valid peers");
+        assert_eq!(config.video_peer(), "169.254.0.21:5004".parse().unwrap());
+        assert_eq!(config.bundle_peer(), "198.51.100.20:5006".parse().unwrap());
     }
 
     #[test]
@@ -3843,6 +4221,22 @@ mod tests {
             "official binds 0.0.0.0, advertised NIC IPv4 is separate"
         );
         assert_ne!(addr.port(), 0);
+    }
+
+    #[test]
+    fn link_local_interfaces_use_distinct_logical_ice_addresses() {
+        let local: SocketAddr = "169.254.0.21:49000".parse().unwrap();
+        let remote: SocketAddr = "169.254.0.22:5006".parse().unwrap();
+        assert_eq!(
+            logical_ice_addr(local, 1),
+            "127.0.0.1:49000".parse().unwrap()
+        );
+        assert_eq!(
+            logical_ice_addr(remote, 2),
+            "127.0.0.2:5006".parse().unwrap()
+        );
+        assert!(Candidate::host(logical_ice_addr(local, 1), "udp").is_ok());
+        assert!(Candidate::host(logical_ice_addr(remote, 2), "udp").is_ok());
     }
 
     #[test]
@@ -3934,7 +4328,7 @@ mod tests {
 
     #[test]
     fn gfn_local_ice_credentials_match_official_lengths() {
-        let creds = generate_gfn_local_ice_credentials();
+        let creds = generate_gfn_local_ice_credentials().expect("OS randomness");
         assert_eq!(creds.ufrag.len(), 4);
         assert_eq!(creds.pass.len(), 22);
     }
@@ -3995,7 +4389,7 @@ mod tests {
         assert!(matches!(
             select_preferred_video_transport(&json!({ "nvstTransport": { "tracks": [] } })),
             PreferredVideoTransport::WebRtcFallback(NvstFallbackReason::InvalidNvstHandoff(
-                NvstConfigError::RichHandoffUnsupported
+                NvstConfigError::MissingNvstVideoHandoff
             ))
         ));
 
@@ -4359,6 +4753,7 @@ mod tests {
     #[test]
     fn receiver_reorders_authenticated_packets_and_emits_annex_b_frame() {
         let config = config();
+        let feedback = config.feedback();
         let crypto = test_srtp(&config);
         let first = protect_for_test(
             &crypto,
@@ -4399,6 +4794,7 @@ mod tests {
         assert_eq!(frame.frame_index, 9);
         assert!(frame.keyframe);
         assert_eq!(frame.bytes, [0, 0, 0, 1, 0x65, 0xaa, 0xbb]);
+        assert_eq!(feedback.take_nack(), None);
     }
 
     #[test]
@@ -4527,20 +4923,99 @@ mod tests {
         let events = receiver.process_datagram(peer(), &far, Instant::now());
         assert!(events.iter().any(|event| matches!(
             event,
-            NvstReceiveEvent::RecoveryNeeded(NvstRecovery::PacketGap {
-                nack: NvstUnsupportedFeature::Nack,
-                ..
-            })
+            NvstReceiveEvent::RecoveryNeeded(NvstRecovery::PacketGap { .. })
         )));
         assert!(
             !events
                 .iter()
                 .any(|event| matches!(event, NvstReceiveEvent::Frame(_)))
         );
+    }
+
+    #[test]
+    fn generic_nack_encodes_wrapping_sequence_range() {
+        let packet = build_rtcp_nack(0x0102_0304, 0x0506_0708, 65_534, 65_536);
         assert_eq!(
-            nack_transmission_support(),
-            Err(NvstUnsupportedFeature::Nack)
+            packet,
+            [0x81, 205, 0, 3, 1, 2, 3, 4, 5, 6, 7, 8, 0xff, 0xfe, 0, 3,]
         );
+    }
+
+    #[test]
+    fn picture_loss_indication_uses_rfc_4585_psfb_layout() {
+        assert_eq!(
+            build_rtcp_pli(0x0102_0304, 0x0506_0708),
+            [0x81, 206, 0, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+        );
+    }
+
+    #[test]
+    fn receiver_report_tracks_loss_interval_and_late_recovery() {
+        let feedback = NvstFeedbackState::default();
+        let now = Instant::now();
+        feedback.publish_stream(7, 10, 1_000, now);
+        feedback.publish_stream(7, 12, 2_800, now + Duration::from_millis(20));
+
+        let report = feedback.report_snapshot(true).expect("report");
+        assert_eq!(report.media_ssrc, 7);
+        assert_eq!(report.highest_sequence, 12);
+        assert_eq!(report.cumulative_lost, 1);
+        assert_eq!(report.fraction_lost, 85);
+        assert_eq!(report.jitter, 0);
+
+        feedback.publish_stream(7, 12, 1_900, now + Duration::from_millis(10));
+        let recovered = feedback.report_snapshot(true).expect("report");
+        assert_eq!(recovered.cumulative_lost, 0);
+        assert_eq!(recovered.fraction_lost, 0);
+    }
+
+    #[test]
+    fn rtp_classifier_does_not_bind_rtcp_or_dtls_as_media_streams() {
+        let rtcp = build_rtcp_receiver_report(
+            1,
+            RtcpReportBlock {
+                media_ssrc: 2,
+                fraction_lost: 0,
+                cumulative_lost: 0,
+                highest_sequence: 3,
+                jitter: 0,
+            },
+        );
+        assert!(looks_like_rtcp(&rtcp));
+        assert!(!looks_like_rtp(&rtcp));
+        assert_eq!(peek_rtp_ssrc(&rtcp), None);
+
+        let mut dtls = vec![0_u8; RTP_FIXED_HEADER_LEN];
+        dtls[0] = 23;
+        assert!(looks_like_dtls(&dtls));
+        assert!(!looks_like_rtp(&dtls));
+    }
+
+    #[test]
+    fn generic_nack_is_bounded() {
+        let packet = build_rtcp_nack(1, 2, 10, 10_000);
+        assert_eq!(packet.len(), 12 + MAX_NACK_FCI_ENTRIES * 4);
+        assert_eq!(
+            &packet[2..4],
+            &(2_u16 + MAX_NACK_FCI_ENTRIES as u16).to_be_bytes()
+        );
+        assert_eq!(&packet[packet.len() - 4..], &[0, 61, 0x0f, 0xff]);
+    }
+
+    #[test]
+    fn pending_nack_ranges_are_chunked_without_discarding_tail() {
+        let feedback = NvstFeedbackState::default();
+        feedback.request_nack(10, 100);
+        feedback.resolve_nack(12);
+        assert_eq!(feedback.take_nack(), Some((10, 11)));
+        assert_eq!(feedback.take_nack(), Some((13, 76)));
+        assert_eq!(feedback.take_nack(), Some((77, 100)));
+        assert_eq!(feedback.take_nack(), None);
+
+        feedback.request_nack(10, 100);
+        assert_eq!(feedback.take_nack(), Some((10, 73)));
+        assert_eq!(feedback.take_nack(), Some((74, 100)));
+        assert_eq!(feedback.take_nack(), None);
     }
 
     #[test]

@@ -19,6 +19,7 @@ use objc2_core_audio_types::{
 };
 use opus::{Channels, Decoder};
 
+use crate::failure::{BackendSubsystem, FailureReporter};
 use crate::format::AudioFormat;
 use crate::queue::{BoundedQueue, PushResult};
 use crate::ring::PcmRing;
@@ -40,6 +41,7 @@ impl AudioPipeline {
         packet_capacity: usize,
         pcm_milliseconds: u32,
         counters: Arc<Counters>,
+        failures: Arc<FailureReporter>,
     ) -> Result<Self, BackendError> {
         format.validate()?;
         let channels = usize::from(format.channels);
@@ -62,27 +64,42 @@ impl AudioPipeline {
         let worker_packets = Arc::clone(&packets);
         let worker_ring = Arc::clone(&ring);
         let worker_counters = Arc::clone(&counters);
+        let worker_failures = Arc::clone(&failures);
         let worker = thread::Builder::new()
             .name("opennow-opus-decode".into())
             .spawn(move || {
-                let mut pcm = vec![0.0; MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL * channels];
-                while let Some(packet) = worker_packets.pop_wait() {
-                    match decoder.decode_float(&packet, &mut pcm, false) {
-                        Ok(samples_per_channel) => {
-                            let sample_count = samples_per_channel * channels;
-                            let written = worker_ring.push(&pcm[..sample_count]);
-                            if written != sample_count {
+                let run_failures = Arc::clone(&worker_failures);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    let mut pcm = vec![0.0; MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL * channels];
+                    while let Some(packet) = worker_packets.pop_wait() {
+                        match decoder.decode_float(&packet, &mut pcm, false) {
+                            Ok(samples_per_channel) => {
+                                run_failures.audio_succeeded();
+                                let sample_count = samples_per_channel * channels;
+                                let written = worker_ring.push(&pcm[..sample_count]);
+                                if written != sample_count {
+                                    worker_counters.pcm_samples_dropped.fetch_add(
+                                        (sample_count - written) as u64,
+                                        Ordering::Relaxed,
+                                    );
+                                }
+                            }
+                            Err(error) => {
                                 worker_counters
-                                    .pcm_samples_dropped
-                                    .fetch_add((sample_count - written) as u64, Ordering::Relaxed);
+                                    .opus_decode_errors
+                                    .fetch_add(1, Ordering::Relaxed);
+                                if run_failures.audio_failed(error.to_string()) {
+                                    break;
+                                }
                             }
                         }
-                        Err(_) => {
-                            worker_counters
-                                .opus_decode_errors
-                                .fetch_add(1, Ordering::Relaxed);
-                        }
                     }
+                }));
+                if result.is_err() {
+                    worker_failures.report_fatal(
+                        BackendSubsystem::AudioWorker,
+                        "the audio decode worker stopped unexpectedly".to_owned(),
+                    );
                 }
             })
             .map_err(|_| BackendError::Thread("Opus decoder"))?;

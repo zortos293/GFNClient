@@ -3,6 +3,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
+import { nativeStreamerCargoArgs } from "./build-native-streamer-config.mjs";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(__dirname, "..");
 const repoRoot = resolve(packageRoot, "..");
@@ -50,16 +52,7 @@ if (appProtocolVersion !== nativeProtocolVersion) {
   );
 }
 
-const cargoArgs = [
-  "build",
-  "--locked",
-  "--release",
-  "--package",
-  "opennow-streamer",
-  "--manifest-path",
-  manifestPath,
-];
-if (nativeTarget) cargoArgs.push("--target", nativeTarget);
+const cargoArgs = nativeStreamerCargoArgs({ manifestPath, nativeTarget, platformKey });
 
 const build = spawnSync("cargo", cargoArgs, {
   cwd: workspaceRoot,

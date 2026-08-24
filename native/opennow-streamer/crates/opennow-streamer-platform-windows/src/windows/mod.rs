@@ -69,11 +69,16 @@ pub(super) fn probe() -> CapabilityProbe {
     let h264_hardware_decode = decoder.is_ok();
     let d3d11_presentation = graphics.is_ok();
     let wasapi_render = audio.is_ok();
-    let available = h264_hardware_decode && d3d11_presentation && wasapi_render;
-    let reason = if available {
-        None
-    } else {
-        Some(
+    let mut probe = CapabilityProbe {
+        available: false,
+        h264_hardware_decode,
+        d3d11_presentation,
+        wasapi_render,
+        reason: None,
+    };
+    probe.available = probe.bundled_backend_available();
+    if !probe.available {
+        probe.reason = Some(
             [
                 graphics.err().map(|error| format!("D3D11: {error}")),
                 decoder.err().map(|error| format!("H.264: {error}")),
@@ -83,16 +88,9 @@ pub(super) fn probe() -> CapabilityProbe {
             .flatten()
             .collect::<Vec<_>>()
             .join("; "),
-        )
-    };
-
-    CapabilityProbe {
-        available,
-        h264_hardware_decode,
-        d3d11_presentation,
-        wasapi_render,
-        reason,
+        );
     }
+    probe
 }
 
 pub(super) fn spawn(
@@ -236,6 +234,25 @@ impl Worker {
             }
             if stopping {
                 break;
+            }
+            match self.audio.default_endpoint_changed() {
+                Ok(true) => {
+                    if let Err(error) =
+                        self.rebuild_audio("default audio endpoint changed".to_owned())
+                    {
+                        self.fail(error);
+                        return;
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    if let Err(error) =
+                        self.rebuild_audio(format!("default audio endpoint check failed: {error}"))
+                    {
+                        self.fail(error);
+                        return;
+                    }
+                }
             }
             if self
                 .shared
@@ -384,7 +401,16 @@ impl Worker {
                 .audio_format
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            match AudioRenderer::new(self.config.audio) {
+            let paused = self
+                .shared
+                .paused
+                .load(std::sync::atomic::Ordering::Acquire);
+            match AudioRenderer::new(self.config.audio).and_then(|mut audio| {
+                if paused {
+                    audio.set_paused(true)?;
+                }
+                Ok(audio)
+            }) {
                 Ok(audio) => {
                     self.audio = audio;
                     let _ = self

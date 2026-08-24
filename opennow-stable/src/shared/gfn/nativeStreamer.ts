@@ -28,11 +28,14 @@ export function isNativeStreamerSupportedPlatform(platform: string): boolean {
 }
 
 export function isNativeExternalRendererSupported(platform: string): boolean {
+  void platform;
+  return false;
+}
+
+export function isNativeDirectXBackendSupported(platform: string): boolean {
   const normalized = platform.toLowerCase();
   return normalized === "win32" || normalized.startsWith("win") || normalized.includes("windows");
 }
-
-export const isNativeDirectXBackendSupported = isNativeExternalRendererSupported;
 export function isNvstTransportSupported(platform: string): boolean {
   return isNativeStreamerSupportedPlatform(platform);
 }

@@ -206,13 +206,16 @@ export async function connectNvstWss(
   return connectNvstWssOnce(host, port, timeoutMs, form, sessionId);
 }
 
-export function encodeWsTextFrame(payload: Buffer): Buffer {
+function encodeMaskedWsFrame(opcode: number, payload: Buffer): Buffer {
   const len = payload.length;
+  if (opcode >= 0x8 && len > 125) {
+    throw new Error("WS control frame payload exceeds 125 bytes");
+  }
   const mask = randomBytes(4);
   let header: Buffer;
   if (len < 126) {
     header = Buffer.alloc(2);
-    header[0] = 0x81; // FIN + text
+    header[0] = 0x80 | opcode;
     header[1] = 0x80 | len; // MASK bit set
   } else if (len < 65536) {
     header = Buffer.alloc(4);
@@ -233,9 +236,18 @@ export function encodeWsTextFrame(payload: Buffer): Buffer {
   return Buffer.concat([header, mask, masked]);
 }
 
-/** Minimal client-side WS frame reader (text + close; ignores ping/pong/control). */
+export function encodeWsTextFrame(payload: Buffer): Buffer {
+  return encodeMaskedWsFrame(0x1, payload);
+}
+
+export function encodeWsPongFrame(payload: Buffer): Buffer {
+  return encodeMaskedWsFrame(0xa, payload);
+}
+
+/** Minimal client-side WS frame reader for RTSP messages and control frames. */
 export class WsFrameReader {
   private buffer = Buffer.alloc(0);
+  private pingPayloads: Buffer[] = [];
 
   push(chunk: Buffer): Buffer[] {
     this.buffer = Buffer.concat([this.buffer, chunk]);
@@ -285,9 +297,16 @@ export class WsFrameReader {
         messages.push(payload);
       } else if (opcode === 0x8) {
         throw new Error("RTSPS WebSocket closed");
+      } else if (opcode === 0x9) {
+        this.pingPayloads.push(payload);
       }
-      // 0x9/0xa ping/pong ignored for probe
     }
     return messages;
+  }
+
+  drainPingPayloads(): Buffer[] {
+    const payloads = this.pingPayloads;
+    this.pingPayloads = [];
+    return payloads;
   }
 }

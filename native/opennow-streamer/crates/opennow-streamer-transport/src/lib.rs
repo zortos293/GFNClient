@@ -25,10 +25,9 @@ pub use nvst::{
     NvstFallbackReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstSrtpProfile,
     NvstUdpReceiverControl, NvstUdpReceiverError, NvstUdpReceiverSession, NvstUnsupportedFeature,
     NvstVideoCodec, NvstVideoConfig, NvstVideoReceiver, PreferredVideoTransport,
-    ReservedNvstBundle, SharedNvstFeedback, advertised_nvst_ipv4, nack_transmission_support,
-    parse_nvst_video_handoff, reserve_nvst_mjolnir_udp_socket, reserve_nvst_udp_socket,
-    select_preferred_video_transport, spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver,
-    spawn_nvst_udp_receiver_with_socket,
+    ReservedNvstBundle, SharedNvstFeedback, advertised_nvst_ipv4, parse_nvst_video_handoff,
+    reserve_nvst_mjolnir_udp_socket, reserve_nvst_udp_socket, select_preferred_video_transport,
+    spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver, spawn_nvst_udp_receiver_with_socket,
 };
 
 static INSTALL_CRYPTO: Once = Once::new();
@@ -94,6 +93,7 @@ pub enum TransportEvent {
     Connected,
     Disconnected(String),
     InputReady(u16),
+    InputUnavailable(String),
     Log(String),
 }
 
@@ -506,6 +506,8 @@ fn run_transport(
     let mut receive_buffer = vec![0_u8; 65_536];
     let mut input_state = InputChannelState::default();
     let mut next_heartbeat = next_input_heartbeat(Instant::now());
+    let mut input_handshake_started_at = None;
+    let mut input_timeout_reported = false;
 
     loop {
         loop {
@@ -517,8 +519,13 @@ fn run_transport(
                     bytes,
                     partially_reliable,
                 }) => {
-                    if input_state.is_ready() {
-                        let _ = channels.send(&mut rtc, &bytes, partially_reliable);
+                    if input_state.is_ready()
+                        && !channels.send(&mut rtc, &bytes, partially_reliable)
+                    {
+                        input_ready_state.store(false, Ordering::Release);
+                        let _ = outputs.events.send(TransportEvent::InputUnavailable(
+                            "input packet could not be queued".to_owned(),
+                        ));
                     }
                 }
                 Ok(TransportCommand::RequestKeyframe { mid }) => {
@@ -556,18 +563,40 @@ fn run_transport(
         }
 
         if input_state.is_ready() && Instant::now() >= next_heartbeat {
-            let _ = channels.send_heartbeat(&mut rtc);
+            if !channels.send_heartbeat(&mut rtc) {
+                input_ready_state.store(false, Ordering::Release);
+                let _ = outputs.events.send(TransportEvent::InputUnavailable(
+                    "input heartbeat could not be queued".to_owned(),
+                ));
+            }
             next_heartbeat = next_input_heartbeat(Instant::now());
+        }
+        if !input_timeout_reported
+            && !input_state.is_ready()
+            && input_handshake_started_at.is_some_and(|started| {
+                Instant::now().duration_since(started) >= Duration::from_secs(5)
+            })
+        {
+            input_timeout_reported = true;
+            let _ = outputs.events.send(TransportEvent::InputUnavailable(
+                "input handshake timed out".to_owned(),
+            ));
         }
 
         let timeout = loop {
             match rtc.poll_output() {
                 Ok(Output::Timeout(timeout)) => break timeout,
                 Ok(Output::Transmit(transmit)) => {
-                    let _ = socket.send_to(&transmit.contents, transmit.destination);
+                    if let Err(error) = socket.send_to(&transmit.contents, transmit.destination) {
+                        let _ = outputs.events.send(TransportEvent::Disconnected(format!(
+                            "UDP send failed: {error}"
+                        )));
+                        return;
+                    }
                 }
                 Ok(Output::Event(event)) => match event {
                     Event::IceConnectionStateChange(IceConnectionState::Connected) => {
+                        input_handshake_started_at.get_or_insert_with(Instant::now);
                         let _ = outputs.events.send(TransportEvent::Connected);
                     }
                     Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
@@ -588,6 +617,14 @@ fn run_transport(
                         {
                             input_ready_state.store(true, Ordering::Release);
                             let _ = outputs.events.send(TransportEvent::InputReady(version));
+                        }
+                    }
+                    Event::ChannelClose(id) => {
+                        if input_state.channel_closed(channels, id) {
+                            input_ready_state.store(false, Ordering::Release);
+                            let _ = outputs.events.send(TransportEvent::InputUnavailable(
+                                "input data channel closed".to_owned(),
+                            ));
                         }
                     }
                     Event::MediaData(data) => {
@@ -631,11 +668,21 @@ fn run_transport(
             .saturating_duration_since(Instant::now())
             .min(Duration::from_millis(10));
         if wait.is_zero() {
-            let _ = rtc.handle_input(Input::Timeout(Instant::now()));
+            if let Err(error) = rtc.handle_input(Input::Timeout(Instant::now())) {
+                let _ = outputs.events.send(TransportEvent::Disconnected(format!(
+                    "RTC timer failed: {error}"
+                )));
+                return;
+            }
             continue;
         }
 
-        let _ = socket.set_read_timeout(Some(wait));
+        if let Err(error) = socket.set_read_timeout(Some(wait)) {
+            let _ = outputs.events.send(TransportEvent::Disconnected(format!(
+                "UDP timeout configuration failed: {error}"
+            )));
+            return;
+        }
         let input = match socket.recv_from(&mut receive_buffer) {
             Ok((length, source)) => {
                 let destination = match socket.local_addr() {

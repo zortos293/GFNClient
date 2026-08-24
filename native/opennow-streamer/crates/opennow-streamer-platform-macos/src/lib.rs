@@ -29,6 +29,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
+mod failure;
 mod format;
 mod lifecycle;
 mod queue;
@@ -37,6 +38,7 @@ mod ring;
 #[cfg(target_os = "macos")]
 mod macos;
 
+pub use failure::{BackendFailure, BackendSubsystem, VideoDecodeLoss};
 pub use format::{
     AudioFormat, BackendConfig, BorrowedNsView, BorrowedNsWindow, FrameTiming, H264Format,
     H264Framing, H264ParameterSets, OwnedOverlayConfig, QueueLimits, RendererRect, ScreenRect,
@@ -44,8 +46,28 @@ pub use format::{
 };
 pub use lifecycle::BackendState;
 
+pub(crate) const fn overlay_should_be_ordered(
+    requested_visible: bool,
+    parent_frontmost: bool,
+) -> bool {
+    requested_visible && parent_frontmost
+}
+
 #[cfg(target_os = "macos")]
 pub use macos::{
     BackendError, BackendStats, MacOsBackend, NativeSurfaceHandle, StreamSink, SubmitOutcome,
     debug_show_overlay_window, probe_h264_hardware, pump_app_events,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::overlay_should_be_ordered;
+
+    #[test]
+    fn overlay_requires_requested_visibility_and_frontmost_parent() {
+        assert!(!overlay_should_be_ordered(false, false));
+        assert!(!overlay_should_be_ordered(false, true));
+        assert!(!overlay_should_be_ordered(true, false));
+        assert!(overlay_should_be_ordered(true, true));
+    }
+}

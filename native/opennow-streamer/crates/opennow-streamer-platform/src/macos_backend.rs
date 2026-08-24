@@ -30,6 +30,7 @@ pub(crate) struct MacOutput {
     visible: bool,
     paused: bool,
     last_ordering_check: Instant,
+    failure_reported: bool,
 }
 
 impl MacOutput {
@@ -40,11 +41,13 @@ impl MacOutput {
             visible: false,
             paused: false,
             last_ordering_check: Instant::now(),
+            failure_reported: false,
         }
     }
 
     pub(crate) fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
         self.paused = false;
+        self.failure_reported = false;
         if let Some(surface) = surface {
             self.update_surface(surface)?;
         }
@@ -112,6 +115,16 @@ impl MacOutput {
     }
 
     pub(crate) fn pump(&mut self) -> Result<(), String> {
+        if !self.failure_reported
+            && let Some(failure) = self.backend.as_ref().and_then(MacOsBackend::fatal_failure)
+        {
+            self.failure_reported = true;
+            return Err(format!(
+                "{} backend failed: {}",
+                failure.subsystem.name(),
+                failure.message
+            ));
+        }
         if self.last_ordering_check.elapsed() < ORDERING_POLL_INTERVAL {
             return Ok(());
         }

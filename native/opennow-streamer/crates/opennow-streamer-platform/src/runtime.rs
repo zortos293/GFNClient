@@ -477,9 +477,9 @@ impl MainThreadHost {
                                 Arc::clone(&self.output),
                                 false,
                                 MediaStreamConfig::default(),
-                                false,
                                 #[cfg(target_os = "windows")]
                                 Arc::clone(&self.windows_bridge),
+                                false,
                             )?;
                             replacement.start(surface.as_ref())?;
                             replacement.set_paused(paused)?;
@@ -520,6 +520,47 @@ impl MainThreadHost {
                     }
                     Ok(OutputEvent::None | OutputEvent::Presented(_)) => {}
                     Err(message) => {
+                        #[cfg(target_os = "macos")]
+                        if output.is_macos_hardware() {
+                            self.use_macos_hardware.store(false, Ordering::Release);
+                            crate::macos_backend::disable();
+                            output.stop();
+                            let fallback = initialize_output(
+                                Arc::clone(&self.output),
+                                surface.as_ref(),
+                                paused,
+                                false,
+                                MediaStreamConfig::default(),
+                                false,
+                            );
+                            match fallback {
+                                Ok(replacement) => {
+                                    *output = replacement;
+                                    software_playback_started = false;
+                                    if let Some(feedback) = feedback.as_ref() {
+                                        let _ = feedback.send(MediaFeedback::BackendFallback {
+                                            from: "VideoToolbox/Metal/CoreAudio",
+                                            to: "OpenH264/SDL",
+                                            reason: message,
+                                        });
+                                    }
+                                    continue;
+                                }
+                                Err(fallback_error) => {
+                                    if let Some(feedback) = feedback.as_ref() {
+                                        let _ = feedback.send(MediaFeedback::OutputError {
+                                            message: format!(
+                                                "macOS hardware output failed ({message}); software fallback failed: {fallback_error}"
+                                            ),
+                                        });
+                                    }
+                                    active = None;
+                                    feedback = None;
+                                    software_playback_started = false;
+                                    continue;
+                                }
+                            }
+                        }
                         #[cfg(target_os = "linux")]
                         if output.is_linux_hardware() {
                             self.linux_software_fallback.store(true, Ordering::Release);
@@ -621,9 +662,9 @@ fn initialize_output(
         output,
         use_hardware,
         stream,
-        use_linux_hardware,
         #[cfg(target_os = "windows")]
         windows_bridge,
+        use_linux_hardware,
     )?;
     if let Err(error) = output.start(surface) {
         output.stop();

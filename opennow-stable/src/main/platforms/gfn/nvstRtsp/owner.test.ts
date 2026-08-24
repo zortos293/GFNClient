@@ -23,6 +23,7 @@ function createContext(
       serverIp: "192.0.2.10",
       signalingServer: "signal.example",
       signalingUrl: "wss://signal.example/session",
+      mediaConnectionInfo: { ip: "198.51.100.20", port: 5006, usage: 17 },
       rtspsEndpoints: withEndpoints ? [`rtsps://rtsp.example:322/${sessionId}`] : undefined,
       iceServers: [],
     },
@@ -39,6 +40,7 @@ function createContext(
 function createRtspSession(
   sessionId: string,
   onRelease: (reason: string) => void,
+  isHealthy: () => boolean = () => true,
 ): NvstRtspSession {
   return {
     endpoint: `rtsps://rtsp.example:322/${sessionId}`,
@@ -63,6 +65,7 @@ function createRtspSession(
       codec: "H265",
     },
     steps: ["wss-open", "options", "describe", "setup-video", "announce", "play"],
+    isHealthy,
     handoffVideoUdp: async () => undefined,
     release: async (reason = "released") => onRelease(reason),
   };
@@ -71,9 +74,14 @@ function createRtspSession(
 test("owner retains one negotiated control session and reuses its video handoff", async () => {
   const releases: string[] = [];
   let negotiations = 0;
+  let codec: string | undefined;
+  let bundlePeer: { ip: string; port: number } | undefined;
   const owner = new GfnNvstRtspSessionOwner({
-    negotiate: async ({ sessionId }) => {
+    negotiate: async (input) => {
+      const { sessionId } = input;
       negotiations += 1;
+      codec = input.codec;
+      bundlePeer = input.bundlePeer;
       return createRtspSession(sessionId, (reason) => releases.push(reason));
     },
   });
@@ -82,6 +90,8 @@ test("owner retains one negotiated control session and reuses its video handoff"
   const duplicate = await owner.prepare(createContext("same-session"));
 
   assert.equal(negotiations, 1);
+  assert.equal(codec, "H264");
+  assert.deepEqual(bundlePeer, { ip: "198.51.100.20", port: 5006, usage: 17 });
   assert.deepEqual(duplicate.nvstVideo, first.nvstVideo);
   assert.deepEqual(releases, []);
 
@@ -109,6 +119,29 @@ test("owner tears down the previous session before negotiating its replacement",
     "release:first:replaced by GFN session second",
     "negotiate:second",
   ]);
+  await owner.release("test complete");
+});
+
+test("owner renegotiates instead of reusing an unhealthy same-session client", async () => {
+  const events: string[] = [];
+  let negotiations = 0;
+  const owner = new GfnNvstRtspSessionOwner({
+    negotiate: async ({ sessionId }) => {
+      negotiations += 1;
+      const negotiation = negotiations;
+      return createRtspSession(
+        sessionId,
+        (reason) => events.push(`release:${negotiation}:${reason}`),
+        () => negotiation > 1,
+      );
+    },
+  });
+
+  await owner.prepare(createContext("same-session"));
+  await owner.prepare(createContext("same-session"));
+
+  assert.equal(negotiations, 2);
+  assert.deepEqual(events, ["release:1:replaced by GFN session same-session"]);
   await owner.release("test complete");
 });
 

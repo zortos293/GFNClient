@@ -1435,6 +1435,22 @@ export class GfnWebRtcClient {
 
   }
 
+  public markNativeInputUnavailable(reason: string): void {
+    this.nativeInputActive = false;
+    this.nativeElectronInputBridge = false;
+    this.inputReady = false;
+    this.inputProtocolVersion = 2;
+    this.inputEncoder.setProtocolVersion(2);
+    this.detachInputCapture();
+    this.gamepadController.stop();
+    this.diagnostics.inputReady = false;
+    this.diagnostics.partiallyReliableInputOpen = false;
+    this.diagnostics.mouseMoveTransport = "reliable";
+    this.diagnostics.lagReason = "unknown";
+    this.diagnostics.lagReasonDetail = `Native input unavailable: ${reason}`;
+    this.emitStats();
+  }
+
   private async waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<string> {
     if (pc.iceGatheringState === "complete" && pc.localDescription?.sdp) {
       return pc.localDescription.sdp;

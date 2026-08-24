@@ -1,33 +1,43 @@
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
-
-#[cfg(not(target_os = "linux"))]
-compile_error!("opennow-streamer-platform-linux only supports Linux");
-
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "x86_64", target_arch = "aarch64"))
+))]
 compile_error!("the Linux backend currently supports x86_64 and aarch64");
 
+#[cfg(target_os = "linux")]
 mod audio;
+#[cfg(target_os = "linux")]
 mod capability;
+#[cfg(target_os = "linux")]
 mod error;
+#[cfg(target_os = "linux")]
 mod format;
-#[cfg(feature = "vulkan")]
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
 mod presentation;
+#[cfg(target_os = "linux")]
 mod queue;
+#[cfg(target_os = "linux")]
 mod session;
+#[cfg(target_os = "linux")]
 mod video;
 
+#[cfg(target_os = "linux")]
 pub use audio::{AudioBackend, AudioBackendPreference, AudioConfig, AudioPacket};
+#[cfg(target_os = "linux")]
 pub use capability::{
     BackendCapability, CapabilityReport, PresentationCapability, probe_capabilities,
     probe_video_capabilities,
 };
+#[cfg(target_os = "linux")]
 pub use error::{Error, Result, Subsystem};
+#[cfg(target_os = "linux")]
 pub use format::{
     ChromaLocation, ColorMatrix, ColorRange, DecodedVideoFrame, EncodedVideoFrame, FramePlane,
     PixelFormat, StreamFormat,
 };
-#[cfg(feature = "vulkan")]
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use presentation::{NativeSurface, VulkanPresenter};
+#[cfg(target_os = "linux")]
 pub use session::{
     BackendEvent, DecoderBackend, DecoderPreference, LifecycleState, LinuxSession, PushOutcome,
     SessionConfig,

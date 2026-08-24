@@ -1,11 +1,8 @@
 import type {
   IceCandidatePayload,
   NativeStreamerBackend,
-  NativeStreamStats,
   NativeRenderSurface,
-  NativeStreamerShortcutAction,
   NativeStreamerSessionContext,
-  NativeVideoTransition,
   NativeVideoBackendCapability,
   SendAnswerRequest,
 } from "./gfn";
@@ -61,6 +58,10 @@ export type NativeStreamerCommand =
     }
   | {
       id: string;
+      type: "nvst-unbind";
+    }
+  | {
+      id: string;
       type: "nvst-send";
       host: string;
       port: number;
@@ -94,18 +95,8 @@ export type NativeStreamerCommand =
     }
   | {
       id: string;
-      type: "bitrate";
-      maxBitrateKbps: number;
-    }
-  | {
-      id: string;
       type: "stop";
       reason?: string;
-    }
-  | {
-      id: string;
-      type: "update-shortcuts";
-      shortcuts: import("./gfn").NativeStreamerShortcutBindings;
     };
 
 export type NativeStreamerResponse =
@@ -162,50 +153,8 @@ export type NativeStreamerEvent =
       protocolVersion: number;
     }
   | {
-      type: "shortcut";
-      action: NativeStreamerShortcutAction;
-    }
-  | {
-      type: "clipboard-paste";
-    }
-  | {
-      type: "input-capture-changed";
-      captured: boolean;
-    }
-  | {
-      type: "video-stall";
-      stallMs: number;
-      encodedKbps?: number;
-      decodedFps: number;
-      sinkFps: number;
-      encodedAgeMs?: number;
-      decodedAgeMs?: number;
-      sinkAgeMs?: number;
-      likelyStage?: string;
-      sinkRendered?: number;
-      sinkDropped?: number;
-      memoryMode?: string;
-      zeroCopy?: boolean;
-      requestedFps?: number;
-      capsFramerate?: string;
-      queueMode?: string;
-      partialFlushCount?: number;
-      completeFlushCount?: number;
-      lastTransitionType?: string;
-      lastTransitionAtMs?: number;
-      requestedStreamingFeaturesSummary?: string;
-      finalizedStreamingFeaturesSummary?: string;
-      zeroCopyD3D11: boolean;
-      zeroCopyD3D12: boolean;
-      recoveryAttempt: number;
-    }
-  | {
-      type: "video-transition";
-      transition: NativeVideoTransition;
-    }
-  | {
-      type: "stats";
-      stats: NativeStreamStats;
+      type: "input-unavailable";
+      reason: string;
     }
   | {
       type: "error";

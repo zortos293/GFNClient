@@ -67,6 +67,10 @@ class FakeRtspClient implements NvstRtspClient {
     this.events.push(`connect:${sessionId}`);
   }
 
+  isHealthy(): boolean {
+    return !this.closed;
+  }
+
   async request(
     method: string,
     uri: string,

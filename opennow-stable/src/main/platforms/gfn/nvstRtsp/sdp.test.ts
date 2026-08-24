@@ -70,6 +70,10 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   assert.match(sdp, /a=x-nv-general\.clientPorts\.video:45000/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.audio:45002/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.control:45004/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.enableRtpNack:1/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.fec\.enable:0/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.bllFec\.enable:0/);
+  assert.match(sdp, /a=x-nv-aqos\.enableRedundancy:0/);
   assert.match(sdp, /m=video 5004\r\ni=DeviceString, DeviceName/);
   assert.doesNotMatch(sdp, /RTP\/AVP|msid:video_0|clientTransport|nativeRtcOnBundlePort|iceUsernameFragment|dtlsFingerprint|controlProtocol/);
 });

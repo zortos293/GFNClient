@@ -6,6 +6,7 @@ use opennow_streamer_platform_linux::{
 use opennow_streamer_protocol::{CodecCapability, VideoBackendCapability};
 
 const VIDEO_BACKEND_ENV: &str = "OPENNOW_NATIVE_VIDEO_BACKEND";
+const REQUIRED_WINDOW_SYSTEM: &str = "x11";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinuxVideoPath {
@@ -48,18 +49,34 @@ impl LinuxCapabilitySnapshot {
     }
 
     fn hardware_available(&self, decoder: &BackendCapability) -> bool {
-        decoder.available && self.presentation.available
+        decoder.available && presentation_available(&self.presentation)
     }
 
     fn unavailable_reason(&self, decoder: &BackendCapability) -> String {
         if !decoder.available {
             return decoder.detail.clone();
         }
-        if !self.presentation.available {
-            return self.presentation.detail.clone();
+        if !presentation_available(&self.presentation) {
+            return presentation_unavailable_reason(&self.presentation);
         }
         "Linux hardware video path is unavailable".to_owned()
     }
+}
+
+fn presentation_available(presentation: &PresentationCapability) -> bool {
+    presentation.available
+        && presentation
+            .window_systems
+            .contains(&REQUIRED_WINDOW_SYSTEM)
+}
+
+fn presentation_unavailable_reason(presentation: &PresentationCapability) -> String {
+    if !presentation.available {
+        return presentation.detail.clone();
+    }
+    format!(
+        "Vulkan presentation lacks {REQUIRED_WINDOW_SYSTEM} WSI required by the Electron native window path"
+    )
 }
 
 fn capabilities() -> &'static LinuxCapabilitySnapshot {
@@ -117,7 +134,7 @@ fn select_video_path_for(
                 "Linux hardware video is unavailable (VA-API: {}; V4L2: {}; Vulkan: {})",
                 capabilities.vaapi.detail,
                 capabilities.v4l2.detail,
-                capabilities.presentation.detail,
+                presentation_unavailable_reason(&capabilities.presentation),
             )),
         ),
         other => (
@@ -146,11 +163,11 @@ fn hardware_capability(
     decoder: &BackendCapability,
     presentation: &PresentationCapability,
 ) -> VideoBackendCapability {
-    let available = decoder.available && presentation.available;
+    let available = decoder.available && presentation_available(presentation);
     let reason = if !decoder.available {
         Some(decoder.detail.clone())
-    } else if !presentation.available {
-        Some(presentation.detail.clone())
+    } else if !presentation_available(presentation) {
+        Some(presentation_unavailable_reason(presentation))
     } else {
         None
     };
@@ -189,7 +206,12 @@ fn static_reason(reason: String) -> &'static str {
 mod tests {
     use super::*;
 
-    fn snapshot(vaapi: bool, v4l2: bool, vulkan: bool) -> LinuxCapabilitySnapshot {
+    fn snapshot(
+        vaapi: bool,
+        v4l2: bool,
+        vulkan: bool,
+        window_systems: Vec<&'static str>,
+    ) -> LinuxCapabilitySnapshot {
         LinuxCapabilitySnapshot {
             vaapi: BackendCapability {
                 name: "vaapi-h264",
@@ -204,7 +226,7 @@ mod tests {
             presentation: PresentationCapability {
                 available: vulkan,
                 api: "vulkan",
-                window_systems: vec!["x11"],
+                window_systems,
                 detail: "vulkan probe".to_owned(),
             },
         }
@@ -212,7 +234,7 @@ mod tests {
 
     #[test]
     fn honors_explicit_linux_backend_preference() {
-        let available = snapshot(true, true, true);
+        let available = snapshot(true, true, true, vec!["x11"]);
         assert_eq!(
             select_video_path_for(Some("vaapi"), &available).path,
             LinuxVideoPath::Hardware(DecoderPreference::VaApiOnly)
@@ -230,23 +252,44 @@ mod tests {
     #[test]
     fn auto_prefers_vaapi_then_v4l2_and_requires_presentation() {
         assert_eq!(
-            select_video_path_for(Some("auto"), &snapshot(true, true, true)).path,
+            select_video_path_for(Some("auto"), &snapshot(true, true, true, vec!["x11"])).path,
             LinuxVideoPath::Hardware(DecoderPreference::VaApiThenV4l2)
         );
         assert_eq!(
-            select_video_path_for(None, &snapshot(false, true, true)).path,
+            select_video_path_for(None, &snapshot(false, true, true, vec!["x11"])).path,
             LinuxVideoPath::Hardware(DecoderPreference::V4l2ThenVaApi)
         );
         assert_eq!(
-            select_video_path_for(None, &snapshot(true, true, false)).path,
+            select_video_path_for(None, &snapshot(true, true, false, Vec::new())).path,
             LinuxVideoPath::Software
+        );
+    }
+
+    #[test]
+    fn wayland_only_vulkan_snapshot_falls_back_and_reports_x11_requirement() {
+        let capabilities = snapshot(true, true, true, vec!["wayland"]);
+        let selected = select_video_path_for(None, &capabilities);
+        assert_eq!(selected.path, LinuxVideoPath::Software);
+        assert!(
+            selected
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("lacks x11 WSI"))
+        );
+
+        let backend = hardware_capability("vaapi", &capabilities.vaapi, &capabilities.presentation);
+        assert!(!backend.available);
+        assert_eq!(
+            backend.reason,
+            Some("Vulkan presentation lacks x11 WSI required by the Electron native window path")
         );
     }
 
     #[test]
     fn unsupported_or_unavailable_explicit_backend_falls_back_honestly() {
         for requested in ["vaapi", "v4l2", "nvdec", "d3d11"] {
-            let selected = select_video_path_for(Some(requested), &snapshot(false, false, true));
+            let selected =
+                select_video_path_for(Some(requested), &snapshot(false, false, true, vec!["x11"]));
             assert_eq!(selected.path, LinuxVideoPath::Software);
             assert!(selected.fallback_reason.is_some());
         }

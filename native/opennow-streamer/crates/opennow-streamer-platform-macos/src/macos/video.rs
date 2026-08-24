@@ -20,6 +20,7 @@ use objc2_video_toolbox::{
     VTDecompressionSession, kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
 };
 
+use crate::failure::FailureReporter;
 use crate::format::{FrameTiming, H264Format, VideoColorSpace};
 use crate::queue::{BoundedQueue, PushResult};
 
@@ -56,6 +57,7 @@ impl InFlight {
 struct CallbackContext {
     queue: Arc<BoundedQueue<DecodedFrame>>,
     counters: Arc<Counters>,
+    failures: Arc<FailureReporter>,
     in_flight: Arc<InFlight>,
     color_space: VideoColorSpace,
 }
@@ -76,6 +78,7 @@ impl VideoDecoder {
         format: &H264Format,
         queue: Arc<BoundedQueue<DecodedFrame>>,
         counters: Arc<Counters>,
+        failures: Arc<FailureReporter>,
         maximum_in_flight: usize,
     ) -> Result<Self, BackendError> {
         let format_description = create_format_description(format)?;
@@ -86,6 +89,7 @@ impl VideoDecoder {
         let mut callback_context = Box::new(CallbackContext {
             queue,
             counters,
+            failures,
             in_flight: Arc::clone(&in_flight),
             color_space: format.color_space,
         });
@@ -164,6 +168,11 @@ impl VideoDecoder {
                 .counters
                 .video_decode_errors
                 .fetch_add(1, Ordering::Relaxed);
+            let status = match &result {
+                Err(BackendError::AppleApi { status, .. }) => Some(*status),
+                _ => None,
+            };
+            self.callback_context.failures.video_decode_failed(status);
         }
         result.map(|()| true)
     }
@@ -276,6 +285,7 @@ unsafe extern "C-unwind" fn decompression_callback(
                 .counters
                 .video_decoded
                 .fetch_add(1, Ordering::Relaxed);
+            context.failures.video_decode_succeeded();
             if matches!(
                 context.queue.push_drop_oldest(frame),
                 PushResult::Replaced(_) | PushResult::Closed(_)
@@ -290,12 +300,14 @@ unsafe extern "C-unwind" fn decompression_callback(
                 .counters
                 .video_decode_errors
                 .fetch_add(1, Ordering::Relaxed);
+            context.failures.video_decode_failed(None);
         }
     } else {
         context
             .counters
             .video_decode_errors
             .fetch_add(1, Ordering::Relaxed);
+        context.failures.video_decode_failed(Some(status));
     }
     context.in_flight.release();
 }

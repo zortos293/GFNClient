@@ -1,4 +1,4 @@
-use std::sync::Arc;
+#![cfg(target_os = "linux")]
 
 use opennow_streamer_platform_linux::{
     AudioConfig, AudioPacket, EncodedVideoFrame, LinuxSession, SessionConfig, StreamFormat,
@@ -6,6 +6,7 @@ use opennow_streamer_platform_linux::{
 use static_assertions::assert_impl_all;
 #[cfg(feature = "vulkan")]
 use static_assertions::assert_not_impl_any;
+use std::sync::Arc;
 
 assert_impl_all!(LinuxSession: Send);
 #[cfg(feature = "vulkan")]

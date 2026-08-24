@@ -19,6 +19,12 @@ pub(crate) struct InputChannels {
 
 impl InputChannels {
     pub(crate) fn create(rtc: &mut Rtc, partial_reliable_lifetime_ms: u16) -> Self {
+        let stats = rtc.direct_api().create_data_channel(ChannelConfig {
+            label: STATS_LABEL.to_owned(),
+            ordered: false,
+            reliability: Reliability::MaxRetransmits { retransmits: 0 },
+            ..Default::default()
+        });
         let reliable = rtc.direct_api().create_data_channel(ChannelConfig {
             label: RELIABLE_INPUT_LABEL.to_owned(),
             ..Default::default()
@@ -29,12 +35,6 @@ impl InputChannels {
             reliability: Reliability::MaxPacketLifetime {
                 lifetime: partial_reliable_lifetime_ms,
             },
-            ..Default::default()
-        });
-        let stats = rtc.direct_api().create_data_channel(ChannelConfig {
-            label: STATS_LABEL.to_owned(),
-            ordered: false,
-            reliability: Reliability::MaxRetransmits { retransmits: 0 },
             ..Default::default()
         });
         Self {
@@ -98,6 +98,20 @@ impl InputChannelState {
         self.reliable_open && self.partial_open && self.negotiated_version.is_some()
     }
 
+    pub(crate) fn channel_closed(&mut self, channels: InputChannels, id: ChannelId) -> bool {
+        let was_ready = self.is_ready();
+        if id == channels.reliable {
+            self.reliable_open = false;
+            self.negotiated_version = None;
+        } else if id == channels.partial {
+            self.partial_open = false;
+        } else {
+            return false;
+        }
+        self.ready_reported = false;
+        was_ready
+    }
+
     fn take_new_ready_version(&mut self) -> Option<u16> {
         if self.ready_reported || !self.is_ready() {
             return None;
@@ -155,6 +169,8 @@ mod tests {
         assert!(!state.is_ready());
         assert_eq!(state.channel_opened(channels, channels.partial), Some(3));
         assert!(state.is_ready());
-        assert_eq!(state.channel_opened(channels, channels.partial), None);
+        assert!(state.channel_closed(channels, channels.partial));
+        assert!(!state.is_ready());
+        assert!(!state.channel_closed(channels, channels.stats));
     }
 }

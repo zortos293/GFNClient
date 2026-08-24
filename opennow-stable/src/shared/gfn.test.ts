@@ -187,6 +187,14 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
   assert.equal(context.settings.enableCloudGsync, false);
   assert.equal(context.settings.nativeTransitionDiagnostics?.forceQueueMode, "adaptive");
   assert.equal(context.shortcuts.toggleRecording, "F12");
+
+  const nvstContext = buildNativeStreamerSessionContext(
+    context.session,
+    { ...context.settings, transportMode: "nvst", codec: "AV1" },
+    context.shortcuts,
+  );
+  assert.equal(nvstContext.settings.codec, "H264");
+  assert.equal(nvstContext.session.negotiatedStreamProfile?.codec, "H264");
 });
 
 test("keeps native stream client mode on supported desktop platforms", () => {
@@ -235,15 +243,15 @@ test("reports unsupported native streamer status on unknown platforms only", () 
   assert.equal(isNativeStreamerSupportedPlatform("android"), false);
 });
 
-test("isNativeExternalRendererSupported is Windows-only", () => {
-  assert.equal(isNativeExternalRendererSupported("win32"), true);
-  assert.equal(isNativeExternalRendererSupported("windows"), true);
+test("external renderer remains disabled until native OS input capture exists", () => {
+  assert.equal(isNativeExternalRendererSupported("win32"), false);
+  assert.equal(isNativeExternalRendererSupported("windows"), false);
   assert.equal(isNativeExternalRendererSupported("linux"), false);
   assert.equal(isNativeExternalRendererSupported("darwin"), false);
   assert.equal(isNativeDirectXBackendSupported("win32"), true);
   assert.equal(isNativeDirectXBackendSupported("linux"), false);
   assert.equal(normalizeNativeExternalRendererForPlatform(true, "linux"), false);
-  assert.equal(normalizeNativeExternalRendererForPlatform(true, "win32"), true);
+  assert.equal(normalizeNativeExternalRendererForPlatform(true, "win32"), false);
   assert.equal(normalizeNativeExternalRendererForPlatform(false, "win32"), false);
 
   const status = createUnsupportedNativeStreamerStatus();

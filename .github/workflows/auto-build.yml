@@ -147,7 +147,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libasound2-dev \
+            libdrm-dev \
             libpulse-dev \
+            libva-dev \
             libx11-dev \
             libxcursor-dev \
             libxext-dev \

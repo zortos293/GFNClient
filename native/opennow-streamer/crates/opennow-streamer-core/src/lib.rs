@@ -171,6 +171,7 @@ impl Engine {
         let result = match command.kind.as_str() {
             "hello" => self.hello(&command),
             "nvst-bind" => self.nvst_bind(command),
+            "nvst-unbind" => self.nvst_unbind(command),
             "nvst-send" => self.nvst_send(command),
             "start" => self.start(command),
             "offer" => self.offer(command),
@@ -339,6 +340,24 @@ impl Engine {
         Ok(vec![response(command.id, "ok")])
     }
 
+    fn nvst_unbind(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        let lifecycle = lock_lifecycle(&self.lifecycle);
+        if lifecycle.state != State::Idle
+            || self.nvst_transport.is_some()
+            || self.nvst_mjolnir_transport.is_some()
+        {
+            return Err(error(
+                Some(&command.id),
+                "nvst-unbind-in-use",
+                "Cannot release an NVST UDP reservation after session start",
+            ));
+        }
+        drop(lifecycle);
+        self.reserved_nvst_bundle = None;
+        self.nvst_hole_punch_socket = None;
+        Ok(vec![response(command.id, "ok")])
+    }
+
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         let context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
@@ -348,7 +367,38 @@ impl Engine {
                 return Err(invalid_state(&command.id, "start", lifecycle.state, "Idle"));
             }
         }
+        let transport_context = serde_json::to_value(&context).map_err(|context_error| {
+            error(
+                Some(&command.id),
+                "invalid-context",
+                format!("Session context is not serializable: {context_error}"),
+            )
+        })?;
+        let explicit_nvst = transport_context
+            .pointer("/settings/transportMode")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("nvst"))
+            || transport_context.get("nvstVideo").is_some()
+            || transport_context.get("nvstTransport").is_some();
+        let (nvst_config, fallback_note) =
+            match select_preferred_video_transport(&transport_context) {
+                PreferredVideoTransport::Nvst(config) => (Some(*config), None),
+                PreferredVideoTransport::WebRtcFallback(reason) if explicit_nvst => {
+                    return Err(error(
+                        Some(&command.id),
+                        "invalid-nvst-handoff",
+                        format!("Explicit NVST transport is invalid: {reason:?}"),
+                    ));
+                }
+                PreferredVideoTransport::WebRtcFallback(reason) => (
+                    None,
+                    Some(format!(
+                        "NVST unavailable; using WebRTC fallback: {reason:?}"
+                    )),
+                ),
+            };
         if self.media_runtime.is_some()
+            && nvst_config.is_none()
             && context
                 .settings
                 .get("codec")
@@ -361,23 +411,6 @@ impl Engine {
                 "Native streamer v2 was built with H.264 decode only",
             ));
         }
-        let transport_context = serde_json::to_value(&context).map_err(|context_error| {
-            error(
-                Some(&command.id),
-                "invalid-context",
-                format!("Session context is not serializable: {context_error}"),
-            )
-        })?;
-        let (nvst_config, fallback_note) =
-            match select_preferred_video_transport(&transport_context) {
-                PreferredVideoTransport::Nvst(config) => (Some(*config), None),
-                PreferredVideoTransport::WebRtcFallback(reason) => (
-                    None,
-                    Some(format!(
-                        "NVST unavailable; using WebRTC fallback: {reason:?}"
-                    )),
-                ),
-            };
         let nvst_bundle_available = nvst_config
             .as_ref()
             .is_some_and(|config| config.remote_dtls_fingerprint().is_some());
@@ -773,8 +806,8 @@ impl Engine {
         if self.nvst_transport.is_some() {
             return Err(error(
                 Some(&command.id),
-                "nvst-input-unsupported",
-                "NVST video does not implement the WebRTC input/control channel",
+                "nvst-remote-ice-unsupported",
+                "NVST owns its negotiated ICE bundle and does not accept remote-ice commands",
             ));
         }
         let state = lock_lifecycle(&self.lifecycle).state;
@@ -1122,6 +1155,9 @@ fn forward_transport_event(
             "input-ready",
             json!({ "protocolVersion": protocol_version }),
         ),
+        TransportEvent::InputUnavailable(reason) => {
+            event("input-unavailable", json!({ "reason": reason }))
+        }
         TransportEvent::Log(message) => {
             event("log", json!({ "level": "warn", "message": message }))
         }
@@ -1169,7 +1205,17 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = emit_nvst_terminal(
+                    output,
+                    lifecycle,
+                    generation,
+                    &resources,
+                    "nvst-event-channel-closed",
+                    "NVST receiver event channel closed unexpectedly".to_owned(),
+                );
+                return;
+            }
         }
     }
 }
@@ -1251,6 +1297,10 @@ fn forward_nvst_event<R: NvstSessionResources>(
             ));
             false
         }
+        NvstReceiveEvent::InputUnavailable(reason) => {
+            let _ = output.send(event("input-unavailable", json!({ "reason": reason })));
+            false
+        }
         NvstReceiveEvent::Dropped(reason) => {
             let _ = output.send(event(
                 "log",
@@ -1258,7 +1308,12 @@ fn forward_nvst_event<R: NvstSessionResources>(
             ));
             false
         }
-        NvstReceiveEvent::Frame(_) => false,
+        NvstReceiveEvent::Frame(frame) => {
+            if frame.keyframe {
+                *recovery_attempts = 0;
+            }
+            false
+        }
     }
 }
 
@@ -1820,6 +1875,30 @@ mod tests {
     }
 
     #[test]
+    fn decoded_keyframe_resets_recovery_episode_budget() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut recovery_attempts = 1;
+
+        assert!(!forward_nvst_event(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            &mut recovery_attempts,
+            NvstReceiveEvent::Frame(opennow_streamer_transport::EncodedH264Frame {
+                timestamp: 1,
+                frame_index: 1,
+                first_stream_packet_index: 1,
+                keyframe: true,
+                bytes: vec![0, 0, 0, 1, 0x65],
+            }),
+        ));
+        assert_eq!(recovery_attempts, 0);
+    }
+
+    #[test]
     fn hello_reports_honest_transport_only_capabilities() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut engine = Engine::new(sender);
@@ -1901,6 +1980,7 @@ mod tests {
         let (media_sender, _media_receiver) = std::sync::mpsc::sync_channel(4);
         let mut engine = Engine::with_media_consumer(sender, media_sender);
         let mut context = synthetic_context("nvst-session", json!([]));
+        context["settings"]["codec"] = json!("AV1");
         context["nvstVideo"] = json!({
             "clientUdpPort": unused_udp_port(),
             "videoPeerIp": "127.0.0.1",
@@ -1946,6 +2026,69 @@ mod tests {
         })));
         assert_eq!(responses[0]["type"], "ok");
         assert_eq!(lifecycle_state(&engine), State::Idle);
+    }
+
+    #[test]
+    fn explicit_invalid_nvst_handoff_fails_closed_without_webrtc_fallback() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let mut context = synthetic_context("invalid-nvst-session", json!([]));
+        context["nvstVideo"] = json!({
+            "clientUdpPort": 0,
+            "codec": "H264"
+        });
+
+        let (responses, _) = engine.handle(command(json!({
+            "id": "start-invalid-nvst",
+            "type": "start",
+            "context": context,
+        })));
+
+        assert_eq!(responses[0]["code"], "invalid-nvst-handoff");
+        assert_eq!(lifecycle_state(&engine), State::Idle);
+        assert!(engine.transport.is_none());
+        assert!(engine.nvst_transport.is_none());
+    }
+
+    #[test]
+    fn explicit_nvst_mode_without_handoff_fails_closed() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let mut context = synthetic_context("missing-nvst-session", json!([]));
+        context["settings"]["transportMode"] = json!("nvst");
+
+        let (responses, _) = engine.handle(command(json!({
+            "id": "start-missing-nvst",
+            "type": "start",
+            "context": context,
+        })));
+
+        assert_eq!(responses[0]["code"], "invalid-nvst-handoff");
+        assert_eq!(lifecycle_state(&engine), State::Idle);
+        assert!(engine.transport.is_none());
+        assert!(engine.nvst_transport.is_none());
+    }
+
+    #[test]
+    fn unused_nvst_reservation_can_be_released_idempotently() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+
+        let (responses, _) = engine.handle(command(json!({
+            "id": "bind",
+            "type": "nvst-bind",
+        })));
+        assert_eq!(responses[0]["type"], "nvst-bound");
+        assert!(engine.reserved_nvst_bundle.is_some());
+
+        for id in ["unbind", "unbind-again"] {
+            let (responses, _) = engine.handle(command(json!({
+                "id": id,
+                "type": "nvst-unbind",
+            })));
+            assert_eq!(responses[0]["type"], "ok");
+            assert!(engine.reserved_nvst_bundle.is_none());
+        }
     }
 
     #[test]
@@ -2185,6 +2328,12 @@ mod tests {
             "context": synthetic_context("synthetic-session", json!([])),
         })));
         assert_eq!(responses[0]["type"], "ok");
+        let (responses, _) = engine.handle(command(json!({
+            "id": "shortcuts",
+            "type": "update-shortcuts",
+            "shortcuts": { "stopStream": "Ctrl+Alt+Q" }
+        })));
+        assert_eq!(responses[0]["code"], "unsupported-command");
         let (responses, _) = engine.handle(command(json!({
             "id": "stop",
             "type": "stop",

@@ -4,6 +4,10 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 
 import type {
+  MainToRendererSignalingEvent,
+  NativeStreamerSessionContext,
+} from "@shared/gfn";
+import type {
   NativeStreamerCapabilities,
   NativeStreamerActiveTransportCapabilities,
   NativeStreamerEvent,
@@ -40,6 +44,7 @@ interface ManagerInternals {
   child: ChildProcessWithoutNullStreams | null;
   stdoutBuffer: string;
   activeSessionId: string | null;
+  activeTransport: "webrtc" | "nvst" | null;
   capabilities: NativeStreamerCapabilities | null;
   activeTransportCapabilities: NativeStreamerActiveTransportCapabilities | null;
   inputReady: boolean;
@@ -51,6 +56,7 @@ interface ManagerInternals {
   installStdinErrorHandler(child: ChildProcessWithoutNullStreams): void;
   handleStdout(child: ChildProcessWithoutNullStreams, chunk: string): void;
   handleEvent(message: NativeStreamerEvent): void;
+  ensureProcess(): Promise<void>;
 }
 
 test("stdout from a replaced native process cannot affect the current session", () => {
@@ -86,7 +92,7 @@ function createFakeChild(): FakeChild {
   };
 }
 
-function createManager(): {
+function createManager(emitted: MainToRendererSignalingEvent[] = []): {
   manager: NativeStreamerManager;
   internals: ManagerInternals;
 } {
@@ -100,7 +106,7 @@ function createManager(): {
     sendAnswer: async () => undefined,
     sendIceCandidate: async () => undefined,
     requestKeyframe: async () => undefined,
-    emit: () => undefined,
+    emit: (event) => emitted.push(event),
     retryWithSoftwareDecoder: () => undefined,
   });
   return {
@@ -277,6 +283,76 @@ test("input is suppressed until the active transport reports its channels ready"
   internals.handleEvent({ type: "input-ready", protocolVersion: 3 });
   manager.sendInput({ payloadBase64: "AQ==" });
   assert.equal(writes, 1);
+});
+
+test("input unavailable clears readiness and forwards the native reason", () => {
+  const emitted: MainToRendererSignalingEvent[] = [];
+  const { internals } = createManager(emitted);
+  internals.activeTransportCapabilities = activeInputCapabilities();
+  internals.inputReady = true;
+
+  internals.handleEvent({ type: "input-unavailable", reason: "reliable channel failed" });
+
+  assert.equal(internals.inputReady, false);
+  assert.deepEqual(emitted, [{
+    type: "native-input-unavailable",
+    reason: "reliable channel failed",
+  }]);
+});
+
+test("terminal stopped clears ownership so same-session prepare starts again", async () => {
+  const { manager, internals } = createManager();
+  internals.activeSessionId = "same-session";
+  internals.activeTransport = "nvst";
+  internals.activeTransportCapabilities = activeInputCapabilities();
+  internals.inputReady = true;
+  internals.ensureProcess = async () => undefined;
+  let starts = 0;
+  internals.request = async (input) => {
+    assert.equal(input.type, "start");
+    starts += 1;
+    return {
+      id: "start",
+      type: "ok",
+      transport: "nvst",
+      capabilities: activeInputCapabilities(),
+    };
+  };
+
+  internals.handleEvent({ type: "status", status: "stopped", message: "remote ended" });
+  assert.equal(internals.activeSessionId, null);
+  assert.equal(internals.activeTransport, null);
+  assert.equal(internals.activeTransportCapabilities, null);
+  assert.equal(internals.inputReady, false);
+
+  await manager.prepareForSession({
+    session: { sessionId: "same-session" },
+    settings: {
+      resolution: "1920x1080",
+      fps: 60,
+      codec: "H264",
+      transportMode: "nvst",
+      enableCloudGsync: false,
+    },
+  } as NativeStreamerSessionContext);
+
+  assert.equal(starts, 1);
+  assert.equal(internals.activeSessionId, "same-session");
+});
+
+test("native NVST reservation release sends an idempotent unbind command", async () => {
+  const { manager, internals } = createManager();
+  internals.ensureProcess = async () => undefined;
+  internals.request = async (input) => {
+    if (input.type === "nvst-bind") {
+      return { id: "bind", type: "nvst-bound", port: 45_000 };
+    }
+    assert.equal(input.type, "nvst-unbind");
+    return { id: "unbind", type: "ok" };
+  };
+
+  const reservation = await manager.reserveNvstUdp();
+  await reservation.release();
 });
 
 test("unrelated synchronous command write failures reject only their request", async () => {

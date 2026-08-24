@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+linux-vaapi = ["opennow-streamer-platform/linux-vaapi"]
+
 [dependencies]
 opennow-streamer-core = { path = "../opennow-streamer-core" }
 opennow-streamer-platform = { path = "../opennow-streamer-platform" }

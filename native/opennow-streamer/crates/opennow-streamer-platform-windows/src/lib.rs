@@ -75,6 +75,40 @@ pub struct CapabilityProbe {
     pub reason: Option<String>,
 }
 
+impl CapabilityProbe {
+    pub const fn bundled_backend_available(&self) -> bool {
+        self.h264_hardware_decode && self.d3d11_presentation && self.wasapi_render
+    }
+}
+
+#[cfg(any(windows, test))]
+struct DefaultEndpointTracker {
+    active_id: String,
+    reported_id: Option<String>,
+}
+
+#[cfg(any(windows, test))]
+impl DefaultEndpointTracker {
+    fn new(active_id: String) -> Self {
+        Self {
+            active_id,
+            reported_id: None,
+        }
+    }
+
+    fn observe(&mut self, current_id: String) -> bool {
+        if current_id == self.active_id {
+            self.reported_id = None;
+            return false;
+        }
+        if self.reported_id.as_ref() == Some(&current_id) {
+            return false;
+        }
+        self.reported_id = Some(current_id);
+        true
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendError {
     UnsupportedPlatform,
@@ -384,6 +418,32 @@ mod tests {
             assert!(!probe.d3d11_presentation);
             assert!(!probe.wasapi_render);
         }
+    }
+
+    #[test]
+    fn bundled_backend_requires_wasapi_start() {
+        let mut probe = CapabilityProbe {
+            available: false,
+            h264_hardware_decode: true,
+            d3d11_presentation: true,
+            wasapi_render: false,
+            reason: Some("WASAPI failed to start".to_owned()),
+        };
+
+        assert!(!probe.bundled_backend_available());
+        probe.wasapi_render = true;
+        assert!(probe.bundled_backend_available());
+    }
+
+    #[test]
+    fn endpoint_change_is_reported_once_per_transition() {
+        let mut tracker = DefaultEndpointTracker::new("speakers".to_owned());
+
+        assert!(!tracker.observe("speakers".to_owned()));
+        assert!(tracker.observe("headset".to_owned()));
+        assert!(!tracker.observe("headset".to_owned()));
+        assert!(!tracker.observe("speakers".to_owned()));
+        assert!(tracker.observe("headset".to_owned()));
     }
 
     #[test]

@@ -31,7 +31,6 @@ import {
   type NativeStreamerResponse,
 } from "@shared/nativeStreamer";
 import { isTerminalBrokenWriteError, setLogContext } from "@shared/logger";
-import type { NativeStreamerShortcutBindings } from "@shared/gfn";
 import {
   createNativeStreamerDetectionFailureStatus,
   createNativeStreamerStatus,
@@ -79,22 +78,9 @@ const SURFACE_UPDATE_TIMEOUT_MS = 15000;
 const OFFER_TIMEOUT_MS = 20000;
 const STOP_TIMEOUT_MS = 1200;
 const MAX_INPUT_STDIN_BUFFER_BYTES = 64 * 1024;
-const MIN_NATIVE_BITRATE_KBPS = 5_000;
-const MAX_NATIVE_BITRATE_KBPS = 150_000;
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-function normalizeBitrateKbps(value: number): number {
-  if (!Number.isFinite(value)) {
-    return MIN_NATIVE_BITRATE_KBPS;
-  }
-
-  return Math.min(
-    MAX_NATIVE_BITRATE_KBPS,
-    Math.max(MIN_NATIVE_BITRATE_KBPS, Math.round(value)),
-  );
 }
 
 export class NativeStreamerManager {
@@ -199,7 +185,12 @@ export class NativeStreamerManager {
           throw new Error(`Native streamer returned ${sent.type} instead of ok for nvst-send.`);
         }
       },
-      release: async () => undefined,
+      release: async () => {
+        const released = await this.request({ type: "nvst-unbind" }, CONTROL_TIMEOUT_MS);
+        if (released.type !== "ok") {
+          throw new Error(`Native streamer returned ${released.type} instead of ok for nvst-unbind.`);
+        }
+      },
     };
   }
 
@@ -441,19 +432,6 @@ export class NativeStreamerManager {
     this.surfaceUpdates.update(surface);
   }
 
-  updateBitrateLimit(maxBitrateKbps: number): void {
-    if (!this.child || !this.activeSessionId) {
-      return;
-    }
-
-    void this.request({
-      type: "bitrate",
-      maxBitrateKbps: normalizeBitrateKbps(maxBitrateKbps),
-    }, CONTROL_TIMEOUT_MS).catch((error) => {
-      console.warn("[NativeStreamer] Failed to update native bitrate limit:", error);
-    });
-  }
-
   setInputPaused(paused: boolean): void {
     if (!this.child || !this.activeSessionId) {
       return;
@@ -464,19 +442,6 @@ export class NativeStreamerManager {
       paused,
     }, CONTROL_TIMEOUT_MS).catch((error) => {
       console.warn("[NativeStreamer] Failed to update native input pause state:", error);
-    });
-  }
-
-  updateShortcuts(shortcuts: NativeStreamerShortcutBindings): void {
-    if (!this.child || !this.activeSessionId) {
-      return;
-    }
-
-    void this.request({
-      type: "update-shortcuts",
-      shortcuts,
-    }, CONTROL_TIMEOUT_MS).catch((error) => {
-      console.warn("[NativeStreamer] Failed to update native shortcut bindings:", error);
     });
   }
 
@@ -846,100 +811,10 @@ export class NativeStreamerManager {
       return;
     }
 
-    if (message.type === "shortcut") {
-      this.options.emit({ type: "native-shortcut", action: message.action });
-      return;
-    }
-
-    if (message.type === "clipboard-paste") {
-      this.options.emit({ type: "native-clipboard-paste" });
-      return;
-    }
-
-    if (message.type === "input-capture-changed") {
-      this.options.emit({ type: "native-input-capture-changed", captured: message.captured });
-      return;
-    }
-
-    if (message.type === "video-stall") {
-      const formatAge = (value: number | undefined): string => value === undefined ? "n/a" : `${value}ms`;
-      const stats = [
-        `stall=${message.stallMs}ms`,
-        `stage=${message.likelyStage ?? "unknown"}`,
-        `encoded=${(message.encodedKbps ?? 0).toFixed(0)}kbps`,
-        `decoded=${message.decodedFps.toFixed(1)}fps`,
-        `sink=${message.sinkFps.toFixed(1)}fps`,
-        `requestedFps=${message.requestedFps ?? "n/a"}`,
-        `capsFramerate=${message.capsFramerate ?? "n/a"}`,
-        `queueMode=${message.queueMode ?? "unknown"}`,
-        `partialFlushes=${message.partialFlushCount ?? 0}`,
-        `completeFlushes=${message.completeFlushCount ?? 0}`,
-        `lastTransition=${message.lastTransitionType ?? "none"}`,
-        `ages=encoded:${formatAge(message.encodedAgeMs)} decoded:${formatAge(message.decodedAgeMs)} sink:${formatAge(message.sinkAgeMs)}`,
-        `rendered=${message.sinkRendered ?? "n/a"}`,
-        `dropped=${message.sinkDropped ?? "n/a"}`,
-        `memory=${message.memoryMode ?? "unknown"}`,
-        `zeroCopy=${message.zeroCopy ?? "unknown"}`,
-        `zeroCopyD3D11=${message.zeroCopyD3D11}`,
-        `zeroCopyD3D12=${message.zeroCopyD3D12}`,
-      ].join(" ");
-      console.warn(`[NativeStreamer] Video stall recovery attempt ${message.recoveryAttempt}: ${stats}`);
-      this.options.emit({
-        type: "log",
-        message: `[NativeStreamer] Video stall recovery attempt ${message.recoveryAttempt}: ${stats}`,
-      });
-      void this.options.requestKeyframe({
-        reason: "native-video-stall",
-        backlogFrames: 0,
-        attempt: message.recoveryAttempt,
-      }).catch((error) => {
-        console.warn("[NativeStreamer] Failed to request video keyframe after stall:", error);
-      });
-      return;
-    }
-
-    if (message.type === "video-transition") {
-      const transition = message.transition;
-      const summary = transition.summary ?? `${transition.transitionType} @ ${transition.atMs}ms`;
-      console.warn(`[NativeStreamer] Video transition: ${summary}`);
-      this.options.emit({
-        type: "native-stream-transition",
-        transition,
-      });
-      this.options.emit({
-        type: "log",
-        message: `[NativeStreamer] Video transition: ${summary}`,
-      });
-      return;
-    }
-
-    if (message.type === "stats") {
-      this.retainDiagnosticState({
-        sessionState: "streaming",
-        statsCapturedAt: new Date().toISOString(),
-        codec: message.stats.codec,
-        resolution: message.stats.resolution,
-        hardwareAcceleration: message.stats.hardwareAcceleration,
-        memoryMode: message.stats.memoryMode ?? "unknown",
-        zeroCopy: message.stats.zeroCopy ?? false,
-        bitrateKbps: message.stats.bitrateKbps,
-        targetBitrateKbps: message.stats.targetBitrateKbps,
-        decodedFps: message.stats.decodedFps,
-        renderFps: message.stats.renderFps,
-        framesDecoded: message.stats.framesDecoded,
-        framesRendered: message.stats.framesRendered,
-        sinkDropped: message.stats.sinkDropped ?? 0,
-        queueMode: message.stats.queueMode ?? "unknown",
-        partialFlushCount: message.stats.partialFlushCount ?? 0,
-        completeFlushCount: message.stats.completeFlushCount ?? 0,
-        lastTransition: message.stats.lastTransitionSummary ?? "none",
-        serverGpuType: message.stats.serverGpuType ?? "unknown",
-        serverLocation: message.stats.serverLocation ?? "unknown",
-      });
-      this.options.emit({
-        type: "native-stream-stats",
-        stats: message.stats,
-      });
+    if (message.type === "input-unavailable") {
+      this.inputReady = false;
+      console.warn(`[NativeStreamer] Input unavailable: ${message.reason}`);
+      this.options.emit({ type: "native-input-unavailable", reason: message.reason });
       return;
     }
 
@@ -952,7 +827,7 @@ export class NativeStreamerManager {
       if (message.status === "streaming") {
         this.options.emit({ type: "native-stream-started", message: message.message });
       } else if (message.status === "stopped") {
-        this.inputReady = false;
+        this.clearActiveSessionOwnership();
         if (this.suppressNextStoppedEvent) {
           this.suppressNextStoppedEvent = false;
           return;
@@ -979,6 +854,15 @@ export class NativeStreamerManager {
       }
       this.options.emit({ type: "error", message: `Native streamer error: ${message.message}` });
     }
+  }
+
+  private clearActiveSessionOwnership(): void {
+    this.activeSessionId = null;
+    this.activeTransport = null;
+    this.activeTransportCapabilities = null;
+    this.inputReady = false;
+    this.surfaceUpdates.markNotReady();
+    this.clearQueuedRemoteIce();
   }
 
   private handleStdinFailure(

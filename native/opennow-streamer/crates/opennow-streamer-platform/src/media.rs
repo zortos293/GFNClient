@@ -217,6 +217,8 @@ impl MediaSession {
         #[cfg(target_os = "linux")] linux_selection: LinuxVideoSelection,
         #[cfg(target_os = "linux")] linux_software_fallback: Arc<AtomicBool>,
     ) -> Result<Self, String> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = &stream;
         #[cfg(target_os = "macos")]
         if use_hardware {
             return Self::spawn_macos(output, feedback, host_commands);
@@ -1119,6 +1121,46 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
         if shared.paused.load(Ordering::Acquire) {
             continue;
         }
+        if let Some(sink) = backend_sink.as_ref() {
+            while let Some(loss) = sink.pop_video_decode_loss() {
+                let message = loss.status.map_or_else(
+                    || "VideoToolbox produced no decoded pixel buffer".to_owned(),
+                    |status| format!("VideoToolbox decode failed with OSStatus {status}"),
+                );
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: "h264",
+                    message,
+                });
+                mark_macos_video_desynced(
+                    &shared,
+                    &frame.mid,
+                    "VideoToolbox lost decoder synchronization",
+                );
+            }
+            if let Some(failure) = sink.fatal_failure() {
+                shared.mac_software_fallback.store(true, Ordering::Release);
+                mark_macos_video_desynced(
+                    &shared,
+                    &frame.mid,
+                    &format!(
+                        "{} failure requires software decode",
+                        failure.subsystem.name()
+                    ),
+                );
+            }
+        }
+        if shared.mac_software_fallback.load(Ordering::Acquire) {
+            match H264Decoder::new() {
+                Ok(decoder) => run_video_decoder_from(shared, decoder, Some(frame)),
+                Err(message) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "h264",
+                        message,
+                    });
+                }
+            }
+            return;
+        }
         let framing = match tracker.observe(&frame.data) {
             Ok(framing) => framing,
             Err(message) => {
@@ -1285,6 +1327,18 @@ fn run_macos_audio(shared: Arc<SharedPipeline>) {
         if shared.paused.load(Ordering::Acquire) {
             continue;
         }
+        let native_sink = shared
+            .mac_sink
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if native_sink
+            .as_ref()
+            .and_then(|sink| sink.fatal_failure())
+            .is_some()
+        {
+            shared.mac_software_fallback.store(true, Ordering::Release);
+        }
         if shared.mac_software_fallback.load(Ordering::Acquire) {
             match OpusDecoder::new(2) {
                 Ok(decoder) => run_audio_decoder_from(shared, decoder, Some(frame)),
@@ -1300,12 +1354,7 @@ fn run_macos_audio(shared: Arc<SharedPipeline>) {
         let MediaCodec::Opus { channels } = frame.codec else {
             continue;
         };
-        let Some(sink) = shared
-            .mac_sink
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
-        else {
+        let Some(sink) = native_sink else {
             continue;
         };
         let channels = channels.clamp(1, 2);

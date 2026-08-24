@@ -621,6 +621,11 @@ pub(crate) enum ActiveOutput {
 }
 
 impl ActiveOutput {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn is_macos_hardware(&self) -> bool {
+        matches!(self, Self::Mac(_))
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn is_linux_hardware(&self) -> bool {
         matches!(self, Self::LinuxHardware(_))

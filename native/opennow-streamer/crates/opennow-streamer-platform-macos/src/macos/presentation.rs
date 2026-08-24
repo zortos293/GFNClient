@@ -16,13 +16,14 @@ use objc2_core_video::{
 };
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
+    MTLClearColor, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
     MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLLibrary, MTLLoadAction,
     MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
     MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStoreAction, MTLTexture, MTLViewport,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 
+use crate::failure::{BackendSubsystem, FailureReporter};
 use crate::format::VideoColorSpace;
 use crate::queue::BoundedQueue;
 
@@ -82,32 +83,46 @@ impl PresenterHandle {
         visible: Arc<AtomicBool>,
         queue: Arc<BoundedQueue<DecodedFrame>>,
         counters: Arc<Counters>,
+        failures: Arc<FailureReporter>,
     ) -> Result<Self, BackendError> {
         let mut presenter = MetalPresenter::new(layer)?;
         let worker_queue = Arc::clone(&queue);
+        let worker_failures = Arc::clone(&failures);
         let worker = thread::Builder::new()
             .name("opennow-metal-present".into())
             .spawn(move || {
-                while let Some(frame) = worker_queue.pop_wait() {
-                    if !visible.load(Ordering::Acquire) {
-                        counters
-                            .video_frames_dropped
-                            .fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                    let result = autoreleasepool(|_| presenter.present(frame));
-                    match result {
-                        Ok(()) => {
-                            counters.video_presented.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(_) => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    while let Some(frame) = worker_queue.pop_wait() {
+                        if !visible.load(Ordering::Acquire) {
                             counters
-                                .video_present_errors
+                                .video_frames_dropped
                                 .fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        let result = autoreleasepool(|_| presenter.present(frame));
+                        match result {
+                            Ok(()) => {
+                                failures.metal_succeeded();
+                                counters.video_presented.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(error) => {
+                                counters
+                                    .video_present_errors
+                                    .fetch_add(1, Ordering::Relaxed);
+                                if failures.metal_failed(error.to_string()) {
+                                    break;
+                                }
+                            }
                         }
                     }
+                    presenter.finish();
+                }));
+                if result.is_err() {
+                    worker_failures.report_fatal(
+                        BackendSubsystem::Metal,
+                        "the Metal presentation worker stopped unexpectedly".to_owned(),
+                    );
                 }
-                presenter.finish();
             })
             .map_err(|_| BackendError::Thread("Metal presenter"))?;
         Ok(Self {
@@ -214,7 +229,7 @@ impl MetalPresenter {
 
     fn present(&mut self, frame: DecodedFrame) -> Result<(), BackendError> {
         if self.pending.len() >= 2 {
-            self.wait_for_oldest();
+            self.wait_for_oldest()?;
         }
         if CVPixelBufferGetPixelFormatType(&frame.image)
             != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
@@ -343,15 +358,23 @@ impl MetalPresenter {
         Ok(unsafe { CFRetained::from_raw(texture_ptr) })
     }
 
-    fn wait_for_oldest(&mut self) {
+    fn wait_for_oldest(&mut self) -> Result<(), BackendError> {
         if let Some(frame) = self.pending.pop_front() {
             frame.command_buffer.waitUntilCompleted();
+            if frame.command_buffer.status() == MTLCommandBufferStatus::Error {
+                let message = frame.command_buffer.error().map_or_else(
+                    || "Metal command buffer failed without an error description".to_owned(),
+                    |error| error.localizedDescription().to_string(),
+                );
+                return Err(BackendError::Metal(message));
+            }
         }
+        Ok(())
     }
 
     fn finish(&mut self) {
         while !self.pending.is_empty() {
-            self.wait_for_oldest();
+            let _ = self.wait_for_oldest();
         }
         self.texture_cache.flush(0);
     }

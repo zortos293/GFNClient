@@ -6,6 +6,56 @@ import OpenNOW
 FocusScope {
     id: page
     signal signedIn()
+    property int providerIndex: 0
+    property int codeIndex: 0
+    readonly property var providers: [
+        { mark: "NV", name: "NVIDIA · GeForce NOW", detail: "Global · default provider", login: "NVIDIA", url: "login.nvidia.com/device" },
+        { mark: "LG", name: "LG U+", detail: "Korea · alliance partner", login: "LG U+", url: "gfn.lguplus.com/device" },
+        { mark: "TM", name: "Taiwan Mobile", detail: "Taiwan · alliance partner", login: "TAIWAN MOBILE", url: "gfn.taiwanmobile.com/device" },
+        { mark: "BG", name: "bro.game", detail: "Regional · alliance partner", login: "BRO.GAME", url: "bro.game/device" },
+        { mark: "G+", name: "GAME+", detail: "Türkiye · alliance partner", login: "GAME+", url: "gameplus.com.tr/device" },
+        { mark: "SB", name: "SoftBank", detail: "Japan · alliance partner", login: "SOFTBANK", url: "cloudgaming.mb.softbank.jp/device" },
+        { mark: "AU", name: "au", detail: "Japan · alliance partner", login: "AU", url: "cloudgame.auone.jp/device" },
+        { mark: "SH", name: "StarHub", detail: "Singapore · alliance partner", login: "STARHUB", url: "gfn.starhub.com/device" },
+        { mark: "PT", name: "Pentanet", detail: "Australia · alliance partner", login: "PENTANET", url: "cloud.gg/device" },
+        { mark: "ZN", name: "Zain", detail: "Middle East · alliance partner", login: "ZAIN", url: "gfn.zain.com/device" },
+        { mark: "RN", name: "Rain", detail: "South Africa · alliance partner", login: "RAIN", url: "gfn.rain.co.za/device" },
+        { mark: "YS", name: "Yes", detail: "Malaysia · alliance partner", login: "YES", url: "gfn.yes.my/device" }
+    ]
+    readonly property var codes: [
+        ["7", "K", "4", "—", "D", "9", "X"],
+        ["M", "2", "R", "—", "8", "Q", "P"],
+        ["C", "6", "N", "—", "W", "3", "T"]
+    ]
+    readonly property var displayCode: {
+        if (authEngine.userCode.length === 0)
+            return codes[codeIndex]
+        var result = []
+        var midpoint = Math.ceil(authEngine.userCode.length / 2)
+        for (var i = 0; i < authEngine.userCode.length; ++i) {
+            if (i === midpoint)
+                result.push("—")
+            result.push(authEngine.userCode.charAt(i))
+        }
+        return result
+    }
+
+    function cycleProvider(delta) {
+        providerIndex = (providerIndex + delta + providers.length) % providers.length
+        codeIndex = (codeIndex + 1) % codes.length
+    }
+
+    function refreshCode() {
+        authEngine.startLogin()
+    }
+
+    function signInWithBrowser() {
+        authEngine.startLogin()
+    }
+
+    Shortcut { sequence: "Y"; enabled: page.visible; onActivated: page.refreshCode() }
+    Shortcut { sequence: "Ctrl+Left"; enabled: page.visible; onActivated: page.cycleProvider(-1) }
+    Shortcut { sequence: "Ctrl+Right"; enabled: page.visible; onActivated: page.cycleProvider(1) }
 
     Rectangle {
         anchors.fill: parent
@@ -79,14 +129,18 @@ FocusScope {
             KeyHint { keyText: "RB"; label: "Switch"; scale: 0.78 }
         }
 
-        Rectangle {
+        Item { width: 1; height: 9 }
+
+        Button {
+            id: providerButton
             width: parent.width
             height: 64
-            radius: 12
-            color: Theme.surfaceRaised
-            border.width: 1
-            border.color: "#344039"
-            RowLayout {
+            focusPolicy: Qt.StrongFocus
+            onClicked: providerPopup.open()
+            KeyNavigation.down: browserButton
+            Keys.onReturnPressed: providerPopup.open()
+
+            contentItem: RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 18
                 anchors.rightMargin: 18
@@ -96,15 +150,69 @@ FocusScope {
                     height: 38
                     radius: 9
                     color: Theme.accent
-                    Text { anchors.centerIn: parent; text: "NV"; color: Theme.accentInk; font.family: Theme.monoFont.family; font.pixelSize: 13; font.weight: Font.Bold }
+                    Text { anchors.centerIn: parent; text: page.providers[page.providerIndex].mark; color: Theme.accentInk; font.family: Theme.monoFont.family; font.pixelSize: 13; font.weight: Font.Bold }
                 }
                 Column {
                     spacing: 3
-                    Text { text: "NVIDIA · GeForce NOW"; color: Theme.ink; font.family: Theme.bodyFont.family; font.pixelSize: 15; font.weight: Font.Bold }
-                    Text { text: "Global · default provider"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 10 }
+                    Text { text: page.providers[page.providerIndex].name; color: Theme.ink; font.family: Theme.bodyFont.family; font.pixelSize: 15; font.weight: Font.Bold }
+                    Text { text: page.providers[page.providerIndex].detail; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 10 }
                 }
                 Item { Layout.fillWidth: true }
                 Text { text: "11 more ⌄"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 10 }
+            }
+            background: Rectangle {
+                radius: 12
+                color: "#0e120f"
+                border.width: providerButton.activeFocus || providerPopup.opened ? 2 : 1
+                border.color: providerButton.activeFocus || providerPopup.opened ? Theme.accent : "#233028"
+            }
+
+            Popup {
+                id: providerPopup
+                x: 0
+                y: providerButton.height + 8
+                width: providerButton.width
+                height: 320
+                focus: true
+                modal: true
+                padding: 6
+                closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                background: Rectangle { radius: 12; color: "#0e120f"; border.width: 1; border.color: "#233028" }
+                contentItem: ListView {
+                    id: providerList
+                    clip: true
+                    focus: true
+                    model: page.providers
+                    currentIndex: page.providerIndex
+                    Keys.onUpPressed: currentIndex = (currentIndex + count - 1) % count
+                    Keys.onDownPressed: currentIndex = (currentIndex + 1) % count
+                    Keys.onReturnPressed: {
+                        page.providerIndex = currentIndex
+                        page.codeIndex = (page.codeIndex + 1) % page.codes.length
+                        providerPopup.close()
+                        providerButton.forceActiveFocus()
+                    }
+                    delegate: ItemDelegate {
+                        id: providerDelegate
+                        required property var modelData
+                        required property int index
+                        width: ListView.view.width
+                        height: 48
+                        text: modelData.name
+                        font.family: Theme.bodyFont.family
+                        font.pixelSize: 13
+                        highlighted: index === page.providerIndex
+                        onClicked: {
+                            page.providerIndex = index
+                            page.codeIndex = (page.codeIndex + 1) % page.codes.length
+                            providerPopup.close()
+                            providerButton.forceActiveFocus()
+                        }
+                        contentItem: Text { text: providerDelegate.text; color: providerDelegate.highlighted ? Theme.accent : Theme.ink; font: providerDelegate.font; verticalAlignment: Text.AlignVCenter; leftPadding: 12 }
+                        background: Rectangle { radius: 8; color: providerDelegate.highlighted ? "#15241a" : (providerDelegate.hovered ? Theme.surfaceBright : "transparent") }
+                    }
+                }
+                onOpened: providerList.forceActiveFocus()
             }
         }
         Text {
@@ -115,24 +223,24 @@ FocusScope {
             font.pixelSize: 12
         }
 
-        Item { width: 1; height: 48 }
+        Item { width: 1; height: 39 }
 
         Rectangle {
             width: parent.width
             height: 304
             radius: 16
-            color: "#0d120f"
+            color: "#0e120f"
             border.width: 1
             border.color: "#202a24"
 
             Column {
                 anchors.fill: parent
                 anchors.margins: 40
-                spacing: 26
+                spacing: 31
                 RowLayout {
                     width: parent.width
                     Text {
-                        text: "NVIDIA DEVICE LOGIN"
+                        text: page.providers[page.providerIndex].login + " DEVICE LOGIN"
                         color: Theme.accent
                         font.family: Theme.monoFont.family
                         font.pixelSize: 12
@@ -141,16 +249,16 @@ FocusScope {
                     }
                     Item { Layout.fillWidth: true }
                     Rectangle { width: 8; height: 8; radius: 4; color: Theme.accent }
-                    Text { text: "Waiting for approval"; color: Theme.inkSoft; font.family: Theme.bodyFont.family; font.pixelSize: 12 }
+                    Text { text: authEngine.statusText; color: Theme.inkSoft; font.family: Theme.bodyFont.family; font.pixelSize: 12 }
                 }
                 Row {
                     spacing: 14
                     Repeater {
-                        model: ["7", "K", "4", "—", "D", "9", "X"]
+                        model: page.displayCode
                         Item {
                             required property string modelData
-                            width: modelData === "—" ? 26 : 76
-                            height: 84
+                            width: modelData === "—" ? 22 : (page.displayCode.length > 7 ? 58 : 76)
+                            height: 96
                             Rectangle {
                                 visible: modelData !== "—"
                                 anchors.fill: parent
@@ -164,7 +272,7 @@ FocusScope {
                                 text: modelData
                                 color: modelData === "—" ? "#465149" : Theme.accent
                                 font.family: Theme.monoFont.family
-                                font.pixelSize: modelData === "—" ? 28 : 39
+                                font.pixelSize: modelData === "—" ? 28 : 45
                                 font.weight: Font.Bold
                             }
                         }
@@ -172,7 +280,7 @@ FocusScope {
                 }
                 Text {
                     width: parent.width
-                    text: "On any phone or PC, open login.nvidia.com/device and enter this code. Switching\nprovider issues a new code."
+                    text: "On any phone or PC, open " + page.providers[page.providerIndex].url + " and enter this code. Switching\nprovider issues a new code."
                     color: Theme.inkSoft
                     font.family: Theme.bodyFont.family
                     font.pixelSize: 14
@@ -190,18 +298,20 @@ FocusScope {
             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
         }
 
-        Item { width: 1; height: 32 }
+        Item { width: 1; height: 38 }
 
         ActionButton {
             id: browserButton
-            width: parent.width
-            height: 78
+            x: -6
+            width: parent.width + 12
+            height: 84
             text: "Sign in with browser"
             glyph: "⊕"
             primary: true
             focus: page.visible
-            onClicked: page.signedIn()
-            Keys.onReturnPressed: page.signedIn()
+            KeyNavigation.up: providerButton
+            onClicked: page.signInWithBrowser()
+            Keys.onReturnPressed: page.signInWithBrowser()
         }
 
         Item { width: 1; height: 24 }
@@ -222,7 +332,8 @@ FocusScope {
         anchors.bottom: parent.bottom
         height: 80
         color: Theme.canvas
-        border.color: "#18201c"
+        border.width: 0
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 1; color: Theme.divider }
         Text {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter

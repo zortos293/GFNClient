@@ -19,7 +19,7 @@ ApplicationWindow {
     property bool showingDetails: false
     property bool showingStream: false
     property bool reducedMotion: false
-    property bool signedIn: false
+    property bool signedIn: Qt.application.arguments.indexOf("--demo-signed-in") >= 0
     readonly property var games: [
         { title: "Cyber Drift 2088", subtitle: "Last played 2 h ago", badge: "CONTINUE", variant: 0, progress: 0.64, genre: "Open-world racing", store: "Steam", description: "Return to the neon megacity with your latest cloud save and a low-latency performance profile." },
         { title: "Starfall Frontier", subtitle: "Steam · 84 h played", badge: "RTX ON", variant: 1, progress: 0, genre: "Space adventure", store: "Steam", description: "Explore the frontier with ray-traced lighting and synchronized progress." },
@@ -63,13 +63,15 @@ ApplicationWindow {
             libraryPage.forceActiveFocus()
         else if (currentPage === 2)
             searchPage.forceActiveFocus()
+        else if (currentPage === 3)
+            sessionsPage.forceActiveFocus()
         else
             settingsPage.forceActiveFocus()
     }
 
     function switchSection(delta) {
         if (signedIn && !showingDetails && !showingStream)
-            currentPage = (currentPage + delta + 4) % 4
+            currentPage = (currentPage + delta + 5) % 5
     }
 
     Component.onCompleted: Qt.callLater(focusCurrentView)
@@ -82,9 +84,21 @@ ApplicationWindow {
     Shortcut { sequence: "Alt+Left"; onActivated: window.closeOverlay() }
     Shortcut { sequence: "Ctrl+Tab"; onActivated: window.switchSection(1) }
     Shortcut { sequence: "Ctrl+Shift+Tab"; onActivated: window.switchSection(-1) }
+    Shortcut { sequence: "Y"; onActivated: { if (window.signedIn && !window.showingDetails && !window.showingStream) window.currentPage = 2 } }
     Connections {
         target: controllerInput
-        function onSectionRequested(delta) { window.switchSection(delta) }
+        function onSectionRequested(delta) {
+            if (homePage.visible)
+                homePage.browseRows(delta)
+            else if (window.signedIn)
+                window.switchSection(delta)
+            else
+                signInPage.cycleProvider(delta)
+        }
+    }
+    Connections {
+        target: authEngine
+        function onAuthorized() { window.signedIn = true }
     }
 
     Rectangle {
@@ -149,10 +163,16 @@ ApplicationWindow {
                 games: window.games
                 onOpenGame: function(game) { window.openGame(game) }
             }
+            SessionsPage {
+                id: sessionsPage
+                anchors.fill: parent
+                visible: window.currentPage === 3 && !window.showingDetails && !window.showingStream
+                focus: visible
+            }
             SettingsPage {
                 id: settingsPage
                 anchors.fill: parent
-                visible: window.currentPage === 3 && !window.showingDetails && !window.showingStream
+                visible: window.currentPage === 4 && !window.showingDetails && !window.showingStream
                 focus: visible
                 reducedMotion: window.reducedMotion
                 onReducedMotionChangedByUser: function(value) { window.reducedMotion = value }

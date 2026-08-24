@@ -5,6 +5,7 @@ This prototype validates a non-Electron OpenNOW shell with a real local WebRTC m
 ## What is implemented
 
 - Qt 6 Quick/QML application shell with Home, Library, Search, Settings, game detail, and stream states.
+- Real NVIDIA device authorization challenge, browser handoff, and token approval polling without exposing credentials to OpenNOW.
 - Keyboard/D-pad focus navigation and a layout designed at 1280×800 first.
 - SDL3 gamepad hot-plug, standardized D-pad/A/B navigation, and bumper section switching.
 - Restartable Rust runtime controlled through versioned JSON-line messages.
@@ -36,5 +37,7 @@ sudo apt install qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
 ```bash
 ./scripts/run.sh
 ```
+
+Pass `--demo-signed-in` to the native executable when developing post-authentication screens without an NVIDIA account.
 
 The WebRTC demo currently owns a native GStreamer output surface. Production integration will import D3D11 textures, IOSurfaces, or DMA-BUF handles into the Qt scene graph rather than copying decoded pixels or passing native view pointers between processes.

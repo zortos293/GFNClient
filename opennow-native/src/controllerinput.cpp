@@ -92,6 +92,12 @@ void ControllerInput::pollEvents()
         case SDL_GAMEPAD_BUTTON_EAST:
             postKey(Qt::Key_Escape, pressed);
             break;
+        case SDL_GAMEPAD_BUTTON_WEST:
+            postKey(Qt::Key_X, pressed);
+            break;
+        case SDL_GAMEPAD_BUTTON_NORTH:
+            postKey(Qt::Key_Y, pressed);
+            break;
         case SDL_GAMEPAD_BUTTON_START:
             postKey(Qt::Key_F6, pressed);
             break;

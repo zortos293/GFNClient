@@ -7,7 +7,7 @@ Rectangle {
     property string kicker: ""
     clip: true
     radius: 14
-    color: Theme.surfaceBright
+    color: "#171d1a"
 
     Text {
         visible: root.kicker.length > 0

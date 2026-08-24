@@ -27,7 +27,7 @@ Rectangle {
         spacing: 8
 
         Repeater {
-            model: ["⌂", "▥", "⌕", "▥", "☼"]
+            model: ["\uf015", "\uf02d", "\uf002", "\uf080", "\uf185"]
 
             Button {
                 id: navButton
@@ -37,15 +37,17 @@ Rectangle {
                 height: 56
                 hoverEnabled: true
                 focusPolicy: Qt.StrongFocus
-                onClicked: rail.navigate(Math.min(index, 3))
+                onClicked: rail.navigate(index)
 
-                contentItem: Text {
-                    anchors.centerIn: parent
-                    text: navButton.modelData
-                    color: rail.currentIndex === navButton.index ? Theme.accent : Theme.inkMuted
-                    font.family: Theme.bodyFont.family
-                    font.pixelSize: navButton.index === 0 ? 27 : 23
-                    font.weight: Font.Light
+                contentItem: Item {
+                    Text {
+                        anchors.centerIn: parent
+                        text: navButton.modelData
+                        color: rail.currentIndex === navButton.index ? Theme.accent : Theme.inkMuted
+                        font.family: "FontAwesome"
+                        font.pixelSize: 20
+                        font.weight: Font.Light
+                    }
                 }
 
                 background: Rectangle {

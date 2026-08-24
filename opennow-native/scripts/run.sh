@@ -13,4 +13,4 @@ if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
   mkdir -p "$XDG_RUNTIME_DIR"
   chmod 700 "$XDG_RUNTIME_DIR"
 fi
-exec "$ROOT/build/opennow-native"
+exec "$ROOT/build/opennow-native" "$@"

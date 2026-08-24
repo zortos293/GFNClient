@@ -4,9 +4,9 @@ import QtQuick
 QtObject {
     readonly property color canvas: "#070a08"
     readonly property color surface: "#0a0e0c"
-    readonly property color surfaceRaised: "#111713"
-    readonly property color surfaceBright: "#171f1b"
-    readonly property color ink: "#edf4ef"
+    readonly property color surfaceRaised: "#0e120f"
+    readonly property color surfaceBright: "#17201b"
+    readonly property color ink: "#e8f2ea"
     readonly property color inkSoft: "#a0aaa3"
     readonly property color inkMuted: "#667169"
     readonly property color accent: "#4ce87f"
@@ -14,7 +14,7 @@ QtObject {
     readonly property color accentInk: "#041309"
     readonly property color warning: "#f3c969"
     readonly property color error: "#ff7b72"
-    readonly property color divider: "#202a24"
+    readonly property color divider: "#1c231e"
 
     readonly property int railWidth: 104
     readonly property int pageMargin: 56

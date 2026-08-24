@@ -75,6 +75,10 @@ FocusScope {
             cellWidth: width / 3
             cellHeight: 246
             keyNavigationWraps: true
+            Keys.onReturnPressed: {
+                if (currentIndex >= 0 && currentIndex < model.length)
+                    page.openGame(model[currentIndex])
+            }
             model: page.games.filter(function(game) {
                 return page.query.length === 0 || game.title.toLowerCase().indexOf(page.query.toLowerCase()) >= 0
             })

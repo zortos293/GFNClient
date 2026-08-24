@@ -50,7 +50,7 @@ Button {
             color: control.primary
                    ? (control.down ? Theme.accentStrong : Theme.accent)
                    : (control.down ? Theme.surfaceBright : Theme.surface)
-            border.width: control.activeFocus ? 2 : 1
+            border.width: 1
             border.color: control.activeFocus ? Theme.accentInk : Theme.divider
         }
 

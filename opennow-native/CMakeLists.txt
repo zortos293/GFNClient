@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Qml Quick)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Network Qml Quick)
 
 include(FetchContent)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
@@ -27,6 +27,8 @@ qt_add_executable(opennow-native
     src/main.cpp
     src/controllerinput.cpp
     src/controllerinput.h
+    src/authengine.cpp
+    src/authengine.h
     src/streamengine.cpp
     src/streamengine.h
 )
@@ -51,6 +53,7 @@ qt_add_qml_module(opennow-native
         qml/pages/HomePage.qml
         qml/pages/LibraryPage.qml
         qml/pages/SearchPage.qml
+        qml/pages/SessionsPage.qml
         qml/pages/SettingsPage.qml
         qml/pages/GameDetailPage.qml
         qml/pages/StreamPage.qml
@@ -61,6 +64,7 @@ qt_add_qml_module(opennow-native
 target_link_libraries(opennow-native PRIVATE
     Qt6::Core
     Qt6::Gui
+    Qt6::Network
     Qt6::Qml
     Qt6::Quick
     SDL3::SDL3-static

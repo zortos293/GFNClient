@@ -9,6 +9,15 @@ FocusScope {
     signal openGame(var game)
     signal startGame(var game)
 
+    function browseRows(delta) {
+        if (delta > 0)
+            libraryRow.forceActiveFocus()
+        else
+            playButton.forceActiveFocus()
+    }
+
+    Shortcut { sequence: "X"; enabled: page.visible; onActivated: page.openGame(page.games[0]) }
+
     Text {
         x: Theme.pageMargin
         y: 35
@@ -22,11 +31,11 @@ FocusScope {
 
     Text {
         x: Theme.pageMargin
-        y: 66
+        y: 60
         text: "Good evening, Zortos"
         color: Theme.ink
         font.family: Theme.displayFont.family
-        font.pixelSize: 42
+        font.pixelSize: 48
         font.weight: Font.DemiBold
     }
 
@@ -92,7 +101,7 @@ FocusScope {
                 text: page.games[0].title
                 color: Theme.ink
                 font.family: Theme.displayFont.family
-                font.pixelSize: 58
+                font.pixelSize: 64
                 font.weight: Font.DemiBold
             }
             Text {
@@ -106,13 +115,13 @@ FocusScope {
         Row {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            anchors.rightMargin: 45
-            anchors.bottomMargin: 39
+            anchors.rightMargin: 46
+            anchors.bottomMargin: 35
             spacing: 14
             ActionButton {
                 id: playButton
                 width: 220
-                height: 78
+                height: 88
                 text: "PLAY   Ⓐ"
                 glyph: "▶"
                 primary: true
@@ -120,21 +129,24 @@ FocusScope {
                 onClicked: page.startGame(page.games[0])
                 Keys.onReturnPressed: page.startGame(page.games[0])
                 KeyNavigation.right: detailsButton
+                KeyNavigation.down: libraryRow
             }
             ActionButton {
                 id: detailsButton
                 width: 172
                 height: 78
+                y: 5
                 text: "Details   ⓧ"
                 onClicked: page.openGame(page.games[0])
                 KeyNavigation.left: playButton
+                KeyNavigation.down: libraryRow
             }
         }
     }
 
     Text {
         x: Theme.pageMargin
-        y: 614
+        y: 606
         text: "Your library"
         color: Theme.ink
         font.family: Theme.displayFont.family
@@ -155,15 +167,18 @@ FocusScope {
         id: libraryRow
         x: Theme.pageMargin
         y: 672
-        width: parent.width - Theme.pageMargin * 2
+        width: parent.width - Theme.pageMargin * 2 + 16
         height: 250
         interactive: false
         model: page.games.slice(1, 6)
-        cellWidth: width / 5
+        cellWidth: 344
         cellHeight: 250
         focus: false
         keyNavigationWraps: true
-        Keys.onReturnPressed: page.openGame(model[currentIndex])
+        KeyNavigation.up: playButton
+        Keys.onLeftPressed: currentIndex = (currentIndex + count - 1) % count
+        Keys.onRightPressed: currentIndex = (currentIndex + 1) % count
+        Keys.onReturnPressed: page.startGame(model[currentIndex])
 
         delegate: Item {
             required property var modelData
@@ -171,13 +186,13 @@ FocusScope {
             width: libraryRow.cellWidth
             height: libraryRow.cellHeight
             GameCard {
-                anchors.fill: parent
-                anchors.rightMargin: index === 4 ? 0 : 24
+                width: 320
+                height: parent.height
                 title: modelData.title
                 subtitle: modelData.subtitle
                 badge: modelData.badge
                 variant: modelData.variant
-                selected: index === 0
+                selected: index === libraryRow.currentIndex
                 onClicked: page.openGame(modelData)
             }
         }
@@ -191,7 +206,8 @@ FocusScope {
         anchors.rightMargin: Theme.pageMargin
         height: 80
         color: Theme.canvas
-        border.color: "#18201c"
+        border.width: 0
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 1; color: Theme.divider }
         Text {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter

@@ -39,8 +39,8 @@ FocusScope {
     property int upscalingSharpness: Number(appState.preference("streamUpscalingSharpness", 62))
     property string frameGenerationMode: String(appState.preference("streamFrameGeneration", "2x"))
     property int bitrateCapMbps: Number(appState.preference("streamBitrateCapMbps", 75))
-    property bool antiAfkEnabled: Boolean(appState.preference("streamAntiAfk", true))
-    property bool microphoneEnabled: Boolean(appState.preference("streamMicrophone", true))
+    property bool antiAfkEnabled: false
+    property bool microphoneEnabled: false
     property bool recording: false
     property int recordingSeconds: 0
 
@@ -164,38 +164,19 @@ FocusScope {
     }
 
     function captureScreenshot() {
-        screenshotRequested()
-        var count = Number(appState.preference("streamScreenshotCount", 0)) + 1
-        appState.setPreference("streamScreenshotCount", count)
-        showToast("Screenshot saved", "Pictures › OpenNOW", "success", "▣", "")
+        showToast("Screenshot unavailable", "The native video surface cannot be captured yet", "neutral", "▣", "")
     }
 
     function toggleRecording() {
-        recording = !recording
-        if (recording)
-            recordingSeconds = 0
-        recordingToggled(recording)
-        showToast(recording ? "Recording started" : "Recording saved",
-                  recording ? "Press F12 to stop" : "Videos › OpenNOW",
-                  recording ? "recording" : "success", "●", "")
+        showToast("Recording unavailable", "The production streamer does not expose recording", "neutral", "●", "")
     }
 
     function toggleMicrophone() {
-        microphoneEnabled = !microphoneEnabled
-        appState.setPreference("streamMicrophone", microphoneEnabled)
-        microphoneChanged(microphoneEnabled)
-        showToast(microphoneEnabled ? "Microphone live" : "Microphone muted",
-                  microphoneEnabled ? "Voice is being sent to the rig" : "Voice input is paused",
-                  microphoneEnabled ? "success" : "neutral", microphoneEnabled ? "♩" : "×", "")
+        showToast("Microphone unavailable", "Audio capture is not implemented in the native streamer", "neutral", "×", "")
     }
 
     function toggleAntiAfk() {
-        antiAfkEnabled = !antiAfkEnabled
-        appState.setPreference("streamAntiAfk", antiAfkEnabled)
-        antiAfkChanged(antiAfkEnabled)
-        showToast(antiAfkEnabled ? "Anti-AFK enabled" : "Anti-AFK disabled",
-                  antiAfkEnabled ? "Simulates input every 15 minutes" : "No synthetic input will be sent",
-                  antiAfkEnabled ? "success" : "neutral", "•", "")
+        showToast("Anti-AFK unavailable", "OpenNOW will not synthesize gameplay input", "neutral", "•", "")
     }
 
     function applyBitrateCap(value) {
@@ -449,11 +430,7 @@ FocusScope {
     Connections {
         target: appState
         function onPreferenceChanged(key, value) {
-            if (key === "streamAntiAfk")
-                page.antiAfkEnabled = Boolean(value)
-            else if (key === "streamMicrophone")
-                page.microphoneEnabled = Boolean(value)
-            else if (key === "streamStatsMode")
+            if (key === "streamStatsMode")
                 page.statsMode = Number(value)
         }
     }
@@ -465,7 +442,7 @@ FocusScope {
 
     GameArtwork {
         anchors.fill: parent
-        variant: page.game.variant
+        variant: Number(page.game.variant || 0)
         opacity: page.liveSurfaceVisible ? 0.14 : 0.08
     }
 
@@ -528,7 +505,7 @@ FocusScope {
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 topPadding: 12
-                text: appState.serverName + " · RTX 4080 · " + qualityLabel() + " · " + page.displayCodec
+                text: sessionEngine.statusText + " · " + qualityLabel() + " · " + page.displayCodec
                 color: Theme.inkMuted
                 font.pixelSize: 16
             }
@@ -585,10 +562,10 @@ FocusScope {
                 topPadding: 32
                 spacing: 17
 
-                StageRow { complete: true; active: false; text: "Queue skipped — Ultimate tier" }
-                StageRow { complete: page.preparingSeconds >= 1; active: page.preparingSeconds < 1; text: "Rig allocated in " + appState.serverRegion + "-03" }
-                StageRow { complete: page.preparingSeconds >= 3; active: page.preparingSeconds >= 1 && page.preparingSeconds < 3; text: "Starting Steam in console mode…" }
-                StageRow { complete: false; active: page.preparingSeconds >= 3; text: "NVST handshake & first frame" }
+                StageRow { complete: sessionEngine.phase !== "idle" && sessionEngine.phase !== "resolving"; active: sessionEngine.phase === "resolving"; text: "Requesting a GeForce NOW session" }
+                StageRow { complete: sessionEngine.phase === "ready"; active: sessionEngine.busy; text: sessionEngine.statusText }
+                StageRow { complete: streamEngine.available; active: sessionEngine.phase === "ready" && !streamEngine.available; text: "Starting the production streamer" }
+                StageRow { complete: streamEngine.phase === "streaming"; active: streamEngine.available; text: "Negotiating media and input" }
             }
         }
 
@@ -745,7 +722,7 @@ FocusScope {
         Rectangle {
             width: 42; height: 34; radius: 17; color: "#d0090d0a"; border.color: "#2c3930"
             Text { anchors.centerIn: parent; text: page.microphoneEnabled ? "♩" : "×"; color: page.microphoneEnabled ? Theme.accent : Theme.inkMuted; font.pixelSize: 15 }
-            MouseArea { anchors.fill: parent; onClicked: page.toggleMicrophone() }
+            MouseArea { anchors.fill: parent; enabled: false }
         }
         Rectangle {
             visible: page.antiAfkEnabled
@@ -837,6 +814,7 @@ FocusScope {
                         Layout.fillWidth: true
                         glyph: "▣"
                         text: "SHOT · F11"
+                        enabled: false
                         onClicked: page.captureScreenshot()
                     }
                     QuickAction {
@@ -846,6 +824,7 @@ FocusScope {
                         text: page.recording ? "STOP · F12" : "REC · F12"
                         active: page.recording
                         danger: page.recording
+                        enabled: false
                         onClicked: page.toggleRecording()
                     }
                     QuickAction {
@@ -854,6 +833,7 @@ FocusScope {
                         glyph: "♩"
                         text: page.microphoneEnabled ? "MIC LIVE" : "MIC OFF"
                         active: page.microphoneEnabled
+                        enabled: false
                         onClicked: page.toggleMicrophone()
                     }
                     QuickAction {
@@ -868,7 +848,8 @@ FocusScope {
 
                 SettingsCard {
                     title: "Upscaling"
-                    value: upscalingMode === "off" ? "Native" : "1440p → 4K"
+                    value: "Unavailable"
+                    enabled: false
                     Column {
                         width: parent.width
                         spacing: 12
@@ -897,7 +878,8 @@ FocusScope {
 
                 SettingsCard {
                     title: "Frame generation"
-                    value: page.frameGenerationMode === "off" ? "" : "+4 MS LATENCY"
+                    value: "Unavailable"
+                    enabled: false
                     valueWarning: page.frameGenerationMode !== "off"
                     RowLayout {
                         width: parent.width
@@ -925,6 +907,7 @@ FocusScope {
                 }
 
                 Rectangle {
+                    enabled: false
                     width: parent.width
                     height: 62
                     radius: 12
@@ -935,7 +918,7 @@ FocusScope {
                         anchors.margins: 14
                         Column {
                             Text { text: "Anti-AFK"; color: Theme.ink; font.pixelSize: 14; font.weight: Font.DemiBold }
-                            Text { text: "Simulates input every 15 min · Ctrl+Shift+K"; color: Theme.inkMuted; font.pixelSize: 10 }
+                            Text { text: "Unavailable in the production streamer"; color: Theme.inkMuted; font.pixelSize: 10 }
                         }
                         Item { Layout.fillWidth: true }
                         Switch {
@@ -1246,9 +1229,9 @@ FocusScope {
     Shortcut { sequence: "Ctrl+N"; enabled: page.visible && page.lifecycle === "live"; onActivated: page.cycleStats() }
     Shortcut { sequence: "F6"; enabled: page.visible && page.lifecycle === "live"; onActivated: { page.menuVisible = !page.menuVisible; if (page.menuVisible) Qt.callLater(function() { resumeButton.forceActiveFocus() }); else page.forceActiveFocus() } }
     Shortcut { sequence: "Ctrl+G"; enabled: page.visible && page.lifecycle === "live"; onActivated: { page.menuVisible = !page.menuVisible; if (page.menuVisible) Qt.callLater(function() { resumeButton.forceActiveFocus() }); else page.forceActiveFocus() } }
-    Shortcut { sequence: "F11"; enabled: page.visible && page.lifecycle === "live"; onActivated: page.captureScreenshot() }
-    Shortcut { sequence: "F12"; enabled: page.visible && page.lifecycle === "live"; onActivated: page.toggleRecording() }
-    Shortcut { sequence: "Ctrl+Shift+K"; enabled: page.visible && page.lifecycle === "live"; onActivated: page.toggleAntiAfk() }
+    Shortcut { sequence: "F11"; enabled: false; onActivated: page.captureScreenshot() }
+    Shortcut { sequence: "F12"; enabled: false; onActivated: page.toggleRecording() }
+    Shortcut { sequence: "Ctrl+Shift+K"; enabled: false; onActivated: page.toggleAntiAfk() }
     Shortcut { sequence: "Ctrl+Shift+Q"; enabled: page.visible && page.lifecycle !== "report"; onActivated: page.openEndConfirmation() }
     Shortcut { sequence: "X"; enabled: page.visible && page.lifecycle === "report"; onActivated: page.exportReport() }
 

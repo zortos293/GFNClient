@@ -7,7 +7,7 @@ FocusScope {
     id: page
     required property var games
     signal openGame(var game)
-    property string query: "cyber"
+    property string query: ""
     property bool keyboardVisible: true
     property int selectedRow: 3
     property int selectedColumn: 2
@@ -18,39 +18,25 @@ FocusScope {
         ["Z", "X", "C", "V", "B", "N", "M", "⌫"],
         ["SPACE", "DONE"]
     ]
-    readonly property var supplementalGames: [
-        { title: "Cyberline: Rogue", subtitle: "Epic · not installed", badge: "", variant: 2, progress: 0, genre: "Action", store: "Epic", description: "Break the line in a tactical cyber-thriller." },
-        { title: "Neon Cyber Racer", subtitle: "GOG · 2 h played", badge: "", variant: 4, progress: 0, genre: "Racing", store: "GOG", description: "Race the neon grid at impossible speed." }
-    ]
-    readonly property var searchCatalog: {
-        var catalog = page.games ? page.games.slice(0) : []
-        var known = {}
-        for (var i = 0; i < catalog.length; ++i)
-            known[catalog[i].title] = true
-        for (var j = 0; j < page.supplementalGames.length; ++j) {
-            if (!known[page.supplementalGames[j].title])
-                catalog.push(page.supplementalGames[j])
-        }
-        return catalog
-    }
+    readonly property var searchCatalog: page.games || []
     readonly property var filteredGames: {
         var needle = page.query.trim().toLowerCase()
         if (needle.length === 0)
             return page.searchCatalog
         return page.searchCatalog.filter(function(game) {
-            return game.title.toLowerCase().indexOf(needle) >= 0
-                || (game.store || "").toLowerCase().indexOf(needle) >= 0
-                || (game.genre || "").toLowerCase().indexOf(needle) >= 0
+            return String(game.searchText || game.title || "").toLowerCase().indexOf(needle) >= 0
         })
     }
 
     function appendText(text) {
         page.query += text
+        searchDelay.restart()
     }
 
     function backspace() {
         if (page.query.length > 0)
             page.query = page.query.slice(0, -1)
+        searchDelay.restart()
     }
 
     function moveHorizontal(delta) {
@@ -88,9 +74,16 @@ FocusScope {
 
     onVisibleChanged: {
         if (visible) {
+            catalogEngine.browseCatalog(page.query)
             keyboardVisible = true
             Qt.callLater(function() { keyboard.forceActiveFocus() })
         }
+    }
+
+    Timer {
+        id: searchDelay
+        interval: 350
+        onTriggered: catalogEngine.browseCatalog(page.query)
     }
 
     Rectangle {
@@ -127,7 +120,10 @@ FocusScope {
             font.family: Theme.bodyFont.family
             font.pixelSize: 22
             font.weight: Font.DemiBold
-            onTextEdited: page.query = text
+            onTextEdited: {
+                page.query = text
+                searchDelay.restart()
+            }
             onAccepted: {
                 page.keyboardVisible = false
                 if (results.count > 0)
@@ -188,9 +184,10 @@ FocusScope {
                 anchors.rightMargin: index % 5 === 4 ? 0 : 20
                 anchors.bottomMargin: 14
                 title: modelData.title
-                subtitle: modelData.subtitle || ((modelData.store || "") + " · " + (modelData.genre || ""))
-                badge: modelData.badge
+                subtitle: modelData.subtitle || ((modelData.availableStores || []).join(" · "))
+                badge: modelData.badge || ""
                 variant: modelData.variant
+                imageSource: modelData.imageUrl || ""
                 selected: index === results.currentIndex
                 onClicked: {
                     results.currentIndex = index

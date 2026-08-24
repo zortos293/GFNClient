@@ -31,6 +31,16 @@ qt_add_executable(opennow-native
     src/controllerinput.h
     src/authengine.cpp
     src/authengine.h
+    src/auth/authdata.h
+    src/auth/sessionstore.h
+    src/gfn/catalogengine.cpp
+    src/gfn/catalogengine.h
+    src/gfn/cloudmatchprotocol.cpp
+    src/gfn/cloudmatchprotocol.h
+    src/gfn/sessionengine.cpp
+    src/gfn/sessionengine.h
+    src/gfn/signalingclient.cpp
+    src/gfn/signalingclient.h
     src/streamengine.cpp
     src/streamengine.h
 )
@@ -79,3 +89,40 @@ install(TARGETS opennow-native
     BUNDLE DESTINATION .
     RUNTIME DESTINATION bin
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+
+    qt_add_executable(catalogengine-parsertest
+        src/gfn/tests/catalogengine_parsertest.cpp
+        src/gfn/catalogengine.cpp
+        src/gfn/catalogengine.h
+    )
+    target_link_libraries(catalogengine-parsertest PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+    add_test(NAME catalogengine-parsertest COMMAND catalogengine-parsertest)
+
+    qt_add_executable(authdata-test
+        src/auth/tests/authdata_test.cpp
+        src/auth/authdata.h
+        src/auth/sessionstore.h
+    )
+    target_link_libraries(authdata-test PRIVATE Qt6::Core Qt6::Test)
+    add_test(NAME authdata-test COMMAND authdata-test)
+
+    qt_add_executable(cloudmatchprotocol-test
+        src/gfn/tests/cloudmatchprotocol_test.cpp
+        src/gfn/cloudmatchprotocol.cpp
+        src/gfn/cloudmatchprotocol.h
+    )
+    target_link_libraries(cloudmatchprotocol-test PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+    add_test(NAME cloudmatchprotocol-test COMMAND cloudmatchprotocol-test)
+
+    qt_add_executable(signalingclient-test
+        src/gfn/tests/signalingclient_test.cpp
+        src/gfn/signalingclient.cpp
+        src/gfn/signalingclient.h
+    )
+    target_link_libraries(signalingclient-test PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+    add_test(NAME signalingclient-test COMMAND signalingclient-test)
+endif()

@@ -8,6 +8,7 @@ FocusCard {
     property string subtitle: "Ready"
     property string badge: ""
     property int variant: 0
+    property url imageSource: ""
     property real progress: 0
     property bool selected: false
 
@@ -27,6 +28,7 @@ FocusCard {
             height: 180
             variant: card.variant
             kicker: card.badge
+            source: card.imageSource
         }
 
         Rectangle {

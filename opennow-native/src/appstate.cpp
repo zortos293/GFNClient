@@ -21,6 +21,14 @@ QByteArray csvCell(const QVariant &value)
 AppState::AppState(QObject *parent)
     : QObject(parent)
 {
+    if (m_settings.value(QStringLiteral("profile/name")).toString() == QStringLiteral("Zortos")) {
+        m_settings.remove(QStringLiteral("profile/name"));
+    }
+    if (m_settings.value(QStringLiteral("server/name")).toString() == QStringLiteral("EU West - Frankfurt")) {
+        m_settings.remove(QStringLiteral("server/name"));
+        m_settings.remove(QStringLiteral("server/region"));
+        m_settings.remove(QStringLiteral("server/latency"));
+    }
     const auto parsed = QJsonDocument::fromJson(
         m_settings.value(QStringLiteral("sessions/history")).toByteArray());
     if (parsed.isArray()) {
@@ -30,7 +38,7 @@ AppState::AppState(QObject *parent)
 
 QString AppState::profileName() const
 {
-    return m_settings.value(QStringLiteral("profile/name"), QStringLiteral("Zortos")).toString();
+    return m_settings.value(QStringLiteral("profile/name"), QStringLiteral("Player")).toString();
 }
 
 QString AppState::profileInitial() const
@@ -41,17 +49,17 @@ QString AppState::profileInitial() const
 
 QString AppState::serverName() const
 {
-    return m_settings.value(QStringLiteral("server/name"), QStringLiteral("EU West - Frankfurt")).toString();
+    return m_settings.value(QStringLiteral("server/name"), QStringLiteral("Automatic")).toString();
 }
 
 QString AppState::serverRegion() const
 {
-    return m_settings.value(QStringLiteral("server/region"), QStringLiteral("EU-WEST")).toString();
+    return m_settings.value(QStringLiteral("server/region"), QStringLiteral("Automatic")).toString();
 }
 
 int AppState::serverLatency() const
 {
-    return m_settings.value(QStringLiteral("server/latency"), 9).toInt();
+    return m_settings.value(QStringLiteral("server/latency"), 0).toInt();
 }
 
 QVariant AppState::preference(const QString &key, const QVariant &fallback) const

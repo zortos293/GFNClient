@@ -9,6 +9,7 @@ FocusScope {
     signal openGame(var game)
     signal startGame(var game)
     signal chooseServer()
+    readonly property var primaryGame: games.length > 0 ? games[0] : ({})
 
     function browseRows(delta) {
         if (delta > 0)
@@ -17,12 +18,12 @@ FocusScope {
             playButton.forceActiveFocus()
     }
 
-    Shortcut { sequence: "X"; enabled: page.visible; onActivated: page.openGame(page.games[0]) }
+    Shortcut { sequence: "X"; enabled: page.visible && page.games.length > 0; onActivated: page.openGame(page.primaryGame) }
 
     Text {
         x: Theme.pageMargin
         y: 35
-        text: "FRI 21:47"
+        text: new Date().toLocaleString(Qt.locale(), "ddd HH:mm").toUpperCase()
         color: Theme.accent
         font.family: Theme.monoFont.family
         font.pixelSize: 13
@@ -33,7 +34,7 @@ FocusScope {
     Text {
         x: Theme.pageMargin
         y: 60
-        text: "Good evening, " + appState.profileName
+        text: "Welcome, " + (authEngine.accountName || "player")
         color: Theme.ink
         font.family: Theme.displayFont.family
         font.pixelSize: 48
@@ -56,11 +57,9 @@ FocusScope {
             anchors.leftMargin: 24
             anchors.rightMargin: 24
             Rectangle { width: 8; height: 8; radius: 4; color: Theme.accent }
-            Text { text: appState.serverRegion; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
+            Text { text: "REGION AUTO"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
             Rectangle { width: 1; height: 24; color: Theme.divider }
-            Text { text: "RTX 4080 rig"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 12 }
-            Rectangle { width: 1; height: 24; color: Theme.divider }
-            Text { text: appState.serverLatency + " ms"; color: Theme.accent; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
+            Text { text: catalogEngine.subscription.membershipName || "GeForce NOW"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 12 }
         }
         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: page.chooseServer() }
     }
@@ -76,6 +75,7 @@ FocusScope {
         border.width: 1
         border.color: "#202a24"
         clip: true
+        visible: page.games.length > 0
 
         Rectangle {
             anchors.left: parent.left
@@ -100,14 +100,14 @@ FocusScope {
                 font.letterSpacing: 2.4
             }
             Text {
-                text: page.games[0].title
+                text: page.primaryGame.title || ""
                 color: Theme.ink
                 font.family: Theme.displayFont.family
                 font.pixelSize: 64
                 font.weight: Font.DemiBold
             }
             Text {
-                text: "Last played 2 h ago   ·   Steam   ·   1440p   ·   120 FPS"
+                text: page.primaryGame.lastPlayed || page.primaryGame.availableStores || "Ready to stream"
                 color: Theme.inkSoft
                 font.family: Theme.bodyFont.family
                 font.pixelSize: 15
@@ -128,8 +128,8 @@ FocusScope {
                 glyph: "▶"
                 primary: true
                 focus: page.visible
-                onClicked: page.startGame(page.games[0])
-                Keys.onReturnPressed: page.startGame(page.games[0])
+                onClicked: page.startGame(page.primaryGame)
+                Keys.onReturnPressed: page.startGame(page.primaryGame)
                 KeyNavigation.right: detailsButton
                 KeyNavigation.down: libraryRow
             }
@@ -139,10 +139,29 @@ FocusScope {
                 height: 78
                 y: 5
                 text: "Details   ⓧ"
-                onClicked: page.openGame(page.games[0])
+                onClicked: page.openGame(page.primaryGame)
                 KeyNavigation.left: playButton
                 KeyNavigation.down: libraryRow
             }
+        }
+    }
+
+    Column {
+        visible: page.games.length === 0
+        anchors.centerIn: hero
+        spacing: 12
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: catalogEngine.loading ? "Loading your GeForce NOW library…" : "Your library is empty"
+            color: Theme.ink
+            font.pixelSize: 24
+            font.weight: Font.DemiBold
+        }
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: catalogEngine.errorString || "Sync a supported store account in GeForce NOW, then refresh."
+            color: Theme.inkMuted
+            font.pixelSize: 14
         }
     }
 
@@ -194,6 +213,7 @@ FocusScope {
                 subtitle: modelData.subtitle
                 badge: modelData.badge
                 variant: modelData.variant
+                imageSource: modelData.imageUrl || ""
                 selected: index === libraryRow.currentIndex
                 onClicked: page.openGame(modelData)
             }
@@ -213,7 +233,7 @@ FocusScope {
         Text {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "library: 214 titles · synced 4 min ago"
+            text: "library: " + page.games.length + (page.games.length === 1 ? " title" : " titles")
             color: "#455048"
             font.family: Theme.monoFont.family
             font.pixelSize: 11

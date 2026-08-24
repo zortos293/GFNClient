@@ -1,9 +1,21 @@
 #pragma once
 
+#include <QByteArray>
+#include <QHash>
 #include <QJsonObject>
 #include <QObject>
 #include <QProcess>
-#include <QTimer>
+#include <QQueue>
+
+struct NativeStreamerSessionContext final
+{
+    QJsonObject session;
+    QJsonObject settings;
+    QJsonObject shortcuts;
+    QJsonObject nvstVideo;
+
+    QJsonObject toJson() const;
+};
 
 class StreamEngine final : public QObject
 {
@@ -19,6 +31,8 @@ class StreamEngine final : public QObject
     Q_PROPERTY(bool available READ available NOTIFY availableChanged)
 
 public:
+    static constexpr int ProtocolVersion = 4;
+
     explicit StreamEngine(QObject *parent = nullptr);
 
     QString phase() const { return m_phase; }
@@ -31,10 +45,22 @@ public:
     double packetLoss() const { return m_packetLoss; }
     bool available() const { return m_available; }
 
+    QString startRemoteSession(const NativeStreamerSessionContext &context);
+    Q_INVOKABLE QString startRemoteSession(const QJsonObject &context);
+    Q_INVOKABLE QString handleOffer(const QString &sdp);
+    Q_INVOKABLE QString handleOffer(const QString &sdp, const QJsonObject &context);
+    Q_INVOKABLE QString addRemoteIce(const QJsonObject &candidate);
+    Q_INVOKABLE QString sendInput(const QByteArray &payload, bool partiallyReliable = false);
+    Q_INVOKABLE QString sendInputPacket(const QJsonObject &input);
+    Q_INVOKABLE QString setInputPaused(bool paused);
+    Q_INVOKABLE QString updateSurface(const QJsonObject &surface);
+    Q_INVOKABLE QString setSurface(const QJsonObject &surface);
+    Q_INVOKABLE QString updateShortcuts(const QJsonObject &shortcuts);
+    Q_INVOKABLE QString stop(const QString &reason = QStringLiteral("stopped"));
+
     Q_INVOKABLE void startDemo(const QString &quality = QStringLiteral("720p60"));
-    Q_INVOKABLE void stop();
     Q_INVOKABLE void setQuality(const QString &quality);
-    Q_INVOKABLE void setBitrate(int bitrateKbps);
+    Q_INVOKABLE QString setBitrate(int bitrateKbps);
     Q_INVOKABLE void ping();
 
 signals:
@@ -42,17 +68,54 @@ signals:
     void statusTextChanged();
     void statsChanged();
     void availableChanged();
+    void runtimeReady(const QJsonObject &capabilities);
+    void answerReady(const QString &requestId, const QString &sdp, const QString &nvstSdp);
+    void localIceCandidate(const QJsonObject &candidate);
+    void streamStatus(const QString &status, const QString &message);
+    void streamStats(const QJsonObject &stats);
+    void shortcutTriggered(const QString &action);
+    void inputReady(int protocolVersion);
+    void clipboardPasteRequested();
+    void inputCaptureChanged(bool captured);
+    void requestSucceeded(const QString &requestId, const QString &commandType);
+    void requestFailed(const QString &requestId, const QString &commandType,
+                       const QString &code, const QString &message);
+    void streamerError(const QString &code, const QString &message);
     void runtimeEvent(const QString &type, const QJsonObject &payload);
 
 private:
-    void ensureStarted();
-    void sendCommand(const QJsonObject &command);
+    enum class RuntimeMode {
+        None,
+        Production,
+        Demo,
+    };
+
+    bool ensureStarted(RuntimeMode mode);
+    void startProcess(RuntimeMode mode, const QString &path);
+    QString sendProtocolCommand(const QString &type, QJsonObject fields = {},
+                                bool expectsResponse = true);
+    void sendDemoCommand(const QJsonObject &command);
+    void writeCommand(const QJsonObject &command);
+    void flushQueuedCommands();
+    void failPendingCommands(const QString &code, const QString &message);
     void processLine(const QByteArray &line);
+    void processProtocolMessage(const QJsonObject &message);
+    void processDemoMessage(const QJsonObject &message);
+    void updateStats(const QJsonObject &stats);
     void setPhase(const QString &phase, const QString &status);
-    QString runtimePath() const;
+    void setAvailable(bool available);
+    QString productionRuntimePath() const;
+    QString demoRuntimePath() const;
 
     QProcess m_process;
     QByteArray m_buffer;
+    QQueue<QJsonObject> m_queuedCommands;
+    QHash<QString, QString> m_pendingCommands;
+    QJsonObject m_sessionContext;
+    RuntimeMode m_runtimeMode = RuntimeMode::None;
+    bool m_protocolReady = false;
+    bool m_ignoreNextFinished = false;
+    QString m_helloRequestId;
     QString m_phase = QStringLiteral("idle");
     QString m_statusText = QStringLiteral("Native runtime ready");
     QString m_codec = QStringLiteral("VP8");

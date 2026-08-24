@@ -23,6 +23,15 @@ FocusScope {
         { title: "Performance", detail: "1440p · 120 FPS", quality: "1440p120" },
         { title: "Cinematic", detail: "4K · 60 FPS", quality: "4k60" }
     ]
+    readonly property var latestReport: {
+        var sessions = appState.sessions || []
+        var title = page.field("title", "")
+        for (var i = 0; i < sessions.length; ++i) {
+            if (String(sessions[i].title || "") === title)
+                return sessions[i]
+        }
+        return null
+    }
 
     function field(name, fallback) {
         var value = page.game ? page.game[name] : undefined
@@ -93,6 +102,7 @@ FocusScope {
             anchors.top: parent.top
             height: 260
             variant: page.field("variant", 1)
+            source: page.field("heroImageUrl", page.field("imageUrl", ""))
         }
 
         Rectangle {
@@ -140,7 +150,7 @@ FocusScope {
                 y: 94
                 spacing: 10
                 Repeater {
-                    model: ["RTX ON", "4K", "120 FPS", "GAMEPAD"]
+                model: (page.game.nvidiaTech || []).concat(page.game.supportedControls || []).slice(0, 4)
                     Rectangle {
                         required property string modelData
                         width: tagText.implicitWidth + 22
@@ -166,7 +176,7 @@ FocusScope {
                 x: 52
                 y: 136
                 width: parent.width * 0.62
-                text: page.field("title", "Starfall Frontier")
+                text: page.field("title", "Untitled game")
                 color: Theme.ink
                 font.family: Theme.displayFont.family
                 font.pixelSize: 56
@@ -177,7 +187,9 @@ FocusScope {
             Text {
                 x: 52
                 y: 218
-                text: page.field("studio", "Nova Forge Studios") + "   ·   " + page.field("genre", "Open-world RPG") + "   ·   " + page.field("store", "Steam")
+                text: page.field("developerName", page.field("publisherName", ""))
+                      + "   ·   " + (page.game.genres || []).join(", ")
+                      + "   ·   " + (page.game.availableStores || []).join(", ")
                 color: Theme.inkSoft
                 font.family: Theme.bodyFont.family
                 font.pixelSize: 15
@@ -225,7 +237,7 @@ FocusScope {
             x: 52
             y: 642
             width: canvas.width * 0.61
-            text: page.field("description", "Chart a dying frontier at the edge of a collapsing star system. Build your convoy, forge fragile alliances and outrun the wavefront. Full ray-traced lighting and synchronized cloud saves keep every session ready.")
+            text: page.field("longDescription", page.field("description", "No description is available."))
             color: Theme.inkSoft
             font.family: Theme.bodyFont.family
             font.pixelSize: 15
@@ -238,7 +250,7 @@ FocusScope {
             y: 716
             spacing: 10
             Repeater {
-                model: ["Single-player", "Co-op", "Cloud saves"]
+                model: page.game.featureLabels || []
                 Rectangle {
                     required property string modelData
                     width: capabilityText.implicitWidth + 24
@@ -270,10 +282,10 @@ FocusScope {
                 spacing: 18
                 Repeater {
                     model: [
-                        { label: "Played", value: page.field("played", "84 h total"), accent: false },
-                        { label: "Last session", value: page.field("lastSession", "yesterday · 2 h 10 m"), accent: false },
-                        { label: "Avg quality", value: page.field("averageQuality", "117 FPS · 0 stalls"), accent: true },
-                        { label: "Launch preset", value: page.settingsIndex === 3 ? "4K 60 · AV1" : (page.settingsIndex === 2 ? "1080p 120 · AV1" : page.qualityOptions[page.settingsIndex].detail), accent: false }
+                        { label: "Available on", value: (page.game.availableStores || []).join(", ") || "—", accent: false },
+                        { label: "Last played", value: page.field("lastPlayed", "—"), accent: false },
+                        { label: "Required tier", value: page.field("membershipTierLabel", "—"), accent: false },
+                        { label: "Controls", value: (page.game.supportedControls || []).join(", ") || "—", accent: false }
                     ]
                     RowLayout {
                         required property var modelData
@@ -287,15 +299,16 @@ FocusScope {
             Rectangle { x: 24; y: 226; width: parent.width - 48; height: 1; color: Theme.divider }
             Button {
                 id: reportButton
+                enabled: page.latestReport !== null
                 x: 16
                 y: 238
                 width: parent.width - 32
                 height: 56
                 onClicked: page.openReport()
                 contentItem: RowLayout {
-                    Text { text: "Session report"; color: Theme.ink; font.pixelSize: 13; font.weight: Font.Bold }
+                    Text { text: page.latestReport ? "Session report" : "No session report"; color: Theme.ink; font.pixelSize: 13; font.weight: Font.Bold }
                     Item { Layout.fillWidth: true }
-                    Text { text: "View last →"; color: Theme.accent; font.pixelSize: 13; font.weight: Font.Bold }
+                    Text { text: page.latestReport ? "View last →" : ""; color: Theme.accent; font.pixelSize: 13; font.weight: Font.Bold }
                 }
                 background: Rectangle { radius: 8; color: reportButton.down ? Theme.surfaceBright : "transparent"; border.width: reportButton.activeFocus ? 1 : 0; border.color: Theme.accent }
             }
@@ -312,7 +325,7 @@ FocusScope {
                 anchors.left: parent.left
                 anchors.leftMargin: 52
                 anchors.verticalCenter: parent.verticalCenter
-                text: "launches on your " + appState.serverRegion + " rig · est. start 15 s"
+                text: "GeForce NOW selects the streaming region when you launch"
                 color: "#455048"
                 font.family: Theme.monoFont.family
                 font.pixelSize: 11
@@ -416,7 +429,7 @@ FocusScope {
             }
             Rectangle { anchors.fill: parent; radius: 18; color: Theme.surfaceRaised; border.color: Theme.divider }
             Text { x: 28; y: 24; text: "Last session report"; color: Theme.ink; font.pixelSize: 24; font.weight: Font.Bold }
-            Text { x: 28; y: 62; text: page.field("title", "Game") + " · yesterday · 2 h 10 m"; color: Theme.inkMuted; font.pixelSize: 13 }
+            Text { x: 28; y: 62; text: page.field("title", "Game") + " · " + (page.latestReport ? String(page.latestReport.startedAt || "") : ""); color: Theme.inkMuted; font.pixelSize: 13 }
             Column {
                 x: 28
                 y: 112
@@ -424,10 +437,10 @@ FocusScope {
                 spacing: 18
                 Repeater {
                     model: [
-                        { label: "Average frame rate", value: "117 FPS" },
-                        { label: "Round-trip latency", value: "12 ms" },
-                        { label: "Frame stalls", value: "0" },
-                        { label: "Connection", value: "Smooth" }
+                        { label: "Average frame rate", value: page.latestReport ? Number(page.latestReport.averageFps || 0) + " FPS" : "—" },
+                        { label: "Round-trip latency", value: page.latestReport ? Number(page.latestReport.latencyMs || 0) + " ms" : "—" },
+                        { label: "Packet loss", value: page.latestReport ? Number(page.latestReport.packetLoss || 0).toFixed(2) + "%" : "—" },
+                        { label: "Connection", value: page.latestReport ? String(page.latestReport.rating || "—") : "—" }
                     ]
                     RowLayout {
                         required property var modelData

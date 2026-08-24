@@ -12,10 +12,10 @@ ApplicationWindow {
     visible: true
     visibility: Window.FullScreen
     color: Theme.canvas
-    title: "OpenNOW Native Prototype"
+    title: "OpenNOW"
 
     property int currentPage: 0
-    property var selectedGame: games[0]
+    property var selectedGame: games.length > 0 ? games[0] : ({})
     property string pendingQuality: "720p60"
     property bool showingDetails: false
     property bool showingStream: false
@@ -26,8 +26,9 @@ ApplicationWindow {
     property string toastMessage: ""
     property string toastDetail: ""
     property string toastTone: "success"
-    property bool signedIn: Qt.application.arguments.indexOf("--demo-signed-in") >= 0
-    readonly property var games: [
+    readonly property bool demoMode: Qt.application.arguments.indexOf("--demo-signed-in") >= 0
+    property bool signedIn: demoMode || authEngine.signedIn
+    readonly property var demoGames: [
         { title: "Cyber Drift 2088", subtitle: "Last played 2 h ago", badge: "CONTINUE", variant: 0, progress: 0.64, genre: "Open-world racing", store: "Steam", description: "Return to the neon megacity with your latest cloud save and a low-latency performance profile." },
         { title: "Starfall Frontier", subtitle: "Steam · 84 h played", badge: "RTX ON", variant: 1, progress: 0, genre: "Space adventure", store: "Steam", description: "Explore the frontier with ray-traced lighting and synchronized progress." },
         { title: "Nightfall Protocol", subtitle: "Epic · 12 h played", badge: "", variant: 2, progress: 0, genre: "Tactical action", store: "Epic", description: "Coordinate your squad through a responsive cloud session." },
@@ -35,6 +36,8 @@ ApplicationWindow {
         { title: "Voidrunner", subtitle: "Steam · 3 h played", badge: "", variant: 4, progress: 0, genre: "Action", store: "Steam", description: "Resume your run from the latest synchronized checkpoint." },
         { title: "Ashen Kingdom", subtitle: "Ubisoft · 51 h played", badge: "NEW", variant: 5, progress: 0, genre: "Role-playing", store: "Ubisoft", description: "Return to the kingdom with every save synchronized." }
     ]
+    readonly property var games: demoMode ? demoGames : catalogEngine.library
+    readonly property var searchGames: demoMode ? demoGames : (catalogEngine.catalog.games || [])
 
     function showToast(message, detail, tone) {
         toastMessage = message
@@ -53,7 +56,8 @@ ApplicationWindow {
         showingDetails = false
         showingServerSelector = false
         showingStream = true
-        streamEngine.startDemo(quality || "720p60")
+        if (demoMode)
+            streamEngine.startDemo(quality || "720p60")
         streamEngine.setBitrate(Number(appState.preference("streaming.bitrate", 75)) * 1000)
     }
 
@@ -72,25 +76,67 @@ ApplicationWindow {
     }
 
     function requestLaunch(game, quality) {
+        if (!game || !game.launchAppId && !demoMode) {
+            showToast("This game cannot be launched", "GeForce NOW did not return a launchable app variant", "error")
+            return
+        }
         selectedGame = game
         var requestedQuality = quality || configuredQuality()
-        if (!Boolean(appState.preference("streaming.enableStressProfiles", false))
-                && (requestedQuality === "1440p120" || requestedQuality === "1080p120" || requestedQuality === "4k60"))
-            pendingQuality = "720p60"
-        else
-            pendingQuality = requestedQuality
+        pendingQuality = requestedQuality
         showingDetails = false
-        if (appState.preference("account.console.profilePicker", true)) {
+        if (demoMode && appState.preference("account.console.profilePicker", true)) {
             launchAfterProfile = true
             showingProfilePicker = true
-        } else {
+        } else if (demoMode) {
             showingServerSelector = true
+        } else {
+            confirmLaunch()
         }
+    }
+
+    function launchSettings() {
+        var quality = pendingQuality
+        var width = quality === "4k60" ? 3840 : (quality === "1440p120" ? 2560 : (quality.indexOf("1080p") === 0 ? 1920 : 1280))
+        var height = quality === "4k60" ? 2160 : (quality === "1440p120" ? 1440 : (quality.indexOf("1080p") === 0 ? 1080 : 720))
+        var fps = quality.indexOf("120") >= 0 ? 120 : 60
+        var codec = String(appState.preference("streaming.codec", "H264")).toUpperCase()
+        if (codec === "AUTO")
+            codec = "H264"
+        var keyboardChoice = String(appState.preference("input.keyboard.layout", "QWERTY · US Intl"))
+        var languageChoice = String(appState.preference("input.gameLanguage", "English (US)"))
+        return {
+            resolution: width + "x" + height,
+            fps: fps,
+            maxBitrateKbps: Number(appState.preference("streaming.bitrate", 75)) * 1000,
+            codec: codec,
+            supportedCodecs: ["H264", "H265", "AV1"],
+            colorQuality: "8bit_420",
+            keyboardLayout: keyboardChoice.indexOf("German") >= 0 ? "de-DE" : (keyboardChoice.indexOf("French") >= 0 ? "fr-FR" : "en-US"),
+            gameLanguage: languageChoice === "Deutsch" ? "de_DE" : (languageChoice === "Français" ? "fr_FR" : (languageChoice.indexOf("UK") >= 0 ? "en_GB" : "en_US")),
+            enableL4S: Boolean(appState.preference("streaming.l4s", false)),
+            enableCloudGsync: Boolean(appState.preference("streaming.cloudGsync", false)),
+            enableReflex: Boolean(appState.preference("streaming.reflex", false))
+        }
+    }
+
+    function confirmLaunch() {
+        showingServerSelector = false
+        showingDetails = false
+        showingStream = true
+        if (demoMode) {
+            startStream(pendingQuality)
+            return
+        }
+        sessionEngine.launchGame("", String(selectedGame.launchAppId || ""),
+                                 String(selectedGame.title || ""), launchSettings(),
+                                 Boolean(selectedGame.isInLibrary), false, false)
     }
 
     function closeOverlay() {
         if (showingStream) {
             streamEngine.stop()
+            if (!demoMode)
+                sessionEngine.stopSession()
             showingStream = false
         } else if (showingServerSelector) {
             showingServerSelector = false
@@ -212,7 +258,7 @@ ApplicationWindow {
         target: authEngine
         function onAuthorized() {
             window.signedIn = true
-            window.showingProfilePicker = appState.preference("account.console.profilePicker", true)
+            window.showingProfilePicker = window.demoMode && appState.preference("account.console.profilePicker", true)
         }
         function onSignedInChanged() {
             if (!authEngine.signedIn && Qt.application.arguments.indexOf("--demo-signed-in") < 0) {
@@ -221,6 +267,21 @@ ApplicationWindow {
                 window.showingDetails = false
                 window.showingStream = false
             }
+        }
+    }
+    Connections {
+        target: catalogEngine
+        function onRequestFailed(operation, message) {
+            window.showToast("GeForce NOW data could not be loaded", message, "error")
+        }
+    }
+    Connections {
+        target: sessionEngine
+        function onFailed(code, title, message, retryable, needsReauthentication) {
+            window.showToast(title, message, "error")
+            window.showingStream = false
+            if (needsReauthentication)
+                authEngine.refreshSession()
         }
     }
 
@@ -233,7 +294,6 @@ ApplicationWindow {
             anchors.fill: parent
             visible: !window.signedIn
             focus: visible
-            onSignedIn: window.signedIn = true
         }
 
         Item {
@@ -252,7 +312,12 @@ ApplicationWindow {
                 window.currentPage = index
                 window.showingDetails = false
             }
-            onProfileRequested: window.showingProfilePicker = true
+            onProfileRequested: {
+                if (window.demoMode)
+                    window.showingProfilePicker = true
+                else
+                    window.currentPage = 4
+            }
         }
 
         Item {
@@ -270,14 +335,19 @@ ApplicationWindow {
                 games: window.games
                 onOpenGame: function(game) { window.openGame(game) }
                 onStartGame: function(game) { window.requestLaunch(game, window.configuredQuality()) }
-                onChooseServer: { window.selectedGame = window.games[0]; window.showingServerSelector = true }
+                onChooseServer: {
+                    if (window.demoMode && window.games.length > 0) {
+                        window.selectedGame = window.games[0]
+                        window.showingServerSelector = true
+                    }
+                }
             }
             LibraryPage {
                 id: libraryPage
                 anchors.fill: parent
                 visible: window.currentPage === 1 && !window.showingDetails && !window.showingStream
                 focus: visible
-                games: window.games
+                games: window.searchGames
                 onOpenGame: function(game) { window.openGame(game) }
                 onStartGame: function(game) { window.requestLaunch(game, window.configuredQuality()) }
             }
@@ -365,7 +435,7 @@ ApplicationWindow {
             z: 90
             game: window.selectedGame
             onLaunch: function(serverId) {
-                window.startStream(window.pendingQuality)
+                window.confirmLaunch()
             }
             onCancelled: window.showingServerSelector = false
         }

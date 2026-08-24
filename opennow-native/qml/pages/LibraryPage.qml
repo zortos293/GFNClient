@@ -17,24 +17,8 @@ FocusScope {
     property var favorites: ({})
     property int favoritesRevision: 0
     readonly property var filterNames: ["All", "☆  Favorites", "Steam", "Epic", "GOG", "Ubisoft"]
-    readonly property var sortNames: ["Recently played", "A → Z", "Most played", "Recently added"]
-    readonly property var extraGames: [
-        { title: "Neon Circuit", subtitle: "Epic · 9 h played", badge: "", variant: 2, progress: 0, genre: "Racing", store: "Epic", description: "Race through a reactive city circuit." },
-        { title: "Hex of the Old Gods", subtitle: "Ubisoft · 7 h played", badge: "", variant: 5, progress: 0, genre: "Adventure", store: "Ubisoft", description: "Break an ancient curse across forgotten kingdoms." },
-        { title: "Deep Orbit", subtitle: "Steam · 61 h played", badge: "RTX ON", variant: 1, progress: 0, genre: "Simulation", store: "Steam", description: "Build a station at the edge of explored space." },
-        { title: "Wasteland Express", subtitle: "GOG · 18 h played", badge: "", variant: 3, progress: 0, genre: "Action", store: "GOG", description: "Carry precious cargo across a hostile frontier." }
-    ]
-    readonly property var libraryGames: {
-        var catalog = page.games ? page.games.slice(0) : []
-        var known = {}
-        for (var i = 0; i < catalog.length; ++i)
-            known[catalog[i].title] = true
-        for (var j = 0; j < page.extraGames.length; ++j) {
-            if (!known[page.extraGames[j].title])
-                catalog.push(page.extraGames[j])
-        }
-        return catalog
-    }
+    readonly property var sortNames: ["Recently played", "A → Z"]
+    readonly property var libraryGames: page.games || []
     readonly property var visibleGames: {
         page.filterIndex
         page.sortIndex
@@ -74,15 +58,13 @@ FocusScope {
                 return true
             if (page.filterIndex === 1)
                 return page.isFavorite(game)
-            return (game.store || "").toLowerCase() === filter.toLowerCase()
+            return (game.availableStores || []).some(function(store) {
+                return String(store).toLowerCase() === filter.toLowerCase()
+            })
         })
         output.sort(function(a, b) {
             if (page.sortIndex === 1)
                 return a.title.localeCompare(b.title)
-            if (page.sortIndex === 2)
-                return page.hoursPlayed(b) - page.hoursPlayed(a)
-            if (page.sortIndex === 3)
-                return (b.variant || 0) - (a.variant || 0)
             return page.libraryGames.indexOf(a) - page.libraryGames.indexOf(b)
         })
         return output
@@ -123,7 +105,7 @@ FocusScope {
     Text {
         x: Theme.pageMargin + 142
         y: 55
-        text: "214 titles"
+        text: page.libraryGames.length + (page.libraryGames.length === 1 ? " title" : " titles")
         color: Theme.inkMuted
         font.family: Theme.monoFont.family
         font.pixelSize: 13
@@ -250,9 +232,10 @@ FocusScope {
                 anchors.rightMargin: index % 5 === 4 ? 0 : 20
                 anchors.bottomMargin: 20
                 title: modelData.title
-                subtitle: modelData.subtitle
-                badge: modelData.badge
+                subtitle: modelData.subtitle || ((modelData.availableStores || []).join(" · "))
+                badge: modelData.badge || ""
                 variant: modelData.variant
+                imageSource: modelData.imageUrl || ""
                 progress: modelData.progress
                 selected: index === grid.currentIndex
                 onClicked: {
@@ -285,7 +268,7 @@ FocusScope {
         Text {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "page 1 of 22 · scroll with right stick"
+            text: page.visibleGames.length + (page.visibleGames.length === 1 ? " visible title" : " visible titles")
             color: "#455048"
             font.family: Theme.monoFont.family
             font.pixelSize: 11

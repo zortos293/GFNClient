@@ -557,34 +557,20 @@ FocusScope {
     component AccountSection: Item {
         id: accountSection
         property Item firstControl: signOutButton
-        property int storeRevision: 0
         function storeModel() {
-            storeRevision
-            var steam = Boolean(appState.preference("account.store.Steam.connected", true))
-            var epic = Boolean(appState.preference("account.store.Epic Games.connected", true))
-            var gog = Boolean(appState.preference("account.store.GOG.connected", false))
-            var ubisoft = Boolean(appState.preference("account.store.Ubisoft Connect.connected", false))
-            var epicRetried = Number(appState.preference("account.store.Epic Games.lastAction", 0)) > 0
-            return [
-                { name: "Steam", state: steam ? "CONNECTED · zortos · 148 games · just now" : "NOT CONNECTED", tone: steam ? "ok" : "off", action: steam ? "Sync now" : "Connect", connected: steam },
-                { name: "Epic Games", state: !epic ? "NOT CONNECTED" : (epicRetried ? "CONNECTED · 41 games · just now" : "⚠ SYNC ERROR · last OK 2 d ago · 41 games"), tone: !epic ? "off" : (epicRetried ? "ok" : "warn"), action: !epic ? "Connect" : (epicRetried ? "Sync now" : "Retry sync"), connected: epic },
-                { name: "GOG", state: gog ? "CONNECTED · 25 games · just now" : "LINK EXPIRED · 25 games kept in library", tone: gog ? "ok" : "warn", action: gog ? "Sync now" : "Re-link", connected: gog },
-                { name: "Ubisoft Connect", state: ubisoft ? "CONNECTED · sync pending" : "NOT CONNECTED", tone: ubisoft ? "ok" : "off", action: ubisoft ? "Sync now" : "Connect", connected: ubisoft }
-            ]
-        }
-        function runStoreAction(name) {
-            appState.setPreference("account.store." + name + ".connected", true)
-            appState.setPreference("account.store." + name + ".lastAction", Date.now())
-        }
-        function disconnectStore(name) {
-            appState.setPreference("account.store." + name + ".connected", false)
-        }
-        Connections {
-            target: appState
-            function onPreferenceChanged(key, value) {
-                if (key.indexOf("account.store.") === 0)
-                    accountSection.storeRevision += 1
-            }
+            return (catalogEngine.connectedAccounts || []).map(function(account) {
+                var detail = String(account.status || "unknown").replace(/_/g, " ").toUpperCase()
+                if (account.displayName)
+                    detail += " · " + account.displayName
+                if (Number(account.syncedGames || 0) > 0)
+                    detail += " · " + account.syncedGames + " games"
+                return {
+                    name: account.label || account.provider,
+                    state: detail,
+                    tone: account.status === "connected" ? "ok" : (account.status === "not_connected" ? "off" : "warn"),
+                    connected: account.isConnected
+                }
+            })
         }
 
         SectionHeader {
@@ -592,7 +578,7 @@ FocusScope {
             width: parent.width
             title: "Account"
             description: "Your NVIDIA link, membership and connected game stores."
-            status: "TIER: ULTIMATE"
+            status: "TIER: " + (catalogEngine.subscription.membershipTier || "—")
         }
         RowLayout {
             anchors.left: parent.left
@@ -614,12 +600,12 @@ FocusScope {
                         anchors.leftMargin: 22
                         width: 62; height: 62; radius: 31
                         color: "#1a241e"; border.color: "#35433a"
-                        Text { anchors.centerIn: parent; text: appState.profileInitial; color: Theme.ink; font.pixelSize: 24; font.weight: Font.Bold }
+                        Text { anchors.centerIn: parent; text: (authEngine.accountName || "?").charAt(0).toUpperCase(); color: Theme.ink; font.pixelSize: 24; font.weight: Font.Bold }
                     }
                     Column {
                         anchors.left: parent.left; anchors.leftMargin: 104
                         anchors.verticalCenter: parent.verticalCenter; spacing: 3
-                        Text { text: authEngine.accountName.length > 0 ? authEngine.accountName : appState.profileName; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
+                        Text { text: authEngine.accountName.length > 0 ? authEngine.accountName : "NVIDIA account"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
                         Text { text: authEngine.accountEmail.length > 0 ? authEngine.accountEmail : "Signed in with NVIDIA"; color: Theme.inkMuted; font.pixelSize: 11 }
                         TinyCaps { text: "●  NVIDIA ACCOUNT LINKED"; color: Theme.accent; font.pixelSize: 9 }
                     }
@@ -634,29 +620,26 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 162
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Membership"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
-                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "ULTIMATE"; color: Theme.accent }
+                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: catalogEngine.subscription.membershipTier || "—"; color: Theme.accent }
                     GridLayout {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                         anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 58
                         columns: 2; rowSpacing: 12
-                        Text { text: "Rig class"; color: Theme.inkMuted; font.pixelSize: 12 }
-                        Text { Layout.fillWidth: true; text: "RTX 4080  ·  up to 4K 240"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight }
-                        Text { text: "Session length"; color: Theme.inkMuted; font.pixelSize: 12 }
-                        Text { Layout.fillWidth: true; text: "8 h  ·  no queue"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight }
-                        Text { text: "Renews"; color: Theme.inkMuted; font.pixelSize: 12 }
-                        Text { Layout.fillWidth: true; text: "12 Sep 2026"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight }
+                        Text { text: "Subscription"; color: Theme.inkMuted; font.pixelSize: 12 }
+                        Text { Layout.fillWidth: true; text: catalogEngine.subscription.subscriptionType || "—"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight }
+                        Text { text: "Remaining time"; color: Theme.inkMuted; font.pixelSize: 12 }
+                        Text { Layout.fillWidth: true; text: catalogEngine.subscription.isUnlimited ? "Unlimited" : Number(catalogEngine.subscription.remainingHours || 0).toFixed(1) + " h"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight }
+                        Text { text: "State"; color: Theme.inkMuted; font.pixelSize: 12 }
+                        Text { Layout.fillWidth: true; text: catalogEngine.subscription.state || "—"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight }
                     }
                 }
                 SurfaceCard {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 162
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Cloud storage"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
-                    Text { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "94 GB used"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 13; font.weight: Font.Bold }
-                    Text { anchors.left: parent.left; anchors.top: parent.top; anchors.leftMargin: 22; anchors.topMargin: 49; text: "Install-to-Play — games stay installed between sessions"; color: Theme.inkMuted; font.pixelSize: 11 }
-                    Text { anchors.right: parent.right; anchors.top: parent.top; anchors.rightMargin: 22; anchors.topMargin: 49; text: "106 GB free of 200 GB"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 10 }
-                    Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; anchors.topMargin: 77; height: 7; radius: 4; color: "#202a23"; Rectangle { width: parent.width * .47; height: parent.height; radius: 4; color: Theme.accent } }
-                    Text { anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.leftMargin: 22; anchors.bottomMargin: 24; width: parent.width * .48; text: "Per-game usage lives in Steam — GFN only reports the total."; wrapMode: Text.WordWrap; color: Theme.inkMuted; font.pixelSize: 10 }
-                    SmallButton { anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.rightMargin: 22; anchors.bottomMargin: 20; text: "Manage installed games"; onClicked: appState.setPreference("account.storage.manageRequested", Date.now()) }
+                    Text { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: catalogEngine.subscription.storageAddon ? Number(catalogEngine.subscription.storageAddon.usedGb || 0).toFixed(1) + " GB used" : "Not included"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 13; font.weight: Font.Bold }
+                    Text { anchors.left: parent.left; anchors.top: parent.top; anchors.leftMargin: 22; anchors.topMargin: 49; text: catalogEngine.subscription.storageAddon ? "Permanent storage · " + (catalogEngine.subscription.storageAddon.regionName || "region managed by GeForce NOW") : "No storage add-on was returned for this membership."; color: Theme.inkMuted; font.pixelSize: 11 }
+                    Text { anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.leftMargin: 22; anchors.bottomMargin: 24; width: parent.width - 44; text: catalogEngine.subscription.storageAddon ? Number(catalogEngine.subscription.storageAddon.sizeGb || 0).toFixed(1) + " GB total" : ""; wrapMode: Text.WordWrap; color: Theme.inkMuted; font.pixelSize: 10 }
                 }
                 Item { Layout.fillHeight: true }
             }
@@ -669,7 +652,7 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 390
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Connected stores"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
-                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "X  SYNC     Y  DISCONNECT" }
+                    SmallButton { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 16; text: "Refresh"; onClicked: catalogEngine.refreshConnectedAccounts() }
                     Column {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                         anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 58; spacing: 10
@@ -683,12 +666,11 @@ FocusScope {
                                 Text { anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.leftMargin: 14; anchors.bottomMargin: 10; text: modelData.state; color: modelData.tone === "ok" ? Theme.accent : modelData.tone === "warn" ? "#eab308" : Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 9; font.weight: Font.Bold }
                                 Row {
                                     anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; anchors.rightMargin: 10; spacing: 8
-                                    SmallButton { text: modelData.action; primary: modelData.action === "Re-link" || modelData.action === "Connect"; onClicked: accountSection.runStoreAction(modelData.name) }
-                                    SmallButton { visible: modelData.connected; text: "Disconnect"; danger: true; onClicked: accountSection.disconnectStore(modelData.name) }
+                                    Text { text: "Manage in GeForce NOW"; color: Theme.inkMuted; font.pixelSize: 10 }
                                 }
                             }
                         }
-                        Text { width: parent.width; text: "Disconnecting removes the link on GeForce NOW — synced games leave your library on the next refresh."; color: Theme.inkMuted; wrapMode: Text.WordWrap; font.pixelSize: 10 }
+                        Text { width: parent.width; text: accountSection.storeModel().length === 0 ? "No supported linked-store data was returned." : "Linking and disconnect actions remain owned by GeForce NOW."; color: Theme.inkMuted; wrapMode: Text.WordWrap; font.pixelSize: 10 }
                     }
                 }
                 SurfaceCard {
@@ -696,10 +678,8 @@ FocusScope {
                     Layout.preferredHeight: 220
                     Column {
                         anchors.fill: parent; anchors.margins: 22; spacing: 2
-                        Text { text: "Console mode"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold; bottomPadding: 8 }
-                        PersistToggle { width: parent.width; title: "Launch games gamepad-friendly"; description: "Steam starts in Big Picture inside the session"; preferenceKey: "account.console.bigPicture"; defaultValue: true; compact: true }
-                        PersistToggle { width: parent.width; title: "\"Who's playing?\" on launch"; description: "Show the profile picker when console mode starts"; preferenceKey: "account.console.profilePicker"; defaultValue: true; compact: true }
-                        PersistToggle { width: parent.width; title: "Discord Rich Presence"; description: "Show the streaming game as your Discord activity"; preferenceKey: "account.console.discordPresence"; defaultValue: false; compact: true }
+                        Text { text: "Account controls"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold; bottomPadding: 8 }
+                        Text { width: parent.width; text: "Store linking, profile management and membership changes open in GeForce NOW. OpenNOW only displays data returned by your account."; wrapMode: Text.WordWrap; color: Theme.inkMuted; font.pixelSize: 12 }
                     }
                 }
                 Item { Layout.fillHeight: true }
@@ -749,8 +729,9 @@ FocusScope {
                 }
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 142
+                    enabled: false
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Upscaling"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
-                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "1440p → 4K"; color: Theme.accent }
+                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "UNAVAILABLE"; color: Theme.inkMuted }
                     PersistSegments { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 56; options: ["Off", "Spatial", "AI Temporal"]; preferenceKey: "streaming.upscaling"; defaultValue: "AI Temporal" }
                     PersistSlider { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.leftMargin: 22; anchors.rightMargin: 22; title: "Sharpness"; preferenceKey: "streaming.sharpness"; defaultValue: 62; from: 0; to: 100 }
                 }
@@ -769,22 +750,23 @@ FocusScope {
                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 16
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 150
+                    enabled: false
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Frame generation"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
-                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "+4 MS LATENCY"; color: "#eab308" }
+                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "UNAVAILABLE"; color: Theme.inkMuted }
                     PersistSegments { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 58; options: ["Off", "2×", "3×"]; preferenceKey: "streaming.frameGeneration"; defaultValue: "2×" }
                     Text { anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.leftMargin: 22; anchors.bottomMargin: 14; text: "Interpolates on this device after decode — 60 stream FPS presents at 120."; color: Theme.inkMuted; font.pixelSize: 10 }
                 }
-                SurfaceCard { Layout.fillWidth: true; Layout.preferredHeight: 82; PersistToggle { anchors.fill: parent; anchors.margins: 18; title: "NTFK"; description: "Experimental low-latency transport"; preferenceKey: "streaming.ntfk"; defaultValue: true; compact: true } }
-                SurfaceCard { Layout.fillWidth: true; Layout.preferredHeight: 82; PersistToggle { anchors.fill: parent; anchors.margins: 18; title: "Variable refresh sync"; description: "Match display refresh to stream pacing (VRR / G-Sync)"; preferenceKey: "streaming.vrr"; defaultValue: true; compact: true } }
+                SurfaceCard { enabled: false; Layout.fillWidth: true; Layout.preferredHeight: 82; PersistToggle { anchors.fill: parent; anchors.margins: 18; title: "NTFK · unavailable"; description: "The native client currently uses GeForce NOW WebRTC"; preferenceKey: "streaming.ntfk"; defaultValue: false; compact: true } }
+                SurfaceCard { enabled: false; Layout.fillWidth: true; Layout.preferredHeight: 82; PersistToggle { anchors.fill: parent; anchors.margins: 18; title: "Variable refresh sync · unavailable"; description: "The production surface does not expose VRR control"; preferenceKey: "streaming.vrr"; defaultValue: false; compact: true } }
                 SurfaceCard { Layout.fillWidth: true; Layout.preferredHeight: 86; PersistSlider { anchors.fill: parent; anchors.margins: 18; title: "Bitrate cap"; preferenceKey: "streaming.bitrate"; defaultValue: 75; from: 5; to: 100; suffix: " Mbps" } }
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 112; color: "#080d0a"
-                    TinyCaps { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 20; text: "ESTIMATED PIPELINE" }
-                    Text { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; text: "~32 ms click-to-photon"; color: Theme.accent; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
+                    TinyCaps { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 20; text: "LIVE STREAM TELEMETRY" }
+                    Text { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; text: streamEngine.latencyMs > 0 ? streamEngine.latencyMs + " ms RTT" : "No active stream"; color: Theme.accent; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
                     RowLayout {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.leftMargin: 20; anchors.rightMargin: 20; anchors.bottomMargin: 20; spacing: 6
                         Repeater {
-                            model: [{t:"network 14",c:"#315f43"},{t:"encode 8",c:"#4ce87f"},{t:"decode 2",c:"#a5f3c0"},{t:"framegen 4",c:"#eab308"},{t:"present 4",c:"#68736c"}]
+                            model: [{t:streamEngine.resolution,c:"#315f43"},{t:streamEngine.codec,c:"#4ce87f"},{t:streamEngine.fps + " fps",c:"#a5f3c0"},{t:Math.round(streamEngine.bitrateKbps / 1000) + " Mbps",c:"#68736c"}]
                             ColumnLayout { Layout.fillWidth: true; spacing: 6; Rectangle { Layout.fillWidth: true; height: 7; radius: 4; color: modelData.c } Text { text: modelData.t; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 8 } }
                         }
                     }
@@ -807,13 +789,14 @@ FocusScope {
                     Layout.fillWidth: true; Layout.preferredHeight: 268
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Presentation"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.leftMargin: 22; anchors.topMargin: 81; text: "Decoder"; color: Theme.inkMuted; font.pixelSize: 12 }
-                    PersistSegments { id: decoder; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 150; anchors.rightMargin: 22; anchors.topMargin: 60; options: ["Auto", "Hardware", "Software"]; preferenceKey: "video.decoder"; defaultValue: "Auto" }
+                    PersistSegments { id: decoder; enabled: false; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 150; anchors.rightMargin: 22; anchors.topMargin: 60; options: ["Auto", "Hardware", "Software"]; preferenceKey: "video.decoder"; defaultValue: "Auto" }
                     Text { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 116; text: "Hardware decode picks the OS API automatically — D3D11VA on Windows, VideoToolbox on macOS, VAAPI on Linux."; wrapMode: Text.WordWrap; color: Theme.inkMuted; font.pixelSize: 10 }
                     PersistToggle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 151; title: "Enter fullscreen on launch"; description: "F10 toggles at any time"; preferenceKey: "video.fullscreenOnLaunch"; defaultValue: true; compact: true }
                     PersistToggle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.bottomMargin: 12; title: "Stats overlay on launch"; description: "Position: bottom-left · toggle with Ctrl+N"; preferenceKey: "video.statsOnLaunch"; defaultValue: false; compact: true }
                 }
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 202
+                    enabled: false
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Video shaders"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
                     TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "GPU POST-PROCESS" }
                     PersistToggle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 53; title: "Adaptive sharpen"; description: "Counteracts encoder softness"; preferenceKey: "video.sharpen.enabled"; defaultValue: true; compact: true }
@@ -847,8 +830,9 @@ FocusScope {
                 }
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 210
+                    enabled: false
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Recording"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
-                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "F12 START/STOP" }
+                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "UNAVAILABLE" }
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.leftMargin: 22; anchors.topMargin: 83; text: "Resolution"; color: Theme.inkMuted; font.pixelSize: 12 }
                     PersistSegments { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 150; anchors.rightMargin: 22; anchors.topMargin: 62; options: ["720p", "1080p", "1440p"]; preferenceKey: "recording.resolution"; defaultValue: "720p" }
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.leftMargin: 22; anchors.topMargin: 137; text: "Frame rate"; color: Theme.inkMuted; font.pixelSize: 12 }
@@ -862,7 +846,7 @@ FocusScope {
 
     component InputSection: Item {
         property Item firstControl: gyro
-        SectionHeader { id: header; width: parent.width; title: "Input & controllers"; description: "Controllers, mouse, keyboard layout and in-stream shortcuts."; status: "2 CONTROLLERS" }
+        SectionHeader { id: header; width: parent.width; title: "Input & controllers"; description: "Controllers, mouse, keyboard layout and in-stream shortcuts."; status: controllerInput.controllerCount + (controllerInput.controllerCount === 1 ? " CONTROLLER" : " CONTROLLERS") }
         RowLayout {
             anchors.left: parent.left; anchors.right: parent.right; anchors.top: header.bottom; anchors.bottom: parent.bottom; spacing: 20
             ColumnLayout {
@@ -873,7 +857,7 @@ FocusScope {
                     Column {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 58; spacing: 10
                         Repeater {
-                            model: [{p:"P1",n:"Xbox Wireless Controller",s:"BT · 80%",active:true},{p:"P2",n:"DualSense",s:"USB",active:false}]
+                            model: controllerInput.connected ? [{p:"P1",n:controllerInput.controllerName,s:"ACTIVE",active:true}] : []
                             Rectangle {
                                 width: parent.width; height: 53; radius: 9; color: "#090d0b"; border.color: modelData.active ? "#2f4638" : "#202a23"
                                 TinyCaps { anchors.left: parent.left; anchors.leftMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: modelData.p; color: modelData.active ? Theme.accent : Theme.inkMuted }
@@ -882,11 +866,12 @@ FocusScope {
                             }
                         }
                     }
-                    PersistToggle { id: gyro; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 176; title: "Gyroscope controls"; description: "Experimental motion input mapping"; preferenceKey: "input.gyroscope"; defaultValue: false; compact: true }
-                    PersistToggle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.bottomMargin: 12; title: "Steam Controller compatibility"; description: "macOS-only legacy HID workaround"; preferenceKey: "input.steamControllerCompatibility"; defaultValue: false; compact: true }
+                    PersistToggle { id: gyro; enabled: false; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 176; title: "Gyroscope controls · unavailable"; description: "Motion input is not encoded yet"; preferenceKey: "input.gyroscope"; defaultValue: false; compact: true }
+                    PersistToggle { enabled: false; anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.bottomMargin: 12; title: "Steam Controller compatibility · unavailable"; description: "No compatibility shim is active"; preferenceKey: "input.steamControllerCompatibility"; defaultValue: false; compact: true }
                 }
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 298
+                    enabled: false
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Mouse & keyboard"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
                     PersistSlider { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 52; title: "Sensitivity"; preferenceKey: "input.mouse.sensitivity"; defaultValue: 1; from: .1; to: 2; stepSize: .1; decimals: 1 }
                     PersistSlider { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 93; title: "Acceleration"; preferenceKey: "input.mouse.acceleration"; defaultValue: 1; from: 0; to: 2; stepSize: .1; decimals: 1 }
@@ -900,13 +885,15 @@ FocusScope {
                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 16
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 120
-                    Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Microphone"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
+                    enabled: false
+                    Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Microphone · unavailable"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
                     PersistSegments { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.bottomMargin: 21; options: ["Disabled", "Push-to-talk", "Voice activity"]; preferenceKey: "input.microphone"; defaultValue: "Disabled" }
                 }
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 480
+                    enabled: false
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Shortcuts"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
-                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "A TO REBIND" }
+                    TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "REBINDING UNAVAILABLE" }
                     Column {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 58; spacing: 0
                         KeybindRow { width: parent.width; title: "Toggle stats overlay"; preferenceKey: "shortcut.stats"; defaultSequence: "Ctrl+N" }
@@ -928,17 +915,17 @@ FocusScope {
         id: networkSection
         property Item firstControl: autoRegion
         property string filterText: ""
-        property string selectedServer: String(appState.preference("network.server", "EU West · Frankfurt"))
-        property bool communityProxy: !!appState.preference("network.communityProxy", true)
-        SectionHeader { id: header; width: parent.width; title: "Network"; description: "Region, routing, transport and connection resilience."; status: "REGION: AUTO · EU-WEST" }
+        property string selectedServer: "Automatic"
+        property bool communityProxy: false
+        SectionHeader { id: header; width: parent.width; title: "Network"; description: "Region, routing, transport and connection resilience."; status: "REGION: AUTO" + (catalogEngine.vpcId ? " · " + catalogEngine.vpcId : "") }
         Shortcut { sequence: "Y"; enabled: page.visible && page.sectionIndex === 4; onActivated: serverFilter.forceActiveFocus() }
         RowLayout {
             anchors.left: parent.left; anchors.right: parent.right; anchors.top: header.bottom; anchors.bottom: parent.bottom; spacing: 20
             SurfaceCard {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Region"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
-                Text { anchors.left: parent.left; anchors.top: parent.top; anchors.leftMargin: 84; anchors.topMargin: 25; text: "38 servers"; color: Theme.inkMuted; font.pixelSize: 10 }
-                SmallButton { id: autoRegion; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; text: "AUTO · LOWEST PING"; primary: true; onClicked: appState.setPreference("network.regionMode", "auto") }
+                Text { anchors.left: parent.left; anchors.top: parent.top; anchors.leftMargin: 84; anchors.topMargin: 25; text: catalogEngine.regions.length + " API regions"; color: Theme.inkMuted; font.pixelSize: 10 }
+                SmallButton { id: autoRegion; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; text: "REFRESH"; primary: true; onClicked: catalogEngine.refreshServerInfo() }
                 TextField {
                     id: serverFilter
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 60
@@ -949,28 +936,23 @@ FocusScope {
                 }
                 Column {
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 120; spacing: 8
-                    TinyCaps { text: "EUROPE · 14" }
+                    TinyCaps { text: "GEFORCE NOW REGIONS" }
                     Repeater {
-                        model: [
-                            {n:"EU West · Frankfurt",p:"▂▄▆█",m:"9 ms",region:"EU-WEST"},
-                            {n:"EU Central · Vienna",p:"▂▄▆",m:"17 ms",region:"EU-CENTRAL"},
-                            {n:"EU North · Stockholm",p:"▂▄▆",m:"24 ms",region:"EU-NORTH"}
-                        ]
+                        model: catalogEngine.regions.slice(0, 6)
                         AbstractButton {
                             id: europeServerButton
                             width: parent.width; height: 49; activeFocusOnTab: true; hoverEnabled: true
-                            onClicked: { networkSection.selectedServer = modelData.n; appState.setPreference("network.server", modelData.n); appState.setPreference("network.region", modelData.region); appState.setPreference("network.regionMode", "manual") }
-                            background: Rectangle { radius: 9; color: europeServerButton.hovered ? "#111713" : "#090d0b"; border.width: europeServerButton.activeFocus ? 2 : 1; border.color: networkSection.selectedServer === modelData.n ? Theme.accent : "#202a23" }
+                            onClicked: {}
+                            background: Rectangle { radius: 9; color: europeServerButton.hovered ? "#111713" : "#090d0b"; border.width: europeServerButton.activeFocus ? 2 : 1; border.color: "#202a23" }
                             contentItem: Item {
-                                Text { anchors.left: parent.left; anchors.leftMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: modelData.n; color: Theme.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
-                                Text { anchors.right: latency.left; anchors.rightMargin: 20; anchors.verticalCenter: parent.verticalCenter; text: modelData.p; color: Theme.accent; font.pixelSize: 13 }
-                                Text { id: latency; anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: modelData.m; color: modelData.m === "9 ms" ? Theme.accent : Theme.inkSoft; font.family: Theme.monoFont.family; font.pixelSize: 10; font.weight: Font.Bold }
+                                Text { anchors.left: parent.left; anchors.leftMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: modelData.name; color: Theme.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
+                                Text { id: latency; anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: "managed automatically"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 10 }
                             }
                         }
                     }
-                    TinyCaps { text: "NORTH AMERICA · 12"; topPadding: 8 }
+                    TinyCaps { visible: false; text: "" }
                     Repeater {
-                        model: [{n:"US East · Ashburn",m:"92 ms"},{n:"US West · San Jose",m:"141 ms"}]
+                        model: []
                         AbstractButton {
                             id: americanServerButton
                             width: parent.width; height: 49; activeFocusOnTab: true; hoverEnabled: true
@@ -979,7 +961,7 @@ FocusScope {
                             contentItem: Item { Text { anchors.left: parent.left; anchors.leftMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: modelData.n; color: Theme.inkSoft; font.pixelSize: 13; font.weight: Font.DemiBold } Text { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: "▂  " + modelData.m; color: "#eab308"; font.family: Theme.monoFont.family; font.pixelSize: 10; font.weight: Font.Bold } }
                         }
                     }
-                    RowLayout { width: parent.width; Text { Layout.fillWidth: true; text: "33 more — scroll with right stick · groups: South America, Asia, Oceania"; color: Theme.inkMuted; font.pixelSize: 10 } SmallButton { text: "Ping all again →"; onClicked: appState.setPreference("network.pingRequested", Date.now()) } }
+                    RowLayout { width: parent.width; Text { Layout.fillWidth: true; text: "CloudMatch chooses the serving region during launch."; color: Theme.inkMuted; font.pixelSize: 10 } }
                 }
             }
             ColumnLayout {
@@ -992,12 +974,13 @@ FocusScope {
                 }
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 345
+                    enabled: false
                     Text { anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 22; text: "Session proxy"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
                     TinyCaps { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 22; text: "COMMUNITY ACTIVE"; color: Theme.accent }
                     Rectangle {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.topMargin: 60; height: 113; radius: 10; color: "#0a100c"; border.color: Theme.accent
-                        PersistToggle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 14; anchors.rightMargin: 14; anchors.topMargin: 7; title: "Zortos community proxy"; description: "Auto-provisioned credentials, no setup"; preferenceKey: "network.communityProxy"; defaultValue: true; compact: true; onChanged: function(value) { networkSection.communityProxy = value } }
-                        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 14; height: 36; radius: 7; color: "#070b08"; border.color: "#253028"; Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: "altaria.proxy.rlwy.net:51545 · provisioned 2 min ago"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 9 } }
+                        PersistToggle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 14; anchors.rightMargin: 14; anchors.topMargin: 7; title: "Proxy unavailable"; description: "The native client uses direct NVIDIA endpoints"; preferenceKey: "network.communityProxy"; defaultValue: false; compact: true }
+                        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 14; height: 36; radius: 7; color: "#070b08"; border.color: "#253028" }
                     }
                     PersistToggle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.leftMargin: 36; anchors.rightMargin: 36; anchors.topMargin: 187; title: "Custom proxy URL"; description: "Route session traffic through your own proxy"; preferenceKey: "network.customProxyEnabled"; defaultValue: false; compact: true; enabled: !networkSection.communityProxy }
                     TextField {
@@ -1007,6 +990,13 @@ FocusScope {
                         background: Rectangle { radius: 7; color: "#070b08"; border.color: "#253028"; opacity: parent.enabled ? 1 : .45 }
                     }
                     Text { anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.leftMargin: 36; anchors.bottomMargin: 18; text: "▣  Locked — the community proxy writes this URL. Turn it off to use your own."; color: "#eab308"; font.pixelSize: 10 }
+                    Rectangle {
+                        anchors.fill: parent; z: 20; radius: 12; color: "#0c110e"; border.color: Theme.divider
+                        Column { anchors.centerIn: parent; width: parent.width - 60; spacing: 10
+                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: "Direct NVIDIA transport"; color: Theme.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
+                            Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; text: "Proxy routing is not implemented in the native client, so no proxy credentials or fallback endpoints are configured."; color: Theme.inkMuted; font.pixelSize: 12 }
+                        }
+                    }
                 }
                 SurfaceCard {
                     Layout.fillWidth: true; Layout.preferredHeight: 116; color: "#080d0a"
@@ -1014,7 +1004,7 @@ FocusScope {
                     SmallButton { anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 17; text: "Run again →"; onClicked: appState.setPreference("network.connectionTestRequested", Date.now()) }
                     RowLayout {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.leftMargin: 22; anchors.rightMargin: 22; anchors.bottomMargin: 18; spacing: 24
-                        Repeater { model: [{v:"940",l:"Mbps down"},{v:"1.2",l:"ms jitter"},{v:"0.0%",l:"packet loss"},{v:"PASS",l:"4K 240 ready"}]; Column { Text { text: modelData.v; color: index > 1 ? Theme.accent : Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 18; font.weight: Font.Bold } Text { text: modelData.l; color: Theme.inkMuted; font.pixelSize: 9 } } }
+                        Repeater { model: [{v:streamEngine.bitrateKbps > 0 ? Math.round(streamEngine.bitrateKbps / 1000) : "—",l:"Mbps stream"},{v:streamEngine.latencyMs > 0 ? streamEngine.latencyMs : "—",l:"ms RTT"},{v:streamEngine.packetLoss.toFixed(2) + "%",l:"packet loss"},{v:streamEngine.phase.toUpperCase(),l:"runtime state"}]; Column { Text { text: modelData.v; color: index > 1 ? Theme.accent : Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 18; font.weight: Font.Bold } Text { text: modelData.l; color: Theme.inkMuted; font.pixelSize: 9 } } }
                     }
                 }
                 Item { Layout.fillHeight: true }

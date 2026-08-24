@@ -7,16 +7,10 @@ FocusScope {
     id: page
     signal signedIn()
     property int providerIndex: 0
-    property int codeIndex: 0
     readonly property var providers: authEngine.providers
-    readonly property var codes: [
-        ["7", "K", "4", "—", "D", "9", "X"],
-        ["M", "2", "R", "—", "8", "Q", "P"],
-        ["C", "6", "N", "—", "W", "3", "T"]
-    ]
     readonly property var displayCode: {
         if (authEngine.userCode.length === 0)
-            return codes[codeIndex]
+            return ["", "", "", "—", "", "", ""]
         var result = []
         var midpoint = Math.ceil(authEngine.userCode.length / 2)
         for (var i = 0; i < authEngine.userCode.length; ++i) {
@@ -29,7 +23,6 @@ FocusScope {
 
     function cycleProvider(delta) {
         providerIndex = (providerIndex + delta + providers.length) % providers.length
-        codeIndex = (codeIndex + 1) % codes.length
         authEngine.selectProvider(providerIndex)
     }
 
@@ -80,7 +73,7 @@ FocusScope {
         anchors.top: parent.top
         anchors.rightMargin: 48
         anchors.topMargin: 42
-        text: "v3.0.0-beta  ·  gateway EU-WEST  ·  9 ms"
+        text: "OpenNOW " + Qt.application.version
         color: Theme.inkMuted
         font.family: Theme.monoFont.family
         font.pixelSize: 13
@@ -186,7 +179,6 @@ FocusScope {
                     Keys.onDownPressed: currentIndex = (currentIndex + 1) % count
                     Keys.onReturnPressed: {
                         page.providerIndex = currentIndex
-                        page.codeIndex = (page.codeIndex + 1) % page.codes.length
                         authEngine.selectProvider(currentIndex)
                         providerPopup.close()
                         providerButton.forceActiveFocus()
@@ -203,7 +195,6 @@ FocusScope {
                         highlighted: index === page.providerIndex
                         onClicked: {
                             page.providerIndex = index
-                            page.codeIndex = (page.codeIndex + 1) % page.codes.length
                             authEngine.selectProvider(index)
                             providerPopup.close()
                             providerButton.forceActiveFocus()

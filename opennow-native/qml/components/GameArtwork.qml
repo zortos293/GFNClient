@@ -5,9 +5,19 @@ Rectangle {
     id: root
     property int variant: 0
     property string kicker: ""
+    property url source: ""
     clip: true
     radius: 14
     color: "#171d1a"
+
+    Image {
+        anchors.fill: parent
+        source: root.source
+        visible: root.source.toString().length > 0
+        fillMode: Image.PreserveAspectCrop
+        asynchronous: true
+        cache: true
+    }
 
     Text {
         visible: root.kicker.length > 0

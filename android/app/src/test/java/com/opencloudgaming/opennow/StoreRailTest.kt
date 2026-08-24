@@ -48,6 +48,27 @@ class StoreRailTest {
     }
 
     @Test
+    fun storeHeroShowsSixWeeklyGames() {
+        val games = (1..7).map { index -> GameInfo(id = "game-$index", title = "Game $index") }
+
+        assertEquals((1..6).map { "game-$it" }, newlyAddedStoreHeroGames(games).map(GameInfo::id))
+    }
+
+    @Test
+    fun storeHeroSubtitleOmitsStoreNames() {
+        val game = GameInfo(
+            id = "game",
+            title = "Game",
+            publisherName = "  Publisher  ",
+            availableStores = listOf("Steam", "Epic Games Store"),
+        )
+        val storeOnly = game.copy(publisherName = null)
+
+        assertEquals("Publisher", storeHeroSubtitle(game))
+        assertEquals(null, storeHeroSubtitle(storeOnly))
+    }
+
+    @Test
     fun newGamesAddedFeedIsOnlyAnUnfilteredProviderSort() {
         assertTrue(isNewlyAddedCatalogQuery("", NEWLY_ADDED_CATALOG_SORT_ID, emptyList()))
         assertTrue(isNewlyAddedCatalogQuery("", "latest", emptyList()))

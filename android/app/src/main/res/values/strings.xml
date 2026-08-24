@@ -352,7 +352,7 @@
     <string name="stream_joysticks_aim_mode">Touch aiming</string>
     <string name="stream_joysticks_lock_joystick">Lock Joystick</string>
     <string name="stream_joysticks_lock_zone">Lock Zone / Touch Aim</string>
-    <string name="stream_joysticks_lock_zone_summary">Move anywhere inside the right-side zone for finer camera aim. Release to return the aim stick to neutral.</string>
+    <string name="stream_joysticks_lock_zone_summary">Drag anywhere inside the right-side zone for relative mouse-look aiming.</string>
     <string name="stream_joysticks_aim_zone_label">AIM ZONE</string>
     <string name="stream_joysticks_stick_size">Stick size</string>
     <string name="stream_joysticks_dead_zone">Dead zone</string>
@@ -546,9 +546,9 @@
     <string name="library_remove_local_app_confirm">Remove</string>
     <string name="library_hero_featured">Featured</string>
     <string name="settings_touch_skin">Touch controller skin</string>
-    <string name="settings_touch_skin_desc">How the on-screen buttons are drawn. Outline and Neon let more of the game through; High contrast stays readable over bright scenes.</string>
+    <string name="settings_touch_skin_desc">Each skin is a different controller, not a different colour: the cut of the buttons, whether the d-pad is one cross or four separate keys, and what the stick travels inside all change with it.</string>
     <string name="settings_touch_skin_tint">Touch controller colour</string>
-    <string name="settings_touch_skin_tint_desc">Recolours the skins that use an accent. Solid, Outline and High contrast are monochrome by design.</string>
+    <string name="settings_touch_skin_tint_desc">Recolours the skins built around an accent. Classic, Outline, Frost and High contrast are monochrome by design.</string>
     <string name="settings_touch_button_labels">Button letters</string>
     <string name="settings_touch_button_labels_desc">Off leaves the caps blank once the layout is muscle memory.</string>
     <string name="stream_panel_touch_skin">Skin</string>
@@ -560,7 +560,7 @@
     <string name="settings_touch_right_stick_size">Right stick size</string>
     <string name="settings_touch_stick_knob_size">Stick cap size</string>
     <string name="settings_touch_gyro">Gyroscope aiming</string>
-    <string name="settings_touch_gyro_desc">Tilt the phone to move the virtual right stick. Touching the right stick temporarily takes priority.</string>
+    <string name="settings_touch_gyro_desc">Tilt the phone for relative mouse-look aiming.</string>
     <string name="settings_touch_gyro_unavailable">This device does not report a gyroscope.</string>
     <string name="settings_touch_gyro_sensitivity">Gyroscope sensitivity</string>
     <string name="settings_touch_gyro_dead_zone">Gyroscope dead zone</string>

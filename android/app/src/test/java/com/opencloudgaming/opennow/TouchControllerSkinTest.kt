@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -44,6 +45,55 @@ class TouchControllerSkinTest {
         }
         assertEquals(TouchControllerStyle.entries.toSet(), seen.toSet())
         assertEquals(TouchControllerStyle.V1, nextTouchControllerStyle(style))
+    }
+
+    @Test
+    fun everySkinHasItsOwnSilhouette() {
+        // The whole point of a skin: two of them may never differ by colour alone.
+        val silhouettes = TouchControllerStyle.entries.associateWith { touchSkinForm(it).silhouette }
+        assertEquals(
+            "$silhouettes",
+            TouchControllerStyle.entries.size,
+            silhouettes.values.toSet().size,
+        )
+    }
+
+    @Test
+    fun theClassicSkinKeepsTheShapesItAlwaysHad() {
+        val form = touchSkinForm(TouchControllerStyle.V1)
+
+        assertEquals(TouchCapShape.Circle, form.capShape)
+        assertEquals(TouchDpadShape.Cross, form.dpadShape)
+        assertEquals(TouchStickShape.Ring, form.stickShape)
+        assertEquals(TouchShoulderShape.Pill, form.shoulderShape)
+        // No dome, no bloom, no travel: this is the layout people already have muscle memory for.
+        assertEquals(1f, form.pressScale, 0f)
+        assertEquals(0f, form.gloss, 0f)
+        assertEquals(0.dp, form.glow)
+    }
+
+    @Test
+    fun onlyABladeDpadGoesWithoutArrowheads() {
+        TouchControllerStyle.entries.forEach { style ->
+            val form = touchSkinForm(style)
+            if (form.dpadArrow == TouchDpadArrow.None) {
+                assertEquals("$style", TouchDpadShape.Blades, form.dpadShape)
+            }
+        }
+    }
+
+    @Test
+    fun opacityFadesTheShadingASkinAddsOnTopOfItsPalette() {
+        val full = touchSkinColors(TouchControllerStyle.Arcade, opacity = 1f, accent = Color.White)
+        val faded = touchSkinColors(TouchControllerStyle.Arcade, opacity = 0.25f, accent = Color.White)
+
+        assertTrue(faded.sheen(0.5f).alpha < full.sheen(0.5f).alpha)
+    }
+
+    @Test
+    fun theDpadIsAlwaysWideEnoughForItsFourArms() {
+        // Three arms across plus the gaps the arrowheads sit in.
+        assertEquals(62f, touchDpadBoxSize(20.dp).value, 0.001f)
     }
 
     @Test

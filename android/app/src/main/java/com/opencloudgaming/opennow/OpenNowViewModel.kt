@@ -13,6 +13,7 @@ import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -685,9 +686,27 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun applyPrimedCatalogCache(snapshot: CatalogCacheSnapshot) {
-        val storeGames = primedStoreGames(snapshot)
+        val cachedGfnThursdayGames = gfnThursdayCatalogGames(snapshot.main.orEmpty())
+        val gfnThursdayQuery = isNewlyAddedCatalogQuery(
+            searchQuery = snapshot.key.searchQuery,
+            sortId = snapshot.key.sortId,
+            filterIds = snapshot.key.filterIds,
+        )
+        val officialCachedCatalog = if (gfnThursdayQuery && cachedGfnThursdayGames.isNotEmpty()) {
+            catalogResultWithGfnThursdayGames(
+                fallback = snapshot.catalog ?: CatalogBrowseResult(
+                    games = emptyList(),
+                    selectedSortId = NEWLY_ADDED_CATALOG_SORT_ID,
+                ),
+                games = cachedGfnThursdayGames,
+            )
+        } else {
+            snapshot.catalog
+        }
+        val storeGames = officialCachedCatalog?.games ?: primedStoreGames(snapshot)
         val libraryGames = snapshot.library.orEmpty()
-        val newlyAddedGames = snapshot.newlyAdded?.games.orEmpty()
+        val newlyAddedGames = cachedGfnThursdayGames
+            .ifEmpty { snapshot.newlyAdded?.games.orEmpty() }
         if (storeGames.isEmpty() && libraryGames.isEmpty() && newlyAddedGames.isEmpty()) return
         var applied = false
         _state.update { current ->
@@ -698,7 +717,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             current.copy(
                 games = storeGames,
                 newlyAddedGames = newlyAddedGames.ifEmpty { current.newlyAddedGames },
-                catalogResult = snapshot.catalog ?: current.catalogResult,
+                catalogResult = officialCachedCatalog ?: current.catalogResult,
                 libraryGames = libraryGames.ifEmpty { current.libraryGames },
                 // A refresh is still on its way; the pull-to-refresh indicator should say so.
                 loadingGames = true,
@@ -3652,10 +3671,27 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 ),
             )
         }
-        val cachedCatalog = if (androidTvProfile) {
-            unboundedCachedCatalog?.copy(games = unboundedCachedCatalog.games.take(TV_INITIAL_CATALOG_GAME_LIMIT))
+        val cachedGfnThursdayGames = gfnThursdayCatalogGames(cachedMain.orEmpty())
+        val cachedNewlyAddedQuery = isNewlyAddedCatalogQuery(
+            searchQuery = initialCatalogSearch,
+            sortId = initialCatalogSortId,
+            filterIds = initialCatalogFilterIds,
+        )
+        val officialCachedCatalog = if (cachedNewlyAddedQuery && cachedGfnThursdayGames.isNotEmpty()) {
+            catalogResultWithGfnThursdayGames(
+                fallback = unboundedCachedCatalog ?: CatalogBrowseResult(
+                    games = emptyList(),
+                    selectedSortId = NEWLY_ADDED_CATALOG_SORT_ID,
+                ),
+                games = cachedGfnThursdayGames,
+            )
         } else {
             unboundedCachedCatalog
+        }
+        val cachedCatalog = if (androidTvProfile) {
+            officialCachedCatalog?.copy(games = officialCachedCatalog.games.take(TV_INITIAL_CATALOG_GAME_LIMIT))
+        } else {
+            officialCachedCatalog
         }
         val cachedNewlyAdded = if (androidTvProfile) {
             null
@@ -3696,7 +3732,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 val hasGamesToShow = nextGames.isNotEmpty() || nextCatalogResult.games.isNotEmpty()
                 it.copy(
                     games = nextGames,
-                    newlyAddedGames = cachedNewlyAdded?.games?.ifEmpty { it.newlyAddedGames } ?: it.newlyAddedGames,
+                    newlyAddedGames = cachedGfnThursdayGames.ifEmpty {
+                        cachedNewlyAdded?.games?.ifEmpty { it.newlyAddedGames } ?: it.newlyAddedGames
+                    },
                     libraryGames = cachedMergedLibrary.ifEmpty { cachedLibrary ?: it.libraryGames },
                     catalogResult = nextCatalogResult,
                     loadingGames = catalogStillLoadingAfterCache(hasGamesToShow, keepRefreshVisibleWithCache),
@@ -3743,6 +3781,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             runCatching {
                 coroutineScope {
                     val includeSupplementalPublicVariants = !androidTvProfile
+                    val initialNewlyAddedQuery = isNewlyAddedCatalogQuery(
+                        searchQuery = initialCatalogSearch,
+                        sortId = initialCatalogSortId,
+                        filterIds = initialCatalogFilterIds,
+                    )
                     val catalogDeferred = async(Dispatchers.IO) {
                         catalogRepository.browseCatalog(
                             token = token,
@@ -3758,6 +3801,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         ).also { catalog ->
                             _state.update { current ->
                                 if (
+                                    !initialNewlyAddedQuery &&
                                     current.authSession?.user?.userId == session.user.userId &&
                                     current.catalogSearch == initialCatalogSearch &&
                                     current.catalogSortId == initialCatalogSortId &&
@@ -3773,14 +3817,22 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             }
                         }
                     }
-                    // MainV2 is a ~600KB personalized panel response on this TV and then
-                    // triggers additional metadata batches. The bounded catalog already
-                    // contains the launchable TV store data; retain MainV2 on mobile.
-                    val mainDeferred = if (androidTvProfile) {
+                    // MainV2 is a ~600KB personalized panel response. Keep the normal TV path
+                    // bounded, but fetch it for an explicit Latest Added query because its
+                    // GFN Thursday section is NVIDIA's authoritative weekly content.
+                    val mainDeferred: Deferred<Result<List<GameInfo>>>? = if (androidTvProfile && !initialNewlyAddedQuery) {
                         null
                     } else {
                         async(Dispatchers.IO) {
-                            catalogRepository.fetchMainGames(token, baseUrl, includeSupplementalPublicVariants)
+                            try {
+                                Result.success(
+                                    catalogRepository.fetchMainGames(token, baseUrl, includeSupplementalPublicVariants),
+                                )
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (error: Exception) {
+                                Result.failure(error)
+                            }
                         }
                     }
                     val libraryDeferred = async(Dispatchers.IO) {
@@ -3795,14 +3847,17 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                                 }
                             }
                     }
-                    val catalog = catalogDeferred.await()
+                    val providerCatalog = catalogDeferred.await()
+                    val main = mainDeferred?.await()?.getOrElse { error ->
+                        recordDebugEvent("catalog", "Main panel refresh failed; using catalog fallback error=${error.debugMessage()}")
+                        providerCatalog.games
+                    } ?: providerCatalog.games
+                    val gfnThursdayGames = gfnThursdayCatalogGames(main)
                     val newlyAddedCatalog = when {
+                        gfnThursdayGames.isNotEmpty() ->
+                            catalogResultWithGfnThursdayGames(providerCatalog, gfnThursdayGames)
+                        initialNewlyAddedQuery -> providerCatalog
                         androidTvProfile -> null
-                        isNewlyAddedCatalogQuery(
-                            searchQuery = initialCatalogSearch,
-                            sortId = initialCatalogSortId,
-                            filterIds = initialCatalogFilterIds,
-                        ) -> catalog
                         else -> try {
                             withContext(Dispatchers.IO) {
                                 catalogRepository.browseCatalog(
@@ -3822,6 +3877,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             cachedNewlyAdded
                         }
                     }
+                    val catalog = if (initialNewlyAddedQuery) {
+                        newlyAddedCatalog ?: providerCatalog
+                    } else {
+                        providerCatalog
+                    }
                     newlyAddedCatalog?.let { newest ->
                         _state.update { current ->
                             if (current.authSession?.user?.userId == session.user.userId) {
@@ -3831,7 +3891,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             }
                         }
                     }
-                    val main = mainDeferred?.await() ?: catalog.games
                     val library = libraryDeferred.await()
                     val mergedLibrary = withContext(Dispatchers.Default) {
                         mergeKnownLibraryGames(library, main, catalog.games)
@@ -3840,7 +3899,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         "catalog",
                         "Library counts raw=${library.size} main=${main.size} mainOwned=${main.count(::isGameInLibrary)} " +
                             "catalog=${catalog.games.size} catalogOwned=${catalog.games.count(::isGameInLibrary)} " +
-                            "merged=${mergedLibrary.size} activeFilters=${state.value.libraryFilterIds.sorted().joinToString(",").ifBlank { "none" }}",
+                            "gfnThursday=${gfnThursdayGames.size} merged=${mergedLibrary.size} " +
+                            "activeFilters=${state.value.libraryFilterIds.sorted().joinToString(",").ifBlank { "none" }}",
                     )
                     withContext(Dispatchers.IO) {
                         catalogCacheStore.saveMainGames(session.user.userId, baseUrl, main)
@@ -3965,18 +4025,48 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             runCatching {
                 withContext(Dispatchers.IO) {
-                    catalogRepository.browseCatalog(
-                        token = auth.tokens.idToken ?: auth.tokens.accessToken,
-                        providerStreamingBaseUrl = baseUrl,
-                        searchQuery = searchQuery,
-                        sortId = sortId,
-                        filterIds = filterIds,
-                        maxPages = catalogPageLimit(
-                            androidTvProfile = androidTvProfile,
-                            filterIds = filterIds,
-                        ),
-                        includeSupplementalPublicVariants = !androidTvProfile,
-                    )
+                    coroutineScope {
+                        val token = auth.tokens.idToken ?: auth.tokens.accessToken
+                        val providerCatalogDeferred = async {
+                            catalogRepository.browseCatalog(
+                                token = token,
+                                providerStreamingBaseUrl = baseUrl,
+                                searchQuery = searchQuery,
+                                sortId = sortId,
+                                filterIds = filterIds,
+                                maxPages = catalogPageLimit(
+                                    androidTvProfile = androidTvProfile,
+                                    filterIds = filterIds,
+                                ),
+                                includeSupplementalPublicVariants = !androidTvProfile,
+                            )
+                        }
+                        val gfnThursdayDeferred: Deferred<Result<List<GameInfo>>>? = if (newlyAddedQuery) {
+                            async {
+                                try {
+                                    Result.success(
+                                        catalogRepository.fetchGfnThursdayGames(
+                                            token = token,
+                                            providerStreamingBaseUrl = baseUrl,
+                                            includeSupplementalPublicVariants = !androidTvProfile,
+                                        ),
+                                    )
+                                } catch (error: CancellationException) {
+                                    throw error
+                                } catch (error: Exception) {
+                                    Result.failure(error)
+                                }
+                            }
+                        } else {
+                            null
+                        }
+                        val providerCatalog = providerCatalogDeferred.await()
+                        val gfnThursdayGames = gfnThursdayDeferred?.await()?.getOrElse { error ->
+                            recordDebugEvent("catalog", "GFN Thursday refresh failed; using provider sort error=${error.debugMessage()}")
+                            emptyList()
+                        }.orEmpty()
+                        catalogResultWithGfnThursdayGames(providerCatalog, gfnThursdayGames)
+                    }
                 }
             }.onSuccess { result ->
                 val mergedLibrary = withContext(Dispatchers.Default) {

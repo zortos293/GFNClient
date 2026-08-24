@@ -43,7 +43,7 @@ class TouchOverlayLayoutTest {
     }
 
     @Test
-    fun touchAimZoneMapsFingerTravelToRightStickRange() {
+    fun touchStickMappingStillCoversTheFullRangeForActualJoysticks() {
         val halfTravel = touchStickValue(deltaX = 36f, deltaY = -36f, maxTravel = 72f, deadZone = 0f)
         val beyondZone = touchStickValue(deltaX = 144f, deltaY = 0f, maxTravel = 72f, deadZone = 0f)
 

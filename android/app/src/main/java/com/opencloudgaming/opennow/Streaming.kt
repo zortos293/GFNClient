@@ -308,10 +308,6 @@ class NativeStreamClient(
     private var virtualRightStickActive = false
     private var virtualRightStickX = 0
     private var virtualRightStickY = 0
-    /** Separate from touch so a finger on the right stick can temporarily take precedence. */
-    private var gyroscopeRightStickActive = false
-    private var gyroscopeRightStickX = 0
-    private var gyroscopeRightStickY = 0
     private var virtualControllerVisible = false
     @Volatile
     private var touchMouseEnabled = false
@@ -354,6 +350,8 @@ class NativeStreamClient(
     private val gamepadStateBurstLimiter = GamepadStateBurstLimiter(GAMEPAD_STATE_MIN_SEND_INTERVAL_MS)
     private var gamepadStateBurstFlushJob: Job? = null
     private val externalMouseMotionAccumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
+    private val touchAimMouseMotionAccumulator = MouseMotionAccumulator()
+    private val gyroscopeMouseMotionAccumulator = MouseMotionAccumulator()
     private var externalMouseMotionDeviceId = Int.MIN_VALUE
     private var externalMouseMotionSource = 0
     private var inputDropLogged = false
@@ -905,9 +903,6 @@ class NativeStreamClient(
         virtualRightStickActive = false
         virtualRightStickX = 0
         virtualRightStickY = 0
-        gyroscopeRightStickActive = false
-        gyroscopeRightStickX = 0
-        gyroscopeRightStickY = 0
         virtualControllerVisible = false
         physicalControllerConnected = false
         physicalControllerActive = false
@@ -951,6 +946,8 @@ class NativeStreamClient(
         mousePositionValid = false
         mouseSuppressNextAbsoluteDelta = false
         externalMouseMotionAccumulator.reset()
+        touchAimMouseMotionAccumulator.reset()
+        gyroscopeMouseMotionAccumulator.reset()
         externalMouseMotionDeviceId = Int.MIN_VALUE
         externalMouseMotionSource = 0
         inputDropLogged = false
@@ -1705,19 +1702,66 @@ class NativeStreamClient(
         sendBurstLimitedGamepadState()
     }
 
-    fun setGyroscopeRightStick(x: Float, y: Float) {
-        if (controllerMouseEmulationActive) {
-            gyroscopeRightStickActive = false
-            gyroscopeRightStickX = 0
-            gyroscopeRightStickY = 0
-            return
-        }
-        val normalizedX = x.takeIf(Float::isFinite)?.coerceIn(-1f, 1f) ?: 0f
-        val normalizedY = y.takeIf(Float::isFinite)?.coerceIn(-1f, 1f) ?: 0f
-        gyroscopeRightStickActive = normalizedX != 0f || normalizedY != 0f
-        gyroscopeRightStickX = normalizeToInt16(normalizedX)
-        gyroscopeRightStickY = normalizeToInt16(-normalizedY)
-        sendBurstLimitedGamepadState()
+    fun beginTouchAimMouseGesture() = touchAimMouseMotionAccumulator.reset()
+
+    fun sendTouchAimMouseMove(dx: Float, dy: Float, eventTimeMs: Long): Boolean =
+        sendAccumulatedMouseMove(
+            accumulator = touchAimMouseMotionAccumulator,
+            dx = dx,
+            dy = dy,
+            eventTimeMs = eventTimeMs,
+            sensitivity = settings.mouseSensitivity,
+            acceleration = settings.mouseAcceleration,
+        )
+
+    fun endTouchAimMouseGesture(eventTimeMs: Long) {
+        flushAccumulatedMouseMove(touchAimMouseMotionAccumulator, eventTimeMs)
+    }
+
+    fun beginGyroscopeMouseAim() = gyroscopeMouseMotionAccumulator.reset()
+
+    fun sendGyroscopeMouseMove(dx: Float, dy: Float, eventTimeMs: Long): Boolean =
+        sendAccumulatedMouseMove(
+            accumulator = gyroscopeMouseMotionAccumulator,
+            dx = dx,
+            dy = dy,
+            eventTimeMs = eventTimeMs,
+            sensitivity = 1f,
+            acceleration = 1,
+        )
+
+    fun endGyroscopeMouseAim(eventTimeMs: Long) {
+        flushAccumulatedMouseMove(gyroscopeMouseMotionAccumulator, eventTimeMs)
+    }
+
+    private fun sendAccumulatedMouseMove(
+        accumulator: MouseMotionAccumulator,
+        dx: Float,
+        dy: Float,
+        eventTimeMs: Long,
+        sensitivity: Float,
+        acceleration: Int,
+    ): Boolean {
+        val delta = accumulator.add(
+            dx = dx,
+            dy = dy,
+            eventTimeMs = eventTimeMs,
+            sensitivity = sensitivity,
+            acceleration = acceleration,
+        ) ?: return true
+        return sendRawMouseMove(delta.dx, delta.dy)
+    }
+
+    private fun flushAccumulatedMouseMove(accumulator: MouseMotionAccumulator, eventTimeMs: Long) {
+        accumulator.add(
+            dx = 0f,
+            dy = 0f,
+            eventTimeMs = eventTimeMs,
+            sensitivity = 1f,
+            acceleration = 1,
+            force = true,
+        )?.let { delta -> sendRawMouseMove(delta.dx, delta.dy) }
+        accumulator.reset()
     }
 
     fun setVirtualControllerVisible(visible: Boolean) {
@@ -3470,7 +3514,6 @@ class NativeStreamClient(
                     "leftSource=${if (virtualLeftStickActive) "virtual" else "physical"} " +
                     "rightSource=${when {
                         virtualRightStickActive -> "virtual"
-                        gyroscopeRightStickActive -> "gyroscope"
                         else -> "physical"
                     }} " +
                     inputChannelStateSummary()
@@ -3520,7 +3563,6 @@ class NativeStreamClient(
     private fun effectiveRightStickX(): Int =
         when {
             virtualRightStickActive -> virtualRightStickX
-            gyroscopeRightStickActive -> gyroscopeRightStickX
             controllerMouseAssistActive -> 0
             else -> lastRightStickX
         }
@@ -3528,7 +3570,6 @@ class NativeStreamClient(
     private fun effectiveRightStickY(): Int =
         when {
             virtualRightStickActive -> virtualRightStickY
-            gyroscopeRightStickActive -> gyroscopeRightStickY
             controllerMouseAssistActive -> 0
             else -> lastRightStickY
         }
@@ -3550,8 +3591,7 @@ class NativeStreamClient(
             lastRightStickX != 0 ||
             lastRightStickY != 0 ||
             virtualLeftStickActive ||
-            virtualRightStickActive ||
-            gyroscopeRightStickActive
+            virtualRightStickActive
 
     private fun hasActiveControllerInput(): Boolean =
         physicalButtons != 0 ||

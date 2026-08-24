@@ -2,8 +2,12 @@ package com.opencloudgaming.opennow
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /**
  * Everything the on-screen controller needs to paint one control.
@@ -28,6 +32,12 @@ internal data class TouchSkinColors(
     val stickKnobBorder: Color?,
     /** [Color.Transparent] leaves the d-pad cross unfilled and outline-only. */
     val dpadFill: Color,
+    /**
+     * The reader's opacity slider, kept alongside the palette so the shading a [TouchSkinForm] adds
+     * — gloss, glow, the rim on a domed cap — fades with everything else instead of surviving at
+     * full strength on a controller the reader asked to be nearly invisible.
+     */
+    val opacity: Float = 1f,
 ) {
     fun fillFor(pressed: Boolean): Color = if (pressed) pressedFill else fill
 
@@ -36,6 +46,118 @@ internal data class TouchSkinColors(
     fun borderWidthFor(pressed: Boolean): Dp = if (pressed) pressedBorderWidth else borderWidth
 
     fun glyphFor(pressed: Boolean): Color = if (pressed) pressedGlyph else glyph
+
+    /** White at [strength], faded by the reader's slider. Used for gloss and rim highlights. */
+    fun sheen(strength: Float): Color = Color.White.copy(alpha = (opacity * strength).coerceIn(0f, 1f))
+}
+
+/** The outline of a face button, a thumb-stick click, or a start/select cap. */
+internal enum class TouchCapShape {
+    Circle,
+
+    /** A rounded square; how round is [TouchSkinForm.capCornerPercent]. */
+    Rounded,
+
+    /** Flat-topped six-sided cap — the label still sits in the wide middle. */
+    Hexagon,
+}
+
+/** How the four directions of the d-pad are drawn. The hit test is angular in every case. */
+internal enum class TouchDpadShape {
+    /** One continuous plus, the arms joined at the hub. */
+    Cross,
+
+    /** Four separate keys with a gap between them; how round is [TouchSkinForm.dpadCornerPercent]. */
+    Segmented,
+
+    /** A single round pad with the directions grooved into it and pressed quadrants lit as pie slices. */
+    Disc,
+
+    /** Four triangular wedges radiating from a gap at the hub — the blade is its own arrowhead. */
+    Blades,
+}
+
+/** How a stick's track and its travelling cap are drawn. */
+internal enum class TouchStickShape {
+    /** A hairline ring and a plain disc. */
+    Ring,
+
+    /** A recessed bowl with a domed cap. */
+    Dish,
+
+    /** An open sight: dashed ring, axis ticks, and a cap you can see the game through. */
+    Crosshair,
+
+    /** A six-sided gate matching a hexagonal cap set. */
+    Hex,
+
+    /** A restrictor plate: an octagon the cap corners into, with a square-ish cap. */
+    Gate,
+
+    /** A ball top on a visible shaft. */
+    Ball,
+}
+
+/** How the shoulders and the thumb-click pills are cut. */
+internal enum class TouchShoulderShape {
+    Pill,
+    Slab,
+
+    /** Points at both ends. */
+    Wedge,
+}
+
+/** The arrowheads a d-pad marks its directions with. [TouchDpadShape.Blades] needs none. */
+internal enum class TouchDpadArrow {
+    Triangle,
+    Chevron,
+    None,
+}
+
+/**
+ * The silhouette half of a skin.
+ *
+ * A skin that only recolours the same shapes is not a skin — every style here changes what the
+ * controls actually *are*: the cut of a cap, whether the d-pad is one cross or four keys, what the
+ * stick travels inside. [touchSkinColors] then decides how that silhouette is painted.
+ */
+internal data class TouchSkinForm(
+    val capShape: TouchCapShape,
+    /** Corner radius of a [TouchCapShape.Rounded] cap, as a percentage of its half-extent. */
+    val capCornerPercent: Int = 30,
+    /** A second ring set inside the cap edge — the plunger rim of an arcade button. */
+    val capRim: Boolean = false,
+    val dpadShape: TouchDpadShape,
+    /** Corner radius of a [TouchDpadShape.Segmented] key; 100 makes the keys round. */
+    val dpadCornerPercent: Int = 24,
+    val dpadArrow: TouchDpadArrow = TouchDpadArrow.Triangle,
+    val stickShape: TouchStickShape,
+    /** Multiplies the reader's own knob-size slider so a ball top can be a ball top. */
+    val stickKnobScale: Float = 1f,
+    val shoulderShape: TouchShoulderShape,
+    /** Bloom drawn outside the edge. [Dp.Unspecified]-free: 0.dp draws none. */
+    val glow: Dp = 0.dp,
+    /** Strength of the highlight sweep that makes a cap read as domed. 0f draws none. */
+    val gloss: Float = 0f,
+    /** Caps shrink to this fraction under a finger. 1f keeps them still. */
+    val pressScale: Float = 1f,
+    val glyphFamily: FontFamily = FontFamily.Default,
+    val glyphWeight: FontWeight = FontWeight.SemiBold,
+    val glyphLetterSpacing: TextUnit = 0.sp,
+    val glyphScale: Float = 1f,
+    val glyphUppercase: Boolean = false,
+) {
+    /** What the styles are actually distinguished by — see `everySkinHasItsOwnSilhouette`. */
+    val silhouette: List<Any>
+        get() = listOf(
+            capShape,
+            capCornerPercent,
+            capRim,
+            dpadShape,
+            dpadCornerPercent,
+            stickShape,
+            shoulderShape,
+        )
 }
 
 /** Used when [AndroidTouchSettings.touchSkinTint] is unset. */
@@ -43,6 +165,7 @@ internal fun defaultTouchSkinAccent(style: TouchControllerStyle): Color = when (
     TouchControllerStyle.Neon -> Color(0xff42c9ff)
     TouchControllerStyle.Retro -> Color(0xffffb020)
     TouchControllerStyle.Frost -> Color(0xffdff1ff)
+    TouchControllerStyle.Arcade -> Color(0xffff4d5e)
     TouchControllerStyle.V1, TouchControllerStyle.V2, TouchControllerStyle.Contrast -> Color.White
 }
 
@@ -50,6 +173,98 @@ internal fun touchSkinAccent(settings: AndroidTouchSettings): Color =
     settings.touchSkinTint
         ?.let { Color(it.r.coerceIn(0, 255), it.g.coerceIn(0, 255), it.b.coerceIn(0, 255)) }
         ?: defaultTouchSkinAccent(settings.touchControllerStyle)
+
+/**
+ * The shapes a style is built from. Independent of the reader's opacity and tint, which only ever
+ * touch [touchSkinColors] — the silhouette does not move when someone fades the controller out.
+ */
+internal fun touchSkinForm(style: TouchControllerStyle): TouchSkinForm = when (style) {
+    // The original, kept exactly as it was drawn: this is the one people already have muscle
+    // memory for, so it gains no dome, no glow and no press travel.
+    TouchControllerStyle.V1 -> TouchSkinForm(
+        capShape = TouchCapShape.Circle,
+        dpadShape = TouchDpadShape.Cross,
+        stickShape = TouchStickShape.Ring,
+        shoulderShape = TouchShoulderShape.Pill,
+    )
+    // A heads-up display rather than a gamepad: nothing is filled, the d-pad is a grooved ring and
+    // the stick is a sight you aim through.
+    TouchControllerStyle.V2 -> TouchSkinForm(
+        capShape = TouchCapShape.Circle,
+        dpadShape = TouchDpadShape.Disc,
+        dpadArrow = TouchDpadArrow.Chevron,
+        stickShape = TouchStickShape.Crosshair,
+        stickKnobScale = 0.86f,
+        shoulderShape = TouchShoulderShape.Pill,
+        glyphWeight = FontWeight.Medium,
+        glyphLetterSpacing = 1.4.sp,
+        glyphScale = 0.94f,
+    )
+    // Hexagons, blades and bloom.
+    TouchControllerStyle.Neon -> TouchSkinForm(
+        capShape = TouchCapShape.Hexagon,
+        dpadShape = TouchDpadShape.Blades,
+        dpadArrow = TouchDpadArrow.None,
+        stickShape = TouchStickShape.Hex,
+        shoulderShape = TouchShoulderShape.Wedge,
+        glow = 7.dp,
+        pressScale = 0.96f,
+        glyphWeight = FontWeight.Bold,
+        glyphLetterSpacing = 1.8.sp,
+        glyphUppercase = true,
+    )
+    // Soft glass: squircle caps, a single round pad, a stick sunk into a bowl.
+    TouchControllerStyle.Frost -> TouchSkinForm(
+        capShape = TouchCapShape.Rounded,
+        capCornerPercent = 46,
+        dpadShape = TouchDpadShape.Disc,
+        stickShape = TouchStickShape.Dish,
+        shoulderShape = TouchShoulderShape.Slab,
+        gloss = 0.30f,
+        pressScale = 0.97f,
+        glyphWeight = FontWeight.Medium,
+    )
+    // Chunky and unambiguous: every control is a separate block with a rim around it.
+    TouchControllerStyle.Contrast -> TouchSkinForm(
+        capShape = TouchCapShape.Circle,
+        capRim = true,
+        dpadShape = TouchDpadShape.Segmented,
+        dpadCornerPercent = 14,
+        stickShape = TouchStickShape.Dish,
+        shoulderShape = TouchShoulderShape.Slab,
+        glyphWeight = FontWeight.Black,
+        glyphScale = 1.08f,
+    )
+    // A handheld from before analogue sticks: square keys, a restrictor gate, a monospaced legend.
+    TouchControllerStyle.Retro -> TouchSkinForm(
+        capShape = TouchCapShape.Rounded,
+        capCornerPercent = 26,
+        dpadShape = TouchDpadShape.Segmented,
+        dpadCornerPercent = 22,
+        stickShape = TouchStickShape.Gate,
+        shoulderShape = TouchShoulderShape.Slab,
+        gloss = 0.20f,
+        pressScale = 0.94f,
+        glyphFamily = FontFamily.Monospace,
+        glyphWeight = FontWeight.Bold,
+        glyphLetterSpacing = 0.8.sp,
+        glyphUppercase = true,
+        glyphScale = 0.92f,
+    )
+    // A cabinet panel: domed convex buttons on chrome rims, round d-pad keys, a ball top on a shaft.
+    TouchControllerStyle.Arcade -> TouchSkinForm(
+        capShape = TouchCapShape.Circle,
+        capRim = true,
+        dpadShape = TouchDpadShape.Segmented,
+        dpadCornerPercent = 100,
+        stickShape = TouchStickShape.Ball,
+        stickKnobScale = 1.18f,
+        shoulderShape = TouchShoulderShape.Pill,
+        gloss = 0.42f,
+        pressScale = 0.90f,
+        glyphWeight = FontWeight.Bold,
+    )
+}
 
 /**
  * [opacity] is the reader's own slider and multiplies every alpha here, so a skin's relative
@@ -64,7 +279,7 @@ internal fun touchSkinColors(
     fun white(a: Float) = Color.White.copy(alpha = alpha * a)
     fun black(a: Float) = Color.Black.copy(alpha = alpha * a)
     fun tint(a: Float) = accent.copy(alpha = alpha * a)
-    return when (style) {
+    val palette = when (style) {
         TouchControllerStyle.V1 -> TouchSkinColors(
             fill = black(0.6f),
             pressedFill = white(0.2f),
@@ -150,11 +365,31 @@ internal fun touchSkinColors(
             stickKnobBorder = black(0.6f),
             dpadFill = tint(0.82f),
         )
+        TouchControllerStyle.Arcade -> TouchSkinColors(
+            fill = tint(0.88f),
+            pressedFill = tint(0.52f),
+            // The rim is chrome, not ink — it is what makes the cap read as a convex plunger.
+            border = white(0.82f),
+            pressedBorder = white(1f),
+            borderWidth = 2.dp,
+            pressedBorderWidth = 2.dp,
+            glyph = black(0.8f),
+            pressedGlyph = black(1f),
+            stickTrack = black(0.55f),
+            stickKnob = tint(0.95f),
+            stickKnobBorder = white(0.75f),
+            dpadFill = tint(0.88f),
+        )
     }
+    return palette.copy(opacity = alpha)
 }
 
 internal val LocalTouchSkin = androidx.compose.runtime.staticCompositionLocalOf {
     touchSkinColors(TouchControllerStyle.V1, opacity = 0.82f, accent = Color.White)
+}
+
+internal val LocalTouchSkinForm = androidx.compose.runtime.staticCompositionLocalOf {
+    touchSkinForm(TouchControllerStyle.V1)
 }
 
 /** Off blanks the caps; the d-pad arrowheads stay, since a blank cross is unusable. */
@@ -165,12 +400,13 @@ internal val LocalTouchStickKnobScale = androidx.compose.runtime.staticCompositi
 
 @Composable
 internal fun touchControllerStyleLabel(style: TouchControllerStyle): String = when (style) {
-    TouchControllerStyle.V1 -> "Solid"
+    TouchControllerStyle.V1 -> "Classic"
     TouchControllerStyle.V2 -> "Outline"
     TouchControllerStyle.Neon -> "Neon"
     TouchControllerStyle.Frost -> "Frost"
     TouchControllerStyle.Contrast -> "High contrast"
     TouchControllerStyle.Retro -> "Retro"
+    TouchControllerStyle.Arcade -> "Arcade"
 }
 
 internal fun nextTouchControllerStyle(current: TouchControllerStyle): TouchControllerStyle {

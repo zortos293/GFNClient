@@ -554,8 +554,12 @@ private fun LocalAppTile(
                     .onPreviewKeyEvent { event ->
                         when {
                             !focused -> false
-                            isTvActivateKey(event) -> {
-                                launch()
+                            // Consume both halves of controller activation here. Letting
+                            // combinedClickable observe only key-down leaves its long-press armed
+                            // after key-up launches an external activity; it can then open the
+                            // removal prompt while OpenNOW is in the background.
+                            isTvActivationKey(event.key) -> {
+                                if (event.type == KeyEventType.KeyUp) launch()
                                 true
                             }
                             // Y removes, the same button the catalogue cards use for their

@@ -299,6 +299,8 @@ internal const val MAX_CATALOG_REQUEST_PAGES = 50
 private const val DEFAULT_SORT_ID = DEFAULT_CATALOG_SORT_ID
 private const val POPULAR_SORT_ORDER = "itemMetadata.relevance:DESC,sortName:ASC"
 private const val LAST_PLAYED_SORT_ORDER = "variants.gfn.library.lastPlayedDate:DESC,sortName:ASC"
+private const val GFN_THURSDAY_SECTION_TITLE = "GFN Thursday"
+private const val GFN_THURSDAY_SECTION_ID_PREFIX = "section-cbc43218-6ad6-4ff3-8538-bc84f90c796c-"
 private const val LIBRARY_APPS_FETCH_COUNT = 200
 private const val MAX_LIBRARY_APPS_PAGES = 25
 private const val LIBRARY_APPS_SORT_ORDER =
@@ -1822,6 +1824,31 @@ internal fun applyCatalogSortGuarantees(
         games
     }
 
+/** The MAIN panel is NVIDIA's authoritative weekly list; generic catalogue sort is only fallback. */
+internal fun gfnThursdayCatalogGames(games: List<GameInfo>): List<GameInfo> =
+    games.filter { game ->
+        game.catalogSectionTitle?.trim()?.equals(GFN_THURSDAY_SECTION_TITLE, ignoreCase = true) == true ||
+            game.catalogSectionId?.startsWith(GFN_THURSDAY_SECTION_ID_PREFIX) == true
+    }
+
+internal fun catalogResultWithGfnThursdayGames(
+    fallback: CatalogBrowseResult,
+    games: List<GameInfo>,
+): CatalogBrowseResult {
+    if (games.isEmpty()) return fallback
+    return fallback.copy(
+        games = games,
+        numberReturned = games.size,
+        numberSupported = games.size,
+        totalCount = games.size,
+        hasNextPage = false,
+        endCursor = null,
+        searchQuery = "",
+        selectedSortId = NEWLY_ADDED_CATALOG_SORT_ID,
+        selectedFilterIds = emptyList(),
+    )
+}
+
 class GfnCatalogRepository(
     private val http: OkHttpClient = defaultHttpClient(),
     private val localeProvider: () -> String = { DEFAULT_LOCALE },
@@ -1849,6 +1876,21 @@ class GfnCatalogRepository(
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
         val panels = fetchPanels(token, listOf("MAIN"), vpcId, withLibraryTime = false)
         val games = enrichGamesWithMetadata(token, vpcId, flattenPanels(panels))
+        return if (includeSupplementalPublicVariants) mergePublicGameVariants(games, fetchPublicGames()) else games
+    }
+
+    suspend fun fetchGfnThursdayGames(
+        token: String,
+        providerStreamingBaseUrl: String,
+        includeSupplementalPublicVariants: Boolean = true,
+    ): List<GameInfo> {
+        val vpcId = getVpcId(token, providerStreamingBaseUrl)
+        val panels = fetchPanels(token, listOf("MAIN"), vpcId, withLibraryTime = false)
+        val games = enrichGamesWithMetadata(
+            token = token,
+            vpcId = vpcId,
+            games = gfnThursdayCatalogGames(flattenPanels(panels)),
+        )
         return if (includeSupplementalPublicVariants) mergePublicGameVariants(games, fetchPublicGames()) else games
     }
 

@@ -227,30 +227,35 @@ enum class HapticsOutputPreference {
 /**
  * A skin for the on-screen controller.
  *
+ * A skin is a silhouette as well as a palette: the shapes come from `touchSkinForm` and the paint
+ * from `touchSkinColors`, so two skins never differ by colour alone. Adding one is an entry here
+ * plus a branch in each of those two functions.
+ *
  * [V1] and [V2] keep their original names because they are already on disk in saved settings; the
- * labels people see come from `touchControllerStyleLabel`. Everything a skin decides lives in
- * [touchSkinColors] rather than in the button composables, so adding a skin is one entry here plus
- * one branch there.
+ * labels people see come from `touchControllerStyleLabel`.
  */
 @Serializable
 enum class TouchControllerStyle {
-    /** The original: filled black caps with a hairline. */
+    /** Classic: round filled caps, a one-piece d-pad cross, a ring stick. */
     V1,
 
-    /** Outline-only, so the game shows through the controls. */
+    /** A heads-up display — unfilled caps, a grooved round pad, a crosshair stick. */
     V2,
 
-    /** Outline in the accent colour, filling with it under a finger. */
+    /** Hexagonal caps, blade d-pad and a hex gate, all bloomed in the accent colour. */
     Neon,
 
-    /** Frosted white caps — legible over dark scenes without blacking them out. */
+    /** Frosted squircle caps, a soft round pad and a stick sunk into a bowl. */
     Frost,
 
-    /** Opaque black on a heavy white outline, for bright or busy games. */
+    /** Rimmed blocks and separated d-pad keys, for bright or busy games. */
     Contrast,
 
-    /** Solid accent-coloured caps with dark glyphs. */
+    /** A pre-analogue handheld: square keys, a restrictor gate, a monospaced legend. */
     Retro,
+
+    /** A cabinet panel: domed plungers on chrome rims, round keys, a ball top on a shaft. */
+    Arcade,
 }
 
 @Serializable

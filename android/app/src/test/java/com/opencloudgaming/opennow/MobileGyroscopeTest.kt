@@ -6,7 +6,7 @@ import org.junit.Test
 
 class MobileGyroscopeTest {
     @Test
-    fun portraitMapsDeviceYawAndPitchToTheRightStick() {
+    fun portraitMapsDeviceYawAndPitchToScreenRelativeAngularVelocity() {
         val horizontal = gyroscopeAimForScreen(
             rotation = Surface.ROTATION_0,
             angularVelocityX = 0f,
@@ -26,10 +26,10 @@ class MobileGyroscopeTest {
             invertVertical = false,
         )
 
-        assertEquals(1f, horizontal.x, 0.001f)
+        assertEquals(2.5f, horizontal.x, 0.001f)
         assertEquals(0f, horizontal.y, 0.001f)
         assertEquals(0f, vertical.x, 0.001f)
-        assertEquals(1f, vertical.y, 0.001f)
+        assertEquals(2.5f, vertical.y, 0.001f)
     }
 
     @Test
@@ -44,7 +44,7 @@ class MobileGyroscopeTest {
             invertVertical = false,
         )
 
-        assertEquals(1f, sample.x, 0.001f)
+        assertEquals(2.5f, sample.x, 0.001f)
         assertEquals(0f, sample.y, 0.001f)
     }
 
@@ -73,5 +73,22 @@ class MobileGyroscopeTest {
         assertEquals(0f, quiet.y, 0.001f)
         assertEquals(inverted.x, inverted.y, 0.001f)
         assertEquals(true, inverted.x < 0f)
+    }
+
+    @Test
+    fun angularVelocityIntegratesIntoMouseDeltaAndCapsResumeGaps() {
+        val normal = gyroscopeMouseDelta(
+            angularVelocity = androidx.compose.ui.geometry.Offset(2f, -1f),
+            elapsedSeconds = 0.01f,
+        )
+        val resumed = gyroscopeMouseDelta(
+            angularVelocity = androidx.compose.ui.geometry.Offset(2f, -1f),
+            elapsedSeconds = 1f,
+        )
+
+        assertEquals(10f, normal.x, 0.001f)
+        assertEquals(-5f, normal.y, 0.001f)
+        assertEquals(50f, resumed.x, 0.001f)
+        assertEquals(-25f, resumed.y, 0.001f)
     }
 }

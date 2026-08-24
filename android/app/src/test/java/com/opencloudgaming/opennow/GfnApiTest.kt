@@ -58,6 +58,58 @@ class GfnApiTest {
     }
 
     @Test
+    fun latestAddedUsesTheAuthoritativeGfnThursdaySectionInPanelOrder() {
+        val first = GameInfo(
+            id = "first",
+            title = "First weekly game",
+            catalogSectionTitle = "GFN Thursday",
+        )
+        val stale = GameInfo(
+            id = "stale",
+            title = "Old generic-sort game",
+            catalogSectionTitle = "Featured",
+        )
+        val second = GameInfo(
+            id = "second",
+            title = "Second weekly game",
+            catalogSectionTitle = "Localized weekly title",
+            catalogSectionId = "section-cbc43218-6ad6-4ff3-8538-bc84f90c796c-468.0",
+        )
+
+        val weekly = gfnThursdayCatalogGames(listOf(first, stale, second))
+        val result = catalogResultWithGfnThursdayGames(
+            fallback = CatalogBrowseResult(
+                games = listOf(stale),
+                numberReturned = 120,
+                numberSupported = 6_000,
+                totalCount = 6_000,
+                hasNextPage = true,
+                endCursor = "cursor",
+                selectedSortId = "last_added",
+            ),
+            games = weekly,
+        )
+
+        assertEquals(listOf("first", "second"), result.games.map(GameInfo::id))
+        assertEquals(2, result.numberReturned)
+        assertEquals(2, result.numberSupported)
+        assertEquals(2, result.totalCount)
+        assertFalse(result.hasNextPage)
+        assertNull(result.endCursor)
+        assertEquals(NEWLY_ADDED_CATALOG_SORT_ID, result.selectedSortId)
+    }
+
+    @Test
+    fun latestAddedFallsBackToProviderSortWhenThursdaySectionIsUnavailable() {
+        val fallback = CatalogBrowseResult(
+            games = listOf(GameInfo(id = "fallback", title = "Fallback")),
+            selectedSortId = NEWLY_ADDED_CATALOG_SORT_ID,
+        )
+
+        assertEquals(fallback, catalogResultWithGfnThursdayGames(fallback, emptyList()))
+    }
+
+    @Test
     fun shieldDetectionRequiresAnNvidiaShieldAndroidTv() {
         assertTrue(isNvidiaShieldTvDevice(true, "NVIDIA", "SHIELD Android TV"))
         assertTrue(isNvidiaShieldTvDevice(true, " nvidia ", "Nvidia Shield"))

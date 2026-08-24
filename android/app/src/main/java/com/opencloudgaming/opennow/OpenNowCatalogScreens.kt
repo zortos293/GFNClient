@@ -1792,7 +1792,6 @@ private fun StoreStartRails(
                 games = newlyAddedGames,
                 excludedGames = startRails.allGames,
             )
-                .take(HERO_CAROUSEL_PAGE_LIMIT)
         } else {
             emptyList()
         }
@@ -2127,7 +2126,7 @@ private fun StoreComingNextCarousel(
                         Column(
                             Modifier
                                 .align(Alignment.BottomStart)
-                                .fillMaxWidth(0.66f)
+                                .fillMaxWidth(0.74f)
                                 .padding(18.dp),
                             verticalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
@@ -2139,20 +2138,20 @@ private fun StoreComingNextCarousel(
                                     // glance, so TV gets the display scale.
                                     tvProfile -> MaterialTheme.typography.displaySmall
                                     landscape -> MaterialTheme.typography.headlineSmall
-                                    else -> MaterialTheme.typography.headlineMedium
+                                    else -> MaterialTheme.typography.headlineSmall
                                 },
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            Text(
-                                listOfNotNull(featured.publisherName, displayStoresForGame(featured).takeIf { it.isNotBlank() })
-                                    .distinct()
-                                    .joinToString("  •  "),
-                                color = Color.White.copy(alpha = 0.72f),
-                                style = MaterialTheme.typography.labelMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            storeHeroSubtitle(featured)?.let { subtitle ->
+                                Text(
+                                    subtitle,
+                                    color = Color.White.copy(alpha = 0.72f),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                         if (shouldShowCatalogFavoriteIcon(settings)) {
                             FavoriteIconButton(
@@ -2491,8 +2490,12 @@ internal fun newlyAddedStoreHeroGames(
     val excludedKeys = excludedGames.mapTo(mutableSetOf(), ::storeRailGameKey)
     return distinctStoreGames(games)
         .filterNot { storeRailGameKey(it) in excludedKeys }
-        .take(STORE_RAIL_GAME_LIMIT)
+        .take(HERO_CAROUSEL_PAGE_LIMIT)
 }
+
+/** The hero identifies the game without repeating its storefront availability. */
+internal fun storeHeroSubtitle(game: GameInfo): String? =
+    game.publisherName?.trim()?.takeIf(String::isNotEmpty)
 
 private fun GameInfo.recentPlaySortKey(): String? =
     listOfNotNull(
@@ -2516,8 +2519,8 @@ private const val STORE_RAIL_GAME_LIMIT = 14
 /** Recently-played is a short list by nature — padding it out defeats the point of the rail. */
 private const val CONTINUE_PLAYING_RAIL_LIMIT = 12
 
-/** Five hero pages, five indicator pills. Fourteen was a rash of dots. */
-private const val HERO_CAROUSEL_PAGE_LIMIT = 5
+/** Six hero pages keep the weekly selection varied without turning the progress row into a rash of dots. */
+private const val HERO_CAROUSEL_PAGE_LIMIT = 6
 
 private const val HERO_CAROUSEL_ADVANCE_MS = 6_000L
 

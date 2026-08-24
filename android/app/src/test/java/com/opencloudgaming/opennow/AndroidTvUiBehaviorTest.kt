@@ -2,6 +2,7 @@ package com.opencloudgaming.opennow
 
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -203,6 +204,14 @@ class AndroidTvUiBehaviorTest {
                 localAppsEnabled = true,
             ),
         )
+    }
+
+    @Test
+    fun tvActivationKeysCanBeConsumedAcrossBothKeyPhases() {
+        assertTrue(isTvActivationKey(Key.DirectionCenter))
+        assertTrue(isTvActivationKey(Key.Enter))
+        assertTrue(isTvActivationKey(Key.NumPadEnter))
+        assertFalse(isTvActivationKey(Key.ButtonY))
     }
 
     @Test

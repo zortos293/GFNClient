@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -42,8 +41,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -53,9 +50,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -115,9 +110,11 @@ internal fun TouchOverlay(
     val skin = remember(touch.touchControllerStyle, touch.opacity, touch.touchSkinTint) {
         touchSkinColors(touch.touchControllerStyle, touch.opacity, touchSkinAccent(touch))
     }
+    val skinForm = remember(touch.touchControllerStyle) { touchSkinForm(touch.touchControllerStyle) }
     CompositionLocalProvider(
         LocalTouchControllerStyle provides touch.touchControllerStyle,
         LocalTouchSkin provides skin,
+        LocalTouchSkinForm provides skinForm,
         LocalTouchButtonLabels provides touch.touchButtonLabels,
         LocalTouchStickKnobScale provides touch.stickKnobScale,
     ) {
@@ -224,7 +221,6 @@ private fun PortraitTouchControls(
                 id = "portrait-aim-zone",
                 client = client,
                 opacity = opacity,
-                deadZone = joystickDeadZone,
                 enabled = !layoutEditing,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -251,7 +247,6 @@ private fun PortraitTouchControls(
                 client = client,
                 width = triggerWidth,
                 height = bumperHeight,
-                shape = RoundedCornerShape(50),
                 onPressTone = onButtonTone,
             )
         }
@@ -331,7 +326,6 @@ private fun PortraitTouchControls(
                 client = client,
                 width = triggerWidth,
                 height = bumperHeight,
-                shape = RoundedCornerShape(50),
                 onPressTone = onButtonTone,
             )
         }
@@ -455,7 +449,6 @@ private fun BoxScope.LandscapeTouchControls(
                 id = "landscape-aim-zone",
                 client = client,
                 opacity = opacity,
-                deadZone = joystickDeadZone,
                 enabled = !layoutEditing,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -481,7 +474,6 @@ private fun BoxScope.LandscapeTouchControls(
                 client = client,
                 width = triggerWidth,
                 height = bumperHeight,
-                shape = RoundedCornerShape(50),
                 onPressTone = onButtonTone,
             )
         }
@@ -559,7 +551,6 @@ private fun BoxScope.LandscapeTouchControls(
                 client = client,
                 width = triggerWidth,
                 height = bumperHeight,
-                shape = RoundedCornerShape(50),
                 onPressTone = onButtonTone,
             )
         }
@@ -781,19 +772,17 @@ private fun LockZoneAimSurface(
     id: String,
     client: NativeStreamClient,
     opacity: Float,
-    deadZone: Float,
     enabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
-    val currentOnChange by rememberUpdatedState(client::setVirtualRightStick)
     var aimAnchor by remember { mutableStateOf<Offset?>(null) }
     var aimOffset by remember { mutableStateOf(Offset.Zero) }
     val maxTravelPx = with(density) { LOCK_ZONE_MAX_TRAVEL_DP.dp.toPx() }
 
     DisposableEffect(client, id) {
         onDispose {
-            client.setVirtualRightStick(0f, 0f)
+            client.endTouchAimMouseGesture(android.os.SystemClock.uptimeMillis())
             NativeStreamInputRouter.clearTouchControllerPassthroughBound(id)
         }
     }
@@ -810,36 +799,40 @@ private fun LockZoneAimSurface(
                     bounds.bottom.roundToInt(),
                 )
             }
-            .pointerInput(client, deadZone, enabled, maxTravelPx) {
+            .pointerInput(client, enabled, maxTravelPx) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     val anchor = down.position
+                    var previousPosition = anchor
+                    var lastEventTimeMs = down.uptimeMillis
                     aimAnchor = anchor
                     aimOffset = Offset.Zero
-
-                    fun updateAim(position: Offset) {
-                        val delta = position - anchor
-                        val value = touchStickValue(delta.x, delta.y, maxTravelPx, deadZone)
-                        currentOnChange(value.x, value.y)
-                        aimOffset = clampStickOffset(delta, maxTravelPx)
-                    }
+                    client.beginTouchAimMouseGesture()
 
                     try {
-                        updateAim(down.position)
                         down.consume()
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             if (!change.pressed) {
+                                lastEventTimeMs = change.uptimeMillis
                                 change.consume()
                                 break
                             }
-                            updateAim(change.position)
+                            val relativeDelta = change.position - previousPosition
+                            client.sendTouchAimMouseMove(
+                                dx = relativeDelta.x,
+                                dy = relativeDelta.y,
+                                eventTimeMs = change.uptimeMillis,
+                            )
+                            previousPosition = change.position
+                            lastEventTimeMs = change.uptimeMillis
+                            aimOffset = clampStickOffset(change.position - anchor, maxTravelPx)
                             change.consume()
                         }
                     } finally {
-                        currentOnChange(0f, 0f)
+                        client.endTouchAimMouseGesture(lastEventTimeMs)
                         aimAnchor = null
                         aimOffset = Offset.Zero
                     }
@@ -921,7 +914,6 @@ private fun VirtualStick(
     val currentOnChange by rememberUpdatedState(onChange)
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
     var baseOffset by remember { mutableStateOf(Offset.Zero) }
-    val skin = LocalTouchSkin.current
 
     DisposableEffect(client) {
         onDispose {
@@ -969,33 +961,7 @@ private fun VirtualStick(
             },
         contentAlignment = Alignment.Center,
     ) {
-        val knobBorderModifier = skin.stickKnobBorder
-            ?.let { Modifier.border(1.dp, it, CircleShape) }
-            ?: Modifier
-        Box(
-            Modifier
-                .size(diameter)
-                .graphicsLayer {
-                    translationX = baseOffset.x
-                    translationY = baseOffset.y
-                }
-                .clip(CircleShape)
-                .background(Color.Transparent)
-                .border(1.dp, skin.stickTrack, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                Modifier
-                    .size(diameter * LocalTouchStickKnobScale.current.coerceIn(0.28f, 0.72f))
-                    .graphicsLayer {
-                        translationX = knobOffset.x
-                        translationY = knobOffset.y
-                    }
-                    .clip(CircleShape)
-                    .background(skin.stickKnob)
-                    .then(knobBorderModifier)
-            )
-        }
+        TouchStickFace(diameter = diameter, base = { baseOffset }, knob = { knobOffset })
     }
 }
 
@@ -1023,35 +989,15 @@ private fun FaceButtonCluster(client: NativeStreamClient, scale: Float, onButton
 }
 
 @Composable
-private fun DpadArrowhead(
-    label: String,
-    pressed: Boolean,
-) {
-    val arrowColor = LocalTouchSkin.current.glyphFor(pressed)
-    Text(
-        text = label,
-        fontWeight = FontWeight.Bold,
-        fontSize = 18.sp,
-        color = arrowColor
-    )
-}
-
-@Composable
 private fun DpadCluster(client: NativeStreamClient, scale: Float, onButtonTone: () -> Unit) {
     val currentOnButtonTone by rememberUpdatedState(onButtonTone)
     val buttonSize = 54.dp * scale
-    val distance = buttonSize * 1.05f
-    val boxSize = distance * 2 + buttonSize
+    val boxSize = touchDpadBoxSize(buttonSize)
 
     var upPressed by remember { mutableStateOf(false) }
     var downPressed by remember { mutableStateOf(false) }
     var leftPressed by remember { mutableStateOf(false) }
     var rightPressed by remember { mutableStateOf(false) }
-
-    val skin = LocalTouchSkin.current
-    val crossColor = skin.dpadFill
-    val crossBorderColor = skin.border
-    val crossBorderWidth = skin.borderWidth
 
     DisposableEffect(client) {
         onDispose {
@@ -1124,109 +1070,13 @@ private fun DpadCluster(client: NativeStreamClient, scale: Float, onButtonTone: 
                 }
             }
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-            val armSize = buttonSize.toPx()
-            val cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx(), 8.dp.toPx())
-
-            val crossPath = Path().apply {
-                addRoundRect(
-                    androidx.compose.ui.geometry.RoundRect(
-                        left = (w - armSize) / 2f,
-                        top = 0f,
-                        right = (w + armSize) / 2f,
-                        bottom = h,
-                        cornerRadius = cornerRadius
-                    )
-                )
-                addRoundRect(
-                    androidx.compose.ui.geometry.RoundRect(
-                        left = 0f,
-                        top = (h - armSize) / 2f,
-                        right = w,
-                        bottom = (h + armSize) / 2f,
-                        cornerRadius = cornerRadius
-                    )
-                )
-            }
-
-            if (crossColor != Color.Transparent) {
-                drawPath(crossPath, crossColor)
-            }
-
-            val pressedColor = skin.pressedFill
-
-            val pressedPath = Path()
-            if (upPressed) {
-                pressedPath.addRoundRect(
-                    androidx.compose.ui.geometry.RoundRect(
-                        left = (w - armSize) / 2f,
-                        top = 0f,
-                        right = (w + armSize) / 2f,
-                        bottom = h / 2f,
-                        topLeftCornerRadius = cornerRadius,
-                        topRightCornerRadius = cornerRadius
-                    )
-                )
-            }
-            if (downPressed) {
-                pressedPath.addRoundRect(
-                    androidx.compose.ui.geometry.RoundRect(
-                        left = (w - armSize) / 2f,
-                        top = h / 2f,
-                        right = (w + armSize) / 2f,
-                        bottom = h,
-                        bottomLeftCornerRadius = cornerRadius,
-                        bottomRightCornerRadius = cornerRadius
-                    )
-                )
-            }
-            if (leftPressed) {
-                pressedPath.addRoundRect(
-                    androidx.compose.ui.geometry.RoundRect(
-                        left = 0f,
-                        top = (h - armSize) / 2f,
-                        right = w / 2f,
-                        bottom = (h + armSize) / 2f,
-                        topLeftCornerRadius = cornerRadius,
-                        bottomLeftCornerRadius = cornerRadius
-                    )
-                )
-            }
-            if (rightPressed) {
-                pressedPath.addRoundRect(
-                    androidx.compose.ui.geometry.RoundRect(
-                        left = w / 2f,
-                        top = (h - armSize) / 2f,
-                        right = w,
-                        bottom = (h + armSize) / 2f,
-                        topRightCornerRadius = cornerRadius,
-                        bottomRightCornerRadius = cornerRadius
-                    )
-                )
-            }
-            drawPath(pressedPath, pressedColor)
-
-            drawPath(
-                path = crossPath,
-                color = crossBorderColor,
-                style = Stroke(width = crossBorderWidth.toPx())
-            )
-        }
-
-        Box(Modifier.align(Alignment.Center).offset(y = -distance)) {
-            DpadArrowhead("▲", upPressed)
-        }
-        Box(Modifier.align(Alignment.Center).offset(y = distance)) {
-            DpadArrowhead("▼", downPressed)
-        }
-        Box(Modifier.align(Alignment.Center).offset(x = -distance)) {
-            DpadArrowhead("◀", leftPressed)
-        }
-        Box(Modifier.align(Alignment.Center).offset(x = distance)) {
-            DpadArrowhead("▶", rightPressed)
-        }
+        TouchDpadFace(
+            arm = buttonSize,
+            up = upPressed,
+            down = downPressed,
+            left = leftPressed,
+            right = rightPressed,
+        )
     }
 }
 
@@ -1262,7 +1112,6 @@ private fun GamepadTriggerButton(
     client: NativeStreamClient,
     width: androidx.compose.ui.unit.Dp,
     height: androidx.compose.ui.unit.Dp,
-    shape: androidx.compose.ui.graphics.Shape,
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
@@ -1273,11 +1122,6 @@ private fun GamepadTriggerButton(
             if (down) onPressTone()
         }
     }
-    val skin = LocalTouchSkin.current
-    val buttonColor = skin.fill
-    val pressedColor = skin.pressedFill
-    val borderColor = skin.borderFor(pressed)
-    val borderWidth = skin.borderWidthFor(pressed)
     Box(
         Modifier
             .width(width)
@@ -1285,17 +1129,7 @@ private fun GamepadTriggerButton(
             .virtualPressInput(client, left, currentOnPressedChange),
         contentAlignment = Alignment.TopCenter,
     ) {
-        Box(
-            Modifier
-                .width(width)
-                .height(height)
-                .clip(shape)
-                .background(if (pressed) pressedColor else buttonColor)
-                .border(borderWidth, borderColor, shape),
-            contentAlignment = Alignment.Center,
-        ) {
-            TouchButtonLabel(label, pressed, skin)
-        }
+        TouchShoulderFace(label = label, pressed = pressed, width = width, height = height)
     }
     DisposableEffect(client, left) {
         onDispose {
@@ -1321,23 +1155,14 @@ private fun GamepadBumperButton(
             if (down) onPressTone()
         }
     }
-    val skin = LocalTouchSkin.current
-    val buttonColor = skin.fill
-    val pressedColor = skin.pressedFill
-    val borderColor = skin.borderFor(pressed)
-    val borderWidth = skin.borderWidthFor(pressed)
-    val shape = RoundedCornerShape(50)
     Box(
         Modifier
             .width(width)
             .height(height)
-            .clip(shape)
-            .background(if (pressed) pressedColor else buttonColor)
-            .border(borderWidth, borderColor, shape)
             .virtualPressInput(client, mask, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
-        TouchButtonLabel(label, pressed, skin)
+        TouchShoulderFace(label = label, pressed = pressed, width = width, height = height)
     }
     DisposableEffect(client, mask) {
         onDispose {
@@ -1363,27 +1188,13 @@ private fun GamepadButton(
             if (down) currentOnPressTone()
         }
     }
-    val skin = LocalTouchSkin.current
-    val buttonColor = skin.fill
-    val pressedColor = skin.pressedFill
-    val borderColor = skin.borderFor(pressed)
-    val borderWidth = skin.borderWidthFor(pressed)
     Box(
         Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .virtualPressInput(client, mask, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
-        Box(
-            Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(if (pressed) pressedColor else buttonColor)
-                .border(borderWidth, borderColor, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            TouchButtonLabel(label, pressed, skin)
-        }
+        TouchCapFace(label = label, pressed = pressed, diameter = size)
     }
     DisposableEffect(client, mask) {
         onDispose {
@@ -1410,39 +1221,18 @@ private fun GamepadPillButton(
             if (down) currentOnPressTone()
         }
     }
-    val skin = LocalTouchSkin.current
-    val buttonColor = skin.fill
-    val pressedColor = skin.pressedFill
-    val borderColor = skin.borderFor(pressed)
-    val borderWidth = skin.borderWidthFor(pressed)
     Box(
         Modifier
             .width(width)
             .height(height)
-            .clip(RoundedCornerShape(999.dp))
-            .background(if (pressed) pressedColor else buttonColor)
-            .border(borderWidth, borderColor, RoundedCornerShape(999.dp))
             .virtualPressInput(client, mask, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
-        TouchButtonLabel(label, pressed, skin)
+        TouchShoulderFace(label = label, pressed = pressed, width = width, height = height)
     }
     DisposableEffect(client, mask) {
         onDispose {
             client.setVirtualButton(mask, false)
         }
     }
-}
-
-/** Blank caps are a supported look; the d-pad arrowheads are not optional, a bare cross is unusable. */
-@Composable
-private fun TouchButtonLabel(label: String, pressed: Boolean, skin: TouchSkinColors) {
-    if (!LocalTouchButtonLabels.current) return
-    Text(
-        text = label,
-        fontWeight = FontWeight.SemiBold,
-        color = skin.glyphFor(pressed),
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-    )
 }

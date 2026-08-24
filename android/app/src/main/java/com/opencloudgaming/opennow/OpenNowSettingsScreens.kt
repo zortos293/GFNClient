@@ -1136,15 +1136,25 @@ private fun SettingsContent(
                     stringResource(R.string.settings_touch_skin),
                     touchStyleOptions,
                     settings.androidTouch.touchControllerStyle.name,
+                    description = stringResource(R.string.settings_touch_skin_desc),
                 ) { styleName ->
                     val style = TouchControllerStyle.valueOf(styleName)
                     viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(touchControllerStyle = style)))
                 }
+                // The skins differ by shape now, which a list of names cannot show.
+                TouchControllerSkinPreview(
+                    style = settings.androidTouch.touchControllerStyle,
+                    tint = settings.androidTouch.touchSkinTint,
+                    opacity = settings.androidTouch.opacity,
+                    showLabels = settings.androidTouch.touchButtonLabels,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
                 val touchTintOptions = TOUCH_SKIN_TINTS.map { SettingsChoiceOption(it.id, it.label) }
                 ChoiceOptionRow(
                     stringResource(R.string.settings_touch_skin_tint),
                     touchTintOptions,
                     touchSkinTintId(settings.androidTouch.touchSkinTint),
+                    description = stringResource(R.string.settings_touch_skin_tint_desc),
                 ) { tintId ->
                     viewModel.updateSettings(
                         settings.copy(

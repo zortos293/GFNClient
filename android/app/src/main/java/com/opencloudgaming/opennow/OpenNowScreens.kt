@@ -2080,10 +2080,12 @@ internal fun handleSliderDpadInput(
     }
 }
 
+internal fun isTvActivationKey(key: Key): Boolean =
+    key in setOf(
+        Key.DirectionCenter,
+        Key.Enter,
+        Key.NumPadEnter,
+    )
+
 internal fun isTvActivateKey(event: androidx.compose.ui.input.key.KeyEvent): Boolean =
-    event.type == KeyEventType.KeyUp &&
-        event.key in setOf(
-            Key.DirectionCenter,
-            Key.Enter,
-            Key.NumPadEnter,
-        )
+    event.type == KeyEventType.KeyUp && isTvActivationKey(event.key)

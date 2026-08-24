@@ -46,7 +46,7 @@ export const colorQualityOptions: { value: ColorQuality; label: string; descript
 
 export const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; label: string; description: string }[] = [
   { value: "auto", label: "Auto", description: "Pick the default native path for the session" },
-  { value: "d3d12", label: "DirectX 12", description: "Use the D3D12 decoder and renderer" },
+  { value: "d3d12", label: "DirectX 12", description: "Use D3D11-on-12 for Media Foundation decode and D3D12-backed rendering" },
   { value: "d3d11", label: "DirectX 11", description: "Use the D3D11 decoder and renderer" },
   { value: "nvdec", label: "NVIDIA NVDEC", description: "Use NVIDIA's native Linux hardware decoders" },
   { value: "vaapi", label: "VAAPI", description: "Use Linux VA-API hardware decoding" },

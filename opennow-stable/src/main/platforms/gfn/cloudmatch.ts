@@ -122,7 +122,7 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   const url = `${base}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
   console.log(
     `[CloudMatch] createSession POST ${url} resolution=${input.settings.resolution} fps=${input.settings.fps} ` +
-    `colorQuality=${input.settings.colorQuality} bitDepth=${request.requestedStreamingFeatures.bitDepth} ` +
+    `codec=${input.settings.codec} colorQuality=${input.settings.colorQuality} bitDepth=${request.requestedStreamingFeatures.bitDepth} ` +
     `reflex=${request.requestedStreamingFeatures.reflex} deviceHashId=${deviceId.slice(0, 12)}…`,
   );
   const response = await fetchCloudMatch(url, {

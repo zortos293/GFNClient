@@ -242,17 +242,17 @@ test("CloudMatch requests secure RTSPS for explicit classic native sessions", ()
       "WiFi5.0",
     );
   }
-  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.codec, undefined);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.codec, 2);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.maxBitrateKbps, undefined);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.dynamicStreamingMode, undefined);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.audioChannelCount, undefined);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.trueHdr, false);
-  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.bitDepth, 1);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.bitDepth, 0);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.chromaFormat, 0);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.reflex, true);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.qosPolicy, 0);
   assert.deepEqual(resolveNvstCreateStreamSku(makeSettings({ transportMode: "nvst" })), {
-    bitDepth: 1,
+    bitDepth: 0,
     chromaFormat: 0,
     reflex: true,
   });
@@ -264,6 +264,23 @@ test("CloudMatch requests secure RTSPS for explicit classic native sessions", ()
   assert.deepEqual(
     webRtcBody.sessionRequestData.metaData.find((entry) => entry.key === "GSStreamerType"),
     { key: "GSStreamerType", value: "WebRTC" },
+  );
+});
+
+test("CloudMatch caps native sessions at 240 FPS", () => {
+  const body = buildSessionRequestBody(
+    {
+      appId: "1001",
+      internalTitle: "Test Game",
+      zone: "prod",
+      settings: makeSettings({ fps: 360, transportMode: "nvst" }),
+    },
+    "device-id",
+  );
+
+  assert.equal(
+    body.sessionRequestData.clientRequestMonitorSettings[0]?.framesPerSecond,
+    240,
   );
 });
 
@@ -493,7 +510,7 @@ test("CloudMatch NVST create posts to regional host then sends official RESUME",
   } | null;
   assert.equal(resumeBody?.action, 2);
   assert.equal(resumeBody?.data, "RESUME");
-  assert.equal(resumeBody?.sessionRequestData?.requestedStreamingFeatures?.bitDepth, 1);
+  assert.equal(resumeBody?.sessionRequestData?.requestedStreamingFeatures?.bitDepth, 0);
   assert.equal(resumeBody?.sessionRequestData?.requestedStreamingFeatures?.reflex, true);
   assert.equal(resumeBody?.sessionRequestData?.requestedStreamingFeatures?.chromaFormat, 0);
   assert.equal(session.sessionId, "session-nvst-1");

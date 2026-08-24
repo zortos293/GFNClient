@@ -263,6 +263,19 @@ export function toColorQuality(bitDepth?: number, chromaFormat?: number): ColorQ
   return normalizedChromaFormat === 1 ? "8bit_444" : "8bit_420";
 }
 
+function toVideoCodec(codec?: number): NegotiatedStreamProfile["codec"] {
+  switch (codec) {
+    case 1:
+      return "H264";
+    case 2:
+      return "H265";
+    case 3:
+      return "AV1";
+    default:
+      return undefined;
+  }
+}
+
 export function normalizeStreamingFeatures(
   features:
     | NonNullable<CloudMatchResponse["session"]["sessionRequestData"]>["requestedStreamingFeatures"]
@@ -309,6 +322,7 @@ export function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Neg
     finalizedFeatures?.bitDepth ?? requestedFeatures?.bitDepth,
     finalizedFeatures?.chromaFormat ?? requestedFeatures?.chromaFormat,
   );
+  const codec = toVideoCodec(finalizedFeatures?.codec ?? requestedFeatures?.codec);
   const enabledL4S = finalizedFeatures?.enabledL4S ?? requestedFeatures?.enabledL4S;
   const enabledCloudGsync = finalizedFeatures?.cloudGsync ?? requestedFeatures?.cloudGsync;
   const enabledReflex = finalizedFeatures?.reflex ?? requestedFeatures?.reflex;
@@ -332,6 +346,10 @@ export function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Neg
 
   if (colorQuality) {
     profile.colorQuality = colorQuality;
+  }
+
+  if (codec) {
+    profile.codec = codec;
   }
 
   if (typeof enabledL4S === "boolean") {

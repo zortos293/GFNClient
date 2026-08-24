@@ -57,6 +57,10 @@ export function buildRequestedStreamingFeatures(
       hidDevices: null,
       qosPolicy: 0,
       touchSupport: false,
+      codec: resolveRequestedCodecWireValue(
+        codecWireValue(settings.codec),
+        (supportedCodecs ?? []).map(codecWireValue),
+      ),
     };
   }
 
@@ -116,13 +120,23 @@ export function shouldRequestReflex(settings: StreamSettings): boolean {
   return settings.enableCloudGsync || settings.fps >= reflexMinimum;
 }
 
-/** Official Mac Bifrost NVST create advertises 10-bit + reflex even at 8-bit UI quality. */
+/**
+ * Resolve the classic-streamer SKU. The native pipeline currently accepts the
+ * 8-bit 4:2:0 profiles shared by H.264, H.265, and AV1. Non-native callers retain
+ * the captured official Mac Bifrost profile.
+ */
 export function resolveNvstCreateStreamSku(settings: StreamSettings): {
   bitDepth: number;
   chromaFormat: number;
   reflex: boolean;
 } {
-  void settings;
+  if (settings.clientMode === "native") {
+    return {
+      bitDepth: 0,
+      chromaFormat: 0,
+      reflex: shouldRequestReflex(settings),
+    };
+  }
   return { bitDepth: 1, chromaFormat: 0, reflex: true };
 }
 

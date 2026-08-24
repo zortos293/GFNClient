@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import type { NvstAudioTrack } from "@shared/gfn";
+import { clampNativeStreamFps, type NvstAudioTrack } from "@shared/gfn";
 import { deriveSrtpSaltHex } from "./srtp";
 
 /** Official macOS ANNOUNCE baseline. */
@@ -75,6 +75,10 @@ const ANNOUNCE_ALLOWLIST = {
   runtime: {
     audioSrtp: "0",
     micSrtp: "0",
+    // Match the installed native client's cursor policy. Without these the
+    // server accepts cursor_channel but does not publish local cursor shapes.
+    mouseCursorCapture: "3",
+    mimicRemoteCursor: "0",
   },
 } as const;
 
@@ -97,6 +101,7 @@ export function buildAnnounceSdp(
   options: {
     resolution?: string;
     fps?: number;
+    codec?: string;
     /** User-selected bitrate ceiling. Native GFN starts at 25% and adapts up to this value. */
     maxBitrateKbps?: number;
     encryptionKeyHex?: string;
@@ -144,7 +149,7 @@ export function buildAnnounceSdp(
 ): string {
   const { width, height } = parseResolution(options.resolution);
   const fps = options.fps && Number.isFinite(options.fps) && options.fps > 0
-    ? Math.round(options.fps)
+    ? clampNativeStreamFps(options.fps)
     : 60;
   const videoPort = options.videoPort && options.videoPort > 0 ? options.videoPort : 0;
   const maximumBitrateKbps = Math.max(
@@ -152,6 +157,8 @@ export function buildAnnounceSdp(
     Math.min(150_000, Math.round(options.maxBitrateKbps ?? 100_000)),
   );
   const initialBitrateKbps = Math.max(1_000, Math.round(maximumBitrateKbps / 4));
+  const codec = options.codec?.trim().toUpperCase() ?? "H264";
+  const bitStreamFormat = codec === "AV1" ? "2" : codec === "H265" || codec === "HEVC" ? "1" : "0";
 
   const lines: string[] = [
     "v=0",
@@ -184,7 +191,13 @@ export function buildAnnounceSdp(
   lines.push(`a=x-nv-video[0].maxFPS:${fps}`);
   lines.push(`a=x-nv-video[0].initialBitrateKbps:${initialBitrateKbps}`);
   lines.push(`a=x-nv-video[0].initialPeakBitrateKbps:${initialBitrateKbps}`);
-  pushGroup("vqos", true, ANNOUNCE_ALLOWLIST.vqos);
+  pushGroup("vqos", true, {
+    ...ANNOUNCE_ALLOWLIST.vqos,
+    bitStreamFormat,
+  });
+  if (bitStreamFormat !== "2") {
+    lines.push(`a=x-nv-clientSupportHevc:${bitStreamFormat === "1" ? "1" : "0"}`);
+  }
   // Match the installed Windows client's native NVST policy: bitrate remains
   // adaptive while dynamic resolution/framerate stay disabled. Omitting these
   // fields leaves the server near its low default rate even when the UI ceiling

@@ -110,9 +110,10 @@ export function buildNativeStreamerSessionContext(
   shortcuts: NativeStreamerShortcutBindings,
   nvstVideo?: NvstVideoSession,
 ): NativeStreamerSessionContext {
-  const codec = settings.transportMode === "nvst"
-    ? "H264"
-    : (session.negotiatedStreamProfile?.codec ?? settings.codec);
+  // CloudMatch does not consistently echo the chosen codec in its finalized
+  // profile. Prefer an explicit server value, but otherwise preserve the
+  // concrete codec selected by renderer capability resolution.
+  const codec = session.negotiatedStreamProfile?.codec ?? settings.codec;
   const negotiatedStreamProfile = session.negotiatedStreamProfile
     ? {
       ...session.negotiatedStreamProfile,

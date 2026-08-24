@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import type { SessionCreateRequest, StreamSettings } from "@shared/gfn";
 import {
+  clampNativeStreamFps,
   colorQualityBitDepth,
   colorQualityChromaFormat,
 } from "@shared/gfn";
@@ -144,6 +145,9 @@ export function buildSessionRequestBody(
   const advertiseOfficialHdrCaps = useClassicStreamer && process.platform === "darwin";
   const sdrHdrMode = hdrEnabled || advertiseOfficialHdrCaps ? 1 : 0;
   const display = readPrimaryDisplayMetrics();
+  const requestedFps = input.settings.clientMode === "native" || useClassicStreamer
+    ? clampNativeStreamFps(input.settings.fps)
+    : input.settings.fps;
 
   return {
     sessionRequestData: {
@@ -169,7 +173,7 @@ export function buildSessionRequestBody(
           positionY: 0,
           widthInPixels: width,
           heightInPixels: height,
-          framesPerSecond: input.settings.fps,
+          framesPerSecond: requestedFps,
           sdrHdrMode,
           displayData: { ...EMPTY_DISPLAY_DATA },
           hdr10PlusGamingData: null,

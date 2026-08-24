@@ -87,14 +87,28 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bw\.minimumBitrateKbps:1000/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.dynamicStreamingMode:0/);
   assert.match(sdp, /a=x-nv-bwe\.useOwdCongestionControl:1/);
+  assert.match(sdp, /a=x-nv-runtime\.mouseCursorCapture:3/);
+  assert.match(sdp, /a=x-nv-runtime\.mimicRemoteCursor:0/);
   assert.doesNotMatch(sdp, /a=x-nv-general\.rtcpOnSctp:/);
   assert.match(sdp, /m=video 5004\r\ni=DeviceString, DeviceName/);
   assert.doesNotMatch(sdp, /RTP\/AVP|msid:video_0|clientTransport|nativeRtcOnBundlePort|iceUsernameFragment|dtlsFingerprint|controlProtocol/);
 });
 
 test("buildAnnounceSdp advertises the negotiated high-FPS ceiling", () => {
-  const sdp = buildAnnounceSdp({ fps: 120 });
-  assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:120/);
+  const sdp = buildAnnounceSdp({ fps: 360 });
+  assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:240/);
+  const normalSdp = buildAnnounceSdp({ fps: 120 });
+  assert.match(normalSdp, /a=x-nv-video\[0\]\.maxFPS:120/);
+});
+
+test("buildAnnounceSdp selects H.265 and AV1 NVST bitstreams", () => {
+  const h265 = buildAnnounceSdp({ codec: "H265" });
+  assert.match(h265, /a=x-nv-vqos\[0\]\.bitStreamFormat:1/);
+  assert.match(h265, /a=x-nv-clientSupportHevc:1/);
+
+  const av1 = buildAnnounceSdp({ codec: "AV1" });
+  assert.match(av1, /a=x-nv-vqos\[0\]\.bitStreamFormat:2/);
+  assert.doesNotMatch(av1, /a=x-nv-clientSupportHevc:/);
 });
 
 test("buildAnnounceSdp derives the adaptive startup rate from the selected ceiling", () => {

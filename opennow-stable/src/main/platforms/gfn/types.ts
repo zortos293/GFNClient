@@ -193,6 +193,7 @@ export interface CloudMatchResponse {
         chromaFormat?: number;
         enabledL4S?: boolean;
         trueHdr?: boolean;
+        codec?: number;
       };
     };
     finalizedStreamingFeatures?: {
@@ -202,6 +203,7 @@ export interface CloudMatchResponse {
       chromaFormat?: number;
       enabledL4S?: boolean;
       trueHdr?: boolean;
+      codec?: number;
     };
     monitorSettings?: Array<{
       widthInPixels?: number;

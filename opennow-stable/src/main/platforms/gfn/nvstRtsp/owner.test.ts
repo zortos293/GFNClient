@@ -30,6 +30,7 @@ function createContext(
     settings: {
       resolution: "1920x1080",
       fps: 60,
+      maxBitrateMbps: 80,
       codec: "H265",
       transportMode,
     } as NativeStreamerSessionContext["settings"],
@@ -75,12 +76,16 @@ test("owner retains one negotiated control session and reuses its video handoff"
   const releases: string[] = [];
   let negotiations = 0;
   let codec: string | undefined;
+  let fps: number | undefined;
+  let maxBitrateKbps: number | undefined;
   let bundlePeer: { ip: string; port: number } | undefined;
   const owner = new GfnNvstRtspSessionOwner({
     negotiate: async (input) => {
       const { sessionId } = input;
       negotiations += 1;
       codec = input.codec;
+      fps = input.fps;
+      maxBitrateKbps = input.maxBitrateKbps;
       bundlePeer = input.bundlePeer;
       return createRtspSession(sessionId, (reason) => releases.push(reason));
     },
@@ -90,7 +95,9 @@ test("owner retains one negotiated control session and reuses its video handoff"
   const duplicate = await owner.prepare(createContext("same-session"));
 
   assert.equal(negotiations, 1);
-  assert.equal(codec, "H264");
+  assert.equal(codec, "H265");
+  assert.equal(fps, 60);
+  assert.equal(maxBitrateKbps, 80_000);
   assert.deepEqual(bundlePeer, { ip: "198.51.100.20", port: 5006, usage: 17 });
   assert.deepEqual(duplicate.nvstVideo, first.nvstVideo);
   assert.deepEqual(releases, []);
@@ -98,6 +105,28 @@ test("owner retains one negotiated control session and reuses its video handoff"
   await owner.release("stream stopped");
   await owner.release("duplicate stop");
   assert.deepEqual(releases, ["stream stopped"]);
+});
+
+test("owner caps native NVST negotiation at 240 FPS and prefers the negotiated profile", async () => {
+  let fps: number | undefined;
+  let codec: string | undefined;
+  const owner = new GfnNvstRtspSessionOwner({
+    negotiate: async (input) => {
+      fps = input.fps;
+      codec = input.codec;
+      return createRtspSession(input.sessionId, () => undefined);
+    },
+  });
+  const context = createContext("high-fps");
+  context.settings.fps = 360;
+  context.settings.codec = "H264";
+  context.session.negotiatedStreamProfile = { fps: 300, codec: "AV1" };
+
+  await owner.prepare(context);
+
+  assert.equal(fps, 240);
+  assert.equal(codec, "AV1");
+  await owner.release("test complete");
 });
 
 test("owner tears down the previous session before negotiating its replacement", async () => {

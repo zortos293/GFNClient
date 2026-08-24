@@ -23,7 +23,7 @@ mod nvst_input;
 use input::{InputChannelState, InputChannels, next_input_heartbeat};
 
 pub use nvst::{
-    BoundedFrameQueue, EncodedH264Frame, NvstBundleIdentity, NvstConfigError, NvstDropReason,
+    BoundedFrameQueue, EncodedVideoAccessUnit, NvstBundleIdentity, NvstConfigError, NvstDropReason,
     NvstFallbackReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstSrtpProfile,
     NvstUdpReceiverControl, NvstUdpReceiverError, NvstUdpReceiverSession, NvstUnsupportedFeature,
     NvstVideoCodec, NvstVideoConfig, NvstVideoReceiver, PreferredVideoTransport,
@@ -237,7 +237,14 @@ pub fn negotiate(
     let local_candidate = Candidate::host(local_addr, "udp")
         .map_err(|error| TransportError::LocalCandidate(error.to_string()))?;
 
-    let mut rtc = RtcConfig::new().build(Instant::now());
+    // Advertise only media formats that the native pipeline can actually
+    // consume. str0m enables several video codecs by default, which made the
+    // answer claim AV1/H.265 support even though the decoder is H.264-only.
+    let mut rtc = RtcConfig::new()
+        .clear_codecs()
+        .enable_opus(true)
+        .enable_h264(true)
+        .build(Instant::now());
     rtc.add_local_candidate(local_candidate.clone());
     let offer = SdpOffer::from_sdp_string(&normalized_offer.sdp)
         .map_err(|error| TransportError::Offer(error.to_string()))?;
@@ -885,6 +892,9 @@ mod tests {
 
         assert!(negotiated.answer_sdp.contains("m=video"));
         assert!(!negotiated.answer_sdp.contains("m=video 0"));
+        assert!(negotiated.answer_sdp.contains("H264/90000"));
+        assert!(!negotiated.answer_sdp.contains("AV1/90000"));
+        assert!(!negotiated.answer_sdp.contains("H265/90000"));
         negotiated.session.stop();
     }
 

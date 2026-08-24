@@ -190,7 +190,7 @@ export function useSignalingEvents({
           maxBitrateKbps: settings.maxBitrateMbps * 1000,
         },
         {
-          electronInputBridge: true,
+          electronInputBridge: !settings.nativeExternalRenderer,
         },
       );
       window.openNow.notifyNativeInputModeChange(true, false);

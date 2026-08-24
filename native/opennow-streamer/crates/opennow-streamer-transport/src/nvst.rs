@@ -39,7 +39,8 @@ use super::nvst_control::{
     frame_ack, frame_pacing_report, idr_request,
 };
 use super::nvst_input::{
-    NvstInputChannelState, NvstInputChannels, NvstInputCodec, next_control_keepalive,
+    NvstInputChannelState, NvstInputChannels, NvstInputCodec, native_input_type_is_motion,
+    native_input_type_name, native_input_types, next_control_keepalive, server_cursor_messages,
 };
 use super::{
     EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame, install_crypto,
@@ -79,6 +80,8 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_PING_BYTES: usize = 512;
 const PING_INTERVAL_BEFORE_CONNECTION: Duration = Duration::from_millis(20);
 const PING_INTERVAL_AFTER_CONNECTION: Duration = Duration::from_millis(100);
+const CURSOR_CAPTURE_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+const MAX_CURSOR_CAPTURE_ATTEMPTS: u8 = 8;
 const UDP_RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const STUN_HEADER_LEN: usize = 20;
 const STUN_MAGIC_COOKIE: u32 = 0x2112_a442;
@@ -106,6 +109,18 @@ const GFN_RED_PAYLOAD_TYPE: u8 = 63;
 const GFN_OPUS_PAYLOAD_TYPE: u8 = 111;
 const MAX_REDUNDANT_AUDIO_BLOCKS: usize = 8;
 const MAX_OPUS_PACKET_BYTES: usize = 1_275;
+
+fn diagnostic_hex(bytes: &[u8], limit: usize) -> String {
+    let mut value = bytes
+        .iter()
+        .take(limit)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if bytes.len() > limit {
+        value.push_str("...");
+    }
+    value
+}
 
 type Aes256Ctr = Ctr128BE<Aes256>;
 type Aes128Ctr = Ctr128BE<Aes128>;
@@ -150,17 +165,29 @@ impl NvstSrtpProfile {
     }
 }
 
-/// The only media codec this receive path currently exposes.
+/// Video codecs accepted by the native NVST receive path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvstVideoCodec {
     H264,
+    H265,
+    Av1,
 }
 
 impl NvstVideoCodec {
     fn parse(value: &str) -> Result<Self, NvstConfigError> {
         match value.trim().to_ascii_uppercase().as_str() {
             "H264" | "AVC" => Ok(Self::H264),
+            "H265" | "HEVC" => Ok(Self::H265),
+            "AV1" => Ok(Self::Av1),
             other => Err(NvstConfigError::UnsupportedCodec(other.to_owned())),
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::H264 => "H264",
+            Self::H265 => "H265",
+            Self::Av1 => "AV1",
         }
     }
 }
@@ -187,7 +214,7 @@ pub enum NvstConfigError {
     InvalidSrtpSalt,
     #[error("nvstVideo.srtpProfile {0} is not implemented")]
     UnsupportedSrtpProfile(String),
-    #[error("NVST video codec {0} is not implemented; only H264 Annex-B is available")]
+    #[error("NVST video codec {0} is not implemented; supported codecs are H264, H265, and AV1")]
     UnsupportedCodec(String),
     #[error("nvstVideo.audioTrack must contain standard negotiated Opus RTP metadata")]
     InvalidAudioTrack,
@@ -368,7 +395,7 @@ impl NvstFeedbackState {
         *pending = updated;
     }
 
-    fn publish_completed_frame(&self, frame: &EncodedH264Frame) {
+    fn publish_completed_frame(&self, frame: &EncodedVideoAccessUnit) {
         self.completed_frames.fetch_add(1, Ordering::AcqRel);
         self.completed_frame_bytes.fetch_add(
             u64::try_from(frame.bytes.len()).unwrap_or(u64::MAX),
@@ -955,7 +982,7 @@ pub fn parse_nvst_video_handoff(
         .or_else(|| context.pointer("/settings/fps"))
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| (1..=240).contains(value))
+        .map(|value| value.clamp(1, 240))
     {
         config.frame_time_us = 1_000_000 / fps;
     }
@@ -1149,9 +1176,10 @@ fn is_unicast_peer(ip: IpAddr) -> bool {
     }
 }
 
-/// A received H.264 byte-stream access unit ready for a decoder queue.
+/// A received encoded video access unit ready for a decoder queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncodedH264Frame {
+pub struct EncodedVideoAccessUnit {
+    pub codec: NvstVideoCodec,
     pub timestamp: u32,
     pub frame_index: u32,
     pub first_stream_packet_index: u32,
@@ -1197,6 +1225,11 @@ pub enum NvstDropReason {
     AwaitingStartOfFrame,
     FrameDiscontinuity,
     MissingAnnexBStartCode,
+    InvalidLastPacketPayloadLength {
+        reported: usize,
+        frame_header_size: usize,
+        available: usize,
+    },
     AccessUnitTooLarge {
         limit: usize,
     },
@@ -1231,10 +1264,11 @@ pub enum NvstRecovery {
 /// treating malformed network traffic as a fatal thread error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NvstReceiveEvent {
-    Frame(EncodedH264Frame),
+    Frame(EncodedVideoAccessUnit),
     TransportReady(&'static str),
     InputReady(u16),
     InputUnavailable(String),
+    Cursor(Vec<u8>),
     Dropped(NvstDropReason),
     RecoveryNeeded(NvstRecovery),
     Lifecycle(NvstReceiverState),
@@ -1945,18 +1979,30 @@ impl NvVideoPacket {
     }
 }
 
-struct H264AccessUnitAssembler {
+struct VideoAccessUnitAssembler {
+    codec: NvstVideoCodec,
     current_frame: Option<u32>,
     first_stream_packet_index: Option<u32>,
+    keyframe_hint: bool,
+    last_packet_payload_length: Option<usize>,
+    invalid_av1_length_logged: bool,
+    first_start_payload_logged: bool,
+    first_access_unit_logged: bool,
     bytes: Vec<u8>,
     max_access_unit_bytes: usize,
 }
 
-impl H264AccessUnitAssembler {
-    fn new(max_access_unit_bytes: usize) -> Self {
+impl VideoAccessUnitAssembler {
+    fn new(codec: NvstVideoCodec, max_access_unit_bytes: usize) -> Self {
         Self {
+            codec,
             current_frame: None,
             first_stream_packet_index: None,
+            keyframe_hint: false,
+            last_packet_payload_length: None,
+            invalid_av1_length_logged: false,
+            first_start_payload_logged: false,
+            first_access_unit_logged: false,
             bytes: Vec::new(),
             max_access_unit_bytes,
         }
@@ -1965,6 +2011,8 @@ impl H264AccessUnitAssembler {
     fn reset(&mut self) {
         self.current_frame = None;
         self.first_stream_packet_index = None;
+        self.keyframe_hint = false;
+        self.last_packet_payload_length = None;
         self.bytes.clear();
     }
 
@@ -1973,62 +2021,113 @@ impl H264AccessUnitAssembler {
         header: NvVideoPacket,
         timestamp: u32,
         payload: &[u8],
-    ) -> Result<Option<EncodedH264Frame>, NvstDropReason> {
+    ) -> Result<Option<EncodedVideoAccessUnit>, NvstDropReason> {
         if header.is_fec {
             return Err(NvstDropReason::Unsupported(
                 NvstUnsupportedFeature::FecRepair,
             ));
         }
+        let mut frame_header_size = 0;
+        let mut picture_payload = payload;
         if header.is_start_of_frame() {
             self.reset();
-            let Some(payload) = h264_picture_payload(payload) else {
-                return Err(NvstDropReason::MissingAnnexBStartCode);
-            };
+            self.keyframe_hint = payload.get(3).is_some_and(|value| *value == 2);
+            picture_payload = video_picture_payload(self.codec, payload)
+                .ok_or(NvstDropReason::MissingAnnexBStartCode)?;
+            frame_header_size = payload.len() - picture_payload.len();
+            if !self.first_start_payload_logged {
+                self.first_start_payload_logged = true;
+                eprintln!(
+                    "NVST first {} start payload: frame={} bytes={} frameHeader={} raw={}",
+                    self.codec.label(),
+                    header.frame_index,
+                    payload.len(),
+                    frame_header_size,
+                    diagnostic_hex(payload, 64),
+                );
+            }
+            if self.codec == NvstVideoCodec::Av1 {
+                self.last_packet_payload_length = payload
+                    .get(4..6)
+                    .map(|length| usize::from(u16::from_le_bytes([length[0], length[1]])));
+            }
             self.current_frame = Some(header.frame_index);
             self.first_stream_packet_index = Some(header.stream_packet_index);
-            let remaining = self.max_access_unit_bytes;
-            if payload.len() > remaining {
-                self.reset();
-                return Err(NvstDropReason::AccessUnitTooLarge {
-                    limit: self.max_access_unit_bytes,
-                });
-            }
-            self.bytes.extend_from_slice(payload);
         } else if self.current_frame != Some(header.frame_index) {
             self.reset();
             return Err(NvstDropReason::AwaitingStartOfFrame);
-        } else {
-            let remaining = self.max_access_unit_bytes.saturating_sub(self.bytes.len());
-            if payload.len() > remaining {
-                self.reset();
-                return Err(NvstDropReason::AccessUnitTooLarge {
-                    limit: self.max_access_unit_bytes,
-                });
-            }
-            self.bytes.extend_from_slice(payload);
         }
+
+        // GFN pads the final packet to its FEC block size. AVC/HEVC Annex B
+        // decoders tolerate those trailing zeroes, while AV1 decoders require
+        // the exact payload length advertised in bytes 4..6 of the frame
+        // header. Some current GFN cloud streams do not provide a usable value
+        // in that legacy field, so treat it as an optional trimming hint rather
+        // than dropping an otherwise authenticated access unit. The advertised
+        // length includes the frame header only when the first and last packet
+        // are the same packet.
+        if self.codec == NvstVideoCodec::Av1 && header.is_end_of_frame() {
+            let reported = self.last_packet_payload_length.unwrap_or_default();
+            let exact_payload_length = reported.checked_sub(frame_header_size);
+            if let Some(exact_payload_length) = exact_payload_length
+                && exact_payload_length > 0
+                && exact_payload_length <= picture_payload.len()
+            {
+                picture_payload = &picture_payload[..exact_payload_length];
+            } else if !self.invalid_av1_length_logged {
+                self.invalid_av1_length_logged = true;
+                eprintln!(
+                    "NVST AV1 final-packet length hint ignored: reported={reported} frameHeader={frame_header_size} available={}",
+                    picture_payload.len()
+                );
+            }
+        }
+
+        let remaining = self.max_access_unit_bytes.saturating_sub(self.bytes.len());
+        if picture_payload.len() > remaining {
+            self.reset();
+            return Err(NvstDropReason::AccessUnitTooLarge {
+                limit: self.max_access_unit_bytes,
+            });
+        }
+        self.bytes.extend_from_slice(picture_payload);
         if !header.is_end_of_frame() {
             return Ok(None);
         }
 
         let mut bytes = std::mem::take(&mut self.bytes);
-        strip_trailing_access_unit_delimiter(&mut bytes);
+        strip_trailing_access_unit_delimiter(self.codec, &mut bytes);
+        if !self.first_access_unit_logged {
+            self.first_access_unit_logged = true;
+            eprintln!(
+                "NVST first {} access unit: frame={} bytes={} keyframeHint={} raw={}",
+                self.codec.label(),
+                header.frame_index,
+                bytes.len(),
+                self.keyframe_hint,
+                diagnostic_hex(&bytes, 64),
+            );
+        }
         self.current_frame = None;
         let first_stream_packet_index = self
             .first_stream_packet_index
             .take()
             .expect("start-of-frame initializes the packet index");
-        Ok(Some(EncodedH264Frame {
+        Ok(Some(EncodedVideoAccessUnit {
+            codec: self.codec,
             timestamp,
             frame_index: header.frame_index,
             first_stream_packet_index,
-            keyframe: h264_access_unit_is_keyframe(&bytes),
+            keyframe: video_access_unit_is_keyframe(self.codec, &bytes, self.keyframe_hint),
             bytes,
         }))
     }
 }
 
-fn strip_trailing_access_unit_delimiter(bytes: &mut Vec<u8>) {
+fn strip_trailing_access_unit_delimiter(codec: NvstVideoCodec, bytes: &mut Vec<u8>) {
+    if codec == NvstVideoCodec::Av1 {
+        return;
+    }
     let mut offset = 0;
     let mut last_nal = None;
     while let Some((start, prefix_len)) = find_annex_b_start_code(&bytes[offset..]) {
@@ -2038,26 +2137,54 @@ fn strip_trailing_access_unit_delimiter(bytes: &mut Vec<u8>) {
         offset = nal_start + 1;
     }
     if let Some((start, nal_start)) = last_nal
-        && bytes
-            .get(nal_start)
-            .is_some_and(|header| header & 0x1f == 9)
+        && bytes.get(nal_start).is_some_and(|header| match codec {
+            NvstVideoCodec::H264 => header & 0x1f == 9,
+            NvstVideoCodec::H265 => (header >> 1) & 0x3f == 35,
+            NvstVideoCodec::Av1 => false,
+        })
     {
         bytes.truncate(start);
     }
 }
 
-fn h264_picture_payload(payload: &[u8]) -> Option<&[u8]> {
-    let search_len = payload.len().min(MAX_GS_FRAME_HEADER_BYTES + 4);
-    let (offset, _) = find_annex_b_start_code(&payload[..search_len])?;
-    Some(&payload[offset..])
+fn video_picture_payload(codec: NvstVideoCodec, payload: &[u8]) -> Option<&[u8]> {
+    match codec {
+        NvstVideoCodec::H264 | NvstVideoCodec::H265 => {
+            let search_len = payload.len().min(MAX_GS_FRAME_HEADER_BYTES + 4);
+            let (offset, _) = find_annex_b_start_code(&payload[..search_len])?;
+            Some(&payload[offset..])
+        }
+        NvstVideoCodec::Av1 => match payload.first()? {
+            // GFN 14.x follows the current GameStream frame layout: the short
+            // frame header is 8 bytes and the extended 0x81 header is 44 bytes.
+            // Do not inspect the first AV1 byte to choose an offset; AV1 Annex-B
+            // streams may begin with a temporal-unit size rather than an OBU
+            // header, so that heuristic can misidentify the legacy 41-byte
+            // layout and leave three header bytes in the decoder input.
+            0x01 => payload.get(8..),
+            0x81 => payload.get(44..),
+            _ => None,
+        },
+    }
 }
 
-fn h264_access_unit_is_keyframe(bytes: &[u8]) -> bool {
+fn video_access_unit_is_keyframe(
+    codec: NvstVideoCodec,
+    bytes: &[u8],
+    frame_header_hint: bool,
+) -> bool {
+    if codec == NvstVideoCodec::Av1 {
+        return frame_header_hint;
+    }
     let mut offset = 0;
     while let Some((start, prefix_len)) = find_annex_b_start_code(&bytes[offset..]) {
         let nal_start = offset + start + prefix_len;
         if let Some(nal_header) = bytes.get(nal_start)
-            && nal_header & 0x1f == 5
+            && match codec {
+                NvstVideoCodec::H264 => nal_header & 0x1f == 5,
+                NvstVideoCodec::H265 => matches!((nal_header >> 1) & 0x3f, 16..=21),
+                NvstVideoCodec::Av1 => false,
+            }
         {
             return true;
         }
@@ -2269,7 +2396,7 @@ pub struct NvstVideoReceiver {
     srtp: SrtpReceiver,
     srtcp: Option<SrtcpSender>,
     reorder: RtpReorderBuffer,
-    assembler: H264AccessUnitAssembler,
+    assembler: VideoAccessUnitAssembler,
     last_stream_packet_index: Option<u32>,
     state: NvstReceiverState,
     bound_ssrc: Option<u32>,
@@ -2286,7 +2413,7 @@ impl NvstVideoReceiver {
         let srtp = SrtpReceiver::from_material(&config.srtp);
         let srtcp = SrtcpSender::from_material(&config.srtp);
         let reorder = RtpReorderBuffer::new(config.reorder_window_packets);
-        let assembler = H264AccessUnitAssembler::new(config.max_access_unit_bytes);
+        let assembler = VideoAccessUnitAssembler::new(config.codec, config.max_access_unit_bytes);
         Self {
             config,
             srtp,
@@ -2797,7 +2924,7 @@ enum UdpReceiverCommand {
     Recover,
     SendInput {
         bytes: Vec<u8>,
-        reply: mpsc::SyncSender<Result<(), TransportError>>,
+        reply: Option<mpsc::SyncSender<Result<(), TransportError>>>,
     },
     Stop,
 }
@@ -2889,11 +3016,31 @@ impl NvstUdpReceiverControl {
         }
         let (reply, result) = mpsc::sync_channel(1);
         self.commands
-            .send(UdpReceiverCommand::SendInput { bytes, reply })
+            .send(UdpReceiverCommand::SendInput {
+                bytes,
+                reply: Some(reply),
+            })
             .map_err(|_| TransportError::Closed)?;
         result
             .recv_timeout(Duration::from_millis(500))
             .map_err(|_| TransportError::Closed)?
+    }
+
+    /// Queues latency-sensitive locally captured input without waiting for the
+    /// receive worker to round-trip an acknowledgement. Readiness is still
+    /// checked before enqueueing and the ordered command channel preserves the
+    /// exact keyboard/button/motion sequence.
+    pub fn queue_input(
+        &self,
+        bytes: Vec<u8>,
+        _partially_reliable: bool,
+    ) -> Result<(), TransportError> {
+        if !self.input_ready.load(Ordering::Acquire) {
+            return Err(TransportError::InputNotReady);
+        }
+        self.commands
+            .send(UdpReceiverCommand::SendInput { bytes, reply: None })
+            .map_err(|_| TransportError::Closed)
     }
 
     pub fn stop(&self) -> Result<(), NvstUdpReceiverError> {
@@ -2956,10 +3103,14 @@ pub struct ReservedNvstBundle {
 
 impl ReservedNvstBundle {
     pub fn reserve() -> Result<Self, NvstUdpReceiverError> {
-        let socket = reserve_nvst_udp_socket().map_err(NvstUdpReceiverError::Bind)?;
+        // Bifrost's legacy dedicated-socket layout assigns video to N and the
+        // native ICE/DTLS bundle to N+1. The server still relies on this pairing
+        // even though ANNOUNCE advertises clientPorts.video=0 and routes video
+        // after the Mjolnir NATT ping. Reserving the bundle first reverses those
+        // ports and causes some seats to keep all video off the client entirely.
+        let (socket, mjolnir_socket) =
+            reserve_nvst_socket_pair().map_err(NvstUdpReceiverError::Bind)?;
         let rtc = create_nvst_bundle_rtc(&socket)?;
-        let mjolnir_socket =
-            reserve_nvst_mjolnir_udp_socket().map_err(NvstUdpReceiverError::Bind)?;
         Ok(Self {
             socket,
             rtc,
@@ -3131,6 +3282,29 @@ fn bind_nvst_udp_socket(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket
 /// always owns this socket outright, so it never inherits an Electron-owned fd.
 pub fn reserve_nvst_mjolnir_udp_socket() -> std::io::Result<UdpSocket> {
     bind_nvst_udp_socket(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+}
+
+fn reserve_nvst_socket_pair() -> std::io::Result<(UdpSocket, UdpSocket)> {
+    const MAX_PAIR_ATTEMPTS: usize = 32;
+    let bind_ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+    let mut last_error = None;
+    for _ in 0..MAX_PAIR_ATTEMPTS {
+        let mjolnir = reserve_nvst_mjolnir_udp_socket()?;
+        let video_port = mjolnir.local_addr()?.port();
+        let Some(bundle_port) = video_port.checked_add(1) else {
+            continue;
+        };
+        match bind_nvst_udp_socket(bind_ip, bundle_port) {
+            Ok(bundle) => return Ok((bundle, mjolnir)),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "could not reserve consecutive NVST video and bundle UDP ports",
+        )
+    }))
 }
 
 pub fn spawn_nvst_udp_receiver(
@@ -3419,6 +3593,18 @@ fn finish_nvst_input_handshake(
             ));
             return false;
         }
+        eprintln!(
+            "NVST cursor capture tx: channel={} command=0x0308 enabled=true reason=input-activation",
+            channels.label(channels.control_reliable),
+        );
+        eprintln!(
+            "NVST remote cursor tracking tx: channel={} command=0x030d enabled=true reason=input-activation",
+            channels.label(channels.control_reliable),
+        );
+        eprintln!(
+            "NVST client state tx: channel={} window_state=19 system_state=0 frame=0",
+            channels.label(channels.control_reliable),
+        );
         input_state.mark_activation_sent();
     }
     input_ready.store(true, Ordering::Release);
@@ -3482,6 +3668,11 @@ fn run_nvst_webrtc_bundle(
     let mut input_channels: Option<NvstInputChannels> = None;
     let mut input_state = NvstInputChannelState::default();
     let mut input_codec = NvstInputCodec::default();
+    let mut last_input_types = Vec::new();
+    let mut mouse_motion_packets = 0_u64;
+    let mut server_cursor_hidden = false;
+    let mut cursor_capture_retry_at: Option<Instant> = None;
+    let mut cursor_capture_attempts = 0_u8;
     let mut control_keepalive_at = next_control_keepalive(Instant::now());
     let mut input_timeout_reported = false;
     let mut last_audio_sequence: Option<(u32, u16)> = None;
@@ -3500,6 +3691,50 @@ fn run_nvst_webrtc_bundle(
                     if input_state.is_ready()
                         && let Some(channels) = input_channels
                     {
+                        let input_types = native_input_types(&bytes);
+                        let should_log = match input_types.as_ref() {
+                            Ok(types) => {
+                                let only_motion = !types.is_empty()
+                                    && types
+                                        .iter()
+                                        .all(|input_type| native_input_type_is_motion(*input_type));
+                                if only_motion {
+                                    mouse_motion_packets = mouse_motion_packets.wrapping_add(1);
+                                }
+                                let changed = *types != last_input_types;
+                                if changed {
+                                    last_input_types.clone_from(types);
+                                }
+                                changed || !only_motion || mouse_motion_packets % 120 == 1
+                            }
+                            Err(_) => true,
+                        };
+                        if should_log {
+                            match input_types.as_ref() {
+                                Ok(types) => {
+                                    let names = types
+                                        .iter()
+                                        .map(|input_type| {
+                                            format!(
+                                                "{}({input_type})",
+                                                native_input_type_name(*input_type)
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(",");
+                                    eprintln!(
+                                        "NVST native input rx: events=[{names}] bytes={} raw={}",
+                                        bytes.len(),
+                                        diagnostic_hex(&bytes, 128),
+                                    );
+                                }
+                                Err(error) => eprintln!(
+                                    "NVST native input rx undecodable: error={error} bytes={} raw={}",
+                                    bytes.len(),
+                                    diagnostic_hex(&bytes, 128),
+                                ),
+                            }
+                        }
                         let timestamp_us = transport_origin
                             .elapsed()
                             .as_micros()
@@ -3508,6 +3743,14 @@ fn run_nvst_webrtc_bundle(
                         match input_codec.encode(&bytes, timestamp_us) {
                             Ok(messages) => {
                                 for message in messages {
+                                    if should_log {
+                                        eprintln!(
+                                            "NVST encoded input tx: route={:?} bytes={} raw={}",
+                                            message.route,
+                                            message.bytes.len(),
+                                            diagnostic_hex(&message.bytes, 128),
+                                        );
+                                    }
                                     if !channels.send_encoded(&mut rtc, &message) {
                                         sent = false;
                                         eprintln!(
@@ -3525,11 +3768,13 @@ fn run_nvst_webrtc_bundle(
                     } else {
                         sent = false;
                     }
-                    let _ = reply.send(if sent {
-                        Ok(())
-                    } else {
-                        Err(TransportError::InputNotReady)
-                    });
+                    if let Some(reply) = reply {
+                        let _ = reply.send(if sent {
+                            Ok(())
+                        } else {
+                            Err(TransportError::InputNotReady)
+                        });
+                    }
                 }
                 Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected) => {
                     rtc.disconnect();
@@ -3550,6 +3795,30 @@ fn run_nvst_webrtc_bundle(
                 eprintln!("NVST control keepalive could not be queued");
             }
             control_keepalive_at = next_control_keepalive(now);
+        }
+        if !server_cursor_hidden
+            && cursor_capture_attempts < MAX_CURSOR_CAPTURE_ATTEMPTS
+            && cursor_capture_retry_at.is_some_and(|retry_at| now >= retry_at)
+            && let Some(channels) = input_channels
+        {
+            cursor_capture_attempts += 1;
+            let capture_sent = channels.send_mouse_cursor_capture(&mut rtc, true);
+            let tracking_sent = channels.send_remote_cursor_tracking(&mut rtc, true);
+            if capture_sent && tracking_sent {
+                eprintln!(
+                    "NVST cursor capture tx: channel={} command=0x0308 enabled=true reason=post-play-retry attempt={cursor_capture_attempts}",
+                    channels.label(channels.control_reliable),
+                );
+                eprintln!(
+                    "NVST remote cursor tracking tx: channel={} command=0x030d enabled=true reason=post-play-retry attempt={cursor_capture_attempts}",
+                    channels.label(channels.control_reliable),
+                );
+            } else {
+                eprintln!(
+                    "NVST cursor feature retry could not be queued: attempt={cursor_capture_attempts} captureSent={capture_sent} trackingSent={tracking_sent}"
+                );
+            }
+            cursor_capture_retry_at = Some(now + CURSOR_CAPTURE_RETRY_INTERVAL);
         }
         if !input_timeout_reported && input_state.handshake_timed_out(sctp_started_at, now) {
             input_timeout_reported = true;
@@ -3791,7 +4060,7 @@ fn run_nvst_webrtc_bundle(
                             rtc.direct_api().start_sctp(true);
                             input_channels = Some(NvstInputChannels::create(&mut rtc));
                             let _ = event_sender.send(NvstReceiveEvent::TransportReady("sctp"));
-                            eprintln!("NVST SCTP started with the six-channel Bifrost profile");
+                            eprintln!("NVST SCTP started with the seven-channel Bifrost profile");
                         }
                     }
                     Event::ChannelOpen(id, label) => {
@@ -3818,6 +4087,9 @@ fn run_nvst_webrtc_bundle(
                                 ) {
                                     continue;
                                 }
+                                cursor_capture_attempts = 1;
+                                cursor_capture_retry_at =
+                                    Some(Instant::now() + CURSOR_CAPTURE_RETRY_INTERVAL);
                             }
                         }
                         if label.contains("rtcp") {
@@ -3831,17 +4103,71 @@ fn run_nvst_webrtc_bundle(
                         if let Some(channels) = input_channels
                             && channels.contains(data.id)
                         {
-                            let preview = data
-                                .data
-                                .iter()
-                                .take(4)
-                                .map(|byte| format!("{byte:02x}"))
-                                .collect::<Vec<_>>()
-                                .join("");
+                            let label = channels.label(data.id);
+                            let cursor_messages = server_cursor_messages(&data.data);
+                            for message in cursor_messages {
+                                eprintln!(
+                                    "NVST cursor wire rx: channel={label} id={:?} command=0x{:04x} offset={} cursorId={:?} position={:?} visible={:?} bytes={} raw={}",
+                                    data.id,
+                                    message.command,
+                                    message.offset,
+                                    message.cursor_id,
+                                    message.position,
+                                    message.visible,
+                                    message.raw.len(),
+                                    diagnostic_hex(&message.raw, 512),
+                                );
+                                if let Some(cursor) = message.normalized {
+                                    cursor_capture_retry_at = None;
+                                    if !server_cursor_hidden
+                                        && channels.send_mouse_cursor_capture(&mut rtc, false)
+                                    {
+                                        server_cursor_hidden = true;
+                                        eprintln!(
+                                            "NVST cursor capture tx: channel={} command=0x0308 enabled=false reason=first-local-cursor",
+                                            channels.label(channels.control_reliable),
+                                        );
+                                    }
+                                    eprintln!(
+                                        "NVST cursor dispatch: source={label} type={} id={} bytes={} raw={}",
+                                        cursor[0],
+                                        cursor[1],
+                                        cursor.len(),
+                                        diagnostic_hex(&cursor, 512),
+                                    );
+                                    let _ = event_sender.send(NvstReceiveEvent::Cursor(cursor));
+                                }
+                            }
+
+                            if data.id == channels.cursor {
+                                cursor_capture_retry_at = None;
+                                if !server_cursor_hidden
+                                    && channels.send_mouse_cursor_capture(&mut rtc, false)
+                                {
+                                    server_cursor_hidden = true;
+                                    eprintln!(
+                                        "NVST cursor capture tx: channel={} command=0x0308 enabled=false reason=cursor-channel",
+                                        channels.label(channels.control_reliable),
+                                    );
+                                }
+                                eprintln!(
+                                    "NVST cursor-channel raw rx: id={:?} bytes={} type={:?} cursorId={:?} raw={}",
+                                    data.id,
+                                    data.data.len(),
+                                    data.data.first(),
+                                    data.data.get(1),
+                                    diagnostic_hex(&data.data, 512),
+                                );
+                                let _ =
+                                    event_sender.send(NvstReceiveEvent::Cursor(data.data.to_vec()));
+                                continue;
+                            }
+
                             eprintln!(
-                                "NVST input channel inbound: id={:?} bytes={} prefix={preview}",
+                                "NVST data channel rx: channel={label} id={:?} bytes={} raw={}",
                                 data.id,
                                 data.data.len(),
+                                diagnostic_hex(&data.data, 128),
                             );
                         }
                         if let Some(channels) = input_channels
@@ -3859,6 +4185,9 @@ fn run_nvst_webrtc_bundle(
                             ) {
                                 continue;
                             }
+                            cursor_capture_attempts = 1;
+                            cursor_capture_retry_at =
+                                Some(Instant::now() + CURSOR_CAPTURE_RETRY_INTERVAL);
                         } else if Some(data.id) == rtcp_channel {
                             eprintln!(
                                 "NVST rtcp1 inbound: id={:?} binary={} bytes={}",
@@ -3870,6 +4199,11 @@ fn run_nvst_webrtc_bundle(
                     }
                     Event::ChannelClose(id) => {
                         if let Some(channels) = input_channels {
+                            if id == channels.control_reliable {
+                                server_cursor_hidden = false;
+                                cursor_capture_retry_at = None;
+                                cursor_capture_attempts = 0;
+                            }
                             let input_channel_closed = id == channels.input_partial;
                             if input_state.channel_closed(channels, id) || input_channel_closed {
                                 input_ready.store(false, Ordering::Release);
@@ -4117,7 +4451,9 @@ fn run_nvst_udp_receiver(
                     forward_optional(&event_sender, receiver.recover())
                 }
                 Ok(UdpReceiverCommand::SendInput { reply, .. }) => {
-                    let _ = reply.send(Err(TransportError::InputNotReady));
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Err(TransportError::InputNotReady));
+                    }
                 }
                 Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected) => {
                     forward_optional(&event_sender, receiver.stop());
@@ -4135,6 +4471,16 @@ fn run_nvst_udp_receiver(
         };
         if now.duration_since(last_ping) >= ping_interval {
             if let Some(credentials) = stun_credentials.as_ref() {
+                // Bifrost's dedicated Mjolnir video socket still uses the
+                // legacy literal PING to select the return path, even when
+                // ping-version 6 and ICE credentials are present. Send it
+                // before the authenticated binding request. Some seats accept
+                // the latter alone, while others leave video unrouted.
+                if let Err(error) = socket.send_to(b"PING", receiver.config.video_peer) {
+                    eprintln!("NVST legacy video PING send failed: {error}");
+                    forward_optional(&event_sender, receiver.stop());
+                    return;
+                }
                 let mut transaction_id = [0_u8; 12];
                 if let Err(error) = getrandom::fill(&mut transaction_id) {
                     eprintln!("NVST NATT transaction generation failed: {error}");
@@ -4263,7 +4609,7 @@ fn forward_receive_event(
     if let NvstReceiveEvent::Frame(frame) = event {
         let media_frame = EncodedMediaFrame {
             mid: "nvst-video-0".to_owned(),
-            codec: "H264".to_owned(),
+            codec: frame.codec.label().to_owned(),
             payload: Arc::from(frame.bytes),
             rtp_timestamp: u64::from(frame.timestamp),
             clock_rate_hz: 90_000,
@@ -4569,6 +4915,17 @@ mod tests {
     }
 
     #[test]
+    fn reserved_nvst_pair_places_bundle_immediately_after_video() {
+        let (bundle, video) = reserve_nvst_socket_pair().expect("reserve pair");
+        let bundle_addr = bundle.local_addr().expect("bundle address");
+        let video_addr = video.local_addr().expect("video address");
+
+        assert!(bundle_addr.ip().is_unspecified());
+        assert!(video_addr.ip().is_unspecified());
+        assert_eq!(bundle_addr.port(), video_addr.port() + 1);
+    }
+
+    #[test]
     fn link_local_interfaces_use_distinct_logical_ice_addresses() {
         let local: SocketAddr = "169.254.0.21:49000".parse().unwrap();
         let remote: SocketAddr = "169.254.0.22:5006".parse().unwrap();
@@ -4739,6 +5096,13 @@ mod tests {
         .expect("valid NVST context")
         .expect("NVST handoff");
         assert_eq!(configured.frame_time_us, 8_333);
+        let capped = parse_nvst_video_handoff(&json!({
+            "nvstVideo": legacy_handoff(),
+            "settings": { "fps": 360 }
+        }))
+        .expect("valid high-FPS NVST context")
+        .expect("NVST handoff");
+        assert_eq!(capped.frame_time_us, 4_166);
         assert!(matches!(
             select_preferred_video_transport(&json!({ "nvstTransport": { "tracks": [] } })),
             PreferredVideoTransport::WebRtcFallback(NvstFallbackReason::InvalidNvstHandoff(
@@ -4757,7 +5121,7 @@ mod tests {
         ));
 
         let mut invalid = legacy_handoff();
-        invalid["codec"] = json!("H265");
+        invalid["codec"] = json!("VP9");
         let context = json!({ "nvstVideo": invalid });
         assert!(matches!(
             select_preferred_video_transport(&context),
@@ -5049,7 +5413,7 @@ mod tests {
             0, 0, 1, 0x67, 0xaa, 0, 0, 0, 1, 0x68, 0xbb, 0, 0, 1, 0x65, 0xcc,
         ]);
 
-        let mut assembler = H264AccessUnitAssembler::new(4096);
+        let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::H264, 4096);
         let frame = assembler
             .push(header, 90_000, &payload)
             .expect("valid frame")
@@ -5062,6 +5426,133 @@ mod tests {
             ]
         );
         assert!(frame.keyframe);
+    }
+
+    #[test]
+    fn assembles_h265_annex_b_and_detects_irap_keyframes() {
+        let header = NvVideoPacket {
+            stream_packet_index: 1,
+            frame_index: 10,
+            flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            fec_current_block: 0,
+            fec_last_block: 0,
+            is_fec: false,
+        };
+        let mut payload = vec![0x01, 0, 0, 2, 0, 0, 0, 0];
+        payload.extend_from_slice(&[0, 0, 0, 1, 19 << 1, 1, 0xaa]);
+        let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::H265, 4096);
+
+        let frame = assembler
+            .push(header, 90_000, &payload)
+            .expect("valid H.265 frame")
+            .expect("complete frame");
+
+        assert_eq!(frame.codec, NvstVideoCodec::H265);
+        assert_eq!(frame.bytes, [0, 0, 0, 1, 19 << 1, 1, 0xaa]);
+        assert!(frame.keyframe);
+    }
+
+    #[test]
+    fn assembles_av1_payload_after_the_gamestream_frame_header() {
+        let header = NvVideoPacket {
+            stream_packet_index: 1,
+            frame_index: 11,
+            flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            fec_current_block: 0,
+            fec_last_block: 0,
+            is_fec: false,
+        };
+        let payload = [0x01, 0, 0, 2, 11, 0, 0, 0, 0x12, 0x34, 0x56];
+        let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::Av1, 4096);
+
+        let frame = assembler
+            .push(header, 90_000, &payload)
+            .expect("valid AV1 frame")
+            .expect("complete frame");
+
+        assert_eq!(frame.codec, NvstVideoCodec::Av1);
+        assert_eq!(frame.bytes, [0x12, 0x34, 0x56]);
+        assert!(frame.keyframe);
+    }
+
+    #[test]
+    fn strips_the_current_44_byte_extended_av1_frame_header() {
+        let header = NvVideoPacket {
+            stream_packet_index: 1,
+            frame_index: 12,
+            flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            fec_current_block: 0,
+            fec_last_block: 0,
+            is_fec: false,
+        };
+        let mut payload = vec![0_u8; 44];
+        payload[0] = 0x81;
+        payload[3] = 2;
+        payload[4..6].copy_from_slice(&47_u16.to_le_bytes());
+        // A temporal-unit length byte is not necessarily a valid OBU header.
+        payload.extend_from_slice(&[0x81, 0x01, 0x12]);
+        let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::Av1, 4096);
+
+        let frame = assembler
+            .push(header, 90_000, &payload)
+            .expect("valid extended AV1 frame")
+            .expect("complete frame");
+
+        assert_eq!(frame.bytes, [0x81, 0x01, 0x12]);
+        assert!(frame.keyframe);
+    }
+
+    #[test]
+    fn trims_av1_fec_padding_from_the_final_packet() {
+        let first = NvVideoPacket {
+            stream_packet_index: 1,
+            frame_index: 12,
+            flags: FLAG_SOF | FLAG_CONTAINS_PIC_DATA,
+            fec_current_block: 0,
+            fec_last_block: 0,
+            is_fec: false,
+        };
+        let last = NvVideoPacket {
+            stream_packet_index: 2,
+            frame_index: 12,
+            flags: FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            fec_current_block: 0,
+            fec_last_block: 0,
+            is_fec: false,
+        };
+        let first_payload = [0x01, 0, 0, 2, 3, 0, 0, 0, 0x12, 0x00];
+        let padded_last_payload = [0x32, 0x01, 0xaa, 0, 0, 0, 0];
+        let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::Av1, 4096);
+
+        assert!(
+            assembler
+                .push(first, 90_000, &first_payload)
+                .expect("valid AV1 first packet")
+                .is_none()
+        );
+        let frame = assembler
+            .push(last, 90_000, &padded_last_payload)
+            .expect("valid AV1 final packet")
+            .expect("complete frame");
+
+        assert_eq!(frame.bytes, [0x12, 0x00, 0x32, 0x01, 0xaa]);
+        assert!(frame.keyframe);
+    }
+
+    #[test]
+    fn parses_all_supported_nvst_video_codec_names() {
+        assert_eq!(
+            NvstVideoCodec::parse("AVC").expect("AVC"),
+            NvstVideoCodec::H264
+        );
+        assert_eq!(
+            NvstVideoCodec::parse("HEVC").expect("HEVC"),
+            NvstVideoCodec::H265
+        );
+        assert_eq!(
+            NvstVideoCodec::parse("AV1").expect("AV1"),
+            NvstVideoCodec::Av1
+        );
     }
 
     #[test]
@@ -5079,11 +5570,11 @@ mod tests {
     #[test]
     fn strips_a_terminal_access_unit_delimiter_before_decoder_submission() {
         let mut bytes = vec![0, 0, 0, 1, 0x65, 0xaa, 0, 0, 0, 1, 0x09, 0xf0];
-        strip_trailing_access_unit_delimiter(&mut bytes);
+        strip_trailing_access_unit_delimiter(NvstVideoCodec::H264, &mut bytes);
         assert_eq!(bytes, [0, 0, 0, 1, 0x65, 0xaa]);
 
         let mut bytes = vec![0, 0, 0, 1, 0x09, 0xf0, 0, 0, 1, 0x61, 0xbb];
-        strip_trailing_access_unit_delimiter(&mut bytes);
+        strip_trailing_access_unit_delimiter(NvstVideoCodec::H264, &mut bytes);
         assert_eq!(bytes, [0, 0, 0, 1, 0x09, 0xf0, 0, 0, 1, 0x61, 0xbb]);
     }
 
@@ -5097,7 +5588,7 @@ mod tests {
             fec_last_block: 0,
             is_fec: false,
         };
-        let mut assembler = H264AccessUnitAssembler::new(4096);
+        let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::H264, 4096);
         let frame = assembler
             .push(header, 90_000, &[0x81, 0x08, 0, 0, 0, 1, 0x61, 0xaa])
             .expect("source packet")
@@ -5116,7 +5607,7 @@ mod tests {
             is_fec: false,
         };
         let payload = vec![0x81; MAX_GS_FRAME_HEADER_BYTES + 8];
-        let mut assembler = H264AccessUnitAssembler::new(4096);
+        let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::H264, 4096);
 
         assert!(matches!(
             assembler.push(header, 90_000, &payload),
@@ -5717,7 +6208,8 @@ mod tests {
     fn h264_frame_queue_is_bounded_and_prefers_current_frames() {
         let mut queue = BoundedFrameQueue::new(2);
         for frame_index in 1..=3 {
-            queue.push(EncodedH264Frame {
+            queue.push(EncodedVideoAccessUnit {
+                codec: NvstVideoCodec::H264,
                 timestamp: frame_index,
                 frame_index,
                 first_stream_packet_index: frame_index,
@@ -5745,7 +6237,7 @@ mod tests {
 /// using the UDP worker. It drops the oldest frame to keep interactive latency bounded.
 #[derive(Debug)]
 pub struct BoundedFrameQueue {
-    frames: VecDeque<EncodedH264Frame>,
+    frames: VecDeque<EncodedVideoAccessUnit>,
     capacity: usize,
     dropped_frames: u64,
 }
@@ -5759,7 +6251,7 @@ impl BoundedFrameQueue {
         }
     }
 
-    pub fn push(&mut self, frame: EncodedH264Frame) {
+    pub fn push(&mut self, frame: EncodedVideoAccessUnit) {
         if self.frames.len() == self.capacity {
             let _ = self.frames.pop_front();
             self.dropped_frames += 1;
@@ -5767,7 +6259,7 @@ impl BoundedFrameQueue {
         self.frames.push_back(frame);
     }
 
-    pub fn pop(&mut self) -> Option<EncodedH264Frame> {
+    pub fn pop(&mut self) -> Option<EncodedVideoAccessUnit> {
         self.frames.pop_front()
     }
 

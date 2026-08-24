@@ -46,6 +46,7 @@ export interface NvstRtspProbeInput {
   rtspsEndpoints: string[];
   resolution?: string;
   fps?: number;
+  maxBitrateKbps?: number;
   codec?: string;
   bundlePeer?: { ip: string; port: number };
   timeoutMs?: number;
@@ -969,6 +970,8 @@ export async function negotiateNvstRtspSession(
         ? {
           resolution: input.resolution,
           fps: input.fps,
+          codec: input.codec,
+          maxBitrateKbps: input.maxBitrateKbps,
           // Official always advertises the runtime encryptionKey in ANNOUNCE (it keys the
           // video SRTP on the separate non-DTLS socket). Now that we always generate it,
           // send it unconditionally rather than dropping it when a DTLS fingerprint exists.
@@ -1004,6 +1007,8 @@ export async function negotiateNvstRtspSession(
         : {
           resolution: input.resolution,
           fps: input.fps,
+          codec: input.codec,
+          maxBitrateKbps: input.maxBitrateKbps,
           encryptionKeyHex: describedKey || !dtlsFingerprint ? encryptionKeyHex : undefined,
           encryptionKeyId: describedKey || !dtlsFingerprint ? encryptionKeyId : undefined,
           iceCredentials: localIceCredentials ?? undefined,

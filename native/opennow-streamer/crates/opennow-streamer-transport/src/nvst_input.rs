@@ -13,14 +13,25 @@ const CUSTOM_PARTIAL_LABEL: &str = "custom_message_on_sctp_private_partially_rel
 const CONTROL_PARTIAL_LABEL: &str = "control_channel_partially_reliable";
 const CONTROL_UNRELIABLE_LABEL: &str = "control_channel_unreliable";
 const INPUT_PARTIAL_LABEL: &str = "input_channel_partially_reliable";
+const CURSOR_LABEL: &str = "cursor_channel";
 const PARTIAL_RELIABLE_LIFETIME_MS: u16 = 300;
 
+const COMMAND_SYSTEM_CURSOR: u16 = 0x010f;
+const COMMAND_BITMAP_CURSOR: u16 = 0x0110;
 const COMMAND_KEEPALIVE: u16 = 0x0200;
 const COMMAND_REMOTE_INPUT: u16 = 0x0206;
 const COMMAND_ENABLE_INPUT: u16 = 0x020b;
 const COMMAND_GAMEPAD: u16 = 0x020d;
 const COMMAND_INPUT_VERSION: u16 = 0x020e;
-const COMMAND_READY: u16 = 0x0308;
+// Controls whether the server composites its cursor into the video. The
+// official client enables this for startup, waits for the first ServerControl
+// cursor notification, then disables it and renders the reported cursor
+// locally. Notifications continue after the server-rendered cursor is hidden.
+const COMMAND_MOUSE_CURSOR_CAPTURE: u16 = 0x0308;
+// NVB feature type 8 ("track remote cursor image") is distinct from cursor
+// capture. Bifrost keeps this enabled after it turns capture back off so the
+// server continues publishing cursor shape and mode changes.
+const COMMAND_TRACK_REMOTE_CURSOR_IMAGE: u16 = 0x030d;
 const COMMAND_WINDOW_STATE: u16 = 0x0320;
 const COMMAND_SYSTEM_STATE: u16 = 0x0321;
 
@@ -49,7 +60,7 @@ pub(crate) struct NvstChannelDefinition {
     pub(crate) reliability: NvstChannelReliability,
 }
 
-pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 6] = [
+pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 7] = [
     NvstChannelDefinition {
         sid: 0,
         label: CONTROL_RELIABLE_LABEL,
@@ -86,6 +97,12 @@ pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 6] = [
         ordered: true,
         reliability: NvstChannelReliability::Lifetime(PARTIAL_RELIABLE_LIFETIME_MS),
     },
+    NvstChannelDefinition {
+        sid: 12,
+        label: CURSOR_LABEL,
+        ordered: true,
+        reliability: NvstChannelReliability::Reliable,
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +113,7 @@ pub(crate) struct NvstInputChannels {
     pub(crate) control_partial: ChannelId,
     pub(crate) control_unreliable: ChannelId,
     pub(crate) input_partial: ChannelId,
+    pub(crate) cursor: ChannelId,
 }
 
 impl NvstInputChannels {
@@ -114,11 +132,32 @@ impl NvstInputChannels {
             control_partial: ids[3],
             control_unreliable: ids[4],
             input_partial: ids[5],
+            cursor: ids[6],
         }
     }
 
     pub(crate) fn contains(self, id: ChannelId) -> bool {
         self.all().contains(&id)
+    }
+
+    pub(crate) fn label(self, id: ChannelId) -> &'static str {
+        if id == self.control_reliable {
+            CONTROL_RELIABLE_LABEL
+        } else if id == self.custom_reliable {
+            CUSTOM_RELIABLE_LABEL
+        } else if id == self.custom_partial {
+            CUSTOM_PARTIAL_LABEL
+        } else if id == self.control_partial {
+            CONTROL_PARTIAL_LABEL
+        } else if id == self.control_unreliable {
+            CONTROL_UNRELIABLE_LABEL
+        } else if id == self.input_partial {
+            INPUT_PARTIAL_LABEL
+        } else if id == self.cursor {
+            CURSOR_LABEL
+        } else {
+            "unknown"
+        }
     }
 
     pub(crate) fn send_control(self, rtc: &mut Rtc, bytes: &[u8]) -> bool {
@@ -139,15 +178,24 @@ impl NvstInputChannels {
             .all(|bytes| self.send_control(rtc, bytes))
     }
 
+    pub(crate) fn send_mouse_cursor_capture(self, rtc: &mut Rtc, enabled: bool) -> bool {
+        self.send_control(rtc, &mouse_cursor_capture(enabled))
+    }
+
+    pub(crate) fn send_remote_cursor_tracking(self, rtc: &mut Rtc, enabled: bool) -> bool {
+        self.send_control(rtc, &remote_cursor_tracking(enabled))
+    }
+
     pub(crate) fn send_encoded(self, rtc: &mut Rtc, message: &NvstEncodedInput) -> bool {
         let id = match message.route {
             NvstInputRoute::ControlReliable => self.control_reliable,
+            NvstInputRoute::ControlPartial => self.control_partial,
             NvstInputRoute::InputPartial => self.input_partial,
         };
         write_channel(rtc, id, &message.bytes)
     }
 
-    fn all(self) -> [ChannelId; 6] {
+    fn all(self) -> [ChannelId; 7] {
         [
             self.control_reliable,
             self.custom_reliable,
@@ -155,6 +203,7 @@ impl NvstInputChannels {
             self.control_partial,
             self.control_unreliable,
             self.input_partial,
+            self.cursor,
         ]
     }
 }
@@ -298,9 +347,141 @@ pub(crate) fn input_protocol_version(bytes: &[u8]) -> Option<u16> {
     (bytes[0] == 0x0e).then_some(first)
 }
 
+/// Extracts server cursor notifications from the reliable control stream and
+/// normalizes them for the platform output layer.
+///
+/// Bifrost's current Windows client dispatches 0x010f (system cursor) and
+/// 0x0110 (bitmap cursor) through ServerControl. The separately negotiated
+/// `cursor_channel` is not used for these notifications by current GFN hosts.
+#[cfg(test)]
+pub(crate) fn server_cursor_updates(bytes: &[u8]) -> Vec<Vec<u8>> {
+    server_cursor_messages(bytes)
+        .into_iter()
+        .filter_map(|message| message.normalized)
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NvstServerCursorMessage {
+    pub(crate) command: u16,
+    pub(crate) offset: usize,
+    pub(crate) raw: Vec<u8>,
+    pub(crate) cursor_id: Option<u32>,
+    pub(crate) position: Option<(u16, u16)>,
+    pub(crate) visible: Option<bool>,
+    pub(crate) normalized: Option<Vec<u8>>,
+}
+
+/// Scans a data-channel message for cursor commands instead of assuming that
+/// the host always places them at byte zero on `control_channel_reliable`.
+/// This is deliberately cursor-specific: arbitrary custom-channel payloads
+/// must not be interpreted as general NVST control traffic.
+pub(crate) fn server_cursor_messages(bytes: &[u8]) -> Vec<NvstServerCursorMessage> {
+    let mut updates = Vec::new();
+    let mut offset = 0_usize;
+    while bytes.len().saturating_sub(offset) >= 4 {
+        let code = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        let payload_len = usize::from(u16::from_le_bytes([bytes[offset + 2], bytes[offset + 3]]));
+        let payload_start = offset + 4;
+        let Some(payload_end) = payload_start.checked_add(payload_len) else {
+            break;
+        };
+        if payload_end > bytes.len() {
+            offset += 1;
+            continue;
+        }
+        let payload = &bytes[payload_start..payload_end];
+        match code {
+            COMMAND_SYSTEM_CURSOR if payload.len() >= 4 => {
+                let cursor_id =
+                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                let position = (payload.len() >= 8).then(|| {
+                    (
+                        u16::from_le_bytes([payload[4], payload[5]]),
+                        u16::from_le_bytes([payload[6], payload[7]]),
+                    )
+                });
+                let visible = payload.get(8).map(|value| *value != 0);
+                let normalized = u8::try_from(cursor_id).ok().map(|cursor_id| {
+                    // Platform cursor wire shape:
+                    // type, id, hotspot x/y, empty MIME/image, optional x/y.
+                    //
+                    // The optional byte after x/y is cursor visibility metadata,
+                    // not the relative-mouse sentinel. Geronimo preserves the
+                    // cursor ID verbatim; predefined ID 0 is what selects locked
+                    // input in the official SDL cursor manager.
+                    let mut normalized = vec![0, cursor_id, 0, 0, 0, 0, 0];
+                    if payload.len() >= 8 {
+                        normalized.extend_from_slice(&payload[4..8]);
+                    }
+                    normalized
+                });
+                updates.push(NvstServerCursorMessage {
+                    command: code,
+                    offset,
+                    raw: bytes[offset..payload_end].to_vec(),
+                    cursor_id: Some(cursor_id),
+                    position,
+                    visible,
+                    normalized,
+                });
+            }
+            COMMAND_BITMAP_CURSOR => {
+                // Bitmap cursor payloads have a distinct native pixel layout.
+                // Keep detecting them explicitly so they cannot be mistaken for
+                // input/control commands while raw bitmap support is added.
+                updates.push(NvstServerCursorMessage {
+                    command: code,
+                    offset,
+                    raw: bytes[offset..payload_end].to_vec(),
+                    cursor_id: None,
+                    position: None,
+                    visible: None,
+                    normalized: None,
+                });
+            }
+            _ => {
+                offset += 1;
+                continue;
+            }
+        }
+        offset = payload_end;
+    }
+    updates
+}
+
+pub(crate) fn native_input_types(packet: &[u8]) -> Result<Vec<u32>, NvstInputCodecError> {
+    native_events(packet, 0).map(|events| {
+        events
+            .into_iter()
+            .filter_map(|event| read_u32_le(event.bytes, 0))
+            .collect()
+    })
+}
+
+pub(crate) fn native_input_type_name(input_type: u32) -> &'static str {
+    match input_type {
+        INPUT_KEY_DOWN => "key-down",
+        INPUT_KEY_UP => "key-up",
+        INPUT_MOUSE_ABSOLUTE => "mouse-absolute",
+        INPUT_MOUSE_RELATIVE => "mouse-relative",
+        INPUT_MOUSE_BUTTON_DOWN => "mouse-button-down",
+        INPUT_MOUSE_BUTTON_UP => "mouse-button-up",
+        INPUT_MOUSE_WHEEL => "mouse-wheel",
+        INPUT_GAMEPAD => "gamepad",
+        INPUT_TEXT => "text",
+        _ => "unknown",
+    }
+}
+
+pub(crate) fn native_input_type_is_motion(input_type: u32) -> bool {
+    matches!(input_type, INPUT_MOUSE_ABSOLUTE | INPUT_MOUSE_RELATIVE)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NvstInputRoute {
     ControlReliable,
+    ControlPartial,
     InputPartial,
 }
 
@@ -568,7 +749,11 @@ fn remote_input_message(inner: Vec<u8>, timestamp_us: u64) -> NvstEncodedInput {
         body.extend_from_slice(&timestamp_us.to_le_bytes());
     }
     NvstEncodedInput {
-        route: NvstInputRoute::ControlReliable,
+        route: if matches!(input_type, INPUT_MOUSE_RELATIVE | INPUT_MOUSE_ABSOLUTE) {
+            NvstInputRoute::ControlPartial
+        } else {
+            NvstInputRoute::ControlReliable
+        },
         bytes: control_command(COMMAND_REMOTE_INPUT, &remote_input_packet(0x0e, &body)),
     }
 }
@@ -666,15 +851,24 @@ fn text_keystroke(character: char) -> Option<(u16, u16)> {
     Some((virtual_key, 1))
 }
 
-fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 6] {
+fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 7] {
     [
         enable_input(1, false),
         device_descriptor(timestamp_us, 2),
-        control_command(COMMAND_READY, &[0]),
-        state_change(COMMAND_WINDOW_STATE),
-        state_change(COMMAND_SYSTEM_STATE),
+        mouse_cursor_capture(true),
+        remote_cursor_tracking(true),
+        state_change(COMMAND_WINDOW_STATE, 19, 0),
+        state_change(COMMAND_SYSTEM_STATE, 0, 0),
         enable_input(1, true),
     ]
+}
+
+fn mouse_cursor_capture(enabled: bool) -> Vec<u8> {
+    control_command(COMMAND_MOUSE_CURSOR_CAPTURE, &[u8::from(enabled)])
+}
+
+fn remote_cursor_tracking(enabled: bool) -> Vec<u8> {
+    control_command(COMMAND_TRACK_REMOTE_CURSOR_IMAGE, &[u8::from(enabled)])
 }
 
 fn control_keepalive(stream_value: u32) -> Vec<u8> {
@@ -703,8 +897,17 @@ fn device_descriptor(timestamp_us: u64, descriptor_index: u8) -> Vec<u8> {
     control_command(COMMAND_GAMEPAD, &payload)
 }
 
-fn state_change(code: u16) -> Vec<u8> {
-    control_command(code, &[0; 12])
+fn state_change(code: u16, state: u32, frame_number: u32) -> Vec<u8> {
+    // Bifrost serializes these as three little-endian u32 fields: stream
+    // index, requested state, and frame number. The desktop client announces
+    // window state 19 at frame zero once input is activated. Advertising the
+    // previous all-zero window state leaves the session looking inactive and
+    // prevents the server from sending its system-cursor mode updates.
+    let mut payload = Vec::with_capacity(12);
+    payload.extend_from_slice(&0_u32.to_le_bytes());
+    payload.extend_from_slice(&state.to_le_bytes());
+    payload.extend_from_slice(&frame_number.to_le_bytes());
+    control_command(code, &payload)
 }
 
 fn control_command(code: u16, payload: &[u8]) -> Vec<u8> {
@@ -782,7 +985,7 @@ mod tests {
     fn channel_profile_matches_official_sids_labels_and_reliability() {
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.sid),
-            [0, 2, 4, 6, 8, 10]
+            [0, 2, 4, 6, 8, 10, 12]
         );
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.label),
@@ -793,6 +996,7 @@ mod tests {
                 CONTROL_PARTIAL_LABEL,
                 CONTROL_UNRELIABLE_LABEL,
                 INPUT_PARTIAL_LABEL,
+                CURSOR_LABEL,
             ]
         );
         assert!(
@@ -809,10 +1013,11 @@ mod tests {
                 NvstChannelReliability::Lifetime(300),
                 NvstChannelReliability::MaxRetransmits(0),
                 NvstChannelReliability::Lifetime(300),
+                NvstChannelReliability::Reliable,
             ]
         );
         let configs = NVST_CHANNEL_PROFILE.map(channel_config);
-        assert_eq!(configs.clone().map(|config| config.ordered), [true; 6]);
+        assert_eq!(configs.clone().map(|config| config.ordered), [true; 7]);
         assert_eq!(
             configs.map(|config| config.reliability),
             [
@@ -822,6 +1027,7 @@ mod tests {
                 Reliability::MaxPacketLifetime { lifetime: 300 },
                 Reliability::MaxRetransmits { retransmits: 0 },
                 Reliability::MaxPacketLifetime { lifetime: 300 },
+                Reliability::Reliable,
             ]
         );
     }
@@ -870,8 +1076,39 @@ mod tests {
     }
 
     #[test]
+    fn extracts_system_cursor_notifications_from_server_control() {
+        let visible = hex("0f010900010000000c80168001");
+        assert_eq!(
+            server_cursor_updates(&visible),
+            vec![hex("000100000000000c801680")]
+        );
+
+        let mut concatenated = visible;
+        concatenated.extend_from_slice(&hex("0f0109000c0000000000000000"));
+        assert_eq!(
+            server_cursor_updates(&concatenated),
+            vec![hex("000100000000000c801680"), hex("000c000000000000000000")]
+        );
+
+        assert_eq!(
+            server_cursor_updates(&hex("0f010800010000000c801680")),
+            vec![hex("000100000000000c801680")]
+        );
+        assert_eq!(
+            server_cursor_updates(&hex("0f01040000000000")),
+            vec![hex("00000000000000")]
+        );
+        assert!(server_cursor_updates(&hex("0f010400010000")).is_empty());
+        assert!(server_cursor_updates(&hex("0a0102007b7d")).is_empty());
+    }
+
+    #[test]
     fn control_keepalive_and_activation_are_byte_exact() {
         assert_eq!(control_keepalive(0), hex("0002040000000000"));
+        assert_eq!(mouse_cursor_capture(false), hex("0803010000"));
+        assert_eq!(mouse_cursor_capture(true), hex("0803010001"));
+        assert_eq!(remote_cursor_tracking(false), hex("0d03010000"));
+        assert_eq!(remote_cursor_tracking(true), hex("0d03010001"));
         let now = Instant::now();
         assert_eq!(
             next_control_keepalive(now).duration_since(now),
@@ -886,10 +1123,11 @@ mod tests {
                 "0d02300023000000000132bc31220c0000001a000000020014000000000000000000000000000000550000000000000000000000"
             )
         );
-        assert_eq!(chain[2], hex("0803010000"));
-        assert_eq!(chain[3], hex("20030c00000000000000000000000000"));
-        assert_eq!(chain[4], hex("21030c00000000000000000000000000"));
-        assert_eq!(chain[5], hex("0b020c00000000000100000001000000"));
+        assert_eq!(chain[2], hex("0803010001"));
+        assert_eq!(chain[3], hex("0d03010001"));
+        assert_eq!(chain[4], hex("20030c00000000001300000000000000"));
+        assert_eq!(chain[5], hex("21030c00000000000000000000000000"));
+        assert_eq!(chain[6], hex("0b020c00000000000100000001000000"));
     }
 
     #[test]
@@ -925,6 +1163,7 @@ mod tests {
         wrapped_mouse.extend_from_slice(&(mouse.len() as u16).to_be_bytes());
         wrapped_mouse.extend_from_slice(&mouse);
         let mouse = codec.encode(&wrapped_mouse, 0).expect("mouse");
+        assert_eq!(mouse[0].route, NvstInputRoute::ControlPartial);
         assert_eq!(
             mouse[0].bytes,
             hex(

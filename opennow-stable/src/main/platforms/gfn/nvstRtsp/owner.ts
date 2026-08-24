@@ -1,4 +1,9 @@
-import type { NativeStreamerSessionContext, NvstVideoSession } from "@shared/gfn";
+import {
+  clampNativeStreamFps,
+  type NativeStreamerSessionContext,
+  type NvstVideoSession,
+  type VideoCodec,
+} from "@shared/gfn";
 
 import {
   bindEphemeralUdp,
@@ -58,6 +63,10 @@ function withoutNvstVideo(
   return rest;
 }
 
+function resolveNvstCodec(context: NativeStreamerSessionContext): VideoCodec {
+  return context.session.negotiatedStreamProfile?.codec ?? context.settings.codec;
+}
+
 export class GfnNvstRtspSessionOwner implements GfnNvstRtspOwner {
   private active: OwnedSession | null = null;
   private revision = 0;
@@ -109,8 +118,13 @@ export class GfnNvstRtspSessionOwner implements GfnNvstRtspOwner {
           sessionId,
           rtspsEndpoints,
           resolution: context.settings.resolution,
-          fps: context.settings.fps,
-          codec: "H264",
+          fps: clampNativeStreamFps(
+            context.session.negotiatedStreamProfile?.fps ?? context.settings.fps,
+          ),
+          maxBitrateKbps: Number.isFinite(context.settings.maxBitrateMbps)
+            ? Math.round(context.settings.maxBitrateMbps * 1_000)
+            : 100_000,
+          codec: resolveNvstCodec(context),
           bundlePeer: context.session.mediaConnectionInfo,
           onLog: this.dependencies.onLog,
           onVideoReady: this.dependencies.onVideoReady,

@@ -1425,10 +1425,9 @@ export class GfnWebRtcClient {
       );
     } else {
       this.detachInputCapture();
-      // Overlay Meta/Home detection only; gamepad state is owned by the floating window.
-      this.gamepadController.start();
+      this.gamepadController.stop();
       this.log(
-        `Native external-window input active (protocol v${nativeProtocolVersion}); OS capture handled by streamer, Electron overlay shortcuts only.`,
+        `Native external-window input active (protocol v${nativeProtocolVersion}); Electron input capture is disabled and SDL owns the stream window.`,
       );
     }
   }

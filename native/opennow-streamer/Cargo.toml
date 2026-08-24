@@ -28,6 +28,7 @@ crc32fast = "1"
 getrandom = "0.3"
 ghash = "0.5"
 hmac = "0.12"
+image = { version = "0.25", default-features = false, features = ["bmp", "ico", "png"] }
 openh264 = { version = "0.9.8", default-features = false, features = ["source"] }
 opus = "0.3.1"
 sdl2 = { version = "0.38.0", default-features = false, features = ["bundled", "raw-window-handle", "static-link", "unsafe_textures"] }

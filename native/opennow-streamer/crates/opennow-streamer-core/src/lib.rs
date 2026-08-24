@@ -8,14 +8,14 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, EncodedFrame, MediaCodec, MediaControl, MediaFeedback,
-    MediaRuntime, MediaSession, MediaSink, MediaStreamConfig, PushOutcome, supports_audio_decode,
-    supports_audio_output, video_backends,
+    MediaRuntime, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome,
+    supports_audio_decode, supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
 };
 use opennow_streamer_transport::{
-    NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstUdpReceiverControl,
+    NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstUdpReceiverControl,
     NvstUdpReceiverSession, PreferredVideoTransport, ReservedNvstBundle, SharedNvstFeedback,
     TransportControl, TransportEvent, TransportSession, negotiate, reserve_nvst_mjolnir_udp_socket,
     select_preferred_video_transport, spawn_nvst_mjolnir_receiver,
@@ -35,11 +35,13 @@ enum State {
 
 const ENCODED_MEDIA_QUEUE_CAPACITY: usize = 8;
 const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
+const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 trait NvstSessionResources {
     fn request_keyframe(&self);
     fn acknowledge_video_frame(&self, bytes: u32);
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String>;
+    fn apply_cursor(&self, bytes: Vec<u8>);
     fn recover(&self) -> Result<(), String>;
     fn stop(&self);
 }
@@ -62,8 +64,14 @@ impl NvstSessionResources for ActiveNvstResources {
 
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String> {
         self.bundle
-            .send_input(bytes, false)
+            .queue_input(bytes, false)
             .map_err(|error| error.to_string())
+    }
+
+    fn apply_cursor(&self, bytes: Vec<u8>) {
+        if let Some(media) = self.media.as_ref() {
+            media.update_cursor(bytes);
+        }
     }
 
     fn recover(&self) -> Result<(), String> {
@@ -1247,7 +1255,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 }
             }
         }
-        match nvst_events.recv_timeout(Duration::from_millis(5)) {
+        match nvst_events.recv_timeout(NATIVE_INPUT_POLL_INTERVAL) {
             Ok(nvst_event) => {
                 match &nvst_event {
                     NvstReceiveEvent::InputReady(_) => feedback_state.input_available = true,
@@ -1297,6 +1305,27 @@ fn forward_nvst_event<R: NvstSessionResources>(
     }
 
     match nvst_event {
+        NvstReceiveEvent::RecoveryNeeded(NvstRecovery::PacketGap {
+            first_missing_index,
+            last_missing_index,
+        }) => {
+            // Packet loss is expected on the UDP media leg. The reorder buffer
+            // has already skipped the unrecoverable range and reset the frame
+            // assembler, so request a clean decoder reference without spending
+            // the terminal transport-recovery budget. Several gaps can arrive
+            // before the requested keyframe reaches us at high bitrates.
+            resources.request_keyframe();
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "level": "warn",
+                    "message": format!(
+                        "Recovering NVST packet gap with a fresh keyframe: {first_missing_index}..={last_missing_index}"
+                    )
+                }),
+            ));
+            false
+        }
         NvstReceiveEvent::RecoveryNeeded(recovery) => attempt_nvst_recovery(
             output,
             lifecycle,
@@ -1367,6 +1396,10 @@ fn forward_nvst_event<R: NvstSessionResources>(
         }
         NvstReceiveEvent::InputUnavailable(reason) => {
             let _ = output.send(event("input-unavailable", json!({ "reason": reason })));
+            false
+        }
+        NvstReceiveEvent::Cursor(bytes) => {
+            resources.apply_cursor(bytes);
             false
         }
         NvstReceiveEvent::Dropped(reason) => {
@@ -1583,6 +1616,23 @@ fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
             packet.extend_from_slice(&timestamp_us.to_be_bytes());
             packet
         }
+        CapturedInput::MouseAbsolute {
+            x,
+            y,
+            width,
+            height,
+        } => {
+            let mut packet = Vec::with_capacity(26);
+            packet.extend_from_slice(&5_u32.to_le_bytes());
+            packet.extend_from_slice(&x.to_be_bytes());
+            packet.extend_from_slice(&y.to_be_bytes());
+            packet.extend_from_slice(&0_u16.to_be_bytes());
+            packet.extend_from_slice(&width.to_be_bytes());
+            packet.extend_from_slice(&height.to_be_bytes());
+            packet.extend_from_slice(&0_u32.to_be_bytes());
+            packet.extend_from_slice(&timestamp_us.to_be_bytes());
+            packet
+        }
         CapturedInput::MouseButton { button, pressed } => {
             let mut packet = Vec::with_capacity(18);
             packet.extend_from_slice(&(if pressed { 8_u32 } else { 9_u32 }).to_le_bytes());
@@ -1604,6 +1654,19 @@ fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
 }
 
 fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
+    let codec_name = context
+        .session
+        .extra
+        .get("negotiatedStreamProfile")
+        .and_then(|profile| profile.get("codec"))
+        .and_then(Value::as_str)
+        .or_else(|| context.settings.get("codec").and_then(Value::as_str))
+        .unwrap_or("H264");
+    let codec = match codec_name.trim().to_ascii_uppercase().as_str() {
+        "H265" | "HEVC" => MediaVideoCodec::H265,
+        "AV1" => MediaVideoCodec::Av1,
+        _ => MediaVideoCodec::H264,
+    };
     let resolution = context
         .session
         .extra
@@ -1619,8 +1682,11 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .filter(|(width, height)| (48..=4096).contains(width) && (48..=2304).contains(height))
         .unwrap_or((1920, 1080));
     let fps = context
-        .settings
-        .get("fps")
+        .session
+        .extra
+        .get("negotiatedStreamProfile")
+        .and_then(|profile| profile.get("fps"))
+        .or_else(|| context.settings.get("fps"))
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(60)
@@ -1632,6 +1698,7 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(10);
     MediaStreamConfig {
+        codec,
         width: resolution.0,
         height: resolution.1,
         fps,
@@ -1647,6 +1714,12 @@ fn consume_encoded_media(
     while let Ok(frame) = receiver.recv() {
         let codec = if frame.codec.eq_ignore_ascii_case("h264") {
             MediaCodec::H264
+        } else if frame.codec.eq_ignore_ascii_case("h265")
+            || frame.codec.eq_ignore_ascii_case("hevc")
+        {
+            MediaCodec::H265
+        } else if frame.codec.eq_ignore_ascii_case("av1") {
+            MediaCodec::Av1
         } else if frame.codec.eq_ignore_ascii_case("opus") {
             MediaCodec::Opus {
                 channels: frame.channels.unwrap_or(2).clamp(1, 2),
@@ -1890,6 +1963,8 @@ mod tests {
             Ok(())
         }
 
+        fn apply_cursor(&self, _bytes: Vec<u8>) {}
+
         fn recover(&self) -> Result<(), String> {
             self.recoveries.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -2010,12 +2085,25 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            forward_nvst_captured_input(
+                &resources,
+                CapturedInput::MouseAbsolute {
+                    x: 321,
+                    y: 180,
+                    width: 1280,
+                    height: 720,
+                },
+                &state,
+            )
+            .is_ok()
+        );
 
         let inputs = resources
             .captured_inputs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs.len(), 3);
         assert_eq!(u32::from_le_bytes(inputs[0][0..4].try_into().unwrap()), 3);
         assert_eq!(
             u16::from_be_bytes(inputs[0][4..6].try_into().unwrap()),
@@ -2030,6 +2118,18 @@ mod tests {
         assert_eq!(i16::from_be_bytes(inputs[1][4..6].try_into().unwrap()), -12);
         assert_eq!(i16::from_be_bytes(inputs[1][6..8].try_into().unwrap()), 34);
         assert_eq!(inputs[1].len(), 22);
+        assert_eq!(u32::from_le_bytes(inputs[2][0..4].try_into().unwrap()), 5);
+        assert_eq!(u16::from_be_bytes(inputs[2][4..6].try_into().unwrap()), 321);
+        assert_eq!(u16::from_be_bytes(inputs[2][6..8].try_into().unwrap()), 180);
+        assert_eq!(
+            u16::from_be_bytes(inputs[2][10..12].try_into().unwrap()),
+            1280
+        );
+        assert_eq!(
+            u16::from_be_bytes(inputs[2][12..14].try_into().unwrap()),
+            720
+        );
+        assert_eq!(inputs[2].len(), 26);
     }
 
     #[test]
@@ -2054,6 +2154,39 @@ mod tests {
         assert_eq!(recovery_attempts, 1);
         assert_eq!(resources.recoveries.load(Ordering::Relaxed), 1);
         assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(resources.stops.load(Ordering::Relaxed), 0);
+        assert_eq!(lock_lifecycle(&lifecycle).state, State::Connected);
+        assert!(
+            receiver
+                .try_iter()
+                .all(|message| message["type"] != "error")
+        );
+    }
+
+    #[test]
+    fn repeated_packet_gaps_request_keyframes_without_stopping_the_session() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut recovery_attempts = 0;
+
+        for first_missing_index in [100, 200] {
+            assert!(!forward_nvst_event(
+                &sender,
+                &lifecycle,
+                7,
+                &resources,
+                &mut recovery_attempts,
+                NvstReceiveEvent::RecoveryNeeded(NvstRecovery::PacketGap {
+                    first_missing_index,
+                    last_missing_index: first_missing_index + 31,
+                }),
+            ));
+        }
+
+        assert_eq!(recovery_attempts, 0);
+        assert_eq!(resources.recoveries.load(Ordering::Relaxed), 0);
+        assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 2);
         assert_eq!(resources.stops.load(Ordering::Relaxed), 0);
         assert_eq!(lock_lifecycle(&lifecycle).state, State::Connected);
         assert!(
@@ -2123,7 +2256,8 @@ mod tests {
             7,
             &resources,
             &mut recovery_attempts,
-            NvstReceiveEvent::Frame(opennow_streamer_transport::EncodedH264Frame {
+            NvstReceiveEvent::Frame(opennow_streamer_transport::EncodedVideoAccessUnit {
+                codec: opennow_streamer_transport::NvstVideoCodec::H264,
                 timestamp: 1,
                 frame_index: 1,
                 first_stream_packet_index: 1,
@@ -2171,6 +2305,7 @@ mod tests {
         assert_eq!(
             media_stream_config(&context),
             MediaStreamConfig {
+                codec: MediaVideoCodec::H264,
                 width: 2560,
                 height: 1440,
                 fps: 120,
@@ -2182,6 +2317,21 @@ mod tests {
             serde_json::from_value(synthetic_context("fallback-config", json!([])))
                 .expect("context");
         assert_eq!(media_stream_config(&fallback), MediaStreamConfig::default());
+
+        let mut high_fps = synthetic_context("high-fps-config", json!([]));
+        high_fps["settings"] = json!({
+            "codec": "H264",
+            "resolution": "1920x1080",
+            "fps": 360,
+            "maxBitrateMbps": 100
+        });
+        high_fps["session"]["negotiatedStreamProfile"] = json!({
+            "codec": "AV1",
+            "fps": 300
+        });
+        let high_fps: SessionContext = serde_json::from_value(high_fps).expect("context");
+        assert_eq!(media_stream_config(&high_fps).codec, MediaVideoCodec::Av1);
+        assert_eq!(media_stream_config(&high_fps).fps, 240);
     }
 
     #[test]

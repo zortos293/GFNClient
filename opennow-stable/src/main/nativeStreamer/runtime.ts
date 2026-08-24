@@ -97,6 +97,11 @@ export function createNativeStreamerRuntimeEnvironment(
     OPENNOW_NATIVE_EXTERNAL_RENDERER: options.externalRendererEnabled
       ? "1"
       : "0",
+    // A separate renderer window owns its SDL event loop and forwards input
+    // directly over NVST. Embedded mode keeps Electron as the sole owner.
+    OPENNOW_NATIVE_INPUT_OWNER: options.externalRendererEnabled
+      ? "native"
+      : "electron",
     OPENNOW_NATIVE_VIDEO_BACKEND: options.videoBackendPreference,
   };
   if (options.platform === "linux") {

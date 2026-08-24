@@ -3,7 +3,25 @@ use std::num::{NonZeroIsize, NonZeroU32};
 use crate::BackendError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoCodec {
+    H264,
+    H265,
+    Av1,
+}
+
+impl VideoCodec {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264",
+            Self::H265 => "H.265",
+            Self::Av1 => "AV1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoFormat {
+    pub codec: VideoCodec,
     pub width: u32,
     pub height: u32,
     pub frame_rate_numerator: NonZeroU32,
@@ -14,9 +32,10 @@ pub struct VideoFormat {
 impl VideoFormat {
     pub fn validate(self) -> Result<(), BackendError> {
         if !(48..=4096).contains(&self.width) || !(48..=2304).contains(&self.height) {
-            return Err(BackendError::InvalidConfig(
-                "H.264 dimensions must be at least 48x48 and no larger than 4096x2304".to_owned(),
-            ));
+            return Err(BackendError::InvalidConfig(format!(
+                "{} dimensions must be at least 48x48 and no larger than 4096x2304",
+                self.codec.label()
+            )));
         }
         let fps = self.frame_rate_numerator.get() as f64 / self.frame_rate_denominator.get() as f64;
         if !(1.0..=240.0).contains(&fps) {
@@ -136,7 +155,8 @@ impl SurfaceTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedVideoFrame {
-    pub annex_b: Vec<u8>,
+    pub codec: VideoCodec,
+    pub data: Vec<u8>,
     pub timestamp_100ns: i64,
     pub duration_100ns: i64,
     pub key_frame: bool,
@@ -144,15 +164,20 @@ pub struct EncodedVideoFrame {
 
 impl EncodedVideoFrame {
     pub fn validate(&self) -> Result<(), BackendError> {
-        if self.annex_b.is_empty() {
-            return Err(BackendError::InvalidFrame(
-                "H.264 access unit is empty".to_owned(),
-            ));
+        if self.data.is_empty() {
+            return Err(BackendError::InvalidFrame(format!(
+                "{} access unit is empty",
+                self.codec.label()
+            )));
         }
-        if !self.annex_b.starts_with(&[0, 0, 1]) && !self.annex_b.starts_with(&[0, 0, 0, 1]) {
-            return Err(BackendError::InvalidFrame(
-                "H.264 input must use Annex B start codes".to_owned(),
-            ));
+        if matches!(self.codec, VideoCodec::H264 | VideoCodec::H265)
+            && !self.data.starts_with(&[0, 0, 1])
+            && !self.data.starts_with(&[0, 0, 0, 1])
+        {
+            return Err(BackendError::InvalidFrame(format!(
+                "{} input must use Annex B start codes",
+                self.codec.label()
+            )));
         }
         if self.timestamp_100ns < 0 || self.duration_100ns <= 0 {
             return Err(BackendError::InvalidFrame(
@@ -237,6 +262,7 @@ mod tests {
 
     fn video_format() -> VideoFormat {
         VideoFormat {
+            codec: VideoCodec::H264,
             width: 1920,
             height: 1080,
             frame_rate_numerator: NonZeroU32::new(120).unwrap(),
@@ -275,7 +301,8 @@ mod tests {
     #[test]
     fn requires_annex_b_access_units() {
         let valid = EncodedVideoFrame {
-            annex_b: vec![0, 0, 0, 1, 0x67],
+            codec: VideoCodec::H264,
+            data: vec![0, 0, 0, 1, 0x67],
             timestamp_100ns: 0,
             duration_100ns: 166_667,
             key_frame: true,
@@ -283,7 +310,7 @@ mod tests {
         assert!(valid.validate().is_ok());
         assert!(
             EncodedVideoFrame {
-                annex_b: vec![1, 2, 3],
+                data: vec![1, 2, 3],
                 ..valid
             }
             .validate()

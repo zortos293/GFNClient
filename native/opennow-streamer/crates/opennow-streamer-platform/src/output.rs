@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Cursor as IoCursor;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use image::ImageReader;
 use opennow_streamer_protocol::RenderSurface;
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use sdl2::pixels::{Color, PixelFormatEnum};
@@ -11,13 +15,15 @@ use sdl2::render::{Texture, WindowCanvas};
 
 use crate::media::{CapturedInput, CapturedInputQueue, MediaStreamConfig};
 use crate::native_surface::NativeSurface;
+#[cfg(target_os = "windows")]
+use crate::windows_debug_overlay::NativeDebugOverlay;
 
 #[cfg(target_os = "linux")]
 use opennow_streamer_platform_linux::DecodedVideoFrame as LinuxDecodedVideoFrame;
 #[cfg(target_os = "windows")]
 use opennow_streamer_platform_windows::{
-    AudioFormat, BackendConfig, BackendEvent, Bounds, OwnedWindow, Subsystem, SurfaceTarget,
-    VideoFormat, WindowHandle, WindowsBackend,
+    AudioFormat, BackendConfig, BackendEvent, Bounds, ExistingWindow, OwnedWindow, Subsystem,
+    SurfaceTarget, VideoCodec, VideoFormat, WindowHandle, WindowsBackend, WindowsGraphicsApi,
 };
 
 const AUDIO_SAMPLE_RATE: i32 = 48_000;
@@ -437,6 +443,275 @@ impl AudioCallback for StreamAudioCallback {
     }
 }
 
+struct SdlInputCapture {
+    captured: Vec<CapturedInput>,
+    pressed_keys: HashMap<sdl2::keyboard::Scancode, u16>,
+    pressed_buttons: HashSet<u8>,
+    enabled: bool,
+    focused: bool,
+    relative_mouse: bool,
+    cursor_state: RemoteCursorState,
+    cursors: HashMap<(u8, u8), sdl2::mouse::Cursor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteCursorState {
+    Unknown,
+    Hidden,
+    Visible,
+}
+
+impl SdlInputCapture {
+    fn new(enabled: bool) -> Self {
+        Self {
+            captured: Vec::new(),
+            pressed_keys: HashMap::new(),
+            pressed_buttons: HashSet::new(),
+            enabled,
+            focused: false,
+            relative_mouse: false,
+            // Do not infer hidden-cursor gameplay before the first server
+            // update. GFN sends a distinct predefined cursor ID 0 when the
+            // game actually wants locked relative input.
+            cursor_state: RemoteCursorState::Unknown,
+            cursors: HashMap::new(),
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        sdl: &sdl2::Sdl,
+        window: &mut sdl2::video::Window,
+        stream_size: (u32, u32),
+        event: sdl2::event::Event,
+    ) {
+        use sdl2::event::{Event, WindowEvent};
+
+        if !self.enabled {
+            return;
+        }
+        let window_size = window.size();
+        match event {
+            Event::KeyDown {
+                scancode: Some(scancode),
+                keymod,
+                repeat: false,
+                ..
+            } => {
+                let Some(virtual_key) = sdl_virtual_key(scancode) else {
+                    return;
+                };
+                if self.pressed_keys.insert(scancode, virtual_key).is_none() {
+                    self.captured.push(CapturedInput::Key {
+                        virtual_key,
+                        modifiers: sdl_modifiers(scancode, keymod),
+                        pressed: true,
+                    });
+                }
+            }
+            Event::KeyUp {
+                scancode: Some(scancode),
+                keymod,
+                ..
+            } => {
+                if let Some(virtual_key) = self.pressed_keys.remove(&scancode) {
+                    self.captured.push(CapturedInput::Key {
+                        virtual_key,
+                        modifiers: sdl_modifiers(scancode, keymod),
+                        pressed: false,
+                    });
+                }
+            }
+            Event::MouseMotion { xrel, yrel, .. } if self.relative_mouse => {
+                push_mouse_motion(&mut self.captured, xrel, yrel);
+            }
+            Event::MouseMotion { x, y, .. } if self.cursor_state != RemoteCursorState::Hidden => {
+                let absolute =
+                    map_window_point_to_stream_viewport((x, y), stream_size, window_size);
+                self.captured.push(CapturedInput::MouseAbsolute {
+                    x: absolute.x,
+                    y: absolute.y,
+                    width: absolute.width,
+                    height: absolute.height,
+                });
+            }
+            Event::MouseButtonDown { mouse_btn, .. } => {
+                // A button event proves this window owns foreground input even
+                // if SDL delivered FocusGained later in the same pump batch.
+                self.focused = true;
+                if self.cursor_state == RemoteCursorState::Hidden {
+                    self.enable_relative_mouse(sdl, window);
+                }
+                if let Some(button) = sdl_mouse_button(mouse_btn)
+                    && self.pressed_buttons.insert(button)
+                {
+                    self.captured.push(CapturedInput::MouseButton {
+                        button,
+                        pressed: true,
+                    });
+                }
+            }
+            Event::MouseButtonUp { mouse_btn, .. } => {
+                if let Some(button) = sdl_mouse_button(mouse_btn)
+                    && self.pressed_buttons.remove(&button)
+                {
+                    self.captured.push(CapturedInput::MouseButton {
+                        button,
+                        pressed: false,
+                    });
+                }
+            }
+            Event::MouseWheel { y, direction, .. } if y != 0 => {
+                let direction = if direction == sdl2::mouse::MouseWheelDirection::Flipped {
+                    -1
+                } else {
+                    1
+                };
+                self.captured.push(CapturedInput::MouseWheel {
+                    delta: clamp_i16(y.saturating_mul(120).saturating_mul(direction)),
+                });
+            }
+            Event::Window {
+                win_event: WindowEvent::FocusGained,
+                ..
+            } => {
+                self.focused = true;
+                if self.cursor_state == RemoteCursorState::Hidden {
+                    self.enable_relative_mouse(sdl, window);
+                }
+            }
+            Event::Window {
+                win_event: WindowEvent::FocusLost,
+                ..
+            } => {
+                self.focused = false;
+                self.release(sdl, window);
+            }
+            _ => {}
+        }
+    }
+
+    fn enable_relative_mouse(&mut self, sdl: &sdl2::Sdl, window: &mut sdl2::video::Window) {
+        if self.focused && !self.relative_mouse {
+            window.set_mouse_grab(true);
+            sdl.mouse().set_relative_mouse_mode(true);
+            sdl.mouse().show_cursor(false);
+            self.relative_mouse = true;
+            eprintln!("External SDL mouse control mode: locked relative");
+        }
+    }
+
+    fn disable_relative_mouse(&mut self, sdl: &sdl2::Sdl, window: &mut sdl2::video::Window) {
+        if self.relative_mouse {
+            sdl.mouse().set_relative_mouse_mode(false);
+            window.set_mouse_grab(false);
+            self.relative_mouse = false;
+            eprintln!("External SDL mouse control mode: absolute cursor");
+        }
+    }
+
+    fn apply_cursor(
+        &mut self,
+        sdl: &sdl2::Sdl,
+        window: &mut sdl2::video::Window,
+        stream_size: (u32, u32),
+        bytes: &[u8],
+    ) {
+        let Some((&message_type, remainder)) = bytes.split_first() else {
+            return;
+        };
+        if !matches!(message_type, 0 | 1) {
+            return;
+        }
+        let Some(&cursor_id) = remainder.first() else {
+            return;
+        };
+        let was_cursor_visible = self.cursor_state == RemoteCursorState::Visible;
+        self.cursor_state = cursor_state_for_message(message_type, cursor_id);
+        eprintln!(
+            "GFN cursor applied: sourceType={message_type} cursorId={cursor_id} state={:?} bytes={}",
+            self.cursor_state,
+            bytes.len(),
+        );
+        if self.cursor_state == RemoteCursorState::Hidden {
+            self.enable_relative_mouse(sdl, window);
+            return;
+        }
+        self.disable_relative_mouse(sdl, window);
+        let cursor_key = (message_type, cursor_id);
+        if message_type == 1 {
+            match custom_sdl_cursor(bytes) {
+                Ok(cursor) => {
+                    self.cursors.insert(cursor_key, cursor);
+                }
+                Err(error) => {
+                    eprintln!("GFN custom cursor {cursor_id} could not be decoded: {error}");
+                }
+            }
+        } else if !self.cursors.contains_key(&cursor_key) {
+            let system_cursor = match cursor_id {
+                2 => sdl2::mouse::SystemCursor::IBeam,
+                3 => sdl2::mouse::SystemCursor::Wait,
+                4 => sdl2::mouse::SystemCursor::Crosshair,
+                5 => sdl2::mouse::SystemCursor::WaitArrow,
+                6 => sdl2::mouse::SystemCursor::SizeNWSE,
+                7 => sdl2::mouse::SystemCursor::SizeNESW,
+                8 => sdl2::mouse::SystemCursor::SizeWE,
+                9 => sdl2::mouse::SystemCursor::SizeNS,
+                10 => sdl2::mouse::SystemCursor::SizeAll,
+                12 => sdl2::mouse::SystemCursor::Hand,
+                _ => sdl2::mouse::SystemCursor::Arrow,
+            };
+            if let Ok(cursor) = sdl2::mouse::Cursor::from_system(system_cursor) {
+                self.cursors.insert(cursor_key, cursor);
+            }
+        }
+        if let Some(cursor) = self.cursors.get(&cursor_key) {
+            cursor.set();
+        } else if let Ok(cursor) =
+            sdl2::mouse::Cursor::from_system(sdl2::mouse::SystemCursor::Arrow)
+        {
+            cursor.set();
+            self.cursors.insert(cursor_key, cursor);
+        }
+        sdl.mouse().show_cursor(true);
+        if !was_cursor_visible && let Some(position) = parse_cursor_position(bytes) {
+            let viewport = aspect_fit(
+                stream_size.0.max(1),
+                stream_size.1.max(1),
+                window.size().0.max(1),
+                window.size().1.max(1),
+            );
+            let x = viewport.x() + normalized_cursor_coordinate(position.0, viewport.width());
+            let y = viewport.y() + normalized_cursor_coordinate(position.1, viewport.height());
+            sdl.mouse().warp_mouse_in_window(window, x, y);
+        }
+    }
+
+    fn release(&mut self, sdl: &sdl2::Sdl, window: &mut sdl2::video::Window) {
+        for (_, virtual_key) in self.pressed_keys.drain() {
+            self.captured.push(CapturedInput::Key {
+                virtual_key,
+                modifiers: 0,
+                pressed: false,
+            });
+        }
+        for button in self.pressed_buttons.drain() {
+            self.captured.push(CapturedInput::MouseButton {
+                button,
+                pressed: false,
+            });
+        }
+        self.disable_relative_mouse(sdl, window);
+        window.set_mouse_grab(false);
+        sdl.mouse().show_cursor(true);
+    }
+
+    fn take(&mut self) -> Vec<CapturedInput> {
+        std::mem::take(&mut self.captured)
+    }
+}
+
 pub(crate) struct SoftwareOutput {
     _sdl: sdl2::Sdl,
     canvas: WindowCanvas,
@@ -446,11 +721,8 @@ pub(crate) struct SoftwareOutput {
     audio: AudioDevice<StreamAudioCallback>,
     output: Arc<OutputBuffers>,
     native_surface: Result<NativeSurface, String>,
-    captured_input: Vec<CapturedInput>,
-    pressed_keys: HashMap<sdl2::keyboard::Scancode, u16>,
-    pressed_buttons: HashSet<u8>,
-    capture_input: bool,
-    relative_mouse: bool,
+    input_capture: SdlInputCapture,
+    external_renderer: bool,
     visible: bool,
     paused: bool,
 }
@@ -464,13 +736,17 @@ impl SoftwareOutput {
         let audio_subsystem = sdl
             .audio()
             .map_err(|error| format!("SDL audio initialization failed: {error}"))?;
-        let window = video
-            .window("OpenNOW Stream", 1280, 720)
+        let external_renderer = external_renderer_enabled();
+        let mut window_builder = video.window("OpenNOW Stream", 1280, 720);
+        window_builder
             .position_centered()
             .resizable()
-            .borderless()
             .hidden()
-            .metal_view()
+            .metal_view();
+        if !external_renderer {
+            window_builder.borderless();
+        }
+        let window = window_builder
             .build()
             .map_err(|error| format!("native video window creation failed: {error}"))?;
         let mut canvas = window
@@ -517,11 +793,10 @@ impl SoftwareOutput {
             audio,
             output,
             native_surface,
-            captured_input: Vec::new(),
-            pressed_keys: HashMap::new(),
-            pressed_buttons: HashSet::new(),
-            capture_input: cfg!(target_os = "windows"),
-            relative_mouse: false,
+            input_capture: SdlInputCapture::new(
+                cfg!(target_os = "windows") && native_input_capture_enabled(),
+            ),
+            external_renderer,
             visible: false,
             paused: false,
         })
@@ -540,7 +815,8 @@ impl SoftwareOutput {
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
         if paused {
-            self.release_captured_input();
+            self.input_capture
+                .release(&self._sdl, self.canvas.window_mut());
             self.audio.pause();
             self.output.clear();
         } else {
@@ -549,12 +825,16 @@ impl SoftwareOutput {
     }
 
     fn stop(&mut self) {
-        self.release_captured_input();
+        self.input_capture
+            .release(&self._sdl, self.canvas.window_mut());
         self.flush_captured_input();
         self.audio.pause();
         self.output.clear();
         if let Ok(surface) = self.native_surface.as_mut() {
             surface.hide();
+        }
+        if self.external_renderer {
+            self.canvas.window_mut().hide();
         }
         self.visible = false;
         self.paused = false;
@@ -567,9 +847,27 @@ impl SoftwareOutput {
             if let Ok(native_surface) = self.native_surface.as_mut() {
                 native_surface.hide();
             }
+            if self.external_renderer {
+                self.canvas.window_mut().hide();
+            }
             self.visible = false;
             return Ok(());
         };
+        if self.external_renderer {
+            let bounds = surface.screen_rect.unwrap_or(rect);
+            let window = self.canvas.window_mut();
+            window.set_position(
+                sdl2::video::WindowPos::Positioned(bounds.x),
+                sdl2::video::WindowPos::Positioned(bounds.y),
+            );
+            window
+                .set_size(bounds.width.max(2), bounds.height.max(2))
+                .map_err(|error| format!("failed to resize external SDL video surface: {error}"))?;
+            window.show();
+            window.raise();
+            self.visible = true;
+            return Ok(());
+        }
         let parent_handle = surface
             .window_handle
             .as_deref()
@@ -588,19 +886,36 @@ impl SoftwareOutput {
     }
 
     fn pump(&mut self) -> Result<bool, String> {
-        if let Ok(surface) = self.native_surface.as_mut() {
+        if !self.external_renderer
+            && let Ok(surface) = self.native_surface.as_mut()
+        {
             surface.refresh_ordering()?;
         }
         let events = self.event_pump.poll_iter().collect::<Vec<_>>();
         for event in events {
             if matches!(event, sdl2::event::Event::Quit { .. }) {
-                self.release_captured_input();
+                self.input_capture
+                    .release(&self._sdl, self.canvas.window_mut());
                 if let Ok(surface) = self.native_surface.as_mut() {
                     surface.hide();
                 }
+                if self.external_renderer {
+                    self.canvas.window_mut().hide();
+                }
                 self.visible = false;
-            } else if self.capture_input {
-                self.capture_input_event(event);
+            } else if self.external_renderer
+                && handle_native_window_shortcut(self.canvas.window_mut(), &event)
+            {
+                continue;
+            } else {
+                let window_size = self.canvas.window().size();
+                let stream_size = self.texture_size.unwrap_or(window_size);
+                self.input_capture.handle_event(
+                    &self._sdl,
+                    self.canvas.window_mut(),
+                    stream_size,
+                    event,
+                );
             }
         }
         if self.paused || !self.visible {
@@ -633,116 +948,27 @@ impl SoftwareOutput {
     }
 
     fn take_captured_input(&mut self) -> Vec<CapturedInput> {
-        std::mem::take(&mut self.captured_input)
+        self.input_capture.take()
+    }
+
+    fn update_cursor(&mut self, bytes: &[u8]) {
+        if self.external_renderer {
+            let stream_size = self
+                .texture_size
+                .unwrap_or_else(|| self.canvas.window().size());
+            self.input_capture.apply_cursor(
+                &self._sdl,
+                self.canvas.window_mut(),
+                stream_size,
+                bytes,
+            );
+        }
     }
 
     fn flush_captured_input(&mut self) {
         let captured_input = self.output.captured_input();
         for input in self.take_captured_input() {
             captured_input.push(input);
-        }
-    }
-
-    fn capture_input_event(&mut self, event: sdl2::event::Event) {
-        use sdl2::event::{Event, WindowEvent};
-
-        match event {
-            Event::KeyDown {
-                scancode: Some(scancode),
-                keymod,
-                repeat: false,
-                ..
-            } => {
-                let Some(virtual_key) = sdl_virtual_key(scancode) else {
-                    return;
-                };
-                if self.pressed_keys.insert(scancode, virtual_key).is_none() {
-                    self.captured_input.push(CapturedInput::Key {
-                        virtual_key,
-                        modifiers: sdl_modifiers(scancode, keymod),
-                        pressed: true,
-                    });
-                }
-            }
-            Event::KeyUp {
-                scancode: Some(scancode),
-                keymod,
-                ..
-            } => {
-                if let Some(virtual_key) = self.pressed_keys.remove(&scancode) {
-                    self.captured_input.push(CapturedInput::Key {
-                        virtual_key,
-                        modifiers: sdl_modifiers(scancode, keymod),
-                        pressed: false,
-                    });
-                }
-            }
-            Event::MouseMotion { xrel, yrel, .. } if self.relative_mouse => {
-                push_mouse_motion(&mut self.captured_input, xrel, yrel);
-            }
-            Event::MouseButtonDown { mouse_btn, .. } => {
-                self.enable_relative_mouse();
-                if let Some(button) = sdl_mouse_button(mouse_btn)
-                    && self.pressed_buttons.insert(button)
-                {
-                    self.captured_input.push(CapturedInput::MouseButton {
-                        button,
-                        pressed: true,
-                    });
-                }
-            }
-            Event::MouseButtonUp { mouse_btn, .. } => {
-                if let Some(button) = sdl_mouse_button(mouse_btn)
-                    && self.pressed_buttons.remove(&button)
-                {
-                    self.captured_input.push(CapturedInput::MouseButton {
-                        button,
-                        pressed: false,
-                    });
-                }
-            }
-            Event::MouseWheel { y, direction, .. } if self.relative_mouse && y != 0 => {
-                let direction = if direction == sdl2::mouse::MouseWheelDirection::Flipped {
-                    -1
-                } else {
-                    1
-                };
-                self.captured_input.push(CapturedInput::MouseWheel {
-                    delta: clamp_i16(y.saturating_mul(120).saturating_mul(direction)),
-                });
-            }
-            Event::Window {
-                win_event: WindowEvent::FocusLost,
-                ..
-            } => self.release_captured_input(),
-            _ => {}
-        }
-    }
-
-    fn enable_relative_mouse(&mut self) {
-        if !self.relative_mouse {
-            self._sdl.mouse().set_relative_mouse_mode(true);
-            self.relative_mouse = true;
-        }
-    }
-
-    fn release_captured_input(&mut self) {
-        for (_, virtual_key) in self.pressed_keys.drain() {
-            self.captured_input.push(CapturedInput::Key {
-                virtual_key,
-                modifiers: 0,
-                pressed: false,
-            });
-        }
-        for button in self.pressed_buttons.drain() {
-            self.captured_input.push(CapturedInput::MouseButton {
-                button,
-                pressed: false,
-            });
-        }
-        if self.relative_mouse {
-            self._sdl.mouse().set_relative_mouse_mode(false);
-            self.relative_mouse = false;
         }
     }
 }
@@ -934,6 +1160,222 @@ fn clamp_i16(value: i32) -> i16 {
     value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
+fn clamp_i32_u16(value: i32) -> u16 {
+    value.clamp(0, i32::from(u16::MAX)) as u16
+}
+
+fn clamp_u32_u16(value: u32) -> u16 {
+    value.min(u32::from(u16::MAX)) as u16
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AbsoluteMouseViewport {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+}
+
+struct CustomCursorPayload<'a> {
+    hotspot_x: u8,
+    hotspot_y: u8,
+    image_base64: &'a [u8],
+    scale: f32,
+}
+
+fn cursor_state_for_message(message_type: u8, cursor_id: u8) -> RemoteCursorState {
+    if message_type == 0 && cursor_id == 0 {
+        RemoteCursorState::Hidden
+    } else {
+        // Custom cursor ID 0 is still a visible bitmap. Only predefined ID 0
+        // is the protocol's hidden/raw-input cursor.
+        RemoteCursorState::Visible
+    }
+}
+
+fn parse_custom_cursor_payload(bytes: &[u8]) -> Result<CustomCursorPayload<'_>, String> {
+    if bytes.first() != Some(&1) || bytes.len() < 7 {
+        return Err("not a complete custom cursor message".to_owned());
+    }
+    let mime_length = usize::from(bytes[4]);
+    let mime_end = 5_usize
+        .checked_add(mime_length)
+        .ok_or_else(|| "custom cursor MIME length overflow".to_owned())?;
+    let image_length_bytes = bytes
+        .get(mime_end..mime_end + 2)
+        .ok_or_else(|| "custom cursor is missing its image length".to_owned())?;
+    let image_length = usize::from(u16::from_le_bytes([
+        image_length_bytes[0],
+        image_length_bytes[1],
+    ]));
+    let image_start = mime_end + 2;
+    let image_end = image_start
+        .checked_add(image_length)
+        .ok_or_else(|| "custom cursor image length overflow".to_owned())?;
+    let image_base64 = bytes
+        .get(image_start..image_end)
+        .ok_or_else(|| "custom cursor image is truncated".to_owned())?;
+    let position_end = image_end.saturating_add(4);
+    let scale = bytes
+        .get(position_end..position_end + 2)
+        .map(|raw| f32::from(u16::from_le_bytes([raw[0], raw[1]])) / 100.0)
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(1.0);
+    Ok(CustomCursorPayload {
+        hotspot_x: bytes[2],
+        hotspot_y: bytes[3],
+        image_base64,
+        scale,
+    })
+}
+
+fn custom_sdl_cursor(bytes: &[u8]) -> Result<sdl2::mouse::Cursor, String> {
+    const MAX_CURSOR_EXTENT: u32 = 256;
+    let payload = parse_custom_cursor_payload(bytes)?;
+    let encoded = std::str::from_utf8(payload.image_base64)
+        .map_err(|error| format!("cursor image base64 is not UTF-8: {error}"))?;
+    let compressed = BASE64
+        .decode(encoded)
+        .map_err(|error| format!("cursor image base64 is invalid: {error}"))?;
+    let image = ImageReader::new(IoCursor::new(compressed))
+        .with_guessed_format()
+        .map_err(|error| format!("cursor image format is unknown: {error}"))?
+        .decode()
+        .map_err(|error| format!("cursor image decode failed: {error}"))?
+        .to_rgba8();
+    let (source_width, source_height) = image.dimensions();
+    if source_width == 0
+        || source_height == 0
+        || source_width > MAX_CURSOR_EXTENT
+        || source_height > MAX_CURSOR_EXTENT
+    {
+        return Err(format!(
+            "cursor image dimensions are outside 1..={MAX_CURSOR_EXTENT}: {source_width}x{source_height}"
+        ));
+    }
+    let width = ((source_width as f32 / payload.scale).round() as u32).clamp(1, MAX_CURSOR_EXTENT);
+    let height =
+        ((source_height as f32 / payload.scale).round() as u32).clamp(1, MAX_CURSOR_EXTENT);
+    let rgba = if (width, height) == (source_width, source_height) {
+        image
+    } else {
+        image::imageops::resize(&image, width, height, image::imageops::FilterType::Triangle)
+    };
+    let row_bytes = width as usize * 4;
+    let mut surface = sdl2::surface::Surface::new(width, height, PixelFormatEnum::RGBA32)?;
+    let pitch = surface.pitch() as usize;
+    surface.with_lock_mut(|destination| {
+        for (source, destination) in rgba
+            .as_raw()
+            .chunks_exact(row_bytes)
+            .zip(destination.chunks_mut(pitch))
+        {
+            destination[..row_bytes].copy_from_slice(source);
+        }
+    });
+    let hotspot_x = ((f32::from(payload.hotspot_x) / payload.scale).round() as i32)
+        .clamp(0, width.saturating_sub(1) as i32);
+    let hotspot_y = ((f32::from(payload.hotspot_y) / payload.scale).round() as i32)
+        .clamp(0, height.saturating_sub(1) as i32);
+    sdl2::mouse::Cursor::from_surface(surface, hotspot_x, hotspot_y)
+}
+
+fn map_window_point_to_stream_viewport(
+    point: (i32, i32),
+    stream_size: (u32, u32),
+    window_size: (u32, u32),
+) -> AbsoluteMouseViewport {
+    let viewport = aspect_fit(
+        stream_size.0.max(1),
+        stream_size.1.max(1),
+        window_size.0.max(1),
+        window_size.1.max(1),
+    );
+    let width = viewport.width().max(1);
+    let height = viewport.height().max(1);
+    AbsoluteMouseViewport {
+        x: clamp_i32_u16((point.0 - viewport.x()).clamp(0, width.saturating_sub(1) as i32)),
+        y: clamp_i32_u16((point.1 - viewport.y()).clamp(0, height.saturating_sub(1) as i32)),
+        width: clamp_u32_u16(width),
+        height: clamp_u32_u16(height),
+    }
+}
+
+fn parse_cursor_position(bytes: &[u8]) -> Option<(u16, u16)> {
+    if bytes.len() < 7 || !matches!(bytes[0], 0 | 1) {
+        return None;
+    }
+    let mime_length = usize::from(bytes[4]);
+    let image_length_offset = 5_usize.checked_add(mime_length)?;
+    let image_length_bytes = bytes.get(image_length_offset..image_length_offset + 2)?;
+    let image_length = usize::from(u16::from_le_bytes([
+        image_length_bytes[0],
+        image_length_bytes[1],
+    ]));
+    let position_offset = image_length_offset
+        .checked_add(2)?
+        .checked_add(image_length)?;
+    let position = bytes.get(position_offset..position_offset + 4)?;
+    Some((
+        u16::from_le_bytes([position[0], position[1]]),
+        u16::from_le_bytes([position[2], position[3]]),
+    ))
+}
+
+fn normalized_cursor_coordinate(value: u16, viewport_extent: u32) -> i32 {
+    let extent = viewport_extent.max(1);
+    let coordinate = (u64::from(value) * u64::from(extent) / u64::from(u16::MAX)) as u32;
+    coordinate.min(extent.saturating_sub(1)) as i32
+}
+
+fn handle_native_window_shortcut(
+    window: &mut sdl2::video::Window,
+    event: &sdl2::event::Event,
+) -> bool {
+    use sdl2::event::Event;
+    use sdl2::keyboard::Scancode;
+    use sdl2::video::FullscreenType;
+
+    match event {
+        Event::KeyDown {
+            scancode: Some(Scancode::F11),
+            repeat: false,
+            ..
+        } => {
+            let next = if window.fullscreen_state() == FullscreenType::Off {
+                FullscreenType::Desktop
+            } else {
+                FullscreenType::Off
+            };
+            match window.set_fullscreen(next) {
+                Ok(()) => eprintln!(
+                    "External SDL fullscreen changed: {}",
+                    if next == FullscreenType::Off {
+                        "off"
+                    } else {
+                        "desktop"
+                    }
+                ),
+                Err(error) => eprintln!("External SDL fullscreen toggle failed: {error}"),
+            }
+            true
+        }
+        Event::KeyUp {
+            scancode: Some(Scancode::F11),
+            ..
+        } => true,
+        _ => false,
+    }
+}
+
+fn native_input_capture_enabled() -> bool {
+    native_input_capture_enabled_value(std::env::var("OPENNOW_NATIVE_INPUT_OWNER").ok().as_deref())
+}
+
+fn native_input_capture_enabled_value(owner: Option<&str>) -> bool {
+    owner.is_some_and(|owner| owner.trim().eq_ignore_ascii_case("native"))
+}
+
 pub(crate) enum ActiveOutput {
     Software(Box<SoftwareOutput>),
     #[cfg(target_os = "windows")]
@@ -968,7 +1410,7 @@ impl ActiveOutput {
         }
         #[cfg(target_os = "windows")]
         if use_hardware {
-            return WindowsOutput::initialize(windows_bridge, stream).map(Self::Windows);
+            return WindowsOutput::initialize(windows_bridge, output, stream).map(Self::Windows);
         }
         #[cfg(target_os = "linux")]
         if use_linux_hardware {
@@ -1065,11 +1507,23 @@ impl ActiveOutput {
         match self {
             Self::Software(output) => output.take_captured_input(),
             #[cfg(target_os = "windows")]
-            Self::Windows(_) => Vec::new(),
+            Self::Windows(output) => output.take_captured_input(),
             #[cfg(target_os = "linux")]
             Self::LinuxHardware(_) => Vec::new(),
             #[cfg(target_os = "macos")]
             Self::Mac(_) => Vec::new(),
+        }
+    }
+
+    pub(crate) fn update_cursor(&mut self, bytes: &[u8]) {
+        match self {
+            Self::Software(output) => output.update_cursor(bytes),
+            #[cfg(target_os = "windows")]
+            Self::Windows(output) => output.update_cursor(bytes),
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardware(_) => {}
+            #[cfg(target_os = "macos")]
+            Self::Mac(_) => {}
         }
     }
 
@@ -1103,40 +1557,254 @@ pub(crate) enum OutputEvent {
 }
 
 #[cfg(target_os = "windows")]
+struct WindowsExternalSdlSurface {
+    sdl: sdl2::Sdl,
+    window: sdl2::video::Window,
+    event_pump: sdl2::EventPump,
+    native_surface: NativeSurface,
+    input_capture: SdlInputCapture,
+    debug_overlay: NativeDebugOverlay,
+    stream_size: (u32, u32),
+    visible: bool,
+    focused: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsExternalSdlSurface {
+    fn initialize(
+        stream: MediaStreamConfig,
+        graphics_api: WindowsGraphicsApi,
+    ) -> Result<Self, String> {
+        // Force the Windows RawInput path. Warp-relative motion is quantized by
+        // cursor recentering and Windows pointer scaling, which is particularly
+        // noticeable in 120 FPS first-person games.
+        sdl2::hint::set("SDL_MOUSE_RELATIVE_MODE_WARP", "0");
+        sdl2::hint::set("SDL_MOUSE_RELATIVE_SCALING", "0");
+        let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
+        let video = sdl
+            .video()
+            .map_err(|error| format!("SDL video initialization failed: {error}"))?;
+        let window = video
+            .window("OpenNOW Stream", 1280, 720)
+            .position_centered()
+            .resizable()
+            .hidden()
+            .build()
+            .map_err(|error| format!("external SDL video window creation failed: {error}"))?;
+        let native_surface = NativeSurface::new(&window)?;
+        let debug_overlay = NativeDebugOverlay::new(
+            &video,
+            native_surface.window_handle(),
+            stream,
+            match graphics_api {
+                WindowsGraphicsApi::D3d12 => "D3D11VA / D3D12",
+                WindowsGraphicsApi::D3d11 => "D3D11VA HW",
+            },
+        )?;
+        let event_pump = sdl
+            .event_pump()
+            .map_err(|error| format!("external SDL event pump creation failed: {error}"))?;
+        let capture_input = native_input_capture_enabled();
+        eprintln!(
+            "External SDL stream window ready (native keyboard/mouse capture: {capture_input})"
+        );
+        Ok(Self {
+            sdl,
+            window,
+            event_pump,
+            native_surface,
+            input_capture: SdlInputCapture::new(capture_input),
+            debug_overlay,
+            stream_size: (stream.width, stream.height),
+            visible: false,
+            focused: false,
+        })
+    }
+
+    fn target(&self) -> Result<SurfaceTarget, String> {
+        let handle = WindowHandle::new(self.native_surface.window_handle())
+            .ok_or_else(|| "external SDL window returned an empty HWND".to_owned())?;
+        Ok(SurfaceTarget::Existing(ExistingWindow { hwnd: handle }))
+    }
+
+    fn update(&mut self, surface: &RenderSurface) -> Result<(), String> {
+        let Some(rect) = surface.rect.filter(|_| surface.visible) else {
+            self.input_capture.release(&self.sdl, &mut self.window);
+            self.debug_overlay.hide();
+            self.window.hide();
+            self.visible = false;
+            return Ok(());
+        };
+        let bounds = surface.screen_rect.unwrap_or(rect);
+        self.window.set_position(
+            sdl2::video::WindowPos::Positioned(bounds.x),
+            sdl2::video::WindowPos::Positioned(bounds.y),
+        );
+        self.window
+            .set_size(bounds.width.max(2), bounds.height.max(2))
+            .map_err(|error| format!("failed to resize external SDL video surface: {error}"))?;
+        self.window.show();
+        if !self.visible {
+            self.window.raise();
+        }
+        self.visible = true;
+        self.focused = self.window.has_input_focus();
+        if self.focused {
+            self.debug_overlay.show_if_enabled();
+        }
+        Ok(())
+    }
+
+    fn pump(&mut self, presented_frames: u64, dropped_frames: u64) {
+        let stream_window_id = self.window.id();
+        for event in self.event_pump.poll_iter().collect::<Vec<_>>() {
+            if matches!(event, sdl2::event::Event::Quit { .. }) {
+                self.input_capture.release(&self.sdl, &mut self.window);
+                self.window.hide();
+                self.debug_overlay.hide();
+                self.visible = false;
+                self.focused = false;
+            } else if matches!(
+                event,
+                sdl2::event::Event::Window {
+                    window_id,
+                    win_event: sdl2::event::WindowEvent::FocusLost,
+                    ..
+                } if window_id == stream_window_id
+            ) {
+                self.focused = false;
+                self.debug_overlay.hide();
+            } else if matches!(
+                event,
+                sdl2::event::Event::Window {
+                    window_id,
+                    win_event: sdl2::event::WindowEvent::FocusGained,
+                    ..
+                } if window_id == stream_window_id
+            ) {
+                self.focused = true;
+                self.debug_overlay.show_if_enabled();
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyDown {
+                    scancode: Some(sdl2::keyboard::Scancode::F3),
+                    repeat: false,
+                    ..
+                }
+            ) {
+                self.debug_overlay.toggle();
+                continue;
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyUp {
+                    scancode: Some(sdl2::keyboard::Scancode::F3),
+                    ..
+                }
+            ) {
+                continue;
+            } else if handle_native_window_shortcut(&mut self.window, &event) {
+                continue;
+            } else {
+                self.input_capture.handle_event(
+                    &self.sdl,
+                    &mut self.window,
+                    self.stream_size,
+                    event,
+                );
+            }
+        }
+        self.debug_overlay.update(
+            presented_frames,
+            dropped_frames,
+            self.input_capture.relative_mouse,
+        );
+    }
+
+    fn release(&mut self) {
+        self.input_capture.release(&self.sdl, &mut self.window);
+        self.debug_overlay.hide();
+        self.window.hide();
+        self.visible = false;
+        self.focused = false;
+    }
+
+    fn take_captured_input(&mut self) -> Vec<CapturedInput> {
+        self.input_capture.take()
+    }
+
+    fn update_cursor(&mut self, bytes: &[u8]) {
+        self.input_capture
+            .apply_cursor(&self.sdl, &mut self.window, self.stream_size, bytes);
+    }
+}
+
+#[cfg(target_os = "windows")]
 pub(crate) struct WindowsOutput {
     backend: Arc<WindowsBackend>,
+    graphics_api: WindowsGraphicsApi,
     bridge: Arc<WindowsBridge>,
+    output: Arc<OutputBuffers>,
+    external_surface: Option<WindowsExternalSdlSurface>,
+    dropped_video_frames: u64,
     stopped: bool,
 }
 
 #[cfg(target_os = "windows")]
 impl WindowsOutput {
-    fn initialize(bridge: Arc<WindowsBridge>, stream: MediaStreamConfig) -> Result<Self, String> {
+    fn initialize(
+        bridge: Arc<WindowsBridge>,
+        output: Arc<OutputBuffers>,
+        stream: MediaStreamConfig,
+    ) -> Result<Self, String> {
         bridge.reset();
+        let external_renderer = external_renderer_enabled();
+        let graphics_api = selected_windows_graphics_api();
+        let external_surface = if external_renderer {
+            Some(WindowsExternalSdlSurface::initialize(stream, graphics_api)?)
+        } else {
+            None
+        };
+        let initial_surface = match external_surface.as_ref() {
+            Some(surface) => surface.target()?,
+            None => hidden_windows_surface(),
+        };
         let backend = Arc::new(
-            WindowsBackend::start(BackendConfig {
-                video: VideoFormat {
-                    width: stream.width,
-                    height: stream.height,
-                    frame_rate_numerator: std::num::NonZeroU32::new(stream.fps.max(1))
-                        .expect("fps is clamped non-zero"),
-                    frame_rate_denominator: std::num::NonZeroU32::new(1).expect("one is non-zero"),
-                    average_bitrate: stream.bitrate_bps.max(1),
+            WindowsBackend::start_for(
+                graphics_api,
+                BackendConfig {
+                    video: VideoFormat {
+                        codec: match stream.codec {
+                            crate::media::MediaVideoCodec::H264 => VideoCodec::H264,
+                            crate::media::MediaVideoCodec::H265 => VideoCodec::H265,
+                            crate::media::MediaVideoCodec::Av1 => VideoCodec::Av1,
+                        },
+                        width: stream.width,
+                        height: stream.height,
+                        frame_rate_numerator: std::num::NonZeroU32::new(stream.fps.max(1))
+                            .expect("fps is clamped non-zero"),
+                        frame_rate_denominator: std::num::NonZeroU32::new(1)
+                            .expect("one is non-zero"),
+                        average_bitrate: stream.bitrate_bps.max(1),
+                    },
+                    audio: AudioFormat {
+                        sample_rate: AUDIO_SAMPLE_RATE as u32,
+                        channels: AUDIO_CHANNELS as u16,
+                    },
+                    surface: initial_surface,
+                    video_queue_capacity: 2,
+                    audio_queue_capacity: 4,
                 },
-                audio: AudioFormat {
-                    sample_rate: AUDIO_SAMPLE_RATE as u32,
-                    channels: AUDIO_CHANNELS as u16,
-                },
-                surface: hidden_windows_surface(),
-                video_queue_capacity: 3,
-                audio_queue_capacity: 12,
-            })
+            )
             .map_err(|error| error.to_string())?,
         );
         bridge.replace_backend(Some(Arc::clone(&backend)));
         Ok(Self {
             backend,
+            graphics_api,
             bridge,
+            output,
+            external_surface,
+            dropped_video_frames: 0,
             stopped: false,
         })
     }
@@ -1148,26 +1816,42 @@ impl WindowsOutput {
         Ok(())
     }
 
-    fn set_paused(&self, paused: bool) -> Result<(), String> {
+    fn set_paused(&mut self, paused: bool) -> Result<(), String> {
+        if paused && let Some(surface) = self.external_surface.as_mut() {
+            surface
+                .input_capture
+                .release(&surface.sdl, &mut surface.window);
+        }
         self.backend
             .set_paused(paused)
             .map_err(|error| error.to_string())
     }
 
-    fn update_surface(&self, surface: &RenderSurface) -> Result<(), String> {
+    fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
+        if let Some(external_surface) = self.external_surface.as_mut() {
+            external_surface.update(surface)?;
+            return self
+                .backend
+                .set_surface(external_surface.target()?)
+                .map_err(|error| error.to_string());
+        }
         self.backend
             .set_surface(windows_surface(surface)?)
             .map_err(|error| error.to_string())
     }
 
-    fn pump(&self) -> Result<OutputEvent, String> {
+    fn pump(&mut self) -> Result<OutputEvent, String> {
+        if let Some(surface) = self.external_surface.as_mut() {
+            surface.pump(self.backend.presented_frames(), self.dropped_video_frames);
+        }
         let Some(event) = self.backend.try_event() else {
             return Ok(OutputEvent::None);
         };
         Ok(match event {
-            BackendEvent::FirstFramePresented => {
-                OutputEvent::Presented("Media Foundation/D3D11/WASAPI")
-            }
+            BackendEvent::FirstFramePresented => OutputEvent::Presented(match self.graphics_api {
+                WindowsGraphicsApi::D3d12 => "Media Foundation/D3D11-on-12/D3D12/WASAPI",
+                WindowsGraphicsApi::D3d11 => "Media Foundation/D3D11/WASAPI",
+            }),
             BackendEvent::KeyFrameRequired => {
                 self.bridge.require_keyframe();
                 OutputEvent::RequestKeyframe
@@ -1185,6 +1869,7 @@ impl WindowsOutput {
             BackendEvent::Fatal(error) => OutputEvent::Fatal(error.to_string()),
             BackendEvent::QueueOverflow(subsystem) => {
                 if subsystem == Subsystem::VideoDecode {
+                    self.dropped_video_frames = self.dropped_video_frames.saturating_add(1);
                     self.bridge.require_keyframe();
                 }
                 OutputEvent::QueueDropped(subsystem_label(subsystem))
@@ -1200,8 +1885,42 @@ impl WindowsOutput {
             return;
         }
         self.bridge.replace_backend(None);
+        if let Some(surface) = self.external_surface.as_mut() {
+            surface.release();
+            let captured_input = self.output.captured_input();
+            for input in surface.take_captured_input() {
+                captured_input.push(input);
+            }
+        }
         self.backend.stop();
         self.stopped = true;
+    }
+
+    fn take_captured_input(&mut self) -> Vec<CapturedInput> {
+        self.external_surface
+            .as_mut()
+            .map(WindowsExternalSdlSurface::take_captured_input)
+            .unwrap_or_default()
+    }
+
+    fn update_cursor(&mut self, bytes: &[u8]) {
+        if let Some(surface) = self.external_surface.as_mut() {
+            surface.update_cursor(bytes);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn selected_windows_graphics_api() -> WindowsGraphicsApi {
+    let d3d12_allowed = crate::runtime::backend_preference_allows("d3d12");
+    let d3d11_allowed = crate::runtime::backend_preference_allows("d3d11");
+    if d3d12_allowed
+        && (!d3d11_allowed
+            || WindowsBackend::probe_for(WindowsGraphicsApi::D3d12).bundled_backend_available())
+    {
+        WindowsGraphicsApi::D3d12
+    } else {
+        WindowsGraphicsApi::D3d11
     }
 }
 
@@ -1246,6 +1965,23 @@ fn windows_surface(surface: &RenderSurface) -> Result<SurfaceTarget, String> {
         },
         visible: true,
     }))
+}
+
+fn external_renderer_enabled() -> bool {
+    external_renderer_enabled_value(
+        std::env::var("OPENNOW_NATIVE_EXTERNAL_RENDERER")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn external_renderer_enabled_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -1330,6 +2066,36 @@ mod tests {
     }
 
     #[test]
+    fn absolute_mouse_coordinates_exclude_letterbox_bars() {
+        assert_eq!(
+            map_window_point_to_stream_viewport((500, 500), (1920, 1080), (1000, 1000)),
+            AbsoluteMouseViewport {
+                x: 500,
+                y: 282,
+                width: 1000,
+                height: 563,
+            }
+        );
+        assert_eq!(
+            map_window_point_to_stream_viewport((500, 0), (1920, 1080), (1000, 1000)),
+            AbsoluteMouseViewport {
+                x: 500,
+                y: 0,
+                width: 1000,
+                height: 563,
+            }
+        );
+    }
+
+    #[test]
+    fn cursor_channel_position_uses_normalized_stream_coordinates() {
+        let message = [0, 12, 0, 0, 0, 0, 0, 0x00, 0x80, 0xff, 0xff];
+        assert_eq!(parse_cursor_position(&message), Some((32768, 65535)));
+        assert_eq!(normalized_cursor_coordinate(32768, 2560), 1280);
+        assert_eq!(normalized_cursor_coordinate(65535, 1440), 1439);
+    }
+
+    #[test]
     fn sdl_keys_map_to_windows_virtual_keys_and_gfn_modifiers() {
         use sdl2::keyboard::{Mod, Scancode};
 
@@ -1356,5 +2122,54 @@ mod tests {
                 delta_y: -50,
             }]
         );
+    }
+
+    #[test]
+    fn native_input_capture_requires_explicit_ownership() {
+        assert!(!native_input_capture_enabled_value(None));
+        assert!(!native_input_capture_enabled_value(Some("electron")));
+        assert!(native_input_capture_enabled_value(Some(" native ")));
+    }
+
+    #[test]
+    fn native_input_capture_waits_for_the_first_server_cursor_mode() {
+        let capture = SdlInputCapture::new(true);
+        assert!(!capture.focused);
+        assert!(!capture.relative_mouse);
+        assert_eq!(capture.cursor_state, RemoteCursorState::Unknown);
+    }
+
+    #[test]
+    fn only_predefined_cursor_zero_enters_relative_mouse_mode() {
+        assert_eq!(cursor_state_for_message(0, 0), RemoteCursorState::Hidden);
+        assert_eq!(cursor_state_for_message(0, 1), RemoteCursorState::Visible);
+        assert_eq!(cursor_state_for_message(1, 0), RemoteCursorState::Visible);
+    }
+
+    #[test]
+    fn custom_cursor_parser_preserves_bitmap_hotspot_and_scale() {
+        let mime = b"image/png";
+        let image = b"AAAA";
+        let mut bytes = vec![1, 0, 3, 4, mime.len() as u8];
+        bytes.extend_from_slice(mime);
+        bytes.extend_from_slice(&(image.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(image);
+        bytes.extend_from_slice(&10_u16.to_le_bytes());
+        bytes.extend_from_slice(&20_u16.to_le_bytes());
+        bytes.extend_from_slice(&150_u16.to_le_bytes());
+
+        let cursor = parse_custom_cursor_payload(&bytes).expect("custom cursor");
+        assert_eq!(cursor.hotspot_x, 3);
+        assert_eq!(cursor.hotspot_y, 4);
+        assert_eq!(cursor.image_base64, image);
+        assert_eq!(cursor.scale, 1.5);
+    }
+
+    #[test]
+    fn external_renderer_environment_values_are_explicit() {
+        assert!(external_renderer_enabled_value(Some("1")));
+        assert!(external_renderer_enabled_value(Some(" TRUE ")));
+        assert!(!external_renderer_enabled_value(Some("0")));
+        assert!(!external_renderer_enabled_value(None));
     }
 }

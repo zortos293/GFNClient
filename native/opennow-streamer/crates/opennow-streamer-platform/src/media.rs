@@ -18,13 +18,31 @@ use crate::runtime::HostCommand;
 #[cfg(target_os = "linux")]
 use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 
-const VIDEO_QUEUE_CAPACITY: usize = 3;
-const AUDIO_QUEUE_CAPACITY: usize = 12;
+const VIDEO_QUEUE_CAPACITY: usize = 2;
+const AUDIO_QUEUE_CAPACITY: usize = 4;
 const OPUS_SAMPLE_RATE: u32 = 48_000;
 const MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL: usize = 5_760;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaVideoCodec {
+    H264,
+    H265,
+    Av1,
+}
+
+impl MediaVideoCodec {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::H264 => "h264",
+            Self::H265 => "h265",
+            Self::Av1 => "av1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaStreamConfig {
+    pub codec: MediaVideoCodec,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -34,6 +52,7 @@ pub struct MediaStreamConfig {
 impl Default for MediaStreamConfig {
     fn default() -> Self {
         Self {
+            codec: MediaVideoCodec::H264,
             width: 1920,
             height: 1080,
             fps: 60,
@@ -45,6 +64,8 @@ impl Default for MediaStreamConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaCodec {
     H264,
+    H265,
+    Av1,
     Opus { channels: u8 },
     Unsupported(String),
 }
@@ -70,6 +91,12 @@ pub enum CapturedInput {
     MouseMove {
         delta_x: i16,
         delta_y: i16,
+    },
+    MouseAbsolute {
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
     },
     MouseButton {
         button: u8,
@@ -104,11 +131,18 @@ impl CapturedInputQueue {
             *pending_y = pending_y.saturating_add(delta_y);
             return;
         }
+        if matches!(input, CapturedInput::MouseAbsolute { .. })
+            && matches!(pending.back(), Some(CapturedInput::MouseAbsolute { .. }))
+        {
+            pending.pop_back();
+        }
         if pending.len() == CAPTURED_INPUT_CAPACITY {
-            if let Some(index) = pending
-                .iter()
-                .position(|event| matches!(event, CapturedInput::MouseMove { .. }))
-            {
+            if let Some(index) = pending.iter().position(|event| {
+                matches!(
+                    event,
+                    CapturedInput::MouseMove { .. } | CapturedInput::MouseAbsolute { .. }
+                )
+            }) {
                 pending.remove(index);
             } else {
                 self.overflowed.store(true, Ordering::Release);
@@ -221,7 +255,7 @@ impl MediaSink {
             return PushOutcome::Paused;
         }
         match frame.codec {
-            MediaCodec::H264 => self.push_video(frame),
+            MediaCodec::H264 | MediaCodec::H265 | MediaCodec::Av1 => self.push_video(frame),
             MediaCodec::Opus { .. } => self.push_audio(frame),
             MediaCodec::Unsupported(_) => PushOutcome::Unsupported,
         }
@@ -336,6 +370,12 @@ impl MediaSession {
                 }
             }
         }
+        if !use_windows_hardware && stream.codec != MediaVideoCodec::H264 {
+            return Err(format!(
+                "{} requires the Windows hardware decoder",
+                stream.codec.label().to_ascii_uppercase()
+            ));
+        }
         let video_decoder = (!use_windows_hardware).then(H264Decoder::new).transpose()?;
         let audio_decoder = OpusDecoder::new(2)?;
         let shared = Arc::new(SharedPipeline {
@@ -362,7 +402,7 @@ impl MediaSession {
         });
         let video_shared = Arc::clone(&shared);
         let video_worker = thread::Builder::new()
-            .name("opennow-h264-decode".to_owned())
+            .name(format!("opennow-{}-decode", stream.codec.label()))
             .spawn(move || {
                 #[cfg(target_os = "windows")]
                 if use_windows_hardware {
@@ -374,7 +414,7 @@ impl MediaSession {
                     video_decoder.expect("software decoder was initialized"),
                 );
             })
-            .map_err(|error| format!("failed to start H.264 decoder worker: {error}"))?;
+            .map_err(|error| format!("failed to start video decoder worker: {error}"))?;
         let audio_shared = Arc::clone(&shared);
         let audio_worker = match thread::Builder::new()
             .name("opennow-opus-decode".to_owned())
@@ -592,6 +632,10 @@ impl MediaSession {
 }
 
 impl MediaControl {
+    pub fn update_cursor(&self, bytes: Vec<u8>) {
+        let _ = self.host_commands.send(HostCommand::Cursor(bytes));
+    }
+
     pub fn stop(&self) {
         if self.shared.stopped.swap(true, Ordering::AcqRel) {
             return;
@@ -605,7 +649,9 @@ impl MediaControl {
 
 #[cfg(target_os = "windows")]
 fn run_windows_video(shared: Arc<SharedPipeline>) {
-    use opennow_streamer_platform_windows::{EncodedVideoFrame, PushOutcome as WindowsPushOutcome};
+    use opennow_streamer_platform_windows::{
+        EncodedVideoFrame, PushOutcome as WindowsPushOutcome, VideoCodec,
+    };
 
     let mut previous_timestamp = None;
     while let Some(frame) = shared.video.pop() {
@@ -644,7 +690,13 @@ fn run_windows_video(shared: Arc<SharedPipeline>) {
             .filter(|duration| *duration > 0)
             .unwrap_or(166_667);
         match backend.submit_video(EncodedVideoFrame {
-            annex_b: frame.data.to_vec(),
+            codec: match frame.codec {
+                MediaCodec::H264 => VideoCodec::H264,
+                MediaCodec::H265 => VideoCodec::H265,
+                MediaCodec::Av1 => VideoCodec::Av1,
+                _ => continue,
+            },
+            data: frame.data.to_vec(),
             timestamp_100ns,
             duration_100ns,
             key_frame: frame.keyframe,
@@ -671,7 +723,12 @@ fn run_windows_video(shared: Arc<SharedPipeline>) {
                 shared.video_desynced.store(true, Ordering::Release);
                 shared.windows_bridge.require_keyframe();
                 let _ = shared.feedback.send(MediaFeedback::DecoderError {
-                    codec: "h264",
+                    codec: match frame.codec {
+                        MediaCodec::H264 => "h264",
+                        MediaCodec::H265 => "h265",
+                        MediaCodec::Av1 => "av1",
+                        _ => "video",
+                    },
                     message: error.to_string(),
                 });
                 request_keyframe(&shared, &frame.mid, "D3D11 decoder rejected an access unit");

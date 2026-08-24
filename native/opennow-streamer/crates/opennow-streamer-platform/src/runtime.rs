@@ -15,7 +15,10 @@ use crate::output::{ActiveOutput, OutputBuffers, OutputEvent};
 #[cfg(target_os = "linux")]
 use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 
-const HOST_POLL_INTERVAL: Duration = Duration::from_millis(2);
+// Keep native input sampling below one rendered frame even at 120 Hz. SDL can
+// coalesce the individual raw-input events, so this improves delivery cadence
+// without allowing the queue to grow with redundant motion packets.
+const HOST_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const HOST_START_TIMEOUT: Duration = Duration::from_secs(10);
 const HOST_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -39,6 +42,7 @@ pub(crate) enum HostCommand {
         surface: RenderSurface,
         reply: Sender<Result<(), String>>,
     },
+    Cursor(Vec<u8>),
     #[cfg(target_os = "macos")]
     ConfigureMacH264 {
         parameter_sets: opennow_streamer_platform_macos::H264ParameterSets,
@@ -372,6 +376,11 @@ impl MainThreadHost {
                         }
                     }
                 }
+                Ok(HostCommand::Cursor(bytes)) => {
+                    if let Some(output) = active.as_mut() {
+                        output.update_cursor(&bytes);
+                    }
+                }
                 #[cfg(target_os = "linux")]
                 Ok(HostCommand::FallbackLinux { reason }) => {
                     self.linux_software_fallback.store(true, Ordering::Release);
@@ -691,7 +700,7 @@ fn use_hardware_backend() -> bool {
 
 #[cfg(target_os = "windows")]
 fn use_hardware_backend() -> bool {
-    backend_preference_allows("d3d11")
+    backend_preference_allows("d3d12") || backend_preference_allows("d3d11")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -727,7 +736,7 @@ fn current_video_mid(bridge: &WindowsBridge) -> String {
 
 #[cfg(target_os = "windows")]
 const fn hardware_backend_label() -> &'static str {
-    "Media Foundation/D3D11/WASAPI"
+    "Media Foundation/Direct3D/WASAPI"
 }
 
 #[cfg(target_os = "macos")]
@@ -769,5 +778,7 @@ mod tests {
         assert!(backend_preference_allows_value(Some("d3d11"), "d3d11"));
         assert!(!backend_preference_allows_value(Some("software"), "d3d11"));
         assert!(!backend_preference_allows_value(Some("d3d12"), "d3d11"));
+        assert!(backend_preference_allows_value(Some("d3d12"), "d3d12"));
+        assert!(!backend_preference_allows_value(Some("d3d11"), "d3d12"));
     }
 }

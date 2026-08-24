@@ -8,7 +8,7 @@ The backend uses only Windows system APIs:
 - A D3D11 video processor and a two-buffer flip-model DXGI swap chain for NV12 conversion, aspect-correct scaling, and presentation. The swap chain can target a caller-owned HWND, or the backend can create and own a child or top-level HWND.
 - WASAPI shared-mode rendering for interleaved IEEE-float PCM. Windows performs endpoint format conversion when the active mix format differs.
 
-`WindowsBackend::probe` creates a hidden D3D11 presentation path, configures an adapter-matched hardware H.264 transform, and starts a 48 kHz stereo WASAPI client. A capability is reported only when that operation succeeds. Non-Windows builds expose the same typed API but report the backend as unavailable.
+`WindowsBackend::probe_for` creates a hidden presentation path using either D3D11 or a D3D12-backed D3D11-on-12 device, configures an adapter-matched hardware H.264 transform, and starts a 48 kHz stereo WASAPI client. A capability is reported only when that complete operation succeeds. `WindowsBackend::probe` remains the D3D11 compatibility entry point. Non-Windows builds expose the same typed API but report the backend as unavailable.
 
 ## Integration API
 

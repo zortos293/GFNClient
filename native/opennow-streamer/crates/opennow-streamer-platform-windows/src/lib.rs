@@ -6,7 +6,7 @@ mod queue;
 #[cfg(windows)]
 mod windows;
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
@@ -14,7 +14,7 @@ use crate::queue::BoundedQueue;
 
 pub use format::{
     AudioFormat, BackendConfig, Bounds, EncodedVideoFrame, ExistingWindow, OwnedWindow, PcmFrame,
-    SurfaceTarget, VideoFormat, WindowHandle,
+    SurfaceTarget, VideoCodec, VideoFormat, WindowHandle,
 };
 pub use queue::PushOutcome;
 
@@ -51,6 +51,15 @@ pub enum Subsystem {
     Audio,
 }
 
+/// Graphics API that owns the Windows decode/presentation device. D3D12 uses
+/// Microsoft's D3D11-on-12 layer so Media Foundation can keep its required
+/// D3D11 device-manager contract while work is submitted to a D3D12 queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsGraphicsApi {
+    D3d11,
+    D3d12,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendEvent {
     StateChanged(LifecycleState),
@@ -70,6 +79,8 @@ pub enum BackendEvent {
 pub struct CapabilityProbe {
     pub available: bool,
     pub h264_hardware_decode: bool,
+    pub h265_hardware_decode: bool,
+    pub av1_hardware_decode: bool,
     pub d3d11_presentation: bool,
     pub wasapi_render: bool,
     pub reason: Option<String>,
@@ -77,7 +88,9 @@ pub struct CapabilityProbe {
 
 impl CapabilityProbe {
     pub const fn bundled_backend_available(&self) -> bool {
-        self.h264_hardware_decode && self.d3d11_presentation && self.wasapi_render
+        (self.h264_hardware_decode || self.h265_hardware_decode || self.av1_hardware_decode)
+            && self.d3d11_presentation
+            && self.wasapi_render
     }
 }
 
@@ -169,6 +182,7 @@ struct Shared {
     state: AtomicU8,
     paused: std::sync::atomic::AtomicBool,
     events: BoundedQueue<BackendEvent>,
+    presented_frames: AtomicU64,
 }
 
 impl Shared {
@@ -190,15 +204,21 @@ pub struct WindowsBackend {
 
 impl WindowsBackend {
     pub fn probe() -> CapabilityProbe {
+        Self::probe_for(WindowsGraphicsApi::D3d11)
+    }
+
+    pub fn probe_for(api: WindowsGraphicsApi) -> CapabilityProbe {
         #[cfg(windows)]
         {
-            windows::probe()
+            windows::probe(api)
         }
         #[cfg(not(windows))]
         {
             CapabilityProbe {
                 available: false,
                 h264_hardware_decode: false,
+                h265_hardware_decode: false,
+                av1_hardware_decode: false,
                 d3d11_presentation: false,
                 wasapi_render: false,
                 reason: Some("the current target is not Windows".to_owned()),
@@ -207,6 +227,10 @@ impl WindowsBackend {
     }
 
     pub fn start(config: BackendConfig) -> Result<Self, BackendError> {
+        Self::start_for(WindowsGraphicsApi::D3d11, config)
+    }
+
+    pub fn start_for(api: WindowsGraphicsApi, config: BackendConfig) -> Result<Self, BackendError> {
         config.validate()?;
 
         #[cfg(not(windows))]
@@ -226,9 +250,10 @@ impl WindowsBackend {
                 state: AtomicU8::new(LifecycleState::Starting as u8),
                 paused: std::sync::atomic::AtomicBool::new(false),
                 events: BoundedQueue::new(64),
+                presented_frames: AtomicU64::new(0),
             });
             let (control_sender, control_receiver) = mpsc::channel();
-            let worker = windows::spawn(config, Arc::clone(&shared), control_receiver)?;
+            let worker = windows::spawn(api, config, Arc::clone(&shared), control_receiver)?;
             Ok(Self {
                 shared,
                 control: control_sender,
@@ -239,6 +264,10 @@ impl WindowsBackend {
 
     pub fn state(&self) -> LifecycleState {
         self.shared.state()
+    }
+
+    pub fn presented_frames(&self) -> u64 {
+        self.shared.presented_frames.load(Ordering::Relaxed)
     }
 
     pub fn submit_video(&self, frame: EncodedVideoFrame) -> Result<PushOutcome, BackendError> {
@@ -415,6 +444,8 @@ mod tests {
             let probe = WindowsBackend::probe();
             assert!(!probe.available);
             assert!(!probe.h264_hardware_decode);
+            assert!(!probe.h265_hardware_decode);
+            assert!(!probe.av1_hardware_decode);
             assert!(!probe.d3d11_presentation);
             assert!(!probe.wasapi_render);
         }
@@ -425,6 +456,8 @@ mod tests {
         let mut probe = CapabilityProbe {
             available: false,
             h264_hardware_decode: true,
+            h265_hardware_decode: true,
+            av1_hardware_decode: true,
             d3d11_presentation: true,
             wasapi_render: false,
             reason: Some("WASAPI failed to start".to_owned()),
@@ -468,6 +501,7 @@ mod tests {
             video: BoundedQueue::new(2),
             audio: BoundedQueue::new(2),
             video_format: Mutex::new(VideoFormat {
+                codec: VideoCodec::H264,
                 width: 1920,
                 height: 1080,
                 frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
@@ -491,6 +525,7 @@ mod tests {
             state: AtomicU8::new(LifecycleState::Running as u8),
             paused: std::sync::atomic::AtomicBool::new(false),
             events: BoundedQueue::new(8),
+            presented_frames: AtomicU64::new(0),
         });
         let backend = WindowsBackend {
             shared: Arc::clone(&shared),

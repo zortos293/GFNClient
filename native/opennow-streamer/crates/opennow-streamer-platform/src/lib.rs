@@ -7,10 +7,12 @@ mod native_surface;
 mod output;
 mod queue;
 mod runtime;
+#[cfg(target_os = "windows")]
+mod windows_debug_overlay;
 
 pub use media::{
     CapturedInput, CapturedInputQueue, EncodedFrame, MediaCodec, MediaControl, MediaFeedback,
-    MediaSession, MediaSink, MediaStreamConfig, PushOutcome,
+    MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome,
 };
 pub use runtime::{MainThreadHost, MediaRuntime, create_runtime};
 
@@ -32,7 +34,25 @@ pub fn video_backends() -> Vec<VideoBackendCapability> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        vec![hardware_backend(), software_backend()]
+        let mut backends = Vec::new();
+        #[cfg(target_os = "windows")]
+        {
+            use opennow_streamer_platform_windows::WindowsGraphicsApi;
+            backends.push(windows_hardware_backend(
+                WindowsGraphicsApi::D3d12,
+                "d3d12",
+                "d3d11on12-nv12",
+            ));
+            backends.push(windows_hardware_backend(
+                WindowsGraphicsApi::D3d11,
+                "d3d11",
+                "d3d11-nv12",
+            ));
+        }
+        #[cfg(not(target_os = "windows"))]
+        backends.push(hardware_backend());
+        backends.push(software_backend());
+        backends
     }
 }
 
@@ -45,42 +65,55 @@ pub const fn supports_audio_output() -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn hardware_backend() -> VideoBackendCapability {
-    if !runtime::backend_preference_allows("d3d11") {
+fn windows_hardware_backend(
+    api: opennow_streamer_platform_windows::WindowsGraphicsApi,
+    backend: &'static str,
+    zero_copy_mode: &'static str,
+) -> VideoBackendCapability {
+    if !runtime::backend_preference_allows(backend) {
         return unavailable_backend(
-            "d3d11",
+            backend,
             "windows",
-            "D3D11 hardware decode was disabled by configuration",
+            "Direct3D hardware decode was disabled by configuration",
         );
     }
-    let probe = opennow_streamer_platform_windows::WindowsBackend::probe();
+    let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(api);
     let available = probe.bundled_backend_available();
+    let media_output_available = probe.d3d11_presentation && probe.wasapi_render;
     let reason = if available {
         None
     } else {
-        Some("D3D11 H.264 hardware decode, presentation, or WASAPI output is unavailable")
+        Some("Direct3D hardware decode, presentation, or WASAPI output is unavailable")
     };
     VideoBackendCapability {
-        backend: "d3d11",
+        backend,
         platform: "windows",
         codecs: vec![
             CodecCapability {
                 codec: "h264",
-                available,
-                reason,
+                available: media_output_available && probe.h264_hardware_decode,
+                reason: (!(media_output_available && probe.h264_hardware_decode)).then_some(
+                    "H.264 Media Foundation hardware decode or media output is unavailable",
+                ),
             },
             CodecCapability {
                 codec: "h265",
-                available: false,
-                reason: Some("H.265 Media Foundation decode is not implemented"),
+                available: media_output_available && probe.h265_hardware_decode,
+                reason: (!(media_output_available && probe.h265_hardware_decode)).then_some(
+                    "H.265 Media Foundation hardware decode or media output is unavailable",
+                ),
             },
             CodecCapability {
                 codec: "av1",
-                available: false,
-                reason: Some("AV1 Media Foundation decode is not implemented"),
+                available: media_output_available && probe.av1_hardware_decode,
+                reason: (!(media_output_available && probe.av1_hardware_decode)).then_some(
+                    "AV1 Media Foundation hardware decode or media output is unavailable",
+                ),
             },
         ],
-        zero_copy_modes: available.then_some(vec!["d3d11-nv12"]).unwrap_or_default(),
+        zero_copy_modes: available
+            .then_some(vec![zero_copy_mode])
+            .unwrap_or_default(),
         available,
         reason,
     }
@@ -216,22 +249,36 @@ mod tests {
         );
         #[cfg(target_os = "windows")]
         {
-            let hardware = backends
-                .iter()
-                .find(|backend| backend.backend == "d3d11")
-                .expect("D3D11 backend");
-            let probe = opennow_streamer_platform_windows::WindowsBackend::probe();
-            assert_eq!(
-                hardware.available,
-                probe.h264_hardware_decode && probe.d3d11_presentation && probe.wasapi_render
-            );
-            assert!(
-                hardware
-                    .codecs
+            use opennow_streamer_platform_windows::WindowsGraphicsApi;
+            for (backend_name, api) in [
+                ("d3d12", WindowsGraphicsApi::D3d12),
+                ("d3d11", WindowsGraphicsApi::D3d11),
+            ] {
+                let hardware = backends
                     .iter()
-                    .filter(|codec| codec.codec != "h264")
-                    .all(|codec| !codec.available)
-            );
+                    .find(|backend| backend.backend == backend_name)
+                    .expect("Direct3D backend");
+                let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(api);
+                assert_eq!(hardware.available, probe.bundled_backend_available());
+                assert_eq!(
+                    hardware
+                        .codecs
+                        .iter()
+                        .find(|codec| codec.codec == "h265")
+                        .expect("h265")
+                        .available,
+                    probe.h265_hardware_decode && probe.d3d11_presentation && probe.wasapi_render,
+                );
+                assert_eq!(
+                    hardware
+                        .codecs
+                        .iter()
+                        .find(|codec| codec.codec == "av1")
+                        .expect("av1")
+                        .available,
+                    probe.av1_hardware_decode && probe.d3d11_presentation && probe.wasapi_render,
+                );
+            }
         }
         #[cfg(target_os = "macos")]
         {

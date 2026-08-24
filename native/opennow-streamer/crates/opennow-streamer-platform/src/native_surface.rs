@@ -32,6 +32,11 @@ impl NativeSurface {
     pub(crate) fn refresh_ordering(&mut self) -> Result<(), String> {
         self.inner.refresh_ordering()
     }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn window_handle(&self) -> isize {
+        self.inner.window_handle()
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -56,11 +61,12 @@ fn physical_rect(rect: RenderSurfaceRect, _scale: f32) -> (i32, i32, u32, u32) {
 #[cfg(target_os = "windows")]
 mod platform {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GetWindowLongPtrW, HWND_TOP, SW_HIDE,
-        SWP_NOACTIVATE, SWP_SHOWWINDOW, SetFocus, SetForegroundWindow, SetWindowLongPtrW,
-        SetWindowPos, ShowWindow, WS_CHILD, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT,
-        WS_POPUP, WS_VISIBLE,
+        SWP_NOACTIVATE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+        ShowWindow, WS_CHILD, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
+        WS_VISIBLE,
     };
 
     use super::*;
@@ -86,6 +92,10 @@ mod platform {
                 owner: std::ptr::null_mut(),
                 shown: false,
             })
+        }
+
+        pub(crate) fn window_handle(&self) -> isize {
+            self.child as isize
         }
 
         pub(crate) fn attach_and_show(

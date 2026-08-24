@@ -2,34 +2,37 @@ use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::mem::size_of;
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ::windows::Win32::Foundation::{E_NOTIMPL, LUID};
 use ::windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use ::windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFDXGIBuffer, IMFMediaEventGenerator, IMFSample, IMFTransform,
+    IMFActivate, IMFAttributes, IMFDXGIBuffer, IMFMediaEventGenerator, IMFSample, IMFTransform,
     METransformHaveOutput, METransformNeedInput, MF_E_NO_EVENTS_AVAILABLE,
-    MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_FLAG_NO_WAIT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
-    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO,
-    MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
-    MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
-    MFSampleExtension_CleanPoint, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG,
-    MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_MESSAGE_COMMAND_FLUSH,
+    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_FLAG_NO_WAIT,
+    MF_LOW_LATENCY, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+    MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_SA_D3D11_AWARE,
+    MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateAttributes, MFCreateMediaType,
+    MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSampleExtension_CleanPoint,
+    MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG, MFT_ENUM_FLAG_HARDWARE,
+    MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_FLUSH,
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM,
     MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES,
-    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_H264,
-    MFVideoFormat_NV12, MFVideoInterlace_MixedInterlaceOrProgressive,
+    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_AV1,
+    MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_P010,
+    MFVideoInterlace_MixedInterlaceOrProgressive,
 };
 use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::core::Interface;
 
 use crate::queue::BoundedQueue;
-use crate::{BackendEvent, EncodedVideoFrame, VideoFormat};
+use crate::{BackendEvent, EncodedVideoFrame, VideoCodec, VideoFormat};
 
 use super::graphics::Graphics;
 
 pub(super) struct Decoder {
-    events: IMFMediaEventGenerator,
+    events: Option<IMFMediaEventGenerator>,
     transform: IMFTransform,
     activation: IMFActivate,
     input_stream: u32,
@@ -42,25 +45,32 @@ pub(super) struct Decoder {
 }
 
 impl Decoder {
-    pub(super) fn probe(graphics: &Graphics) -> Result<(), String> {
-        let mut decoder = Self::new(graphics, graphics.video_format())?;
+    pub(super) fn probe(graphics: &Graphics, codec: VideoCodec) -> Result<(), String> {
+        let mut decoder = Self::new(
+            graphics,
+            VideoFormat {
+                codec,
+                ..graphics.video_format()
+            },
+        )?;
         decoder.stop();
         Ok(())
     }
 
     pub(super) fn new(graphics: &Graphics, format: VideoFormat) -> Result<Self, String> {
-        let activations = enumerate_hardware_decoders(graphics.adapter_luid()?)?;
+        let activations = enumerate_decoders(graphics.adapter_luid()?, format.codec)?;
         let mut failures = Vec::new();
         for activation in activations {
             match configure_transform(&activation, graphics, format) {
                 Ok((transform, events, input_stream, output_stream, output_provides_samples)) => {
+                    let input_credits = u32::from(events.is_none());
                     return Ok(Self {
                         events,
                         transform,
                         activation,
                         input_stream,
                         output_stream,
-                        input_credits: 0,
+                        input_credits,
                         format,
                         output_provides_samples,
                         first_frame_presented: false,
@@ -76,10 +86,14 @@ impl Decoder {
             }
         }
         Err(if failures.is_empty() {
-            "no hardware H.264 decoder MFT is registered".to_owned()
+            format!(
+                "no D3D11-aware {} decoder MFT is registered",
+                format.codec.label()
+            )
         } else {
             format!(
-                "registered hardware H.264 decoders rejected the D3D11 configuration: {}",
+                "registered {} decoders rejected the D3D11 configuration: {}",
+                format.codec.label(),
                 failures.join("; ")
             )
         })
@@ -98,17 +112,24 @@ impl Decoder {
             return Err("decoder input was submitted without a NeedInput credit".to_owned());
         }
         unsafe {
-            let buffer = MFCreateMemoryBuffer(frame.annex_b.len() as u32)
-                .map_err(|error| error.to_string())?;
+            if frame.codec != self.format.codec {
+                return Err(format!(
+                    "{} decoder received a {} access unit",
+                    self.format.codec.label(),
+                    frame.codec.label()
+                ));
+            }
+            let buffer =
+                MFCreateMemoryBuffer(frame.data.len() as u32).map_err(|error| error.to_string())?;
             let mut destination = ptr::null_mut();
             buffer
                 .Lock(&mut destination, None, None)
                 .map_err(|error| error.to_string())?;
-            ptr::copy_nonoverlapping(frame.annex_b.as_ptr(), destination, frame.annex_b.len());
+            ptr::copy_nonoverlapping(frame.data.as_ptr(), destination, frame.data.len());
             let unlock_result = buffer.Unlock();
             unlock_result.map_err(|error| error.to_string())?;
             buffer
-                .SetCurrentLength(frame.annex_b.len() as u32)
+                .SetCurrentLength(frame.data.len() as u32)
                 .map_err(|error| error.to_string())?;
             let sample = MFCreateSample().map_err(|error| error.to_string())?;
             sample
@@ -137,23 +158,88 @@ impl Decoder {
         &mut self,
         graphics: &mut Graphics,
         event_queue: &BoundedQueue<BackendEvent>,
+        presented_frames: &AtomicU64,
     ) -> Result<(), String> {
-        loop {
-            let event = match unsafe { self.events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
-                Ok(event) => event,
-                Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => break,
-                Err(error) => return Err(error.to_string()),
-            };
-            let status = unsafe { event.GetStatus().map_err(|error| error.to_string())? };
-            status.ok().map_err(|error| error.to_string())?;
-            let event_type = unsafe { event.GetType().map_err(|error| error.to_string())? };
-            if event_type == METransformNeedInput.0 as u32 {
-                self.input_credits = self.input_credits.saturating_add(1);
-            } else if event_type == METransformHaveOutput.0 as u32 {
-                self.process_output(graphics, event_queue)?;
+        if let Some(events) = self.events.clone() {
+            loop {
+                let event = match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+                    Ok(event) => event,
+                    Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => break,
+                    Err(error) => return Err(error.to_string()),
+                };
+                let status = unsafe { event.GetStatus().map_err(|error| error.to_string())? };
+                status.ok().map_err(|error| error.to_string())?;
+                let event_type = unsafe { event.GetType().map_err(|error| error.to_string())? };
+                if event_type == METransformNeedInput.0 as u32 {
+                    self.input_credits = self.input_credits.saturating_add(1);
+                } else if event_type == METransformHaveOutput.0 as u32 {
+                    let _ = self.process_output(graphics, event_queue, presented_frames)?;
+                }
             }
+        } else {
+            while self.process_output(graphics, event_queue, presented_frames)?
+                == OutputPoll::Produced
+            {}
+            self.input_credits = 1;
         }
         Ok(())
+    }
+
+    fn process_output(
+        &mut self,
+        graphics: &mut Graphics,
+        event_queue: &BoundedQueue<BackendEvent>,
+        presented_frames: &AtomicU64,
+    ) -> Result<OutputPoll, String> {
+        let mut output = MFT_OUTPUT_DATA_BUFFER {
+            dwStreamID: self.output_stream,
+            ..Default::default()
+        };
+        let mut status = 0;
+        let result = unsafe {
+            self.transform
+                .ProcessOutput(0, std::slice::from_mut(&mut output), &mut status)
+        };
+        let sample = unsafe { ManuallyDrop::take(&mut output.pSample) };
+        let output_events = unsafe { ManuallyDrop::take(&mut output.pEvents) };
+        drop(output_events);
+
+        if let Err(error) = result {
+            drop(sample);
+            if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT {
+                return Ok(OutputPoll::NeedsInput);
+            }
+            if error.code() == MF_E_TRANSFORM_STREAM_CHANGE {
+                self.select_video_output_type()?;
+                let dimensions = self.output_dimensions()?;
+                let updated = VideoFormat {
+                    width: dimensions.0,
+                    height: dimensions.1,
+                    ..self.format
+                };
+                self.format = updated;
+                graphics.reconfigure_video(updated)?;
+                let _ = event_queue.push(BackendEvent::VideoFormatChanged(updated));
+                return Ok(OutputPoll::Produced);
+            }
+            return Err(error.to_string());
+        }
+
+        let sample = sample.ok_or_else(|| {
+            if self.output_provides_samples {
+                "hardware decoder reported output without a sample".to_owned()
+            } else {
+                "hardware decoder requires caller-allocated output samples".to_owned()
+            }
+        })?;
+        let (texture, subresource) = dxgi_surface(&sample)?;
+        graphics.present(&texture, subresource)?;
+        presented_frames.fetch_add(1, Ordering::Relaxed);
+        if !self.first_frame_presented && graphics.is_visible() {
+            self.first_frame_presented = true;
+            let _ = event_queue.push(BackendEvent::FirstFramePresented);
+        }
+        Ok(OutputPoll::Produced)
     }
 
     pub(super) fn stop(&mut self) {
@@ -174,60 +260,8 @@ impl Decoder {
         self.stopped = true;
     }
 
-    fn process_output(
-        &mut self,
-        graphics: &mut Graphics,
-        event_queue: &BoundedQueue<BackendEvent>,
-    ) -> Result<(), String> {
-        let mut output = MFT_OUTPUT_DATA_BUFFER {
-            dwStreamID: self.output_stream,
-            ..Default::default()
-        };
-        let mut status = 0;
-        let result = unsafe {
-            self.transform
-                .ProcessOutput(0, std::slice::from_mut(&mut output), &mut status)
-        };
-        let sample = unsafe { ManuallyDrop::take(&mut output.pSample) };
-        let output_events = unsafe { ManuallyDrop::take(&mut output.pEvents) };
-        drop(output_events);
-
-        if let Err(error) = result {
-            drop(sample);
-            if error.code() == MF_E_TRANSFORM_STREAM_CHANGE {
-                self.select_nv12_output_type()?;
-                let dimensions = self.output_dimensions()?;
-                let updated = VideoFormat {
-                    width: dimensions.0,
-                    height: dimensions.1,
-                    ..self.format
-                };
-                self.format = updated;
-                graphics.reconfigure_video(updated)?;
-                let _ = event_queue.push(BackendEvent::VideoFormatChanged(updated));
-                return Ok(());
-            }
-            return Err(error.to_string());
-        }
-
-        let sample = sample.ok_or_else(|| {
-            if self.output_provides_samples {
-                "hardware decoder reported output without a sample".to_owned()
-            } else {
-                "hardware decoder requires caller-allocated output samples".to_owned()
-            }
-        })?;
-        let (texture, subresource) = dxgi_surface(&sample)?;
-        graphics.present(&texture, subresource)?;
-        if !self.first_frame_presented && graphics.is_visible() {
-            self.first_frame_presented = true;
-            let _ = event_queue.push(BackendEvent::FirstFramePresented);
-        }
-        Ok(())
-    }
-
-    fn select_nv12_output_type(&self) -> Result<(), String> {
-        select_nv12_output_type(&self.transform, self.output_stream)
+    fn select_video_output_type(&self) -> Result<(), String> {
+        select_video_output_type(&self.transform, self.output_stream)
     }
 
     fn output_dimensions(&self) -> Result<(u32, u32), String> {
@@ -244,6 +278,12 @@ impl Decoder {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputPoll {
+    Produced,
+    NeedsInput,
+}
+
 impl Drop for Decoder {
     fn drop(&mut self) {
         self.stop();
@@ -254,7 +294,7 @@ fn configure_transform(
     activation: &IMFActivate,
     graphics: &Graphics,
     format: VideoFormat,
-) -> Result<(IMFTransform, IMFMediaEventGenerator, u32, u32, bool), String> {
+) -> Result<(IMFTransform, Option<IMFMediaEventGenerator>, u32, u32, bool), String> {
     unsafe {
         let transform: IMFTransform = activation
             .ActivateObject()
@@ -262,15 +302,19 @@ fn configure_transform(
         let attributes = transform
             .GetAttributes()
             .map_err(|error| error.to_string())?;
-        if attributes.GetUINT32(&MF_TRANSFORM_ASYNC).unwrap_or(0) == 0 {
-            return Err("MFT is not asynchronous hardware".to_owned());
-        }
-        if attributes.GetUINT32(&MF_SA_D3D11_AWARE).unwrap_or(0) == 0 {
+        let asynchronous = attributes.GetUINT32(&MF_TRANSFORM_ASYNC).unwrap_or(0) != 0;
+        let d3d11_aware = attributes.GetUINT32(&MF_SA_D3D11_AWARE).unwrap_or(0) != 0;
+        if !d3d11_aware {
             return Err("MFT is not D3D11-aware".to_owned());
         }
         attributes
-            .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
-            .map_err(|error| error.to_string())?;
+            .SetUINT32(&MF_LOW_LATENCY, 1)
+            .map_err(|error| format!("decoder low-latency mode: {error}"))?;
+        if asynchronous {
+            attributes
+                .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
+                .map_err(|error| error.to_string())?;
+        }
         transform
             .ProcessMessage(
                 MFT_MESSAGE_SET_D3D_MANAGER,
@@ -284,7 +328,7 @@ fn configure_transform(
             .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
             .map_err(|error| error.to_string())?;
         input_type
-            .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+            .SetGUID(&MF_MT_SUBTYPE, video_subtype(format.codec))
             .map_err(|error| error.to_string())?;
         input_type
             .SetUINT64(&MF_MT_FRAME_SIZE, pack_pair(format.width, format.height))
@@ -313,7 +357,7 @@ fn configure_transform(
         transform
             .SetInputType(input_stream, &input_type, 0)
             .map_err(|error| error.to_string())?;
-        select_nv12_output_type(&transform, output_stream)?;
+        select_video_output_type(&transform, output_stream)?;
 
         let stream_info = transform
             .GetOutputStreamInfo(output_stream)
@@ -323,7 +367,10 @@ fn configure_transform(
         if stream_info.dwFlags & provider_flags == 0 {
             return Err("MFT cannot allocate D3D11 output samples".to_owned());
         }
-        let events: IMFMediaEventGenerator = transform.cast().map_err(|error| error.to_string())?;
+        let events = asynchronous
+            .then(|| transform.cast::<IMFMediaEventGenerator>())
+            .transpose()
+            .map_err(|error| error.to_string())?;
         transform
             .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
             .map_err(|error| error.to_string())?;
@@ -334,16 +381,8 @@ fn configure_transform(
     }
 }
 
-fn enumerate_hardware_decoders(adapter_luid: LUID) -> Result<Vec<IMFActivate>, String> {
+fn enumerate_decoders(adapter_luid: LUID, codec: VideoCodec) -> Result<Vec<IMFActivate>, String> {
     unsafe {
-        let input = MFT_REGISTER_TYPE_INFO {
-            guidMajorType: MFMediaType_Video,
-            guidSubtype: MFVideoFormat_H264,
-        };
-        let output = MFT_REGISTER_TYPE_INFO {
-            guidMajorType: MFMediaType_Video,
-            guidSubtype: MFVideoFormat_NV12,
-        };
         let mut attributes = None;
         MFCreateAttributes(&mut attributes, 1).map_err(|error| error.to_string())?;
         let attributes = attributes.ok_or("MFCreateAttributes returned no attribute store")?;
@@ -354,20 +393,51 @@ fn enumerate_hardware_decoders(adapter_luid: LUID) -> Result<Vec<IMFActivate>, S
         attributes
             .SetBlob(&MFT_ENUM_ADAPTER_LUID, luid_bytes)
             .map_err(|error| error.to_string())?;
-        let mut entries: *mut Option<IMFActivate> = ptr::null_mut();
-        let mut count = 0;
+
+        let mut activations = enumerate_matching_decoders(
+            MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
+            Some(&attributes),
+            codec,
+        )?;
+        activations.extend(enumerate_matching_decoders(
+            MFT_ENUM_FLAG(MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
+            None,
+            codec,
+        )?);
+        Ok(activations)
+    }
+}
+
+unsafe fn enumerate_matching_decoders(
+    flags: MFT_ENUM_FLAG,
+    attributes: Option<&IMFAttributes>,
+    codec: VideoCodec,
+) -> Result<Vec<IMFActivate>, String> {
+    let input = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: *video_subtype(codec),
+    };
+    let output = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: MFVideoFormat_NV12,
+    };
+    let mut entries: *mut Option<IMFActivate> = ptr::null_mut();
+    let mut count = 0;
+    unsafe {
         MFTEnum2(
             MFT_CATEGORY_VIDEO_DECODER,
-            MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
+            flags,
             Some(&input),
             Some(&output),
-            &attributes,
+            attributes,
             &mut entries,
             &mut count,
         )
         .map_err(|error| error.to_string())?;
-        let mut activations = Vec::with_capacity(count as usize);
-        if !entries.is_null() {
+    }
+    let mut activations = Vec::with_capacity(count as usize);
+    if !entries.is_null() {
+        unsafe {
             for index in 0..count as usize {
                 if let Some(activation) = (*entries.add(index)).take() {
                     activations.push(activation);
@@ -375,8 +445,8 @@ fn enumerate_hardware_decoders(adapter_luid: LUID) -> Result<Vec<IMFActivate>, S
             }
             CoTaskMemFree(Some(entries as *const c_void));
         }
-        Ok(activations)
     }
+    Ok(activations)
 }
 
 fn stream_ids(transform: &IMFTransform) -> Result<(u32, u32), String> {
@@ -403,7 +473,7 @@ fn stream_ids(transform: &IMFTransform) -> Result<(u32, u32), String> {
     }
 }
 
-fn select_nv12_output_type(transform: &IMFTransform, output_stream: u32) -> Result<(), String> {
+fn select_video_output_type(transform: &IMFTransform, output_stream: u32) -> Result<(), String> {
     for index in 0..64 {
         let media_type = match unsafe { transform.GetOutputAvailableType(output_stream, index) } {
             Ok(media_type) => media_type,
@@ -414,7 +484,7 @@ fn select_nv12_output_type(transform: &IMFTransform, output_stream: u32) -> Resu
                 .GetGUID(&MF_MT_SUBTYPE)
                 .map_err(|error| error.to_string())?
         };
-        if subtype == MFVideoFormat_NV12 {
+        if subtype == MFVideoFormat_NV12 || subtype == MFVideoFormat_P010 {
             unsafe {
                 transform
                     .SetOutputType(output_stream, &media_type, 0)
@@ -423,7 +493,15 @@ fn select_nv12_output_type(transform: &IMFTransform, output_stream: u32) -> Resu
             return Ok(());
         }
     }
-    Err("hardware decoder did not expose NV12 output".to_owned())
+    Err("hardware decoder did not expose NV12 or P010 output".to_owned())
+}
+
+fn video_subtype(codec: VideoCodec) -> &'static ::windows::core::GUID {
+    match codec {
+        VideoCodec::H264 => &MFVideoFormat_H264,
+        VideoCodec::H265 => &MFVideoFormat_HEVC,
+        VideoCodec::Av1 => &MFVideoFormat_AV1,
+    }
 }
 
 fn dxgi_surface(sample: &IMFSample) -> Result<(ID3D11Texture2D, u32), String> {

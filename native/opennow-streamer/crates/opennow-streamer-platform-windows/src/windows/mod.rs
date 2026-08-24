@@ -11,7 +11,7 @@ use ::windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUnin
 
 use crate::{
     BackendConfig, BackendError, BackendEvent, CapabilityProbe, Control, LifecycleState, Shared,
-    Subsystem,
+    Subsystem, VideoCodec, WindowsGraphicsApi,
 };
 
 use self::audio::AudioRenderer;
@@ -46,13 +46,15 @@ impl Drop for MediaRuntime {
     }
 }
 
-pub(super) fn probe() -> CapabilityProbe {
+pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
     let _runtime = match MediaRuntime::initialize() {
         Ok(runtime) => runtime,
         Err(error) => {
             return CapabilityProbe {
                 available: false,
                 h264_hardware_decode: false,
+                h265_hardware_decode: false,
+                av1_hardware_decode: false,
                 d3d11_presentation: false,
                 wasapi_render: false,
                 reason: Some(error.to_string()),
@@ -60,18 +62,36 @@ pub(super) fn probe() -> CapabilityProbe {
         }
     };
 
-    let graphics = Graphics::probe();
-    let decoder = graphics
+    let graphics = Graphics::probe(api);
+    let h264_decoder = graphics
         .as_ref()
         .map_err(Clone::clone)
-        .and_then(|graphics| Decoder::probe(graphics).map_err(|error| error.to_string()));
+        .and_then(|graphics| {
+            Decoder::probe(graphics, VideoCodec::H264).map_err(|error| error.to_string())
+        });
+    let h265_decoder = graphics
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|graphics| {
+            Decoder::probe(graphics, VideoCodec::H265).map_err(|error| error.to_string())
+        });
+    let av1_decoder = graphics
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|graphics| {
+            Decoder::probe(graphics, VideoCodec::Av1).map_err(|error| error.to_string())
+        });
     let audio = AudioRenderer::probe().map_err(|error| error.to_string());
-    let h264_hardware_decode = decoder.is_ok();
+    let h264_hardware_decode = h264_decoder.is_ok();
+    let h265_hardware_decode = h265_decoder.is_ok();
+    let av1_hardware_decode = av1_decoder.is_ok();
     let d3d11_presentation = graphics.is_ok();
     let wasapi_render = audio.is_ok();
     let mut probe = CapabilityProbe {
         available: false,
         h264_hardware_decode,
+        h265_hardware_decode,
+        av1_hardware_decode,
         d3d11_presentation,
         wasapi_render,
         reason: None,
@@ -80,8 +100,8 @@ pub(super) fn probe() -> CapabilityProbe {
     if !probe.available {
         probe.reason = Some(
             [
-                graphics.err().map(|error| format!("D3D11: {error}")),
-                decoder.err().map(|error| format!("H.264: {error}")),
+                graphics.err().map(|error| format!("{api:?}: {error}")),
+                h264_decoder.err().map(|error| format!("H.264: {error}")),
                 audio.err().map(|error| format!("WASAPI: {error}")),
             ]
             .into_iter()
@@ -94,6 +114,7 @@ pub(super) fn probe() -> CapabilityProbe {
 }
 
 pub(super) fn spawn(
+    api: WindowsGraphicsApi,
     config: BackendConfig,
     shared: Arc<Shared>,
     controls: mpsc::Receiver<Control>,
@@ -103,7 +124,7 @@ pub(super) fn spawn(
     let worker = thread::Builder::new()
         .name("opennow-windows-media".to_owned())
         .spawn(move || {
-            let runtime = match Worker::new(config, worker_shared, controls) {
+            let runtime = match Worker::new(api, config, worker_shared, controls) {
                 Ok(worker) => {
                     let _ = ready_sender.send(Ok(()));
                     worker
@@ -133,6 +154,7 @@ pub(super) fn spawn(
 }
 
 struct Worker {
+    api: WindowsGraphicsApi,
     config: BackendConfig,
     shared: Arc<Shared>,
     controls: mpsc::Receiver<Control>,
@@ -144,19 +166,21 @@ struct Worker {
 
 impl Worker {
     fn new(
+        api: WindowsGraphicsApi,
         config: BackendConfig,
         shared: Arc<Shared>,
         controls: mpsc::Receiver<Control>,
     ) -> Result<Self, BackendError> {
         let runtime = MediaRuntime::initialize()?;
-        let graphics = Graphics::new(config.surface, config.video)
-            .map_err(|error| BackendError::Startup(format!("D3D11 presentation: {error}")))?;
+        let graphics = Graphics::new(api, config.surface, config.video)
+            .map_err(|error| BackendError::Startup(format!("{api:?} presentation: {error}")))?;
         let decoder = Decoder::new(&graphics, config.video)
             .map_err(|error| BackendError::Startup(format!("Media Foundation H.264: {error}")))?;
         let audio = AudioRenderer::new(config.audio)
             .map_err(|error| BackendError::Startup(format!("WASAPI: {error}")))?;
         shared.set_state(LifecycleState::Running);
         Ok(Self {
+            api,
             config,
             shared,
             controls,
@@ -263,10 +287,11 @@ impl Worker {
                 continue;
             }
 
-            if let Err(error) = self
-                .decoder
-                .poll_output(&mut self.graphics, &self.shared.events)
-            {
+            if let Err(error) = self.decoder.poll_output(
+                &mut self.graphics,
+                &self.shared.events,
+                &self.shared.presented_frames,
+            ) {
                 if let Err(error) = self.recover_video(Subsystem::VideoDecode, error) {
                     self.fail(error);
                     return;
@@ -337,9 +362,11 @@ impl Worker {
                 .surface
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            match Graphics::new(self.config.surface, self.config.video).and_then(|graphics| {
-                Decoder::new(&graphics, self.config.video).map(|decoder| (graphics, decoder))
-            }) {
+            match Graphics::new(self.api, self.config.surface, self.config.video).and_then(
+                |graphics| {
+                    Decoder::new(&graphics, self.config.video).map(|decoder| (graphics, decoder))
+                },
+            ) {
                 Ok((graphics, decoder)) => {
                     self.graphics = graphics;
                     self.decoder = decoder;

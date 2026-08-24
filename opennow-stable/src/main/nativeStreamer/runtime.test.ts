@@ -27,10 +27,29 @@ test("v2 runtime is self-contained and removes inherited GStreamer variables", (
 
   assert.equal(result.env.GST_PLUGIN_PATH, undefined);
   assert.equal(result.env.OPENNOW_NATIVE_STREAMER_PROTOCOL, "4");
+  assert.equal(result.env.OPENNOW_NATIVE_INPUT_OWNER, "electron");
   assert.equal(result.env.OPENNOW_NATIVE_VIDEO_BACKEND, "auto");
   assert.equal(result.env.SDL_VIDEODRIVER, "x11");
   assert.equal(result.runtimeStatus.selfContained, true);
   assert.match(result.runtimeStatus.message, /self-contained/);
+});
+
+test("external renderer makes the native SDL window the input owner", () => {
+  const result = createNativeStreamerRuntimeEnvironment({
+    executablePath: "C:\\OpenNOW\\opennow-streamer.exe",
+    baseEnv: {},
+    platform: "win32",
+    arch: "x64",
+    userDataPath: "C:\\OpenNOW",
+    protocolVersion: 4,
+    videoBackendPreference: "auto",
+    externalRendererEnabled: true,
+    cloudGsyncMode: "auto",
+    d3dFullscreenMode: "auto",
+  });
+
+  assert.equal(result.env.OPENNOW_NATIVE_EXTERNAL_RENDERER, "1");
+  assert.equal(result.env.OPENNOW_NATIVE_INPUT_OWNER, "native");
 });
 
 test("explicit Linux video backend preference is passed to the child", () => {

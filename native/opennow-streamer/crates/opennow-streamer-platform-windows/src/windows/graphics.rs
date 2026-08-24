@@ -17,9 +17,15 @@ use ::windows::Win32::Graphics::Direct3D11::{
     D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM,
-    D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D,
-    D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice, ID3D11Device, ID3D11Texture2D,
-    ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator,
+    D3D11_VIDEO_USAGE_OPTIMAL_SPEED, D3D11_VPIV_DIMENSION_TEXTURE2D,
+    D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor,
+    ID3D11VideoProcessorEnumerator,
+};
+use ::windows::Win32::Graphics::Direct3D11on12::{D3D11On12CreateDevice, ID3D11On12Device};
+use ::windows::Win32::Graphics::Direct3D12::{
+    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
+    D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12CreateDevice, ID3D12CommandQueue, ID3D12Device,
 };
 use ::windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_RATIONAL,
@@ -27,33 +33,87 @@ use ::windows::Win32::Graphics::Dxgi::Common::{
 };
 use ::windows::Win32::Graphics::Dxgi::{
     DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-    DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
-    IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1, IDXGISwapChain2,
+    DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
+    IDXGISwapChain2,
 };
 use ::windows::Win32::Media::MediaFoundation::{IMFDXGIDeviceManager, MFCreateDXGIDeviceManager};
 use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(test)]
+use ::windows::Win32::UI::WindowsAndMessaging::WS_POPUP;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetClientRect, HTTRANSPARENT, IsWindow, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW,
     RegisterClassW, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowPos,
     TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW,
-    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
+    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
+    WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW,
 };
-use ::windows::core::{Interface, w};
+use ::windows::core::{IUnknown, Interface, w};
 
-use crate::{Bounds, ExistingWindow, OwnedWindow, SurfaceTarget, VideoFormat, WindowHandle};
+use crate::{
+    Bounds, ExistingWindow, OwnedWindow, SurfaceTarget, VideoCodec, VideoFormat, WindowHandle,
+    WindowsGraphicsApi,
+};
 
 const WINDOW_CLASS: ::windows::core::PCWSTR = w!("OpenNOWStreamerD3D11Surface");
 
 struct DeviceResources {
     device: ID3D11Device,
+    context: ID3D11DeviceContext,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
     manager: IMFDXGIDeviceManager,
+    _d3d12: Option<D3d12Owners>,
+}
+
+struct D3d12Owners {
+    _device: ID3D12Device,
+    _queue: ID3D12CommandQueue,
+    _on12: ID3D11On12Device,
 }
 
 impl DeviceResources {
-    fn new() -> Result<Self, String> {
+    fn new(api: WindowsGraphicsApi) -> Result<Self, String> {
+        match api {
+            WindowsGraphicsApi::D3d11 => Self::new_d3d11(),
+            WindowsGraphicsApi::D3d12 => Self::new_d3d12(),
+        }
+    }
+
+    fn finish_d3d11_device(
+        device: ID3D11Device,
+        context: ID3D11DeviceContext,
+        d3d12: Option<D3d12Owners>,
+    ) -> Result<Self, String> {
+        unsafe {
+            let multithread: ID3D10Multithread =
+                context.cast().map_err(|error| error.to_string())?;
+            let _ = multithread.SetMultithreadProtected(true);
+            let video_device: ID3D11VideoDevice =
+                device.cast().map_err(|error| error.to_string())?;
+            let video_context: ID3D11VideoContext =
+                context.cast().map_err(|error| error.to_string())?;
+            let mut reset_token = 0;
+            let mut manager = None;
+            MFCreateDXGIDeviceManager(&mut reset_token, &mut manager)
+                .map_err(|error| error.to_string())?;
+            let manager = manager.ok_or("MFCreateDXGIDeviceManager returned no manager")?;
+            manager
+                .ResetDevice(&device, reset_token)
+                .map_err(|error| error.to_string())?;
+            Ok(Self {
+                device,
+                context,
+                video_device,
+                video_context,
+                manager,
+                _d3d12: d3d12,
+            })
+        }
+    }
+
+    fn new_d3d11() -> Result<Self, String> {
         unsafe {
             let mut device = None;
             let mut context = None;
@@ -75,29 +135,57 @@ impl DeviceResources {
                 Some(&mut context),
             )
             .map_err(|error| error.to_string())?;
-            let device = device.ok_or("D3D11CreateDevice returned no device")?;
-            let context = context.ok_or("D3D11CreateDevice returned no immediate context")?;
-            let multithread: ID3D10Multithread =
-                context.cast().map_err(|error| error.to_string())?;
-            let _ = multithread.SetMultithreadProtected(true);
-            let video_device: ID3D11VideoDevice =
-                device.cast().map_err(|error| error.to_string())?;
-            let video_context: ID3D11VideoContext =
-                context.cast().map_err(|error| error.to_string())?;
-            let mut reset_token = 0;
-            let mut manager = None;
-            MFCreateDXGIDeviceManager(&mut reset_token, &mut manager)
-                .map_err(|error| error.to_string())?;
-            let manager = manager.ok_or("MFCreateDXGIDeviceManager returned no manager")?;
-            manager
-                .ResetDevice(&device, reset_token)
-                .map_err(|error| error.to_string())?;
-            Ok(Self {
+            Self::finish_d3d11_device(
+                device.ok_or("D3D11CreateDevice returned no device")?,
+                context.ok_or("D3D11CreateDevice returned no immediate context")?,
+                None,
+            )
+        }
+    }
+
+    fn new_d3d12() -> Result<Self, String> {
+        unsafe {
+            let mut d3d12_device = None;
+            D3D12CreateDevice(None::<&IUnknown>, D3D_FEATURE_LEVEL_11_0, &mut d3d12_device)
+                .map_err(|error| format!("D3D12CreateDevice: {error}"))?;
+            let d3d12_device: ID3D12Device =
+                d3d12_device.ok_or("D3D12CreateDevice returned no device")?;
+            let queue: ID3D12CommandQueue = d3d12_device
+                .CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
+                    Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    Priority: D3D12_COMMAND_QUEUE_PRIORITY_NORMAL.0,
+                    Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
+                    NodeMask: 0,
+                })
+                .map_err(|error| format!("ID3D12Device::CreateCommandQueue: {error}"))?;
+            let queue_unknown = queue.cast().map_err(|error| error.to_string())?;
+            let mut device = None;
+            let mut context = None;
+            D3D11On12CreateDevice(
+                &d3d12_device,
+                (D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT).0 as u32,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                Some(&[Some(queue_unknown)]),
+                0,
+                Some(&mut device),
+                Some(&mut context),
+                None,
+            )
+            .map_err(|error| format!("D3D11On12CreateDevice: {error}"))?;
+            let device = device.ok_or("D3D11On12CreateDevice returned no D3D11 device")?;
+            let context = context.ok_or("D3D11On12CreateDevice returned no immediate context")?;
+            let on12 = device
+                .cast()
+                .map_err(|error| format!("D3D11-on-12 device interface: {error}"))?;
+            Self::finish_d3d11_device(
                 device,
-                video_device,
-                video_context,
-                manager,
-            })
+                context,
+                Some(D3d12Owners {
+                    _device: d3d12_device,
+                    _queue: queue,
+                    _on12: on12,
+                }),
+            )
         }
     }
 }
@@ -221,8 +309,9 @@ pub(super) struct Graphics {
 }
 
 impl Graphics {
-    pub(super) fn probe() -> Result<Self, String> {
+    pub(super) fn probe(api: WindowsGraphicsApi) -> Result<Self, String> {
         let format = VideoFormat {
+            codec: VideoCodec::H264,
             width: 1920,
             height: 1080,
             frame_rate_numerator: NonZeroU32::new(60).expect("non-zero"),
@@ -230,6 +319,7 @@ impl Graphics {
             average_bitrate: 10_000_000,
         };
         Self::new(
+            api,
             SurfaceTarget::Owned(OwnedWindow {
                 parent: None,
                 bounds: Bounds {
@@ -244,8 +334,12 @@ impl Graphics {
         )
     }
 
-    pub(super) fn new(target: SurfaceTarget, video_format: VideoFormat) -> Result<Self, String> {
-        let resources = DeviceResources::new()?;
+    pub(super) fn new(
+        api: WindowsGraphicsApi,
+        target: SurfaceTarget,
+        video_format: VideoFormat,
+    ) -> Result<Self, String> {
+        let resources = DeviceResources::new(api)?;
         let window = RenderWindow::new(target)?;
         let swap_size = window.client_size()?;
         let swap_chain = create_swap_chain(&resources.device, window.hwnd(), swap_size)?;
@@ -430,6 +524,9 @@ impl Graphics {
             );
             ManuallyDrop::drop(&mut stream.pInputSurface);
             blit.map_err(|error| error.to_string())?;
+            if self.resources._d3d12.is_some() {
+                self.resources.context.Flush();
+            }
             self.swap_chain
                 .Present(0, DXGI_PRESENT(0))
                 .ok()
@@ -461,7 +558,7 @@ impl Graphics {
                     size.0,
                     size.1,
                     DXGI_FORMAT_UNKNOWN,
-                    DXGI_SWAP_CHAIN_FLAG(0),
+                    DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                 )
                 .map_err(|error| error.to_string())?;
         }
@@ -492,7 +589,7 @@ impl Graphics {
             },
             OutputWidth: self.swap_size.0,
             OutputHeight: self.swap_size.1,
-            Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+            Usage: D3D11_VIDEO_USAGE_OPTIMAL_SPEED,
         };
         unsafe {
             let enumerator = self
@@ -543,7 +640,9 @@ fn create_swap_chain(
             Scaling: DXGI_SCALING_STRETCH,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-            Flags: 0,
+            // IDXGISwapChain2::SetMaximumFrameLatency is only valid for a
+            // waitable swap chain. Preserve the flag in ResizeBuffers too.
+            Flags: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32,
         };
         let swap_chain = factory
             .CreateSwapChainForHwnd(device, hwnd, &description, None, None)
@@ -590,8 +689,21 @@ fn create_owned_window(window: OwnedWindow) -> Result<HWND, String> {
 }
 
 fn owned_window_styles(has_parent: bool) -> (WINDOW_STYLE, WINDOW_EX_STYLE) {
-    let style = WS_CLIPCHILDREN | WS_CLIPSIBLINGS | if has_parent { WS_CHILD } else { WS_POPUP };
-    (style, WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)
+    let style = WS_CLIPCHILDREN
+        | WS_CLIPSIBLINGS
+        | if has_parent {
+            WS_CHILD
+        } else {
+            WS_OVERLAPPEDWINDOW
+        };
+    let extended_style = WS_EX_NOACTIVATE
+        | WS_EX_TRANSPARENT
+        | if has_parent {
+            WINDOW_EX_STYLE(0)
+        } else {
+            WS_EX_APPWINDOW
+        };
+    (style, extended_style)
 }
 
 fn position_owned_window(hwnd: HWND, window: OwnedWindow) -> Result<(), String> {
@@ -713,12 +825,14 @@ mod tests {
     }
 
     #[test]
-    fn owned_top_level_style_is_also_non_activating() {
+    fn owned_top_level_style_is_a_distinct_non_activating_app_window() {
         let (style, extended_style) = owned_window_styles(false);
 
-        assert_ne!(style.0 & WS_POPUP.0, 0);
+        assert_ne!(style.0 & WS_OVERLAPPEDWINDOW.0, 0);
+        assert_eq!(style.0 & WS_POPUP.0, 0);
         assert_eq!(style.0 & WS_CHILD.0, 0);
         assert_eq!(style.0 & WS_VISIBLE.0, 0);
+        assert_ne!(extended_style.0 & WS_EX_APPWINDOW.0, 0);
         assert_ne!(extended_style.0 & WS_EX_NOACTIVATE.0, 0);
         assert_ne!(extended_style.0 & WS_EX_TRANSPARENT.0, 0);
     }
@@ -734,5 +848,11 @@ mod tests {
             Some(LRESULT(MA_NOACTIVATE as isize))
         );
         assert_eq!(owned_window_message_result(0), None);
+    }
+
+    #[test]
+    fn d3d11_on_12_exposes_video_processing_interfaces() {
+        Graphics::probe(WindowsGraphicsApi::D3d12)
+            .expect("D3D11-on-12 must support the complete graphics presentation path");
     }
 }

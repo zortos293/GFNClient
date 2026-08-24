@@ -15,8 +15,15 @@ export type StreamTransportMode = "webrtc" | "nvst";
 
 export const NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE =
   "Native streamer requires a supported desktop OS (Windows, macOS, or Linux).";
+/** Highest frame rate the native receive, decode, and presentation pipeline accepts. */
+export const MAX_NATIVE_STREAM_FPS = 240;
 /** @deprecated Use NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE. */
 export const NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE = NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE;
+
+export function clampNativeStreamFps(fps: number): number {
+  const normalized = Number.isFinite(fps) ? Math.trunc(fps) : 60;
+  return Math.max(1, Math.min(MAX_NATIVE_STREAM_FPS, normalized));
+}
 
 export function isNativeStreamerSupportedPlatform(platform: string): boolean {
   const normalized = platform.toLowerCase();
@@ -28,8 +35,7 @@ export function isNativeStreamerSupportedPlatform(platform: string): boolean {
 }
 
 export function isNativeExternalRendererSupported(platform: string): boolean {
-  void platform;
-  return false;
+  return isNativeDirectXBackendSupported(platform);
 }
 
 export function isNativeDirectXBackendSupported(platform: string): boolean {

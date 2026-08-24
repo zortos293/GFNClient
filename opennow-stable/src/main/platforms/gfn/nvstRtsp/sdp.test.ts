@@ -66,16 +66,29 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   });
   assert.match(sdp, /^o=unknown 0 14 IN IPv4 127\.0\.0\.1$/m);
   assert.match(sdp, /a=x-nv-video\[0\]\.clientViewportWd:1920/);
-  assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:60/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.videoSplitEncodeStripsPerFrame:64/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.packetSize:1280/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.framePacing\.mode:1/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.framePacing\.feedbackMode:1/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.framePacing\.pid\.minTargetFrameTimeUs:7936/);
+  assert.doesNotMatch(sdp, /a=x-nv-video\[0\]\.maxFPS:/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.video:45000/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.audio:45002/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.control:45004/);
   assert.match(sdp, /a=x-nv-video\[0\]\.enableRtpNack:1/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.fec\.enable:0/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.bitStreamFormat:0/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bllFec\.enable:0/);
   assert.match(sdp, /a=x-nv-aqos\.enableRedundancy:0/);
+  assert.match(sdp, /a=x-nv-bwe\.useOwdCongestionControl:0/);
+  assert.doesNotMatch(sdp, /a=x-nv-general\.rtcpOnSctp:/);
   assert.match(sdp, /m=video 5004\r\ni=DeviceString, DeviceName/);
   assert.doesNotMatch(sdp, /RTP\/AVP|msid:video_0|clientTransport|nativeRtcOnBundlePort|iceUsernameFragment|dtlsFingerprint|controlProtocol/);
+});
+
+test("buildAnnounceSdp advertises RTCP over SCTP only when negotiated", () => {
+  const sdp = buildAnnounceSdp({ rtcpOnSctp: true });
+  assert.match(sdp, /a=x-nv-general\.rtcpOnSctp:1/);
 });
 
 test("buildAnnounceSdp echoes nativeRtcOnBundlePort when the server advertised it", () => {

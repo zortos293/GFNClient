@@ -46,6 +46,13 @@ pub const fn supports_audio_output() -> bool {
 
 #[cfg(target_os = "windows")]
 fn hardware_backend() -> VideoBackendCapability {
+    if !runtime::backend_preference_allows("d3d11") {
+        return unavailable_backend(
+            "d3d11",
+            "windows",
+            "D3D11 hardware decode was disabled by configuration",
+        );
+    }
     let probe = opennow_streamer_platform_windows::WindowsBackend::probe();
     let available = probe.bundled_backend_available();
     let reason = if available {
@@ -81,6 +88,13 @@ fn hardware_backend() -> VideoBackendCapability {
 
 #[cfg(target_os = "macos")]
 fn hardware_backend() -> VideoBackendCapability {
+    if !runtime::backend_preference_allows("videotoolbox") {
+        return unavailable_backend(
+            "videotoolbox",
+            "macos",
+            "VideoToolbox hardware decode was disabled by configuration",
+        );
+    }
     const UNAVAILABLE: &str = "VideoToolbox H.264 hardware decode or Metal is unavailable";
     let available = macos_backend::available();
     VideoBackendCapability {
@@ -143,7 +157,7 @@ fn software_backend() -> VideoBackendCapability {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 fn unavailable_backend(
     backend: &'static str,
     platform: &'static str,

@@ -271,11 +271,13 @@ impl MainThreadHost {
                     #[cfg(target_os = "linux")]
                     let linux_hardware =
                         active.as_ref().is_some_and(ActiveOutput::is_linux_hardware);
-                    let mut result = if let Some(output) = active.as_mut() {
+                    let result = if let Some(output) = active.as_mut() {
                         output.update_surface(&new_surface)
                     } else {
                         Ok(())
                     };
+                    #[cfg(target_os = "linux")]
+                    let mut result = result;
                     #[cfg(target_os = "linux")]
                     if linux_hardware && let Err(reason) = &result {
                         self.linux_software_fallback.store(true, Ordering::Release);
@@ -693,7 +695,7 @@ const fn use_hardware_backend() -> bool {
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-fn backend_preference_allows(hardware_backend: &str) -> bool {
+pub(crate) fn backend_preference_allows(hardware_backend: &str) -> bool {
     backend_preference_allows_value(
         std::env::var("OPENNOW_NATIVE_VIDEO_BACKEND")
             .ok()

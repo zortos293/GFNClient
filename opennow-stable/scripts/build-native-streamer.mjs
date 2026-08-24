@@ -93,6 +93,7 @@ if (!nativeTarget || platformKey === hostPlatformKey) {
     encoding: "utf8",
     env: {
       ...process.env,
+      OPENNOW_NATIVE_VIDEO_BACKEND: "software",
       SDL_AUDIODRIVER: "dummy",
       SDL_VIDEODRIVER: "dummy",
     },
@@ -100,7 +101,10 @@ if (!nativeTarget || platformKey === hostPlatformKey) {
     timeout: 15_000,
   });
   if (verify.status !== 0) {
-    throw new Error(`Native streamer verification failed: ${verify.stderr || verify.stdout}`);
+    const detail = verify.stderr || verify.stdout || verify.error?.message || "no process output";
+    throw new Error(
+      `Native streamer verification failed (status=${verify.status}, signal=${verify.signal}): ${detail}`,
+    );
   }
   const messages = verify.stdout
     .split(/\r?\n/)

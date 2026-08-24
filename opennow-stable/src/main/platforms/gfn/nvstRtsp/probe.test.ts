@@ -541,6 +541,7 @@ test("negotiation announces reserved WebRtcTransport ICE and DTLS fingerprint", 
   assert.match(announceBody, /a=x-nv-general\.clientBundlePort:45678/);
   assert.match(announceBody, /a=x-nv-general\.clientPorts\.video:0/);
   assert.match(announceBody, /a=x-nv-general\.rtcVideoOnNativeBundle:0/);
+  assert.doesNotMatch(announceBody, /a=x-nv-general\.rtcpOnSctp:/);
   assert.doesNotMatch(announceBody, /clientTransport/);
   assert.equal(negotiated.videoSession.localDtlsFingerprint, fingerprint);
   assert.equal(negotiated.videoSession.remoteDtlsFingerprint?.length, 95);
@@ -662,6 +663,13 @@ test("negotiation follows official video-only empty-Transport SETUP on the cloud
   assert.match(announceBody, /rtcVideoOnNativeBundle:0/);
   assert.match(announceBody, /rtcAudioOnNativeBundle:1/);
   assert.equal(negotiated.videoSession.clientUdpPort, 45678);
+  assert.deepEqual(negotiated.videoSession.audioTrack, {
+    payloadType: 111,
+    codec: "opus",
+    clockRateHz: 48_000,
+    channels: 2,
+    mid: "0",
+  });
   // The native-owned Mjolnir port is handed off so the native raw-SRTP receiver
   // reads video from it; the probe must not bind/NATT its own Mjolnir socket.
   assert.equal(negotiated.videoSession.mjolnirUdpPort, 45680);

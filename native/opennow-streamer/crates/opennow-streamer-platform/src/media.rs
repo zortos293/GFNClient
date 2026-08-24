@@ -63,6 +63,11 @@ pub struct EncodedFrame {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaFeedback {
+    VideoFrameAccepted {
+        timestamp: u64,
+        bytes: u32,
+        keyframe: bool,
+    },
     PlaybackStarted {
         backend: &'static str,
     },
@@ -564,6 +569,7 @@ fn run_windows_video(shared: Arc<SharedPipeline>) {
             key_frame: frame.keyframe,
         }) {
             Ok(WindowsPushOutcome::Queued) => {
+                report_video_frame_accepted(&shared, &frame);
                 if frame.keyframe {
                     shared.video_desynced.store(false, Ordering::Release);
                     shared.keyframe_requested.store(false, Ordering::Release);
@@ -720,6 +726,7 @@ fn run_video_decoder_from(
         }
         match decoder.decode(&frame.data) {
             Ok(Some(decoded)) => {
+                report_video_frame_accepted(&shared, &frame);
                 if shared.output.replace_video(decoded) {
                     let _ = shared.feedback.send(MediaFeedback::QueueDropped {
                         media: "present",
@@ -904,6 +911,7 @@ fn run_linux_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
             });
         match result {
             Ok(opennow_streamer_platform_linux::PushOutcome::Queued) => {
+                report_video_frame_accepted(&shared, &frame);
                 if frame.keyframe {
                     shared.video_desynced.store(false, Ordering::Release);
                     shared.keyframe_requested.store(false, Ordering::Release);
@@ -1115,7 +1123,7 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
 
     let mut tracker = crate::macos_backend::H264ParameterSetTracker::default();
     let mut configured_parameter_sets = None;
-    let mut backend_sink = None;
+    let mut backend_sink: Option<opennow_streamer_platform_macos::StreamSink> = None;
     let mut playback_started = false;
     while let Some(frame) = shared.video.pop() {
         if shared.paused.load(Ordering::Acquire) {
@@ -1285,7 +1293,8 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
             return;
         };
         match sink.submit_h264(&frame.data, framing, timing) {
-            Ok(SubmitOutcome::Accepted | SubmitOutcome::Paused) => {}
+            Ok(SubmitOutcome::Accepted) => report_video_frame_accepted(&shared, &frame),
+            Ok(SubmitOutcome::Paused) => {}
             Ok(SubmitOutcome::Backpressured | SubmitOutcome::ReplacedOldest) => {
                 let _ = shared.feedback.send(MediaFeedback::QueueDropped {
                     media: "videotoolbox",
@@ -1316,6 +1325,14 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
             });
         }
     }
+}
+
+fn report_video_frame_accepted(shared: &SharedPipeline, frame: &EncodedFrame) {
+    let _ = shared.feedback.send(MediaFeedback::VideoFrameAccepted {
+        timestamp: frame.timestamp,
+        bytes: u32::try_from(frame.data.len()).unwrap_or(u32::MAX),
+        keyframe: frame.keyframe,
+    });
 }
 
 #[cfg(target_os = "macos")]

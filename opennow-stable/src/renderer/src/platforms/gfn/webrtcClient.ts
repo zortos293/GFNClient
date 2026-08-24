@@ -75,6 +75,7 @@ import {
   type RiInputCapabilities,
 } from "./webrtc/inputChannelPolicy";
 import { GamepadController } from "./webrtc/gamepadController";
+import { parseInputProtocolVersion } from "./webrtc/inputHandshake";
 import { DomInputCaptureController } from "./webrtc/domInputCaptureController";
 import { PeerMediaLifecycleController } from "./webrtc/peerMediaLifecycleController";
 import { updateVideoSenderBitrate } from "./webrtc/senderBitrate";
@@ -939,6 +940,16 @@ export class GfnWebRtcClient {
       this.controlChannel.onclose = null;
       this.controlChannel.onerror = null;
     }
+    if (this.reliableInputChannel) {
+      this.reliableInputChannel.onmessage = null;
+      this.reliableInputChannel.onclose = null;
+      this.reliableInputChannel.onerror = null;
+    }
+    if (this.partiallyReliableInputChannel) {
+      this.partiallyReliableInputChannel.onmessage = null;
+      this.partiallyReliableInputChannel.onclose = null;
+      this.partiallyReliableInputChannel.onerror = null;
+    }
     this.reliableInputChannel?.close();
     this.partiallyReliableInputChannel?.close();
     this.closeCursorChannel();
@@ -1497,6 +1508,20 @@ export class GfnWebRtcClient {
     }, 2000);
   }
 
+  private markReliableInputChannelUnavailable(reason: string): void {
+    if (this.heartbeatTimer !== null) {
+      window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.inputReady = false;
+    this.inputProtocolVersion = 2;
+    this.inputEncoder.setProtocolVersion(2);
+    this.gamepadController.stop();
+    this.diagnostics.inputReady = false;
+    this.emitStats();
+    this.log(reason);
+  }
+
   private isPartiallyReliableChannelOpen(): boolean {
     return this.inputChannelPolicyController.isPartiallyReliableOpen();
   }
@@ -1531,10 +1556,6 @@ export class GfnWebRtcClient {
       return;
     }
 
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const firstWord = view.getUint16(0, true);
-    let version = 2;
-
     if (this.inputReady) {
       this.gamepadController.handleHapticsMessage(bytes);
       return;
@@ -1545,16 +1566,14 @@ export class GfnWebRtcClient {
       .join(" ");
     this.log(`Input channel message: ${bytes.length} bytes [${hex}]`);
 
-    if (firstWord === 526) {
-      version = bytes.length >= 4 ? view.getUint16(2, true) : 2;
-      this.log(`Handshake detected: firstWord=526 (0x020e), version=${version}`);
-    } else if (bytes[0] === 0x0e) {
-      version = firstWord;
-      this.log(`Handshake detected: byte[0]=0x0e, version=${version}`);
-    } else {
+    const version = parseInputProtocolVersion(bytes);
+    if (version === null) {
+      const firstWord = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+        .getUint16(0, true);
       this.log(`Input channel message not a handshake: firstWord=${firstWord} (0x${firstWord.toString(16)})`);
       return;
     }
+    this.log(`Handshake detected: protocol version=${version}`);
 
     if (!this.inputReady) {
       // Official GFN browser client does NOT echo the handshake back.
@@ -1612,6 +1631,14 @@ export class GfnWebRtcClient {
     this.reliableInputChannel.onmessage = async (event) => {
       const bytes = await toBytes(event.data as string | Blob | ArrayBuffer);
       this.onInputHandshakeMessage(bytes);
+    };
+
+    this.reliableInputChannel.onclose = () => {
+      this.markReliableInputChannelUnavailable("Reliable input channel closed");
+    };
+
+    this.reliableInputChannel.onerror = () => {
+      this.markReliableInputChannelUnavailable("Reliable input channel failed");
     };
 
     this.partiallyReliableInputChannel = pc.createDataChannel("input_channel_partially_reliable", {

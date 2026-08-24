@@ -37,6 +37,7 @@ const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
 
 trait NvstSessionResources {
     fn request_keyframe(&self);
+    fn acknowledge_video_frame(&self, bytes: u32);
     fn recover(&self) -> Result<(), String>;
     fn stop(&self);
 }
@@ -51,6 +52,10 @@ struct ActiveNvstResources {
 impl NvstSessionResources for ActiveNvstResources {
     fn request_keyframe(&self) {
         self.feedback.request_keyframe();
+    }
+
+    fn acknowledge_video_frame(&self, bytes: u32) {
+        self.feedback.publish_accepted_frame(bytes, Instant::now());
     }
 
     fn recover(&self) -> Result<(), String> {
@@ -882,7 +887,7 @@ impl Engine {
                 transport_error.to_string(),
             )
         })?;
-        Ok(Vec::new())
+        Ok(vec![response(command.id, "ok")])
     }
 
     fn set_paused(&self, command: Command) -> Result<Vec<Value>, Value> {
@@ -1173,9 +1178,11 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
     media_feedback: Option<Receiver<MediaFeedback>>,
     resources: R,
 ) {
-    let mut dropped = 0;
-    let mut last_drop_report = Instant::now();
-    let mut recovery_attempts = 0;
+    let mut feedback_state = NvstMediaFeedbackState {
+        dropped: 0,
+        last_drop_report: Instant::now(),
+        recovery_attempts: 0,
+    };
     loop {
         if let Some(feedback) = media_feedback.as_ref() {
             while let Ok(feedback) = feedback.try_recv() {
@@ -1185,8 +1192,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     generation,
                     &resources,
                     feedback,
-                    &mut dropped,
-                    &mut last_drop_report,
+                    &mut feedback_state,
                 );
             }
         }
@@ -1197,7 +1203,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     lifecycle,
                     generation,
                     &resources,
-                    &mut recovery_attempts,
+                    &mut feedback_state.recovery_attempts,
                     nvst_event,
                 );
                 if terminal {
@@ -1290,6 +1296,10 @@ fn forward_nvst_event<R: NvstSessionResources>(
             ));
             false
         }
+        NvstReceiveEvent::TransportReady(phase) => {
+            let _ = output.send(event("nvst-transport-ready", json!({ "phase": phase })));
+            false
+        }
         NvstReceiveEvent::InputReady(protocol_version) => {
             let _ = output.send(event(
                 "input-ready",
@@ -1308,12 +1318,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
             ));
             false
         }
-        NvstReceiveEvent::Frame(frame) => {
-            if frame.keyframe {
-                *recovery_attempts = 0;
-            }
-            false
-        }
+        NvstReceiveEvent::Frame(_) => false,
     }
 }
 
@@ -1383,19 +1388,32 @@ fn emit_nvst_terminal<R: NvstSessionResources>(
     true
 }
 
+struct NvstMediaFeedbackState {
+    dropped: usize,
+    last_drop_report: Instant,
+    recovery_attempts: usize,
+}
+
 fn forward_nvst_media_feedback<R: NvstSessionResources>(
     output: &Sender<Value>,
     lifecycle: &Mutex<Lifecycle>,
     generation: u64,
     resources: &R,
     feedback: MediaFeedback,
-    dropped: &mut usize,
-    last_drop_report: &mut Instant,
+    state: &mut NvstMediaFeedbackState,
 ) {
     if lock_lifecycle(lifecycle).generation != generation {
         return;
     }
     match feedback {
+        MediaFeedback::VideoFrameAccepted {
+            bytes, keyframe, ..
+        } => {
+            resources.acknowledge_video_frame(bytes);
+            if keyframe {
+                state.recovery_attempts = 0;
+            }
+        }
         MediaFeedback::PlaybackStarted { backend } => {
             let _ = output.send(event(
                 "status",
@@ -1456,17 +1474,17 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::QueueDropped { media, count } => {
-            *dropped = dropped.saturating_add(count);
-            if last_drop_report.elapsed() >= Duration::from_secs(1) {
+            state.dropped = state.dropped.saturating_add(count);
+            if state.last_drop_report.elapsed() >= Duration::from_secs(1) {
                 let _ = output.send(event(
                     "log",
                     json!({
                         "level": "debug",
-                        "message": format!("Low-latency {media} queues dropped {dropped} stale samples/frames")
+                        "message": format!("Low-latency {media} queues dropped {} stale samples/frames", state.dropped)
                     }),
                 ));
-                *dropped = 0;
-                *last_drop_report = Instant::now();
+                state.dropped = 0;
+                state.last_drop_report = Instant::now();
             }
         }
     }
@@ -1598,6 +1616,7 @@ fn forward_media_feedback(
         return;
     }
     match feedback {
+        MediaFeedback::VideoFrameAccepted { .. } => {}
         MediaFeedback::PlaybackStarted { backend } => {
             let _ = output.send(event(
                 "status",
@@ -1735,6 +1754,7 @@ mod tests {
     #[derive(Default)]
     struct TestNvstResources {
         keyframe_requests: AtomicUsize,
+        acknowledged_frames: AtomicUsize,
         recoveries: AtomicUsize,
         stops: AtomicUsize,
     }
@@ -1742,6 +1762,10 @@ mod tests {
     impl NvstSessionResources for TestNvstResources {
         fn request_keyframe(&self) {
             self.keyframe_requests.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn acknowledge_video_frame(&self, _bytes: u32) {
+            self.acknowledged_frames.fetch_add(1, Ordering::Relaxed);
         }
 
         fn recover(&self) -> Result<(), String> {
@@ -1770,8 +1794,11 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
-        let mut dropped = 0;
-        let mut last_drop_report = Instant::now();
+        let mut state = NvstMediaFeedbackState {
+            dropped: 0,
+            last_drop_report: Instant::now(),
+            recovery_attempts: 0,
+        };
 
         forward_nvst_media_feedback(
             &sender,
@@ -1782,8 +1809,7 @@ mod tests {
                 mid: "nvst-video-0".to_owned(),
                 reason: "decoder reference loss".to_owned(),
             },
-            &mut dropped,
-            &mut last_drop_report,
+            &mut state,
         );
 
         assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 1);
@@ -1794,6 +1820,34 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| message.contains("decoder reference loss"))
         );
+    }
+
+    #[test]
+    fn accepted_video_keyframe_routes_pacing_feedback_and_resets_recovery_budget() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState {
+            dropped: 0,
+            last_drop_report: Instant::now(),
+            recovery_attempts: 1,
+        };
+
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::VideoFrameAccepted {
+                timestamp: 90_000,
+                bytes: 1_024,
+                keyframe: true,
+            },
+            &mut state,
+        );
+
+        assert_eq!(resources.acknowledged_frames.load(Ordering::Relaxed), 1);
+        assert_eq!(state.recovery_attempts, 0);
     }
 
     #[test]
@@ -1875,7 +1929,7 @@ mod tests {
     }
 
     #[test]
-    fn decoded_keyframe_resets_recovery_episode_budget() {
+    fn assembled_keyframe_does_not_reset_recovery_episode_budget() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
@@ -1895,7 +1949,7 @@ mod tests {
                 bytes: vec![0, 0, 0, 1, 0x65],
             }),
         ));
-        assert_eq!(recovery_attempts, 0);
+        assert_eq!(recovery_attempts, 1);
     }
 
     #[test]

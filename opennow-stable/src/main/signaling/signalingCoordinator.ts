@@ -72,8 +72,9 @@ export class SignalingCoordinator {
           nvstVideo: videoSession,
         };
         this.nativeStreamerContext = armed;
-        // Official doAnnounce: ANNOUNCE → setupWebRtcTransport → wait DTLS → PLAY.
-        await this.getNativeStreamerManager().prepareForSession(armed);
+        const manager = this.getNativeStreamerManager();
+        await manager.prepareForSession(armed);
+        await manager.waitForNvstTransportReady(armed.session.sessionId);
       },
     });
   }

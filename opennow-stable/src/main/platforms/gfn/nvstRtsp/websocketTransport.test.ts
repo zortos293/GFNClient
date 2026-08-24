@@ -7,6 +7,7 @@ import {
   buildEmptyPathUpgradeRequest,
   buildNvstWssUpgradeRequest,
   buildNvstWssUpgradeRequestTarget,
+  encodeWsPingFrame,
   encodeWsTextFrame,
   WsFrameReader,
 } from "./websocketTransport";
@@ -74,4 +75,11 @@ test("WebSocket framing preserves masked client payload bytes", () => {
   const reader = new WsFrameReader();
   assert.deepEqual(reader.push(frame.subarray(0, 3)), []);
   assert.deepEqual(reader.push(frame.subarray(3)), [payload]);
+});
+
+test("WebSocket keepalive ping is a masked empty client frame", () => {
+  const frame = encodeWsPingFrame();
+  assert.equal(frame.length, 6);
+  assert.equal(frame[0], 0x89);
+  assert.equal(frame[1], 0x80);
 });

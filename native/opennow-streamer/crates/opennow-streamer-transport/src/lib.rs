@@ -17,6 +17,8 @@ use thiserror::Error;
 
 mod input;
 pub mod nvst;
+mod nvst_control;
+mod nvst_input;
 
 use input::{InputChannelState, InputChannels, next_input_heartbeat};
 

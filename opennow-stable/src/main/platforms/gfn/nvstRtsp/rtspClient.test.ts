@@ -9,8 +9,13 @@ import {
   buildRtspRequest,
   extractVideoPeer,
   parseRtspResponse,
+  RTSPS_WS_KEEPALIVE_INTERVAL_MS,
   RtspOverWssClient,
 } from "./rtspClient";
+
+test("RTSPS WebSocket keepalive uses the official two-second cadence", () => {
+  assert.equal(RTSPS_WS_KEEPALIVE_INTERVAL_MS, 2_000);
+});
 
 class FakeSocket extends EventEmitter {
   destroyed = false;

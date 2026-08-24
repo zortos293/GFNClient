@@ -2,10 +2,13 @@ import type { Duplex } from "node:stream";
 
 import {
   connectNvstWss,
+  encodeWsPingFrame,
   encodeWsPongFrame,
   encodeWsTextFrame,
   WsFrameReader,
 } from "./websocketTransport";
+
+export const RTSPS_WS_KEEPALIVE_INTERVAL_MS = 2_000;
 
 export interface ParsedRtspResponse {
   statusCode: number;
@@ -92,6 +95,7 @@ export class RtspOverWssClient {
   private buffer = Buffer.alloc(0);
   private cseq = 0;
   private healthy = false;
+  private keepaliveTimer: NodeJS.Timeout | null = null;
   private pending: {
     cseq: number;
     resolve: (response: ParsedRtspResponse) => void;
@@ -118,6 +122,12 @@ export class RtspOverWssClient {
     this.frameReader = new WsFrameReader();
     this.buffer = Buffer.alloc(0);
     this.healthy = true;
+    this.keepaliveTimer = setInterval(() => {
+      if (this.isHealthy()) {
+        this.socket?.write(encodeWsPingFrame());
+      }
+    }, RTSPS_WS_KEEPALIVE_INTERVAL_MS);
+    this.keepaliveTimer.unref();
     socket.on("data", (chunk: Buffer) => this.onSocketData(chunk));
     socket.on("error", (error) => {
       this.failConnection(error instanceof Error ? error : new Error(String(error)), false);
@@ -257,6 +267,10 @@ export class RtspOverWssClient {
   }
 
   private failConnection(error: Error, destroySocket: boolean): void {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
     this.healthy = false;
     this.buffer = Buffer.alloc(0);
     const socket = this.socket;

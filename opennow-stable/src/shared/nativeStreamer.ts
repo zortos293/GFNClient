@@ -153,6 +153,10 @@ export type NativeStreamerEvent =
       protocolVersion: number;
     }
   | {
+      type: "nvst-transport-ready";
+      phase: "dtls" | "sctp";
+    }
+  | {
       type: "input-unavailable";
       reason: string;
     }

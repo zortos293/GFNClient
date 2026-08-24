@@ -220,7 +220,7 @@ export function buildNvstStunBindingRequest(
   header.writeUInt16BE(packet.length - 20 + 24, 2);
   packet = Buffer.concat(parts);
   // RFC 5389 MESSAGE-INTEGRITY requires HMAC-SHA1.
-  // codeql[js/weak-cryptographic-algorithm]
+  // lgtm [js/weak-cryptographic-algorithm]
   appendStunAttribute(parts, 0x0008, createHmac("sha1", remotePassword).update(packet).digest());
   packet = Buffer.concat(parts);
   header.writeUInt16BE(packet.length - 20 + 8, 2);
@@ -384,7 +384,7 @@ export function buildNvstStunBindingSuccess(
   header.writeUInt16BE(packet.length - 20 + 24, 2);
   packet = Buffer.concat(parts);
   // RFC 5389 MESSAGE-INTEGRITY requires HMAC-SHA1.
-  // codeql[js/weak-cryptographic-algorithm]
+  // lgtm [js/weak-cryptographic-algorithm]
   appendStunAttribute(parts, 0x0008, createHmac("sha1", localPassword).update(packet).digest());
   packet = Buffer.concat(parts);
   header.writeUInt16BE(packet.length - 20 + 8, 2);
@@ -627,9 +627,10 @@ export async function negotiateNvstRtspSession(
     const describedPingVersion = extractNvstSdpAttribute(describe.body, "general.pingVersion");
     const disablePlay = extractNvstSdpAttribute(describe.body, "general.disablePlay");
     const nativeRtcOnBundlePort = extractNvstSdpAttribute(describe.body, "general.nativeRtcOnBundlePort");
+    const describedRtcpOnSctp = extractNvstSdpAttribute(describe.body, "general.rtcpOnSctp");
     log(
       input.onLog,
-      `DESCRIBE transport metadata: dtlsFingerprintBytes=${dtlsFingerprint?.length ?? 0}, serverTransport=${serverTransport ?? "absent"}, clientTransport=${describedClientTransport ?? "absent"}, useNewIceInfo=${useNewIceInfo ?? "absent"}, pingVersion=${describedPingVersion ?? "absent"}, disablePlay=${disablePlay ?? "absent"}, nativeRtcOnBundlePort=${nativeRtcOnBundlePort ?? "absent"}, legacyIce=${legacyIceUsername?.length ?? 0}/${legacyIcePassword?.length ?? 0}, v2Ice=${v2IceUsername?.length ?? 0}/${v2IcePassword?.length ?? 0}, iceVariantsMatch=${legacyIceUsername === v2IceUsername && legacyIcePassword === v2IcePassword}`,
+      `DESCRIBE transport metadata: dtlsFingerprintBytes=${dtlsFingerprint?.length ?? 0}, serverTransport=${serverTransport ?? "absent"}, clientTransport=${describedClientTransport ?? "absent"}, useNewIceInfo=${useNewIceInfo ?? "absent"}, pingVersion=${describedPingVersion ?? "absent"}, disablePlay=${disablePlay ?? "absent"}, nativeRtcOnBundlePort=${nativeRtcOnBundlePort ?? "absent"}, rtcpOnSctp=${describedRtcpOnSctp ?? "absent"}, legacyIce=${legacyIceUsername?.length ?? 0}/${legacyIcePassword?.length ?? 0}, v2Ice=${v2IceUsername?.length ?? 0}/${v2IcePassword?.length ?? 0}, iceVariantsMatch=${legacyIceUsername === v2IceUsername && legacyIcePassword === v2IcePassword}`,
     );
     let encryptionKeyHex: string | undefined;
     let encryptionKeyId: number | undefined;
@@ -657,6 +658,15 @@ export async function negotiateNvstRtspSession(
     }
 
     const officialCloudPath = nativeRtcOnBundlePort === "1";
+    const negotiatedAudioTrack = officialCloudPath
+      ? {
+        payloadType: 111,
+        codec: "opus" as const,
+        clockRateHz: 48_000,
+        channels: 2,
+        mid: "0",
+      }
+      : audioTrack;
     // Official Bifrost binds the ICE/bundle socket on 0.0.0.0 and never connects
     // it to the RTSPS host. Connecting to :322 would create the wrong NAT mapping.
     // Official: Mjolnir first (empty Transport line), then ICE bundle after SETUP.
@@ -864,7 +874,7 @@ export async function negotiateNvstRtspSession(
       localDtlsFingerprint,
       remoteDtlsFingerprint: dtlsFingerprint ?? undefined,
       codec: input.codec,
-      ...(audioTrack ? { audioTrack } : {}),
+      ...(negotiatedAudioTrack ? { audioTrack: negotiatedAudioTrack } : {}),
       timeoutMs: 60_000,
     };
     if (input.onVideoReady) {
@@ -984,9 +994,11 @@ export async function negotiateNvstRtspSession(
           rtcMicOnNativeBundle: true,
           rtcDataChannelOnNativeBundle: true,
           enableUnifiedSocket: false,
-          // The native streamer opens the `rtcp1` SCTP data channel on the bundle and
-          // sends RTCP Receiver Reports / PLI over it, so advertise RTCP-over-SCTP.
-          rtcpOnSctp: true,
+          rtcpOnSctp: describedRtcpOnSctp === "1"
+            ? true
+            : describedRtcpOnSctp === "0"
+              ? false
+              : undefined,
           dtlsFingerprint: localDtlsFingerprint,
         }
         : {
@@ -1052,13 +1064,6 @@ export async function negotiateNvstRtspSession(
         `Mjolnir NATT owned by native streamer (mjolnirPort=${nativeMjolnirPort}); native raw-SRTP receiver keeps it alive`,
       );
     }
-    if (officialCloudPath && disablePlay === "0") {
-      // Official waits for DTLS after setupWebRtcTransport, then PLAY returns 200.
-      await new Promise((resolve) => {
-        setTimeout(resolve, 400);
-      });
-    }
-
     if (disablePlay === "0") {
       try {
         const play = await client.request("PLAY", officialCloudPath ? rtspTarget : "/", {

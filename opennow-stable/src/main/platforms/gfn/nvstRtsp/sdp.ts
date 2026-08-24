@@ -3,21 +3,21 @@ import { randomBytes } from "node:crypto";
 import type { NvstAudioTrack } from "@shared/gfn";
 import { deriveSrtpSaltHex } from "./srtp";
 
-/** Minimal ANNOUNCE attrs from docs/research/nvst-announce-allowlist-1080p60.json */
+/** Official macOS ANNOUNCE baseline. */
 const ANNOUNCE_ALLOWLIST = {
   video: {
     clientViewportWd: "1920",
     clientViewportHt: "1080",
-    maxFPS: "60",
-    videoSplitEncodeStripsPerFrame: "3",
+    videoSplitEncodeStripsPerFrame: "64",
     updateSplitEncodeStateDynamically: "1",
-    packetSize: "1408",
+    packetSize: "1280",
     enableRtpNack: "1",
     rtpNackQueueLength: "2048",
     rtpNackQueueMaxPackets: "1024",
     rtpNackMaxPacketCount: "64",
-    "framePacing.mode": "2",
-    "framePacing.pid.minTargetFrameTimeUs": "16666",
+    "framePacing.mode": "1",
+    "framePacing.feedbackMode": "1",
+    "framePacing.pid.minTargetFrameTimeUs": "7936",
     "adaptiveQuantization.spatialAQSetting": "7",
     "adaptiveQuantization.temporalAQSetting": "0",
     "adaptiveQuantization.spatialAQStrength": "12",
@@ -29,6 +29,7 @@ const ANNOUNCE_ALLOWLIST = {
     enableAv1RcPrecisionFactor: "1",
   },
   vqos: {
+    bitStreamFormat: "0",
     "fec.enable": "0",
     "fec.repairPercent": "0",
     "fec.repairMinPercent": "0",
@@ -61,6 +62,9 @@ const ANNOUNCE_ALLOWLIST = {
   aqos: {
     enableRedundancy: "0",
     redundancyLevel: "0",
+  },
+  bwe: {
+    useOwdCongestionControl: "0",
   },
   general: {
     rtspWebSocketPerConnection: "1",
@@ -137,8 +141,6 @@ export function buildAnnounceSdp(
   } = {},
 ): string {
   const { width, height } = parseResolution(options.resolution);
-  const fps = options.fps && options.fps > 0 ? Math.round(options.fps) : 60;
-  const frameTimeUs = String(Math.round(1_000_000 / fps));
   const videoPort = options.videoPort && options.videoPort > 0 ? options.videoPort : 0;
 
   const lines: string[] = [
@@ -159,10 +161,6 @@ export function buildAnnounceSdp(
         nextValue = String(width);
       } else if (prefix === "video" && key === "clientViewportHt") {
         nextValue = String(height);
-      } else if (prefix === "video" && key === "maxFPS") {
-        nextValue = String(fps);
-      } else if (prefix === "video" && key === "framePacing.pid.minTargetFrameTimeUs") {
-        nextValue = frameTimeUs;
       }
       const name = indexed ? `x-nv-${prefix}[0].${key}` : `x-nv-${prefix}.${key}`;
       lines.push(`a=${name}:${nextValue}`);
@@ -174,6 +172,7 @@ export function buildAnnounceSdp(
   pushGroup("packetPacing", false, ANNOUNCE_ALLOWLIST.packetPacing);
   pushGroup("ri", false, ANNOUNCE_ALLOWLIST.ri);
   pushGroup("aqos", false, ANNOUNCE_ALLOWLIST.aqos);
+  pushGroup("bwe", false, ANNOUNCE_ALLOWLIST.bwe);
   pushGroup("general", false, ANNOUNCE_ALLOWLIST.general);
   pushGroup("runtime", false, ANNOUNCE_ALLOWLIST.runtime);
   lines.push("a=x-nv-runtime.videoSrtp:1");

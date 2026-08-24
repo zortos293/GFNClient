@@ -70,6 +70,18 @@ interface PendingRequest {
   timeout: NodeJS.Timeout;
 }
 
+interface NvstReservationLease {
+  ownership: "negotiator" | "native";
+  released: boolean;
+}
+
+interface PendingNvstReadiness {
+  sessionId: string;
+  resolve(): void;
+  reject(error: Error): void;
+  timeout: NodeJS.Timeout;
+}
+
 const HELLO_TIMEOUT_MS = 10000;
 const BUNDLED_NATIVE_HELLO_TIMEOUT_MS = process.platform === "win32" ? 120000 : 30000;
 const CONTROL_TIMEOUT_MS = 8000;
@@ -77,6 +89,8 @@ const SESSION_START_TIMEOUT_MS = process.platform === "win32" ? 90000 : 45000;
 const SURFACE_UPDATE_TIMEOUT_MS = 15000;
 const OFFER_TIMEOUT_MS = 20000;
 const STOP_TIMEOUT_MS = 1200;
+const NVST_TRANSPORT_READY_TIMEOUT_MS = 7000;
+const INPUT_RESPONSE_TIMEOUT_MS = 2000;
 const MAX_INPUT_STDIN_BUFFER_BYTES = 64 * 1024;
 
 function toError(error: unknown): Error {
@@ -94,6 +108,11 @@ export class NativeStreamerManager {
   private activeSessionId: string | null = null;
   private activeTransport: "webrtc" | "nvst" | null = null;
   private activeTransportCapabilities: NativeStreamerActiveTransportCapabilities | null = null;
+  private nvstReservation: NvstReservationLease | null = null;
+  private pendingNvstSessionId: string | null = null;
+  private nvstReadinessWaiters = new Set<PendingNvstReadiness>();
+  private nvstTransportReady = false;
+  private nvstReadinessError: Error | null = null;
   private inputReady = false;
   private inputBackpressureWarned = false;
   private answerInFlight = false;
@@ -161,6 +180,11 @@ export class NativeStreamerManager {
     const localAddress = typeof response.localAddress === "string" && response.localAddress.length > 0
       ? response.localAddress
       : undefined;
+    const lease: NvstReservationLease = {
+      ownership: "negotiator",
+      released: false,
+    };
+    this.nvstReservation = lease;
     console.log(
       `[NativeStreamer] Reserved NVST video UDP on port ${port} before RTSP ANNOUNCE`
       + `${mjolnirPort ? ` mjolnirPort=${mjolnirPort}` : ""}`
@@ -186,6 +210,14 @@ export class NativeStreamerManager {
         }
       },
       release: async () => {
+        if (lease.released) {
+          return;
+        }
+        lease.released = true;
+        if (lease.ownership === "native" || this.nvstReservation !== lease) {
+          return;
+        }
+        this.nvstReservation = null;
         const released = await this.request({ type: "nvst-unbind" }, CONTROL_TIMEOUT_MS);
         if (released.type !== "ok") {
           throw new Error(`Native streamer returned ${released.type} instead of ok for nvst-unbind.`);
@@ -220,11 +252,23 @@ export class NativeStreamerManager {
       );
     }
 
-    const response = await this.request({
-      type: "start",
-      context,
-    }, SESSION_START_TIMEOUT_MS);
+    const expectsNvst = context.settings.transportMode === "nvst" || context.nvstVideo !== undefined;
+    this.inputReady = false;
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
+    this.pendingNvstSessionId = expectsNvst ? context.session.sessionId : null;
+    let response: NativeStreamerResponse;
+    try {
+      response = await this.request({
+        type: "start",
+        context,
+      }, SESSION_START_TIMEOUT_MS);
+    } catch (error) {
+      this.pendingNvstSessionId = null;
+      throw error;
+    }
     if (response.type !== "ok") {
+      this.pendingNvstSessionId = null;
       throw new Error(`Native streamer returned ${response.type} instead of ok.`);
     }
     this.activeSessionId = context.session.sessionId;
@@ -240,9 +284,58 @@ export class NativeStreamerManager {
       supportsAudioDecode: this.capabilities?.supportsAudioDecode === true,
       supportsAudioOutput: this.capabilities?.supportsAudioOutput === true,
     };
-    this.inputReady = false;
+    if (this.activeTransport === "nvst" && this.nvstReservation?.ownership === "negotiator") {
+      this.nvstReservation.ownership = "native";
+    }
+    if (this.activeTransport !== "nvst") {
+      this.inputReady = false;
+      this.nvstTransportReady = false;
+      this.nvstReadinessError = null;
+    }
+    this.pendingNvstSessionId = null;
     this.retainDiagnosticState({ sessionState: "ready" });
     await this.flushQueuedRemoteIce(context.session.sessionId);
+  }
+
+  waitForNvstTransportReady(
+    sessionId: string,
+    timeoutMs = NVST_TRANSPORT_READY_TIMEOUT_MS,
+  ): Promise<void> {
+    if (this.activeSessionId !== sessionId || this.activeTransport !== "nvst") {
+      return Promise.reject(new Error(`Native NVST session ${sessionId} is not active.`));
+    }
+    if (!this.activeTransportCapabilities?.supportsInput) {
+      return Promise.reject(new Error("Native NVST transport does not support the DTLS/SCTP readiness handshake."));
+    }
+    if (this.nvstReadinessError) {
+      return Promise.reject(this.nvstReadinessError);
+    }
+    if (this.nvstTransportReady) {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const waiter: PendingNvstReadiness = {
+        sessionId,
+        resolve: () => {
+          clearTimeout(waiter.timeout);
+          this.nvstReadinessWaiters.delete(waiter);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(waiter.timeout);
+          this.nvstReadinessWaiters.delete(waiter);
+          reject(error);
+        },
+        timeout: setTimeout(() => {
+          waiter.reject(new Error(
+            `Native NVST DTLS/SCTP readiness timed out after ${timeoutMs}ms.`,
+          ));
+        }, timeoutMs),
+      };
+      waiter.timeout.unref?.();
+      this.nvstReadinessWaiters.add(waiter);
+    });
   }
 
   async handleOffer(sdp: string, context: NativeStreamerSessionContext): Promise<void> {
@@ -394,6 +487,33 @@ export class NativeStreamerManager {
       input,
     } satisfies NativeStreamerCommand;
 
+    const reportInputFailure = (error: Error): void => {
+      if (!this.inputReady) {
+        return;
+      }
+      const reason = `Native input write failed: ${formatError(error)}`;
+      this.inputReady = false;
+      this.retainDiagnosticState({ inputReady: false, inputUnavailableReason: reason });
+      this.options.emit({ type: "native-input-unavailable", reason });
+    };
+    const timeout = setTimeout(() => {
+      if (!this.pending.delete(payload.id)) {
+        return;
+      }
+      reportInputFailure(new Error(`Native input acknowledgement timed out after ${INPUT_RESPONSE_TIMEOUT_MS}ms.`));
+    }, INPUT_RESPONSE_TIMEOUT_MS);
+    timeout.unref?.();
+    this.pending.set(payload.id, {
+      resolve: () => {
+        clearTimeout(timeout);
+      },
+      reject: (error) => {
+        clearTimeout(timeout);
+        reportInputFailure(error);
+      },
+      timeout,
+    });
+
     let writeFailed = false;
     let flushed: boolean;
     try {
@@ -407,6 +527,7 @@ export class NativeStreamerManager {
     } catch (error) {
       const writeError = toError(error);
       if (!isTerminalBrokenWriteError(writeError, child.stdin)) {
+        this.rejectPendingRequest(payload.id, writeError);
         throw error;
       }
       this.handleStdinFailure(child, writeError);
@@ -459,7 +580,12 @@ export class NativeStreamerManager {
     this.activeSessionId = null;
     this.activeTransport = null;
     this.activeTransportCapabilities = null;
+    this.pendingNvstSessionId = null;
+    this.nvstReservation = null;
     this.inputReady = false;
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
+    this.rejectNvstReadiness(new Error(`Native streamer stopped before NVST transport readiness (${reason}).`));
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -498,7 +624,12 @@ export class NativeStreamerManager {
     this.activeSessionId = null;
     this.activeTransport = null;
     this.activeTransportCapabilities = null;
+    this.pendingNvstSessionId = null;
+    this.nvstReservation = null;
     this.inputReady = false;
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
+    this.rejectNvstReadiness(new Error(`Native streamer ${reason} before NVST transport readiness.`));
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -801,18 +932,50 @@ export class NativeStreamerManager {
     }
 
     if (message.type === "input-ready") {
-      if (!this.activeTransportCapabilities?.supportsInput) {
+      const readySessionId = this.activeSessionId ?? this.pendingNvstSessionId;
+      if (
+        !readySessionId
+        || (this.activeTransportCapabilities && !this.activeTransportCapabilities.supportsInput)
+      ) {
         console.warn("[NativeStreamer] Ignoring input readiness from an active transport that does not advertise input.");
         return;
       }
       this.inputReady = true;
       console.log(`[NativeStreamer] Input protocol ready: v${message.protocolVersion}`);
+      if (this.activeTransport === "nvst" || this.pendingNvstSessionId === readySessionId) {
+        this.nvstTransportReady = true;
+        this.nvstReadinessError = null;
+        this.resolveNvstReadiness(readySessionId);
+      }
       this.options.emit({ type: "native-input-ready", protocolVersion: message.protocolVersion });
+      return;
+    }
+
+    if (message.type === "nvst-transport-ready") {
+      const readySessionId = this.activeSessionId ?? this.pendingNvstSessionId;
+      if (
+        !readySessionId
+        || (this.activeTransport !== null && this.activeTransport !== "nvst")
+      ) {
+        console.warn("[NativeStreamer] Ignoring NVST readiness without an active NVST session.");
+        return;
+      }
+      console.log(`[NativeStreamer] NVST transport readiness: ${message.phase}`);
+      if (message.phase === "sctp") {
+        this.nvstTransportReady = true;
+        this.resolveNvstReadiness(readySessionId);
+      }
       return;
     }
 
     if (message.type === "input-unavailable") {
       this.inputReady = false;
+      if (this.activeTransport === "nvst" || this.pendingNvstSessionId !== null) {
+        this.nvstReadinessError = new Error(
+          `Native NVST DTLS/SCTP readiness failed: ${message.reason}`,
+        );
+        this.rejectNvstReadiness(this.nvstReadinessError);
+      }
       console.warn(`[NativeStreamer] Input unavailable: ${message.reason}`);
       this.options.emit({ type: "native-input-unavailable", reason: message.reason });
       return;
@@ -857,10 +1020,15 @@ export class NativeStreamerManager {
   }
 
   private clearActiveSessionOwnership(): void {
+    this.rejectNvstReadiness(new Error("Native NVST session stopped before transport readiness."));
     this.activeSessionId = null;
     this.activeTransport = null;
     this.activeTransportCapabilities = null;
+    this.pendingNvstSessionId = null;
+    this.nvstReservation = null;
     this.inputReady = false;
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
   }
@@ -919,7 +1087,12 @@ export class NativeStreamerManager {
     this.activeSessionId = null;
     this.activeTransport = null;
     this.activeTransportCapabilities = null;
+    this.pendingNvstSessionId = null;
+    this.nvstReservation = null;
     this.inputReady = false;
+    this.nvstTransportReady = false;
+    this.nvstReadinessError = null;
+    this.rejectNvstReadiness(new Error(`Native streamer process ended before NVST transport readiness (${reason}).`));
     this.capabilities = null;
     this.inputBackpressureWarned = false;
     this.surfaceUpdates.markNotReady();
@@ -957,6 +1130,20 @@ export class NativeStreamerManager {
     }
     this.pending.delete(id);
     pending.reject(error);
+  }
+
+  private resolveNvstReadiness(sessionId: string): void {
+    for (const waiter of this.nvstReadinessWaiters) {
+      if (waiter.sessionId === sessionId) {
+        waiter.resolve();
+      }
+    }
+  }
+
+  private rejectNvstReadiness(error: Error): void {
+    for (const waiter of this.nvstReadinessWaiters) {
+      waiter.reject(error);
+    }
   }
 
   private async flushQueuedLocalIce(): Promise<void> {

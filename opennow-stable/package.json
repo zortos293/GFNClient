@@ -114,6 +114,10 @@
     ],
     "extraResources": [
       {
+        "from": "../THIRD_PARTY_NOTICES",
+        "to": "THIRD_PARTY_NOTICES"
+      },
+      {
         "from": "../native/opennow-streamer/bin",
         "to": "native/opennow-streamer",
         "filter": [

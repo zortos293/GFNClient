@@ -48,6 +48,8 @@ interface ManagerInternals {
   capabilities: NativeStreamerCapabilities | null;
   activeTransportCapabilities: NativeStreamerActiveTransportCapabilities | null;
   inputReady: boolean;
+  nvstTransportReady: boolean;
+  nvstReadinessError: Error | null;
   pending: Map<string, unknown>;
   request(
     input: NativeStreamerCommandInput,
@@ -300,6 +302,57 @@ test("input unavailable clears readiness and forwards the native reason", () => 
   }]);
 });
 
+test("native input responses preserve success and report SCTP write failures", () => {
+  const emitted: MainToRendererSignalingEvent[] = [];
+  const { manager, internals } = createManager(emitted);
+  const fake = createFakeChild();
+  const commandIds: string[] = [];
+  fake.stdin.writeImpl = (chunk) => {
+    commandIds.push((JSON.parse(chunk) as { id: string }).id);
+    return true;
+  };
+  internals.child = fake.child;
+  internals.activeSessionId = "session";
+  internals.capabilities = {
+    protocolVersion: 4,
+    backend: "native",
+    supportsOfferAnswer: true,
+    supportsRemoteIce: true,
+    supportsLocalIce: true,
+    supportsInput: true,
+    supportsVideoDecode: true,
+    supportsVideoPresent: true,
+  };
+  internals.activeTransportCapabilities = activeInputCapabilities();
+  internals.inputReady = true;
+
+  manager.sendInput({ payloadBase64: "AQ==" });
+  assert.equal(internals.pending.size, 1);
+  internals.handleStdout(fake.child, `${JSON.stringify({
+    id: commandIds[0],
+    type: "ok",
+  })}\n`);
+  assert.equal(internals.pending.size, 0);
+  assert.equal(internals.inputReady, true);
+  assert.deepEqual(emitted, []);
+
+  manager.sendInput({ payloadBase64: "Ag==" });
+  assert.equal(internals.pending.size, 1);
+  internals.handleStdout(fake.child, `${JSON.stringify({
+    id: commandIds[1],
+    type: "error",
+    code: "input-write-failed",
+    message: "reliable SCTP write failed",
+  })}\n`);
+
+  assert.equal(internals.pending.size, 0);
+  assert.equal(internals.inputReady, false);
+  assert.deepEqual(emitted, [{
+    type: "native-input-unavailable",
+    reason: "Native input write failed: input-write-failed: reliable SCTP write failed",
+  }]);
+});
+
 test("terminal stopped clears ownership so same-session prepare starts again", async () => {
   const { manager, internals } = createManager();
   internals.activeSessionId = "same-session";
@@ -343,16 +396,144 @@ test("terminal stopped clears ownership so same-session prepare starts again", a
 test("native NVST reservation release sends an idempotent unbind command", async () => {
   const { manager, internals } = createManager();
   internals.ensureProcess = async () => undefined;
+  let unbinds = 0;
   internals.request = async (input) => {
     if (input.type === "nvst-bind") {
       return { id: "bind", type: "nvst-bound", port: 45_000 };
     }
     assert.equal(input.type, "nvst-unbind");
+    unbinds += 1;
     return { id: "unbind", type: "ok" };
   };
 
   const reservation = await manager.reserveNvstUdp();
   await reservation.release();
+  await reservation.release();
+  assert.equal(unbinds, 1);
+});
+
+test("native NVST start takes ownership without unbinding its reserved socket", async () => {
+  const { manager, internals } = createManager();
+  internals.ensureProcess = async () => undefined;
+  const commands: string[] = [];
+  internals.request = async (input) => {
+    commands.push(input.type);
+    if (input.type === "nvst-bind") {
+      return { id: "bind", type: "nvst-bound", port: 45_000 };
+    }
+    if (input.type === "start") {
+      return {
+        id: "start",
+        type: "ok",
+        transport: "nvst",
+        capabilities: activeInputCapabilities(),
+      };
+    }
+    assert.fail(`Unexpected command after native NVST ownership transfer: ${input.type}`);
+  };
+
+  const reservation = await manager.reserveNvstUdp();
+  await manager.prepareForSession({
+    session: { sessionId: "native-owner" },
+    settings: {
+      resolution: "1920x1080",
+      fps: 60,
+      codec: "H264",
+      transportMode: "nvst",
+      enableCloudGsync: false,
+    },
+    nvstVideo: { clientUdpPort: 45_000 },
+  } as NativeStreamerSessionContext);
+  await reservation.release();
+
+  assert.deepEqual(commands, ["nvst-bind", "start"]);
+});
+
+test("NVST readiness waits for the native SCTP transport event", async () => {
+  const { manager, internals } = createManager();
+  internals.activeSessionId = "ready-session";
+  internals.activeTransport = "nvst";
+  internals.activeTransportCapabilities = activeInputCapabilities();
+
+  const ready = manager.waitForNvstTransportReady("ready-session", 1_000);
+  internals.handleEvent({ type: "nvst-transport-ready", phase: "dtls" });
+  assert.equal(internals.nvstTransportReady, false);
+  internals.handleEvent({ type: "nvst-transport-ready", phase: "sctp" });
+  await ready;
+  assert.equal(internals.nvstTransportReady, true);
+});
+
+test("NVST readiness is bounded when native DTLS/SCTP never becomes ready", async () => {
+  const { manager, internals } = createManager();
+  internals.activeSessionId = "timeout-session";
+  internals.activeTransport = "nvst";
+  internals.activeTransportCapabilities = activeInputCapabilities();
+
+  await assert.rejects(
+    manager.waitForNvstTransportReady("timeout-session", 5),
+    /DTLS\/SCTP readiness timed out after 5ms/,
+  );
+});
+
+test("NVST readiness survives an input-ready event racing the start response", async () => {
+  const { manager, internals } = createManager();
+  internals.ensureProcess = async () => undefined;
+  internals.request = async (input) => {
+    assert.equal(input.type, "start");
+    internals.handleEvent({ type: "input-ready", protocolVersion: 3 });
+    return {
+      id: "start",
+      type: "ok",
+      transport: "nvst",
+      capabilities: activeInputCapabilities(),
+    };
+  };
+
+  await manager.prepareForSession({
+    session: { sessionId: "racing-session" },
+    settings: {
+      resolution: "1920x1080",
+      fps: 60,
+      codec: "H264",
+      transportMode: "nvst",
+      enableCloudGsync: false,
+    },
+  } as NativeStreamerSessionContext);
+
+  await manager.waitForNvstTransportReady("racing-session", 5);
+  assert.equal(internals.inputReady, true);
+});
+
+test("NVST readiness preserves input failure racing the start response", async () => {
+  const { manager, internals } = createManager();
+  internals.ensureProcess = async () => undefined;
+  internals.request = async (input) => {
+    assert.equal(input.type, "start");
+    internals.handleEvent({ type: "input-unavailable", reason: "handshake failed" });
+    return {
+      id: "start",
+      type: "ok",
+      transport: "nvst",
+      capabilities: activeInputCapabilities(),
+    };
+  };
+
+  await manager.prepareForSession({
+    session: { sessionId: "failing-race-session" },
+    settings: {
+      resolution: "1920x1080",
+      fps: 60,
+      codec: "H264",
+      transportMode: "nvst",
+      enableCloudGsync: false,
+    },
+  } as NativeStreamerSessionContext);
+
+  await assert.rejects(
+    manager.waitForNvstTransportReady("failing-race-session", 1_000),
+    /handshake failed/,
+  );
+  assert.equal(internals.nvstReadinessError?.message.includes("handshake failed"), true);
 });
 
 test("unrelated synchronous command write failures reject only their request", async () => {

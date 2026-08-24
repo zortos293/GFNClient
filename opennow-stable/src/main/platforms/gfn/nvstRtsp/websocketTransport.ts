@@ -244,6 +244,10 @@ export function encodeWsPongFrame(payload: Buffer): Buffer {
   return encodeMaskedWsFrame(0xa, payload);
 }
 
+export function encodeWsPingFrame(): Buffer {
+  return encodeMaskedWsFrame(0x9, Buffer.alloc(0));
+}
+
 /** Minimal client-side WS frame reader for RTSP messages and control frames. */
 export class WsFrameReader {
   private buffer = Buffer.alloc(0);

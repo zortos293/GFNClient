@@ -24,6 +24,10 @@
     <uses-feature
         android:name="android.hardware.faketouch"
         android:required="false" />
+    <!-- ACCESS_WIFI_STATE otherwise makes Google Play treat Wi-Fi hardware as required. -->
+    <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
     <uses-feature
         android:name="android.software.leanback"
         android:required="false" />
@@ -44,6 +48,9 @@
         android:roundIcon="@drawable/opennow_icon"
         android:supportsRtl="true"
         android:theme="@style/Theme.OpenNOW">
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="barcode_ui" />
         <service
             android:name=".AndroidQueueStatusService"
             android:exported="false"

@@ -22,9 +22,14 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -40,6 +45,12 @@ import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
+data class DiscoveredLocalTv(
+    val name: String,
+    /** Pair URI without the short code. The person confirms physical access by entering it. */
+    val pairUri: String,
+)
+
 data class LocalTvConnectorState(
     val hosting: Boolean = false,
     val pairUri: String? = null,
@@ -48,6 +59,9 @@ data class LocalTvConnectorState(
     val pairedDeviceTrusted: Boolean = false,
     val trustRequestedByDevice: Boolean = false,
     val connectedTvName: String? = null,
+    val discoveredTvs: List<DiscoveredLocalTv> = emptyList(),
+    val discovering: Boolean = false,
+    val discoveryCompleted: Boolean = false,
     val requestTrustedAccess: Boolean = true,
     val busy: Boolean = false,
     val error: String? = null,
@@ -84,6 +98,9 @@ internal class LocalTvConnector {
     val remoteRequests: SharedFlow<LocalTvRemoteRequest> = _remoteRequests.asSharedFlow()
 
     @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var discoveryResponderSocket: DatagramSocket? = null
+    @Volatile private var phoneDiscoverySocket: DatagramSocket? = null
+    @Volatile private var phoneDiscoveryGeneration: Long = 0L
     @Volatile private var hostKeyPair: KeyPair? = null
     @Volatile private var pairingCode: String? = null
     @Volatile private var pairingExpiresAtMs: Long = 0L
@@ -124,6 +141,13 @@ internal class LocalTvConnector {
                     pairingCode = code,
                     requestTrustedAccess = _state.value.requestTrustedAccess,
                 )
+                scope.launch {
+                    respondToDiscovery(
+                        address = address,
+                        port = server.localPort,
+                        publicKey = keyPair.public.encoded,
+                    )
+                }
                 acceptLoop(server, address)
             }.onFailure { error ->
                 closeHost()
@@ -166,11 +190,90 @@ internal class LocalTvConnector {
         _state.value = _state.value.copy(connectedTvName = null, error = null)
     }
 
+    /** Finds OpenNOW TVs on the local network. The TV never broadcasts its pairing code. */
+    fun discoverTvs() {
+        val generation = phoneDiscoveryGeneration + 1L
+        phoneDiscoveryGeneration = generation
+        runCatching { phoneDiscoverySocket?.close() }
+        _state.value = _state.value.copy(
+            discovering = true,
+            discoveryCompleted = false,
+            discoveredTvs = emptyList(),
+            error = null,
+            message = null,
+        )
+        scope.launch {
+            val discovered = linkedMapOf<String, DiscoveredLocalTv>()
+            runCatching {
+                val localAddress = privateLanAddress()
+                    ?: error("Connect this phone to the same private Wi-Fi as the TV")
+                DatagramSocket().use { socket ->
+                    phoneDiscoverySocket = socket
+                    socket.broadcast = true
+                    socket.soTimeout = DISCOVERY_POLL_TIMEOUT_MS
+                    val request = DISCOVERY_REQUEST.toByteArray(Charsets.UTF_8)
+                    discoveryBroadcastAddresses(localAddress).forEach { target ->
+                        socket.send(DatagramPacket(request, request.size, target, DISCOVERY_PORT))
+                    }
+                    val deadline = System.currentTimeMillis() + DISCOVERY_WINDOW_MS
+                    val responseBuffer = ByteArray(MAX_DISCOVERY_PACKET_BYTES)
+                    while (System.currentTimeMillis() < deadline) {
+                        val packet = DatagramPacket(responseBuffer, responseBuffer.size)
+                        try {
+                            socket.receive(packet)
+                        } catch (_: SocketTimeoutException) {
+                            continue
+                        }
+                        if (!isSamePrivateLan(packet.address, localAddress)) continue
+                        parseDiscoveryResponse(packet.data.copyOf(packet.length))?.let { tv ->
+                            discovered[tv.pairUri] = tv
+                            if (phoneDiscoveryGeneration == generation) {
+                                _state.value = _state.value.copy(discoveredTvs = discovered.values.toList())
+                            }
+                        }
+                    }
+                }
+            }.onFailure { error ->
+                if (phoneDiscoveryGeneration == generation &&
+                    (error !is java.net.SocketException || phoneDiscoverySocket?.isClosed != true)
+                ) {
+                    _state.value = _state.value.copy(error = error.message ?: "Could not search for TVs")
+                }
+            }
+            if (phoneDiscoveryGeneration == generation) {
+                phoneDiscoverySocket = null
+                _state.value = _state.value.copy(
+                    discovering = false,
+                    discoveryCompleted = true,
+                )
+            }
+        }
+    }
+
+    fun pairDiscoveredTv(tv: DiscoveredLocalTv, code: String) {
+        val normalizedCode = normalizeLocalTvPairingCode(code)
+        if (normalizedCode == null) {
+            _state.value = _state.value.copy(error = "Enter the 4-digit code shown on the TV")
+            return
+        }
+        val uri = Uri.parse(tv.pairUri).buildUpon()
+            .appendQueryParameter("c", normalizedCode)
+            .build()
+        pairPhone(uri)
+    }
+
+    fun reportPairingError(message: String) {
+        _state.value = _state.value.copy(error = message, busy = false)
+    }
+
     fun isPairUri(uri: Uri?): Boolean =
         uri?.scheme.equals("opennow", ignoreCase = true) && uri?.host.equals("pair", ignoreCase = true)
 
     fun pairPhone(uri: Uri) {
         if (!isPairUri(uri)) return
+        phoneDiscoveryGeneration += 1L
+        runCatching { phoneDiscoverySocket?.close() }
+        phoneDiscoverySocket = null
         _state.value = _state.value.copy(busy = true, error = null)
         scope.launch {
             runCatching {
@@ -313,6 +416,73 @@ internal class LocalTvConnector {
                 }
             }
         }
+    }
+
+    private fun respondToDiscovery(address: Inet4Address, port: Int, publicKey: ByteArray) {
+        val socket = DatagramSocket(null).apply {
+            reuseAddress = true
+            bind(InetSocketAddress(DISCOVERY_PORT))
+            soTimeout = DISCOVERY_POLL_TIMEOUT_MS
+        }
+        discoveryResponderSocket = socket
+        val pairUri = Uri.Builder()
+            .scheme("opennow")
+            .authority("pair")
+            .appendQueryParameter("h", address.hostAddress)
+            .appendQueryParameter("p", port.toString())
+            .appendQueryParameter("k", base64Url(publicKey))
+            .build()
+            .toString()
+        val response = listOf(DISCOVERY_RESPONSE, safeDeviceName(), pairUri)
+            .joinToString("\n")
+            .toByteArray(Charsets.UTF_8)
+        val requestBuffer = ByteArray(128)
+        try {
+            while (!socket.isClosed && serverSocket != null) {
+                val packet = DatagramPacket(requestBuffer, requestBuffer.size)
+                try {
+                    socket.receive(packet)
+                } catch (_: SocketTimeoutException) {
+                    continue
+                } catch (error: SocketException) {
+                    // closeHost/close deliberately interrupts this blocking receive. Android
+                    // reports that wake-up as EBADF; it is a normal shutdown, not a process error.
+                    if (socket.isClosed || discoveryResponderSocket !== socket) break
+                    throw error
+                }
+                if (!isSamePrivateLan(packet.address, address)) continue
+                val request = packet.data.copyOf(packet.length).toString(Charsets.UTF_8)
+                if (request != DISCOVERY_REQUEST) continue
+                socket.send(DatagramPacket(response, response.size, packet.address, packet.port))
+            }
+        } finally {
+            socket.close()
+            if (discoveryResponderSocket === socket) discoveryResponderSocket = null
+        }
+    }
+
+    private fun parseDiscoveryResponse(bytes: ByteArray): DiscoveredLocalTv? {
+        val lines = bytes.toString(Charsets.UTF_8).lines()
+        if (lines.getOrNull(0) != DISCOVERY_RESPONSE) return null
+        val name = lines.getOrNull(1)?.trim()?.take(80)?.ifBlank { "OpenNOW TV" } ?: return null
+        val pairUri = lines.getOrNull(2)?.trim()?.takeIf { raw ->
+            val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return@takeIf false
+            isPairUri(uri) && uri.getQueryParameter("c") == null &&
+                uri.getQueryParameter("h")?.let(::isPrivateIpv4Text) == true &&
+                uri.getQueryParameter("p")?.toIntOrNull() in 1..65535 &&
+                !uri.getQueryParameter("k").isNullOrBlank()
+        } ?: return null
+        return DiscoveredLocalTv(name = name, pairUri = pairUri)
+    }
+
+    private fun discoveryBroadcastAddresses(localAddress: Inet4Address): List<InetAddress> {
+        val bytes = localAddress.address
+        return listOfNotNull(
+            runCatching { InetAddress.getByName("255.255.255.255") }.getOrNull(),
+            runCatching {
+                InetAddress.getByAddress(byteArrayOf(bytes[0], bytes[1], 0xff.toByte(), 0xff.toByte()))
+            }.getOrNull(),
+        ).distinctBy(InetAddress::getHostAddress)
     }
 
     private fun handleClient(socket: Socket) {
@@ -463,7 +633,9 @@ internal class LocalTvConnector {
 
     private fun closeHost() {
         runCatching { serverSocket?.close() }
+        runCatching { discoveryResponderSocket?.close() }
         serverSocket = null
+        discoveryResponderSocket = null
         hostKeyPair = null
         pairingCode = null
         pairingExpiresAtMs = 0L
@@ -475,6 +647,9 @@ internal class LocalTvConnector {
 
     fun close() {
         closeHost()
+        phoneDiscoveryGeneration += 1L
+        runCatching { phoneDiscoverySocket?.close() }
+        phoneDiscoverySocket = null
         scope.cancel()
     }
 
@@ -599,5 +774,14 @@ internal class LocalTvConnector {
         const val MAX_PUBLIC_KEY_BYTES = 512
         const val MAX_IV_BYTES = 32
         const val MAX_CIPHERTEXT_BYTES = 65_536
+        const val DISCOVERY_PORT = 39_047
+        const val DISCOVERY_REQUEST = "OPENNOW_TV_DISCOVERY_V1"
+        const val DISCOVERY_RESPONSE = "OPENNOW_TV_RESPONSE_V1"
+        const val DISCOVERY_WINDOW_MS = 1_800L
+        const val DISCOVERY_POLL_TIMEOUT_MS = 180
+        const val MAX_DISCOVERY_PACKET_BYTES = 2_048
     }
 }
+
+internal fun normalizeLocalTvPairingCode(value: String): String? =
+    value.trim().takeIf { it.matches(Regex("[0-9]{4}")) }

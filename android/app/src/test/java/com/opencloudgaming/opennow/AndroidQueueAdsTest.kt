@@ -243,6 +243,69 @@ class AndroidQueueAdsTest {
     }
 
     @Test
+    fun mergeQueueAdReportResultDropsCompletedAdFromEchoedServerList() {
+        val previous = session(
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                sessionAds = listOf(ad("ad-2")),
+                ads = listOf(ad("ad-2")),
+                serverSentEmptyAds = false,
+            ),
+        )
+        val echoed = session(
+            queuePosition = 5,
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                sessionAds = listOf(ad("ad-1"), ad("ad-2")),
+                ads = listOf(ad("ad-1"), ad("ad-2")),
+            ),
+        )
+
+        val merged = mergeQueueAdReportResult(
+            previous = previous,
+            updated = echoed,
+            adId = "ad-1",
+            terminalAction = true,
+        )
+
+        assertEquals(5, merged.queuePosition)
+        assertEquals(listOf("ad-2"), sessionAdItems(merged.adState).map { it.adId })
+    }
+
+    @Test
+    fun mergeQueueAdReportResultKeepsLocallyAdvancedAdWhenServerOmitsList() {
+        val locallyAdvanced = session(
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                sessionAds = listOf(ad("ad-2")),
+                ads = listOf(ad("ad-2")),
+                serverSentEmptyAds = false,
+            ),
+        )
+        val omitted = session(
+            queuePosition = 4,
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                serverSentEmptyAds = true,
+            ),
+        )
+
+        val merged = mergeQueueAdReportResult(
+            previous = locallyAdvanced,
+            updated = omitted,
+            adId = "ad-1",
+            terminalAction = true,
+        )
+
+        assertEquals(4, merged.queuePosition)
+        assertEquals(listOf("ad-2"), sessionAdItems(merged.adState).map { it.adId })
+    }
+
+    @Test
     fun nextSessionAdIdOnlyAdvancesToADifferentAd() {
         val ads = SessionAdState(
             isAdsRequired = true,

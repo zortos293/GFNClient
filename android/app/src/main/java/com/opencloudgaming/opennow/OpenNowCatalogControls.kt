@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -54,6 +55,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -79,6 +81,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -98,6 +101,16 @@ import kotlin.math.max
 import kotlin.math.sin
 
 @Composable
+private fun catalogSortDisplayLabel(sortId: String, fallback: String): String =
+    when (catalogSortKind(sortId)) {
+        CatalogSortKind.Relevance -> fallback
+        CatalogSortKind.Popular -> stringResource(R.string.catalog_sort_popular)
+        CatalogSortKind.NewlyAdded -> stringResource(R.string.catalog_sort_new_games)
+        CatalogSortKind.LastPlayed -> stringResource(R.string.catalog_sort_last_played)
+        CatalogSortKind.Other -> fallback
+    }
+
+@Composable
 internal fun SortPicker(
     options: List<CatalogSortOption>,
     selected: String,
@@ -105,7 +118,9 @@ internal fun SortPicker(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
-    val labels = options.ifEmpty { listOf(CatalogSortOption("relevance", "Relevance", "")) }
+    val labels = options.ifEmpty {
+        listOf(CatalogSortOption(DEFAULT_CATALOG_SORT_ID, "Most Popular", ""))
+    }
     val selectedLabel = labels.firstOrNull { it.id == selected }?.label ?: labels.first().label
     var expanded by remember { mutableStateOf(false) }
     BackHandler(enabled = expanded) { expanded = false }
@@ -116,7 +131,11 @@ internal fun SortPicker(
             onClick = { expanded = true },
             modifier = Modifier.fillMaxWidth().height(if (compact) TopBarCompactControlHeight else 40.dp),
             shape = controlShape,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+            border = if (LocalAbsoluteCinemaEffects.current) {
+                BorderStroke(1.dp, LocalActiveSelectionColor.current)
+            } else {
+                null
+            },
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = controlColor,
                 contentColor = TextPrimary,
@@ -124,7 +143,7 @@ internal fun SortPicker(
             contentPadding = PaddingValues(horizontal = if (compact) 8.dp else 12.dp),
         ) {
             Text(
-                "Sort: $selectedLabel",
+                "Sort: ${catalogSortDisplayLabel(selected, selectedLabel)}",
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
@@ -136,7 +155,7 @@ internal fun SortPicker(
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(if (option.id == selected) "✓" else "", modifier = Modifier.width(24.dp))
-                            Text(option.label)
+                            Text(catalogSortDisplayLabel(option.id, option.label))
                         }
                     },
                     onClick = {
@@ -164,19 +183,51 @@ internal fun SelectedFilterChips(options: List<CatalogFilterOption>, selectedIds
     }
 }
 
-internal fun catalogVisibleFilterGroups(groups: List<CatalogFilterGroup>): List<CatalogFilterGroup> =
-    groups.filter { it.id in setOf("digital_store", "genre", "subscriptions") }
+private val CATALOG_VISIBLE_FILTER_GROUP_IDS = setOf("digital_store", "genre", "subscriptions")
 
+internal fun catalogVisibleFilterGroups(groups: List<CatalogFilterGroup>): List<CatalogFilterGroup> =
+    groups.filter { it.id in CATALOG_VISIBLE_FILTER_GROUP_IDS }
+
+/**
+ * The filter rows for [groups], plus OpenNOW's own touch-controls filter.
+ *
+ * Deduplicated by id. The provider hands back one flat id namespace across groups, so the same
+ * option can legitimately appear under both `digital_store` and `subscriptions` — and the lists
+ * built here are rendered by `LazyColumn`/`items(key = ...)`, which throws on a repeated key. That
+ * crash only reproduces against accounts whose catalogue happens to carry an overlap, which is why
+ * the invariant belongs here rather than at each call site.
+ */
+internal fun catalogFilterOptions(
+    groups: List<CatalogFilterGroup>,
+    touchFilterLabel: String,
+    controlsGroupLabel: String,
+): List<CatalogFilterOption> =
+    (
+        groups.flatMap { group -> group.options.take(if (group.id == "genre") 10 else group.options.size) } +
+            CatalogFilterOption(
+                id = CATALOG_FILTER_TOUCHSCREEN,
+                rawId = SUPPORTED_CONTROL_TOUCHSCREEN,
+                label = touchFilterLabel,
+                groupId = "supported_controls",
+                groupLabel = controlsGroupLabel,
+            )
+        ).distinctBy { it.id }
+
+/**
+ * Remembers [catalogFilterOptions] for the current catalogue.
+ *
+ * The uncached version ran on every recomposition — including every frame of a grid scroll — and
+ * allocated a fresh list each time. That is invisible on a fast phone and is exactly the kind of
+ * steady allocation that pushes a low-RAM device into continuous GC.
+ */
 @Composable
-internal fun catalogFilterOptions(groups: List<CatalogFilterGroup>): List<CatalogFilterOption> =
-    groups.flatMap { group -> group.options.take(if (group.id == "genre") 10 else group.options.size) } +
-        CatalogFilterOption(
-            id = CATALOG_FILTER_TOUCHSCREEN,
-            rawId = SUPPORTED_CONTROL_TOUCHSCREEN,
-            label = stringResource(R.string.catalog_filter_touch_controls),
-            groupId = "supported_controls",
-            groupLabel = stringResource(R.string.catalog_filter_controls_group),
-        )
+internal fun rememberCatalogFilterOptions(groups: List<CatalogFilterGroup>): List<CatalogFilterOption> {
+    val touchFilterLabel = stringResource(R.string.catalog_filter_touch_controls)
+    val controlsGroupLabel = stringResource(R.string.catalog_filter_controls_group)
+    return remember(groups, touchFilterLabel, controlsGroupLabel) {
+        catalogFilterOptions(groups, touchFilterLabel, controlsGroupLabel)
+    }
+}
 
 @Composable
 internal fun FilterMenu(
@@ -193,7 +244,11 @@ internal fun FilterMenu(
             onClick = { expanded = true },
             modifier = Modifier.height(if (compact) TopBarCompactControlHeight else 36.dp),
             shape = filterControlShape,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+            border = if (LocalAbsoluteCinemaEffects.current) {
+                BorderStroke(1.dp, LocalActiveSelectionColor.current)
+            } else {
+                null
+            },
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = filterControlColor,
                 contentColor = TextPrimary,
@@ -273,7 +328,13 @@ internal fun CatalogSortFilterMenu(
     focusRequester: FocusRequester? = null,
     leadingFocusRequester: FocusRequester? = null,
 ) {
-    val sorts = sortOptions.ifEmpty { listOf(CatalogSortOption("relevance", "Relevance", "")) }
+    // Same flat provider id namespace as the filter options — deduplicate before the keyed
+    // `items` below turns a repeated id into a crash.
+    val sorts = remember(sortOptions) {
+        sortOptions.distinctBy { it.id }.ifEmpty {
+            listOf(CatalogSortOption(DEFAULT_CATALOG_SORT_ID, "Most Popular", ""))
+        }
+    }
     var expanded by remember { mutableStateOf(false) }
     BackHandler(enabled = expanded) { expanded = false }
     val description = if (selectedFilterIds.isEmpty()) {
@@ -286,7 +347,11 @@ internal fun CatalogSortFilterMenu(
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = Color.White.copy(alpha = 0.1f),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+            border = if (LocalAbsoluteCinemaEffects.current) {
+                BorderStroke(1.dp, LocalActiveSelectionColor.current)
+            } else {
+                null
+            },
         ) {
             IconButton(
                 onClick = { expanded = true },
@@ -306,7 +371,7 @@ internal fun CatalogSortFilterMenu(
                 Icon(
                     painter = painterResource(R.drawable.ic_sort_filter),
                     contentDescription = description,
-                    tint = if (selectedFilterIds.isEmpty()) TextPrimary else LocalActiveSelectionColor.current,
+                    tint = if (selectedFilterIds.isEmpty()) TextPrimary else LocalSelectionTintColor.current,
                     modifier = Modifier.size(22.dp),
                 )
             }
@@ -345,7 +410,7 @@ internal fun CatalogSortFilterMenu(
                         items(sorts, key = { "sort:${it.id}" }) { option ->
                             val selected = option.id == selectedSortId
                             CatalogMenuChoiceRow(
-                                label = option.label,
+                                label = catalogSortDisplayLabel(option.id, option.label),
                                 selected = selected,
                                 onClick = { onSortChange(option.id) },
                             )
@@ -399,13 +464,16 @@ private fun CatalogMenuChoiceRow(
             .background(
                 when {
                     focused -> Color.White.copy(alpha = 0.1f)
-                    selected -> LocalActiveSelectionColor.current.copy(alpha = 0.12f)
+                    selected -> LocalSelectionTintColor.current.copy(alpha = 0.12f)
                     else -> Color.Transparent
                 },
             )
             .border(
                 width = if (focused || selected) 1.dp else 0.dp,
-                color = if (focused) Color.White else if (selected) LocalActiveSelectionColor.current else Color.Transparent,
+                color = cinemaBorderColor(
+                    LocalAbsoluteCinemaEffects.current,
+                    LocalActiveSelectionColor.current,
+                ),
                 shape = shape,
             )
             .clickable(onClick = onClick)
@@ -415,7 +483,7 @@ private fun CatalogMenuChoiceRow(
         if (checkbox) {
             Checkbox(checked = selected, onCheckedChange = null)
         } else {
-            Text(if (selected) "✓" else "", modifier = Modifier.width(36.dp), color = LocalActiveSelectionColor.current)
+            Text(if (selected) "✓" else "", modifier = Modifier.width(36.dp), color = LocalSelectionTintColor.current)
         }
         Spacer(Modifier.width(if (checkbox) 10.dp else 0.dp))
         Text(
@@ -449,17 +517,30 @@ internal fun PrintedWasteSelector(
             }
     }
     val autoZone = remember(zones) { recommendedPrintedWasteZone(zones) }
-    val sortedZones = remember(zones, autoZone) {
-        val maxPing = zones.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1) ?: 1
+    // One row per physical location rather than per server id — see PrintedWasteZones.kt.
+    val regionGroups = remember(zones, state.printedWasteMapping) {
+        val maxPing = zones.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1L) ?: 1L
         val maxQueue = zones.maxOfOrNull { it.zone.QueuePosition }?.coerceAtLeast(1) ?: 1
-        zones.sortedWith(
-            compareByDescending<PrintedWasteZoneOption> { it.zoneId == autoZone?.zoneId }
-                .thenBy { printedWasteScore(it, maxPing, maxQueue) }
-                .thenBy { it.zoneId },
+        printedWasteRegionGroups(
+            printedWasteLocations(zones, state.printedWasteMapping),
+            maxPing = maxPing,
+            maxQueue = maxQueue,
         )
     }
-    var selectedZoneId by remember(game.id, sortedZones) { mutableStateOf<String?>(autoZone?.zoneId) }
-    val selectedZone = sortedZones.firstOrNull { it.zoneId == selectedZoneId } ?: autoZone
+    val locations = remember(regionGroups) { regionGroups.flatMap { it.second } }
+    // Match by name, not by id: the recommendation and the fold use slightly different tiebreaks,
+    // so the recommended server can end up as an alternate inside its location rather than its
+    // primary. Matching on id there would drop the "best route" card entirely.
+    val autoLocation = remember(locations, autoZone, state.printedWasteMapping) {
+        val autoTitle = autoZone?.let {
+            printedWasteZoneTitle(it.zoneId, state.printedWasteMapping[it.zoneId])
+        }
+        locations.firstOrNull { it.title == autoTitle }
+    }
+    var selectedZoneId by remember(game.id, locations) {
+        mutableStateOf<String?>((autoLocation ?: locations.firstOrNull())?.primary?.zoneId)
+    }
+    val selectedZone = locations.firstOrNull { it.primary.zoneId == selectedZoneId }?.primary ?: autoZone
     val context = LocalContext.current
 
     BoxWithConstraints(
@@ -505,10 +586,11 @@ internal fun PrintedWasteSelector(
                         )
                         PrintedWasteOptionsColumn(
                             state = state,
-                            zones = sortedZones,
+                            regionGroups = regionGroups,
+                            locations = locations,
                             selectedZoneId = selectedZoneId,
                             selectedZone = selectedZone,
-                            autoZone = autoZone,
+                            autoLocation = autoLocation,
                             showRecommendedCard = true,
                             onSelectZone = { selectedZoneId = it },
                             onRetry = viewModel::refreshPrintedWasteQueues,
@@ -538,10 +620,11 @@ internal fun PrintedWasteSelector(
                         }
                         PrintedWasteOptionsColumn(
                             state = state,
-                            zones = sortedZones,
+                            regionGroups = regionGroups,
+                            locations = locations,
                             selectedZoneId = selectedZoneId,
                             selectedZone = selectedZone,
-                            autoZone = autoZone,
+                            autoLocation = autoLocation,
                             showRecommendedCard = true,
                             onSelectZone = { selectedZoneId = it },
                             onRetry = viewModel::refreshPrintedWasteQueues,
@@ -581,10 +664,11 @@ private fun PrintedWasteGameSummary(
 @Composable
 private fun PrintedWasteOptionsColumn(
     state: OpenNowUiState,
-    zones: List<PrintedWasteZoneOption>,
+    regionGroups: List<Pair<String, List<PrintedWasteLocation>>>,
+    locations: List<PrintedWasteLocation>,
     selectedZoneId: String?,
     selectedZone: PrintedWasteZoneOption?,
-    autoZone: PrintedWasteZoneOption?,
+    autoLocation: PrintedWasteLocation?,
     showRecommendedCard: Boolean,
     onSelectZone: (String) -> Unit,
     onRetry: () -> Unit,
@@ -600,17 +684,23 @@ private fun PrintedWasteOptionsColumn(
     var zoneListFocused by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     fun selectZoneAt(index: Int) {
-        val next = zones.getOrNull(index) ?: return
-        onSelectZone(next.zoneId)
+        val next = locations.getOrNull(index) ?: return
+        onSelectZone(next.primary.zoneId)
         scope.launch {
-            zoneListState.animateScrollToItem(index)
+            // Region headings are list items too, so a location's row sits further down than its
+            // index among locations. Counting the headings above it keeps the scroll honest.
+            val headingsAbove = regionGroups
+                .runningFold(0) { acc, group -> acc + group.second.size }
+                .indexOfFirst { it > index }
+                .coerceAtLeast(1)
+            zoneListState.animateScrollToItem(index + headingsAbove)
         }
     }
-    LaunchedEffect(state.printedWasteLoading, state.printedWasteError, zones.size) {
+    LaunchedEffect(state.printedWasteLoading, state.printedWasteError, locations.size) {
         val initialFocusRequester = if (
             !state.printedWasteLoading &&
             state.printedWasteError == null &&
-            zones.isNotEmpty()
+            locations.isNotEmpty()
         ) {
             launchFocusRequester
         } else {
@@ -635,7 +725,7 @@ private fun PrintedWasteOptionsColumn(
             }
         } else {
             if (showRecommendedCard) {
-                autoZone?.let {
+                autoLocation?.let {
                     RecommendedPrintedWasteCard(it)
                 }
             }
@@ -655,7 +745,9 @@ private fun PrintedWasteOptionsColumn(
                                 false
                             }
                         } else if (event.type == KeyEventType.KeyDown) {
-                            val selectedIndex = zones.indexOfFirst { it.zoneId == selectedZoneId }.let { if (it >= 0) it else 0 }
+                            val selectedIndex = locations
+                                .indexOfFirst { it.primary.zoneId == selectedZoneId }
+                                .let { if (it >= 0) it else 0 }
                             when (event.key) {
                                 Key.DirectionUp -> {
                                     if (selectedIndex > 0) {
@@ -666,7 +758,7 @@ private fun PrintedWasteOptionsColumn(
                                     }
                                 }
                                 Key.DirectionDown -> {
-                                    if (selectedIndex < zones.lastIndex) {
+                                    if (selectedIndex < locations.lastIndex) {
                                         selectZoneAt(selectedIndex + 1)
                                         true
                                     } else {
@@ -682,16 +774,27 @@ private fun PrintedWasteOptionsColumn(
                     .focusable(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(zones, key = { it.zoneId }) { zoneOption ->
-                    val isCurrent = zoneOption.zoneId == selectedZoneId
-                    PrintedWasteZoneRow(
-                        zoneOption = zoneOption,
-                        selected = isCurrent,
-                        focused = isCurrent && listFocused,
-                        listFocused = listFocused,
-                        liveSelectedOutlines = LocalActiveSelectionEnabled.current,
-                        onClick = { onSelectZone(zoneOption.zoneId) },
-                    )
+                regionGroups.forEach { (region, regionLocations) ->
+                    item(key = "region:$region") {
+                        Text(
+                            region,
+                            color = TextMuted,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
+                        )
+                    }
+                    items(regionLocations, key = { it.primary.zoneId }) { location ->
+                        val isCurrent = location.primary.zoneId == selectedZoneId
+                        PrintedWasteLocationRow(
+                            location = location,
+                            selected = isCurrent,
+                            focused = isCurrent && listFocused,
+                            listFocused = listFocused,
+                            liveSelectedOutlines = LocalActiveSelectionEnabled.current,
+                            onClick = { onSelectZone(location.primary.zoneId) },
+                        )
+                    }
                 }
             }
         }
@@ -721,7 +824,8 @@ private fun PrintedWasteOptionsColumn(
 }
 
 @Composable
-private fun RecommendedPrintedWasteCard(zoneOption: PrintedWasteZoneOption) {
+private fun RecommendedPrintedWasteCard(location: PrintedWasteLocation) {
+    val zoneOption = location.primary
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -733,30 +837,70 @@ private fun RecommendedPrintedWasteCard(zoneOption: PrintedWasteZoneOption) {
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(stringResource(R.string.queue_best_route), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Text(
-                    "${zoneOption.zoneId} · ${regionLabel(zoneOption.zone.Region)}",
+                    stringResource(R.string.queue_best_route),
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    location.title,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    printedWasteLocationDetail(location),
                     color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: stringResource(R.string.queue_checking))
-            QueueMetricPill(stringResource(R.string.queue_metric_ahead), zoneOption.zone.QueuePosition.toString(), queueColor(zoneOption.zone.QueuePosition))
+            QueueMetricPill(
+                stringResource(R.string.stream_statusbar_metric_ping),
+                zoneOption.pingMs?.let { "$it ms" } ?: stringResource(R.string.queue_checking),
+            )
+            QueueMetricPill(
+                stringResource(R.string.queue_metric_ahead),
+                zoneOption.zone.QueuePosition.toString(),
+                queueColor(zoneOption.zone.QueuePosition),
+            )
         }
     }
 }
 
+/**
+ * The secondary line under a location name: its region, the GPU it runs, and how many server ids
+ * were folded into this one row.
+ *
+ * The alternate count is stated rather than hidden because it is capacity the player may care
+ * about — three Southern California servers behind one row is a different proposition from one.
+ */
 @Composable
-private fun PrintedWasteZoneRow(
-    zoneOption: PrintedWasteZoneOption,
+private fun printedWasteLocationDetail(location: PrintedWasteLocation): String {
+    val parts = buildList {
+        add(location.region)
+        location.gpuTier?.let { add(it.label) }
+        if (location.alternateCount > 0) {
+            add(pluralStringResource(R.plurals.queue_location_servers, location.alternateCount + 1, location.alternateCount + 1))
+        }
+    }
+    return parts.joinToString(" · ")
+}
+
+@Composable
+private fun PrintedWasteLocationRow(
+    location: PrintedWasteLocation,
     selected: Boolean,
     focused: Boolean,
     listFocused: Boolean,
     liveSelectedOutlines: Boolean,
     onClick: () -> Unit,
 ) {
+    val zoneOption = location.primary
     val zone = zoneOption.zone
+    val detail = printedWasteLocationDetail(location)
     Box(Modifier.fillMaxWidth()) {
         Surface(
             modifier = Modifier
@@ -764,30 +908,55 @@ private fun PrintedWasteZoneRow(
                 .focusProperties { canFocus = false }
                 .clickable { onClick() },
             shape = RoundedCornerShape(12.dp),
-            color = if (focused) Color.White.copy(alpha = 0.16f) else if (selected) LocalActiveSelectionColor.current.copy(alpha = 0.16f) else PanelAlt,
+            color = if (focused) {
+                Color.White.copy(alpha = 0.16f)
+            } else if (selected) {
+                LocalSelectionTintColor.current.copy(alpha = 0.16f)
+            } else {
+                PanelAlt
+            },
             tonalElevation = if (selected) 2.dp else 0.dp,
-            border = if (selected && listFocused && !liveSelectedOutlines) BorderStroke(2.dp, LocalActiveSelectionColor.current) else null,
+            border = if (selected && listFocused && !liveSelectedOutlines) {
+                BorderStroke(2.dp, LocalSelectionTintColor.current)
+            } else {
+                null
+            },
         ) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 val compact = maxWidth < 520.dp
+                val nameBlock: @Composable ColumnScope.() -> Unit = {
+                    Text(
+                        location.title,
+                        fontWeight = FontWeight.Bold,
+                        color = if (selected) LocalSelectionTintColor.current else TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        detail,
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 if (compact) {
                     Column(
                         Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) LocalActiveSelectionColor.current else TextPrimary)
-                                Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
-                            }
+                            Column(Modifier.weight(1f), content = nameBlock)
                             if (selected) {
-                                Text(stringResource(R.string.store_selector_selected), color = LocalActiveSelectionColor.current, style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    stringResource(R.string.store_selector_selected),
+                                    color = LocalSelectionTintColor.current,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
-                            QueueMetricPill(stringResource(R.string.queue_metric_ahead), zone.QueuePosition.toString(), queueColor(zone.QueuePosition))
-                            zone.eta?.let { QueueMetricPill(stringResource(R.string.queue_metric_wait), formatPrintedWasteWait(it)) }
+                            PrintedWasteZoneMetrics(zoneOption)
                         }
                     }
                 } else {
@@ -796,13 +965,8 @@ private fun PrintedWasteZoneRow(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) LocalActiveSelectionColor.current else TextPrimary)
-                            Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
-                        }
-                        QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
-                        QueueMetricPill(stringResource(R.string.queue_metric_ahead), zone.QueuePosition.toString(), queueColor(zone.QueuePosition))
-                        zone.eta?.let { QueueMetricPill(stringResource(R.string.queue_metric_wait), formatPrintedWasteWait(it)) }
+                        Column(Modifier.weight(1f), content = nameBlock)
+                        PrintedWasteZoneMetrics(zoneOption)
                     }
                 }
             }
@@ -817,6 +981,24 @@ private fun PrintedWasteZoneRow(
 }
 
 @Composable
+private fun PrintedWasteZoneMetrics(zoneOption: PrintedWasteZoneOption) {
+    val zone = zoneOption.zone
+    QueueMetricPill(
+        stringResource(R.string.stream_statusbar_metric_ping),
+        zoneOption.pingMs?.let { "$it ms" } ?: "--",
+        zoneOption.pingMs?.let(::pingColor) ?: TextMuted,
+    )
+    QueueMetricPill(
+        stringResource(R.string.queue_metric_ahead),
+        zone.QueuePosition.toString(),
+        queueColor(zone.QueuePosition),
+    )
+    zone.eta?.let {
+        QueueMetricPill(stringResource(R.string.queue_metric_wait), formatPrintedWasteWait(it))
+    }
+}
+
+@Composable
 private fun QueueMetricPill(
     label: String,
     value: String,
@@ -825,7 +1007,11 @@ private fun QueueMetricPill(
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = Color.Black.copy(alpha = 0.22f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+        border = if (LocalAbsoluteCinemaEffects.current) {
+            BorderStroke(1.dp, LocalActiveSelectionColor.current.copy(alpha = 0.72f))
+        } else {
+            null
+        },
     ) {
         Column(
             Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
@@ -835,53 +1021,6 @@ private fun QueueMetricPill(
             Text(value, color = valueColor, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
         }
     }
-}
-
-private fun isStandardPrintedWasteZone(zoneId: String): Boolean =
-    zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-")
-
-internal data class PrintedWasteZoneOption(
-    val zoneId: String,
-    val zone: PrintedWasteZone,
-    val routingUrl: String,
-    val pingMs: Long?,
-)
-
-internal fun recommendedPrintedWasteZone(zones: List<PrintedWasteZoneOption>): PrintedWasteZoneOption? {
-    if (zones.isEmpty()) return null
-    val pool = zones.filter { it.pingMs != null }.ifEmpty { zones }
-    val maxPing = pool.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1) ?: 1
-    val maxQueue = pool.maxOfOrNull { it.zone.QueuePosition }?.coerceAtLeast(1) ?: 1
-    val queueAwareRecommendation = pool.minWithOrNull(
-        compareBy<PrintedWasteZoneOption> { printedWasteScore(it, maxPing, maxQueue) }
-            .thenBy { it.pingMs ?: Long.MAX_VALUE }
-            .thenBy { it.zone.QueuePosition },
-    )
-    if ((queueAwareRecommendation?.pingMs ?: 0L) <= MAX_QUEUE_AWARE_RECOMMENDED_PING_MS) {
-        return queueAwareRecommendation
-    }
-
-    return pool.minWithOrNull(
-        compareBy<PrintedWasteZoneOption> { it.pingMs ?: Long.MAX_VALUE }
-            .thenBy { it.zone.QueuePosition }
-            .thenBy { it.zoneId },
-    )
-}
-
-private fun printedWasteScore(zone: PrintedWasteZoneOption, maxPing: Long, maxQueue: Int): Double {
-    val pingScore = ((zone.pingMs ?: maxPing).toDouble() / maxPing.toDouble()) * 0.75
-    val queueScore = (zone.zone.QueuePosition.toDouble() / maxQueue.toDouble()) * 0.25
-    return pingScore + queueScore
-}
-
-private const val MAX_QUEUE_AWARE_RECOMMENDED_PING_MS = 100L
-
-private fun printedWasteZoneUrl(zoneId: String): String =
-    "https://${zoneId.lowercase()}.cloudmatchbeta.nvidiagrid.net/"
-
-private fun formatPrintedWasteWait(etaMs: Long): String {
-    val minutes = ((etaMs + 59_999L) / 60_000L).coerceAtLeast(1L)
-    return if (minutes < 60L) "${minutes}m" else "${minutes / 60L}h ${minutes % 60L}m"
 }
 
 private fun queueColor(queue: Int): Color = when {
@@ -896,17 +1035,6 @@ private fun pingColor(pingMs: Long): Color = when {
     pingMs <= 120L -> Color(0xffc7ef6b)
     pingMs <= 180L -> Color(0xffffc95a)
     else -> Color(0xffff8d8d)
-}
-
-private fun regionLabel(region: String): String = when (region) {
-    "US" -> "North America"
-    "CA" -> "Canada"
-    "EU" -> "Europe"
-    "JP" -> "Japan"
-    "KR" -> "South Korea"
-    "THAI" -> "Southeast Asia"
-    "MY" -> "Malaysia"
-    else -> region
 }
 
 @Composable
@@ -964,6 +1092,14 @@ internal fun UrlImage(
     var imageState by remember(source, fallbackSource) {
         mutableStateOf(if (activeSource == null) UrlImageState.Empty else UrlImageState.Loading)
     }
+    val loadingTracker = LocalImageLoadingTracker.current
+    val loading = imageState == UrlImageState.Loading
+    DisposableEffect(loadingTracker, loading) {
+        if (loading) loadingTracker?.invoke(1)
+        onDispose {
+            if (loading) loadingTracker?.invoke(-1)
+        }
+    }
     val imageData = remember(activeSource) { activeSource?.let(::imageDataForSource) }
     LaunchedEffect(activeSource, imageData, fallbackSource, source) {
         if (activeSource == null) {
@@ -1013,9 +1149,9 @@ internal fun LoadingShimmer(modifier: Modifier = Modifier) {
     // Use the shared grid animation when available; the local fallback only runs while an
     // individual image placeholder is actually composed.
     // Using nullable avoids treating 0f (a valid animation start value) as "not provided".
-    val reduceMotion = LocalReduceMotion.current
+    val animateLoading = LocalImageLoadingAnimationsEnabled.current && !LocalReduceMotion.current
     val sharedPulse = LocalTvLoadingPulse.current
-    val localPulse = if (!reduceMotion && LocalTvLoadingProfile.current && sharedPulse == null) {
+    val localPulse = if (animateLoading && LocalTvLoadingProfile.current && sharedPulse == null) {
         val transition = rememberInfiniteTransition(label = "loading-pulse-local")
         val pulse = transition.animateFloat(
             initialValue = 0f,
@@ -1032,7 +1168,7 @@ internal fun LoadingShimmer(modifier: Modifier = Modifier) {
     }
     val pulse = sharedPulse ?: localPulse
     // Same rule as the shared driver above: no perpetual sweep under reduced motion.
-    val shimmer = LocalShimmerOffset.current ?: if (pulse == null && !reduceMotion) run {
+    val shimmer = LocalShimmerOffset.current ?: if (pulse == null && animateLoading) run {
         val transition = rememberInfiniteTransition(label = "shimmer-local")
         val localOffset = transition.animateFloat(
             initialValue = 0f,

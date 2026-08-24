@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import com.opencloudgaming.opennow.focusMoveHaptics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -172,6 +173,7 @@ internal fun ControlRow(
                 .fillMaxWidth()
                 .hoverable(hoverInteraction, enabled = enabled)
                 .onFocusChanged { focused = style.focusable && (it.isFocused || it.hasFocus) }
+                .focusMoveHaptics()
                 .border(
                     width = if (showFocus) style.borderFocusWidth else style.borderRestWidth,
                     color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,

@@ -122,7 +122,7 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             availableHeightDp = maxHeight.value,
         )
         if (dedicatedPhonePairing) {
-            TvPhoneSignInConnector(
+            TvPhonePairingPanel(
                 state = state,
                 viewModel = viewModel,
                 dedicated = true,
@@ -190,7 +190,7 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         }
                     }
                     if (tvLogin) {
-                        TvPhoneSignInConnector(state = state, viewModel = viewModel)
+                        TvPhonePairingPanel(state = state, viewModel = viewModel)
                     }
                 }
                 if (state.error != null) {
@@ -313,7 +313,7 @@ internal fun shouldUseDedicatedTvPairingLayout(
 ): Boolean = tvProfile && hosting && (availableHeightDp < 500f || availableWidthDp < 760f)
 
 @Composable
-private fun TvPhoneSignInConnector(
+internal fun TvPhonePairingPanel(
     state: OpenNowUiState,
     viewModel: OpenNowViewModel,
     dedicated: Boolean = false,
@@ -326,7 +326,13 @@ private fun TvPhoneSignInConnector(
             enabled = !connector.busy,
             modifier = modifier,
         ) {
-            Text(if (connector.busy) "Starting phone pairing…" else "Sign in from OpenNOW on phone")
+            Text(
+                if (connector.busy) {
+                    stringResource(R.string.tv_pair_starting)
+                } else {
+                    stringResource(R.string.tv_pair_start)
+                },
+            )
         }
     } else {
         val qrCode = remember(connector.pairUri) { connector.pairUri?.let(QrCode::encodeText) }
@@ -371,13 +377,13 @@ private fun TvPhoneSignInConnector(
                         )
                         Text(
                             if (connector.pairedDeviceName == null) {
-                                "Your TV and phone must be on the same Wi-Fi. Scan the QR code with your phone camera; the pairing code expires after five minutes."
+                                stringResource(R.string.tv_pair_instructions)
                             } else {
                                 "${connector.pairedDeviceName} can launch games. Approve trust below for settings, overlays, sessions, and account switching."
                             },
                             color = TextMuted,
                             style = if (dedicated) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
-                            maxLines = if (dedicated) 3 else 2,
+                            maxLines = if (connector.pairedDeviceName == null) 4 else if (dedicated) 3 else 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                         if (connector.pairedDeviceName == null) {
@@ -412,7 +418,11 @@ private fun PairingCodeDisplay(code: String?, compact: Boolean) {
                     modifier = Modifier.size(if (compact) 38.dp else 46.dp),
                     shape = RoundedCornerShape(12.dp),
                     color = Color.White.copy(alpha = 0.07f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.13f)),
+                    border = if (LocalAbsoluteCinemaEffects.current) {
+                        BorderStroke(1.dp, LocalActiveSelectionColor.current)
+                    } else {
+                        null
+                    },
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(

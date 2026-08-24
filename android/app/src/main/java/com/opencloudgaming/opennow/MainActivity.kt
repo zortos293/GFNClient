@@ -137,6 +137,10 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         if (startupDataReady) {
             viewModel.setAndroidPictureInPictureActive(isAndroidPictureInPictureActive())
+            // A process that was frozen or killed by an aggressive OEM memory manager comes back
+            // with dead sockets and possibly stale tokens. The catalogue is fetched once at
+            // startup and never again, so without this the Store stays empty until a manual pull.
+            viewModel.onAppForegrounded()
         }
         if (streamSystemUiActive) {
             applyStreamSystemUi(true, force = true)

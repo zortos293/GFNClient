@@ -15,6 +15,14 @@ class BugReportPreflightTest {
     )
 
     @Test
+    fun detectsManualServerFromSelectorOrConfiguredRegion() {
+        assertFalse(manuallySelectedServerForReport(null, ""))
+        assertFalse(manuallySelectedServerForReport("", ""))
+        assertTrue(manuallySelectedServerForReport("https://np-lon-06.example", ""))
+        assertTrue(manuallySelectedServerForReport(null, "https://np-ams-06.example"))
+    }
+
+    @Test
     fun experimentalNativeStreamerWarningIsFirstAndExplicitlyUnsupported() {
         val deck = buildBugReportPreflightDeck(
             BugReportPreflightEvidence(
@@ -342,6 +350,65 @@ class BugReportPreflightTest {
             bugReportKnownIssueBlock(
                 title = "Store artwork is missing",
                 description = "Several game cards show a blank image after I return from the library page.",
+                deck = deck,
+            ),
+        )
+    }
+
+    @Test
+    fun manualServerSelectionWarnsAndGatesMatchingStreamReports() {
+        val deck = buildBugReportPreflightDeck(
+            BugReportPreflightEvidence(
+                requestedSettings = settings,
+                runtimeStats = StreamRuntimeStats(
+                    pingMs = 24,
+                    fps = 60,
+                    jitterMs = 1.0,
+                    packetLossPct = 0.0,
+                ),
+                runtimeDiagnostics = AndroidRuntimeDiagnosticsSnapshot(
+                    networkKind = AndroidNetworkKind.Ethernet,
+                    networkDownstreamKbps = 500_000,
+                ),
+                serverZone = "np-lon-06",
+                manuallySelectedServer = true,
+            ),
+        )
+
+        val connection = deck.cards.first { it.area == BugReportPreflightArea.Connection }
+        assertEquals(BugReportPreflightTone.Warning, connection.tone)
+        assertEquals("A manually selected server may explain the issue", connection.title)
+        assertTrue(connection.facts.contains("Server np-lon-06"))
+        assertTrue(connection.facts.contains("Manual server selection"))
+        assertTrue(connection.summary.contains("may not be investigated"))
+
+        val block = requireNotNull(
+            bugReportKnownIssueBlock(
+                title = "FPS drops to 30",
+                description = "The video becomes choppy even though my bandwidth is fast.",
+                deck = deck,
+            ),
+        )
+        assertEquals("network-manual-server", block.key)
+        assertTrue(block.action.contains("may not be investigated"))
+        assertFalse(bugReportKnownIssueAllowsSubmission(block, null))
+        assertTrue(bugReportKnownIssueAllowsSubmission(block, block.key))
+    }
+
+    @Test
+    fun manualServerSelectionDoesNotGateUnrelatedReports() {
+        val deck = buildBugReportPreflightDeck(
+            BugReportPreflightEvidence(
+                requestedSettings = settings,
+                manuallySelectedServer = true,
+            ),
+        )
+
+        assertEquals(
+            null,
+            bugReportKnownIssueBlock(
+                title = "Wrong store artwork",
+                description = "The library card displays an image from a different game.",
                 deck = deck,
             ),
         )

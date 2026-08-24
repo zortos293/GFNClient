@@ -11,6 +11,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -50,6 +51,11 @@ enum class SettingsRouteTarget {
 
 internal fun canMinimizeStreamLaunch(streamStatus: String, sessionReady: Boolean): Boolean =
     streamStatus != "idle" && !sessionReady
+
+internal fun manuallySelectedServerForReport(
+    streamingBaseUrlOverride: String?,
+    configuredRegion: String,
+): Boolean = !streamingBaseUrlOverride.isNullOrBlank() || configuredRegion.isNotBlank()
 
 private const val ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS = 5_000L
 internal const val ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
@@ -159,12 +165,14 @@ data class OpenNowUiState(
     val connectorActionStore: String? = null,
     val regions: List<StreamRegion> = emptyList(),
     val games: List<GameInfo> = emptyList(),
+    /** Dedicated provider-ordered feed for the portrait Store hero. */
+    val newlyAddedGames: List<GameInfo> = emptyList(),
     val libraryGames: List<GameInfo> = emptyList(),
     val queuedGameKeys: List<String> = emptyList(),
     val catalogResult: CatalogBrowseResult = CatalogBrowseResult(emptyList()),
     val catalogSearch: String = "",
     val librarySearch: String = "",
-    val catalogSortId: String = "relevance",
+    val catalogSortId: String = DEFAULT_CATALOG_SORT_ID,
     val catalogFilterIds: List<String> = emptyList(),
     val libraryFilterIds: List<String> = emptyList(),
     val librarySortId: String = LIBRARY_SORT_DEFAULT,
@@ -181,6 +189,7 @@ data class OpenNowUiState(
     val activeSession: ActiveSessionInfo? = null,
     val activeSessionDecision: ActiveSessionDecision? = null,
     val streamSession: SessionInfo? = null,
+    val manuallySelectedServerForReport: Boolean = false,
     val activeStreamSettings: StreamSettings? = null,
     val streamGame: GameInfo? = null,
     val streamLaunchMinimized: Boolean = false,
@@ -192,6 +201,8 @@ data class OpenNowUiState(
     val error: String? = null,
     val deviceLoginPrompt: DeviceLoginPrompt? = null,
     val pendingStoreChoiceGame: GameInfo? = null,
+    /** Set when Play was pressed on a game whose membership tier this account cannot meet. */
+    val pendingMembershipNotice: PendingMembershipNotice? = null,
     val pendingPrintedWasteGame: GameInfo? = null,
     val printedWasteQueue: Map<String, PrintedWasteZone> = emptyMap(),
     val printedWasteMapping: Map<String, PrintedWasteServerMappingEntry> = emptyMap(),
@@ -214,6 +225,111 @@ data class OpenNowUiState(
 internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
     streamStatus != "idle" || streamSession != null || activeStreamSettings != null
 
+/**
+ * Whether the catalogue currently has anything to show.
+ *
+ * The Store, the Library and the cached "main" list all feed off the same fetch, so any one of
+ * them holding games means that fetch has landed at least once.
+ */
+internal fun OpenNowUiState.hasLoadedCatalogGames(): Boolean =
+    games.isNotEmpty() || catalogResult.games.isNotEmpty() || libraryGames.isNotEmpty()
+
+/**
+ * The catalogue was fetched exactly once per ViewModel with no retry, so a single failed attempt —
+ * no network yet on a cold start, or sockets torn down while an aggressive OEM memory manager held
+ * the process frozen — left the Store empty until the reader happened to pull-to-refresh. These
+ * bound an automatic ladder instead.
+ */
+internal const val CATALOG_RETRY_MAX_ATTEMPTS = 4
+internal const val CATALOG_RETRY_BASE_DELAY_MS = 2_000L
+internal const val CATALOG_RETRY_MAX_DELAY_MS = 30_000L
+
+internal fun catalogRetryDelayMs(attempt: Int): Long =
+    (CATALOG_RETRY_BASE_DELAY_MS shl attempt.coerceIn(0, 16)).coerceAtMost(CATALOG_RETRY_MAX_DELAY_MS)
+
+/**
+ * [loadAttempted] keeps the foreground hook from racing the first-run load: on a cold start the
+ * Activity resumes before the bootstrap has asked for anything, and firing here would run a second
+ * identical fetch alongside it.
+ */
+/**
+ * Whether the Store should still read as loading after the cache has been applied.
+ *
+ * The old rule asked whether a cache entry existed for this exact query, not whether anything
+ * landed on screen. Priming from a library-only cache satisfied that test while leaving `games`
+ * empty, which dropped the spinner and rendered "No games loaded" over a fetch that was still in
+ * flight — the empty state, shown as if the request had already come back with nothing.
+ */
+internal const val CATALOG_SORT_DEFAULT = DEFAULT_CATALOG_SORT_ID
+
+/**
+ * A query narrower than "the whole catalogue in its default order".
+ *
+ * Cached results are keyed by the exact query that produced them, so a scoped query cannot borrow
+ * the unscoped cache: showing default-ordered games under a user-chosen sort would be visibly
+ * wrong rather than merely stale.
+ */
+internal fun isScopedCatalogQuery(
+    searchQuery: String,
+    sortId: String,
+    filterIds: List<String>,
+): Boolean = searchQuery.isNotBlank() || filterIds.isNotEmpty() || sortId != CATALOG_SORT_DEFAULT
+
+/** Identifies the catalogue cache entry a query reads from. Filters sort to match the store's key. */
+internal data class CatalogCacheKey(
+    val userId: String,
+    val baseUrl: String,
+    val searchQuery: String,
+    val sortId: String,
+    val filterIds: List<String>,
+) {
+    companion object {
+        fun of(
+            userId: String,
+            baseUrl: String,
+            searchQuery: String,
+            sortId: String,
+            filterIds: List<String>,
+        ): CatalogCacheKey = CatalogCacheKey(userId, baseUrl, searchQuery, sortId, filterIds.sorted())
+    }
+}
+
+internal class CatalogCacheSnapshot(
+    val key: CatalogCacheKey,
+    val main: List<GameInfo>?,
+    val library: List<GameInfo>?,
+    val catalog: CatalogBrowseResult?,
+    val newlyAdded: CatalogBrowseResult? = null,
+)
+
+internal fun isNewlyAddedCatalogQuery(
+    searchQuery: String,
+    sortId: String,
+    filterIds: List<String>,
+): Boolean = searchQuery.isBlank() &&
+    filterIds.isEmpty() &&
+    catalogSortKind(sortId) == CatalogSortKind.NewlyAdded
+
+/** The games a primed snapshot can put on the Store grid, or empty when it has nothing usable. */
+internal fun primedStoreGames(snapshot: CatalogCacheSnapshot): List<GameInfo> {
+    snapshot.catalog?.let { return it.games }
+    val scoped = isScopedCatalogQuery(snapshot.key.searchQuery, snapshot.key.sortId, snapshot.key.filterIds)
+    return if (scoped) emptyList() else snapshot.main.orEmpty()
+}
+
+internal fun catalogStillLoadingAfterCache(
+    hasGamesToShow: Boolean,
+    keepRefreshVisible: Boolean,
+): Boolean = !hasGamesToShow || keepRefreshVisible
+
+internal fun shouldRetryCatalogLoad(
+    signedIn: Boolean,
+    loadAttempted: Boolean,
+    hasGames: Boolean,
+    loadInFlight: Boolean,
+    streamActive: Boolean,
+): Boolean = signedIn && loadAttempted && !hasGames && !loadInFlight && !streamActive
+
 internal fun OpenNowUiState.isNativeStreamReady(): Boolean =
     streamStatus in setOf("connecting", "streaming") &&
         streamSession?.isReadyForStream() == true
@@ -228,6 +344,16 @@ internal fun catalogPageLimit(androidTvProfile: Boolean, filterIds: List<String>
     CATALOG_FILTER_TOUCHSCREEN in filterIds -> MAX_CATALOG_REQUEST_PAGES
     else -> 3
 }
+
+private fun List<GameInfo>.withHydratedGameDetails(details: GameInfo): List<GameInfo> {
+    val detailsKey = gameTrackingKey(details)
+    return map { game ->
+        if (gameTrackingKey(game) == detailsKey) mergeGameInfo(game, details) else game
+    }
+}
+
+internal fun shouldHydrateGameDetails(game: GameInfo): Boolean =
+    game.genres.isEmpty() && !game.uuid.isNullOrBlank()
 
 class OpenNowViewModel(application: Application) : AndroidViewModel(application) {
     private val openNowApplication = application as OpenNowApplication
@@ -271,6 +397,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var lastSessionReportNetworkSampleAtMs: Long = 0L
     private var sessionReportFinalizedForStop: Boolean = false
     private var deviceRecommendation: AndroidDeviceRecommendation? = null
+    /**
+     * Completes when the codec probe has landed.
+     *
+     * The probe is no longer on the path to first paint, so anything that depends on device
+     * capability — only stream launch does — waits on this instead of on startup order.
+     */
+    private val deviceCapabilityProbe = CompletableDeferred<Unit>()
     private val settingsDiagnosticTapTracker = RapidTapTracker()
     private val loginIconTapTracker = RapidTapTracker()
     private val streamSessionRecoveryTracker = StreamSessionRecoveryTracker()
@@ -314,6 +447,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     val state: StateFlow<OpenNowUiState> = _state.asStateFlow()
 
     private var gamesJob: Job? = null
+    private var gameDetailsJob: Job? = null
     private var launchJob: Job? = null
     private var activeSubscriptionJob: Job? = null
     private var pendingActiveSessionLaunch: PendingActiveSessionLaunch? = null
@@ -324,6 +458,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var bugReportUpdateCheckActive: Boolean = false
     private var settingsRefreshJob: Job? = null
     private var authRefreshJob: Job? = null
+    private var catalogRetryJob: Job? = null
+    /** Handed to [refreshAfterAuth] so startup parses the cache once, not twice. */
+    @Volatile
+    private var primedCatalogCache: CatalogCacheSnapshot? = null
+    private var catalogRetryAttempt = 0
+    /** False until the first fetch has been asked for; see [shouldRetryCatalogLoad]. */
+    private var catalogLoadAttempted = false
 
     init {
         viewModelScope.launch {
@@ -398,6 +539,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             startAndroidUpdateAutoChecks()
         }
         startDiagnosticSnapshotPersistence()
+        primeCatalogFromCache()
+        startDeviceCapabilityProbe()
         initialize()
     }
 
@@ -494,10 +637,99 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             AppLaunchPage.Library -> AppPage.Library
         }
 
-    fun initialize() {
+    /**
+     * Paints the last known catalogue before any network work begins.
+     *
+     * The cache was only opened inside [refreshAfterAuth], which sits behind a codec probe, a token
+     * restore and a provider fetch — two network round trips. That left a complete, warm catalogue
+     * sitting on disk while the reader watched a skeleton for ten seconds, for no reason: the cache
+     * key needs nothing but the session already on disk, so this runs concurrently with startup
+     * rather than after it.
+     */
+    private fun primeCatalogFromCache() {
+        val session = initialAuthSession ?: return
         viewModelScope.launch {
-            val codecReport = withContext(Dispatchers.Default) {
-                CodecProbe.report(getApplication())
+            val key = CatalogCacheKey.of(
+                userId = session.user.userId,
+                baseUrl = effectiveStreamingBaseUrl(session),
+                searchQuery = state.value.catalogSearch,
+                sortId = state.value.catalogSortId,
+                filterIds = state.value.catalogFilterIds,
+            )
+            val snapshot = withContext(Dispatchers.IO) {
+                runCatching {
+                    CatalogCacheSnapshot(
+                        key = key,
+                        main = catalogCacheStore.loadMainGames(key.userId, key.baseUrl),
+                        library = catalogCacheStore.loadLibraryGames(key.userId, key.baseUrl),
+                        catalog = catalogCacheStore.loadCatalog(
+                            userId = key.userId,
+                            providerStreamingBaseUrl = key.baseUrl,
+                            searchQuery = key.searchQuery,
+                            sortId = key.sortId,
+                            filterIds = key.filterIds,
+                        ),
+                        newlyAdded = if (androidTvProfile) null else catalogCacheStore.loadCatalog(
+                            userId = key.userId,
+                            providerStreamingBaseUrl = key.baseUrl,
+                            searchQuery = "",
+                            sortId = NEWLY_ADDED_CATALOG_SORT_ID,
+                            filterIds = emptyList(),
+                        ),
+                    )
+                }.getOrNull()
+            } ?: return@launch
+            primedCatalogCache = snapshot
+            applyPrimedCatalogCache(snapshot)
+        }
+    }
+
+    private fun applyPrimedCatalogCache(snapshot: CatalogCacheSnapshot) {
+        val storeGames = primedStoreGames(snapshot)
+        val libraryGames = snapshot.library.orEmpty()
+        val newlyAddedGames = snapshot.newlyAdded?.games.orEmpty()
+        if (storeGames.isEmpty() && libraryGames.isEmpty() && newlyAddedGames.isEmpty()) return
+        var applied = false
+        _state.update { current ->
+            // The live fetch always wins. This only fills a screen that is still blank, so a slow
+            // disk read can never overwrite results that arrived while it was parsing.
+            if (current.hasLoadedCatalogGames()) return@update current
+            applied = true
+            current.copy(
+                games = storeGames,
+                newlyAddedGames = newlyAddedGames.ifEmpty { current.newlyAddedGames },
+                catalogResult = snapshot.catalog ?: current.catalogResult,
+                libraryGames = libraryGames.ifEmpty { current.libraryGames },
+                // A refresh is still on its way; the pull-to-refresh indicator should say so.
+                loadingGames = true,
+                error = null,
+            )
+        }
+        if (applied) {
+            recordDebugEvent(
+                "catalog",
+                "Primed catalog from cache store=${storeGames.size} library=${libraryGames.size}",
+            )
+        }
+    }
+
+    /**
+     * Probes decoder capability, off the path to first paint.
+     *
+     * [CodecProbe.report] calls `WebRtcRuntime.ensureInitialized`, which loads the multi-megabyte
+     * WebRTC native library and stands up a PeerConnectionFactory. Running that before clearing
+     * `initializing` meant every cold start paid for the streaming engine before it could draw a
+     * catalogue — work that only matters once a stream is actually launched.
+     */
+    private fun startDeviceCapabilityProbe() {
+        viewModelScope.launch {
+            val codecReport = runCatching {
+                withContext(Dispatchers.Default) { CodecProbe.report(getApplication()) }
+            }.getOrElse { error ->
+                recordDebugEvent("codec", "Codec probe failed error=${error.debugMessage()}")
+                // Leave the report null: every consumer already treats that as "not probed".
+                deviceCapabilityProbe.complete(Unit)
+                return@launch
             }
             val recommendation = recommendedAndroidStreamProfile(getApplication(), codecReport)
             deviceRecommendation = recommendation
@@ -520,9 +752,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     codecReport = codecReport,
                     recommendedStreamSettings = recommendation.stream,
                     settings = settingsStore.settings.value,
-                    initializing = false,
                 )
             }
+            deviceCapabilityProbe.complete(Unit)
+        }
+    }
+
+    /** Stream launch is the only caller: it must not pick a profile before the device is known. */
+    private suspend fun awaitDeviceCapabilityProbe() {
+        if (deviceCapabilityProbe.isCompleted) return
+        recordDebugEvent("codec", "Waiting on codec probe before launch")
+        deviceCapabilityProbe.await()
+    }
+
+    fun initialize() {
+        viewModelScope.launch {
+            // Nothing here touches the streaming engine, so the catalogue can paint immediately.
+            _state.update { it.copy(initializing = false) }
             val restoreResult = restoreAuthSession()
             val providers = runCatching { authRepository.loginProviders() }.getOrDefault(listOf(defaultProvider()))
             val restored = restoreResult.getOrNull()
@@ -537,7 +783,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     savedAccounts = authStore.state.value.sessions.map { session -> session.toSavedAccount() },
                     initializing = false,
                     launchPhase = "",
-                    loadingGames = if (activeSession == null) false else it.loadingGames,
+                    // refreshAfterAuth runs on the next line, so the Store is about to load. Carrying
+                    // a stale false in here renders the empty state over a fetch that is starting.
+                    loadingGames = activeSession != null,
                     games = if (activeSession == null) emptyList() else it.games,
                     libraryGames = if (activeSession == null) emptyList() else it.libraryGames,
                     catalogResult = if (activeSession == null) CatalogBrowseResult(emptyList()) else it.catalogResult,
@@ -564,10 +812,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-    fun refreshAuthSessionIfNeeded() {
-        if (authRefreshJob?.isActive == true) return
-        val expectedUserId = state.value.authSession?.user?.userId ?: return
-        authRefreshJob = viewModelScope.launch {
+    /** Returns the in-flight refresh so a caller can wait for a fresh token before retrying. */
+    fun refreshAuthSessionIfNeeded(): Job? {
+        authRefreshJob?.takeIf { it.isActive }?.let { return it }
+        val expectedUserId = state.value.authSession?.user?.userId ?: return null
+        val job = viewModelScope.launch {
             try {
                 val result = restoreAuthSession(throwOnRefreshFailure = true)
                 val refreshed = result.getOrNull()
@@ -594,6 +843,71 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             } finally {
                 authRefreshJob = null
             }
+        }
+        authRefreshJob = job
+        return job
+    }
+
+    /**
+     * Called when the app comes back to the foreground.
+     *
+     * Two things can leave a signed-in reader looking at an empty Store: the one startup fetch
+     * failed and its retry ladder ran out, or the process was frozen long enough for its tokens to
+     * go stale — and the only in-process token refresh is a 15-minute WorkManager job. Returning to
+     * the app is the natural moment to repair both.
+     */
+    fun onAppForegrounded() {
+        val snapshot = state.value
+        if (snapshot.authSession == null) return
+        // A fresh visit re-arms the ladder that the last run of failures exhausted.
+        catalogRetryAttempt = 0
+        if (
+            !shouldRetryCatalogLoad(
+                signedIn = true,
+                loadAttempted = catalogLoadAttempted,
+                hasGames = snapshot.hasLoadedCatalogGames(),
+                loadInFlight = gamesJob?.isActive == true,
+                streamActive = snapshot.isAndroidUpdateCheckBlockedByStream(),
+            )
+        ) {
+            return
+        }
+        recordDebugEvent("catalog", "Reloading empty catalog after returning to the foreground")
+        startCatalogRecovery(delayMs = 0L)
+    }
+
+    private fun scheduleCatalogRetry() {
+        if (catalogRetryAttempt >= CATALOG_RETRY_MAX_ATTEMPTS) {
+            recordDebugEvent("catalog", "Catalog retries exhausted after $catalogRetryAttempt attempts")
+            return
+        }
+        val delayMs = catalogRetryDelayMs(catalogRetryAttempt)
+        catalogRetryAttempt += 1
+        recordDebugEvent("catalog", "Scheduling catalog retry attempt=$catalogRetryAttempt inMs=$delayMs")
+        startCatalogRecovery(delayMs)
+    }
+
+    private fun startCatalogRecovery(delayMs: Long) {
+        catalogRetryJob?.cancel()
+        catalogRetryJob = viewModelScope.launch {
+            if (delayMs > 0L) delay(delayMs)
+            // An expired token is the likeliest reason the previous attempt failed, and retrying
+            // the catalogue with the same dead token would only burn an attempt.
+            refreshAuthSessionIfNeeded()?.join()
+            val snapshot = state.value
+            val session = snapshot.authSession ?: return@launch
+            if (
+                !shouldRetryCatalogLoad(
+                    signedIn = true,
+                    loadAttempted = catalogLoadAttempted,
+                    hasGames = snapshot.hasLoadedCatalogGames(),
+                    loadInFlight = gamesJob?.isActive == true,
+                    streamActive = snapshot.isAndroidUpdateCheckBlockedByStream(),
+                )
+            ) {
+                return@launch
+            }
+            refreshAfterAuth(session)
         }
     }
 
@@ -823,6 +1137,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun forgetLocalTvConnector() {
         localTvConnector.forgetPhoneTarget()
+    }
+
+    fun discoverLocalTvs() {
+        if (state.value.androidTvProfile) return
+        localTvConnector.discoverTvs()
+    }
+
+    fun pairDiscoveredLocalTv(tv: DiscoveredLocalTv, code: String) {
+        if (state.value.androidTvProfile) return
+        localTvConnector.pairDiscoveredTv(tv, code)
+    }
+
+    fun pairLocalTvQrValue(value: String?) {
+        if (state.value.androidTvProfile) return
+        val uri = value?.trim()?.takeIf(String::isNotBlank)?.let(Uri::parse)
+        if (!localTvConnector.isPairUri(uri) || uri == null) {
+            localTvConnector.reportPairingError("That QR code is not an OpenNOW TV pairing code")
+            return
+        }
+        localTvConnector.pairPhone(uri)
     }
 
     fun playOnLocalTv(game: GameInfo) {
@@ -1212,6 +1546,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     loadingAccountConnectors = false,
                     connectorActionStore = null,
                     games = emptyList(),
+                    newlyAddedGames = emptyList(),
                     libraryGames = emptyList(),
                     libraryFilterIds = emptyList(),
                     streamSession = null,
@@ -1262,6 +1597,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             loadingAccountConnectors = false,
                             connectorActionStore = null,
                             games = emptyList(),
+                            newlyAddedGames = emptyList(),
                             libraryGames = emptyList(),
                             catalogResult = CatalogBrowseResult(emptyList()),
                             libraryFilterIds = emptyList(),
@@ -1286,6 +1622,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         loadingAccountConnectors = false,
                         connectorActionStore = null,
                         games = emptyList(),
+                        newlyAddedGames = emptyList(),
                         libraryGames = emptyList(),
                         catalogResult = CatalogBrowseResult(emptyList()),
                         libraryFilterIds = emptyList(),
@@ -1330,6 +1667,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 loadingAccountConnectors = false,
                 connectorActionStore = null,
                 games = emptyList(),
+                newlyAddedGames = emptyList(),
                 libraryGames = emptyList(),
                 libraryFilterIds = emptyList(),
                 catalogQueryLoading = false,
@@ -1346,6 +1684,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun refreshGames() {
         val session = state.value.authSession ?: return
+        catalogRetryJob?.cancel()
+        catalogRetryAttempt = 0
         viewModelScope.launch {
             refreshAfterAuth(session, keepRefreshVisibleWithCache = true)
         }
@@ -1417,6 +1757,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectGame(game: GameInfo) {
+        gameDetailsJob?.cancel()
         _state.update { it.copy(selectedGame = game) }
         OpenNowAnalytics.capture(
             event = "game_selected",
@@ -1425,9 +1766,46 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 "game_title" to game.title,
             ),
         )
+        if (!shouldHydrateGameDetails(game)) return
+        val auth = state.value.authSession ?: return
+        val selectedKey = gameTrackingKey(game)
+        gameDetailsJob = viewModelScope.launch {
+            val details = try {
+                withContext(Dispatchers.IO) {
+                    catalogRepository.hydrateGameDetails(
+                        token = auth.tokens.idToken ?: auth.tokens.accessToken,
+                        providerStreamingBaseUrl = effectiveStreamingBaseUrl(auth),
+                        game = game,
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                recordDebugEvent("catalog", "Game detail metadata failed title=${game.title} error=${error.debugMessage()}")
+                return@launch
+            }
+            _state.update { current ->
+                val selected = current.selectedGame
+                if (selected == null || gameTrackingKey(selected) != selectedKey) {
+                    current
+                } else {
+                    current.copy(
+                        selectedGame = mergeGameInfo(selected, details),
+                        games = current.games.withHydratedGameDetails(details),
+                        newlyAddedGames = current.newlyAddedGames.withHydratedGameDetails(details),
+                        libraryGames = current.libraryGames.withHydratedGameDetails(details),
+                        catalogResult = current.catalogResult.copy(
+                            games = current.catalogResult.games.withHydratedGameDetails(details),
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     fun clearSelectedGame() {
+        gameDetailsJob?.cancel()
+        gameDetailsJob = null
         _state.update { it.copy(selectedGame = null) }
     }
 
@@ -1448,6 +1826,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         settingsStore.update { current ->
             current.copy(localAppPackageNames = current.localAppPackageNames - packageName)
         }
+    }
+
+    fun setLocalAppsCollapsed(collapsed: Boolean) {
+        settingsStore.update { current -> current.copy(localAppsCollapsed = collapsed) }
     }
 
     fun checkAndroidUpdate() {
@@ -1755,6 +2137,30 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun dismissMembershipNotice() {
+        _state.update { it.copy(pendingMembershipNotice = null) }
+    }
+
+    /** Launches anyway. The warning informs; it does not decide for the player. */
+    fun continuePastMembershipNotice() {
+        val pending = state.value.pendingMembershipNotice ?: return
+        _state.update { it.copy(pendingMembershipNotice = null) }
+        OpenNowAnalytics.capture(
+            event = "membership_gate_overridden",
+            properties = mapOf(
+                "game_id" to pending.game.id,
+                "required_plan" to pending.requirement.requiredPlanLabel,
+            ),
+        )
+        play(
+            game = pending.game,
+            streamingBaseUrlOverride = pending.streamingBaseUrlOverride,
+            skipPrintedWaste = pending.skipPrintedWaste,
+            skipStoreChoice = pending.skipStoreChoice,
+            skipMembershipNotice = true,
+        )
+    }
+
     fun dismissStoreChoice() {
         _state.update { it.copy(pendingStoreChoiceGame = null) }
     }
@@ -1773,10 +2179,54 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         play(game.withSelectedVariant(variant.id), skipStoreChoice = true)
     }
 
-    fun play(game: GameInfo, streamingBaseUrlOverride: String? = null, skipPrintedWaste: Boolean = false, skipStoreChoice: Boolean = false) {
+    fun play(
+        game: GameInfo,
+        streamingBaseUrlOverride: String? = null,
+        skipPrintedWaste: Boolean = false,
+        skipStoreChoice: Boolean = false,
+        skipMembershipNotice: Boolean = false,
+    ) {
         if (launchJob?.isActive == true) {
             recordDebugEvent("launch", "Ignored play request while another launch is active game=${game.title}")
             return
+        }
+        // Warn before launching rather than after: GFN accepts the session and then fails, or
+        // silently downgrades, and from the player's side that is indistinguishable from a bug.
+        if (!skipMembershipNotice) {
+            val requirement = gameMembershipRequirement(
+                game = game,
+                subscriptionInfo = state.value.subscriptionInfo,
+                fallbackMembershipTier = state.value.authSession?.user?.membershipTier,
+            )
+            if (requirement != null) {
+                recordDebugEvent(
+                    "launch",
+                    "Membership gate game=${game.title} requires=${requirement.requiredPlanLabel} " +
+                        "current=${requirement.currentPlanLabel}",
+                )
+                OpenNowAnalytics.capture(
+                    event = "membership_gate_shown",
+                    properties = mapOf(
+                        "game_id" to game.id,
+                        "required_plan" to requirement.requiredPlanLabel,
+                        "current_plan" to requirement.currentPlanLabel,
+                    ),
+                )
+                _state.update {
+                    it.copy(
+                        pendingMembershipNotice = PendingMembershipNotice(
+                            game = game,
+                            requirement = requirement,
+                            streamingBaseUrlOverride = streamingBaseUrlOverride,
+                            skipPrintedWaste = skipPrintedWaste,
+                            skipStoreChoice = skipStoreChoice,
+                        ),
+                        selectedGame = null,
+                        error = null,
+                    )
+                }
+                return
+            }
         }
         if (!skipStoreChoice) {
             val launchVariants = launchableGameVariants(game.variants)
@@ -1792,7 +2242,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     ),
                     Toast.LENGTH_SHORT,
                 ).show()
-                play(game.withSelectedVariant(defaultVariant.id), streamingBaseUrlOverride, skipPrintedWaste, skipStoreChoice = true)
+                play(
+                    game.withSelectedVariant(defaultVariant.id),
+                    streamingBaseUrlOverride,
+                    skipPrintedWaste,
+                    skipStoreChoice = true,
+                    skipMembershipNotice = true,
+                )
                 return
             }
             if (launchVariants.size > 1) {
@@ -1814,6 +2270,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 showPrintedWasteSelector(game)
                 return@launch
             }
+            awaitDeviceCapabilityProbe()
             val requestedSettings = streamSettingsBeforeDeviceAdjustment()
             val deviceAdjustedSettings = requestedSettings.adjustedForDevice(state.value.codecReport)
             val launchNetwork = AndroidRuntimeDiagnostics.networkSnapshot(getApplication())
@@ -1841,6 +2298,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val baseUrl = streamingBaseUrlOverride ?: effectiveStreamingBaseUrl()
+            val manuallySelectedServer = manuallySelectedServerForReport(
+                streamingBaseUrlOverride = streamingBaseUrlOverride,
+                configuredRegion = requestedSettings.region,
+            )
             pendingActiveSessionLaunch = null
             recordDebugEvent(
                 "launch",
@@ -1862,6 +2323,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     streamStatus = "queue",
                     launchPhase = "Resolving game",
                     streamGame = game,
+                    manuallySelectedServerForReport = manuallySelectedServer,
                     activeStreamSettings = settings,
                     selectedGame = null,
                     page = AppPage.Stream,
@@ -2537,6 +2999,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     val reportSession = state.value.streamSession
                         ?.takeIf { it.sessionId == session.sessionId }
                         ?: session
+                    if (isTerminalAction) {
+                        val nextAdId = nextSessionAdId(reportSession.adState, adId)
+                        _state.update { current ->
+                            val currentSession = current.streamSession
+                            if (currentSession?.sessionId == reportSession.sessionId) {
+                                current.copy(
+                                    streamSession = removeSessionAdItem(currentSession, adId),
+                                    queueAdActiveId = nextAdId,
+                                )
+                            } else {
+                                current
+                            }
+                        }
+                    }
                     sessionRepository.reportSessionAd(
                         token = auth.tokens.idToken ?: auth.tokens.accessToken,
                         session = reportSession,
@@ -2553,19 +3029,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 recordDebugEvent("ad", "Report accepted action=$normalizedAction updated=${updated.debugSummary()}")
                 _state.update { current ->
                     val previous = current.streamSession?.takeIf { it.sessionId == updated.sessionId } ?: session
-                    val merged = mergeQueueSessionState(
-                        previous,
-                        updated,
-                        preserveMissingAdState = !isTerminalAction,
+                    val merged = mergeQueueAdReportResult(
+                        previous = previous,
+                        updated = updated,
+                        adId = adId,
+                        terminalAction = isTerminalAction,
                     )
                     current.copy(
                         streamSession = merged,
                         queuePosition = queueDisplayPosition(merged),
-                        queueAdActiveId = if (isTerminalAction) {
-                            nextSessionAdId(merged.adState, adId) ?: adId
-                        } else {
-                            chooseQueueAdActiveId(current.queueAdActiveId, merged)
-                        },
+                        queueAdActiveId = chooseQueueAdActiveId(current.queueAdActiveId, merged),
                     )
                 }
             }.onFailure { error ->
@@ -3147,13 +3620,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun refreshAfterAuth(session: AuthSession, keepRefreshVisibleWithCache: Boolean = false) {
+        catalogLoadAttempted = true
         _state.update { it.copy(loadingGames = true, error = null) }
         val baseUrl = effectiveStreamingBaseUrl(session)
         val token = session.tokens.idToken ?: session.tokens.accessToken
         val initialCatalogSearch = state.value.catalogSearch
         val initialCatalogSortId = state.value.catalogSortId
         val initialCatalogFilterIds = state.value.catalogFilterIds
-        val (cachedMain, cachedLibrary, unboundedCachedCatalog) = withContext(Dispatchers.IO) {
+        val cacheKey = CatalogCacheKey.of(
+            userId = session.user.userId,
+            baseUrl = baseUrl,
+            searchQuery = initialCatalogSearch,
+            sortId = initialCatalogSortId,
+            filterIds = initialCatalogFilterIds,
+        )
+        // One-shot: startup already parsed these, and after this the network result is authoritative.
+        val primed = primedCatalogCache?.takeIf { it.key == cacheKey }
+        primedCatalogCache = null
+        val (cachedMain, cachedLibrary, unboundedCachedCatalog) = primed?.let {
+            Triple(it.main, it.library, it.catalog)
+        } ?: withContext(Dispatchers.IO) {
             Triple(
                 catalogCacheStore.loadMainGames(session.user.userId, baseUrl),
                 catalogCacheStore.loadLibraryGames(session.user.userId, baseUrl),
@@ -3171,11 +3657,22 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         } else {
             unboundedCachedCatalog
         }
+        val cachedNewlyAdded = if (androidTvProfile) {
+            null
+        } else {
+            primed?.newlyAdded ?: withContext(Dispatchers.IO) {
+                catalogCacheStore.loadCatalog(
+                    userId = session.user.userId,
+                    providerStreamingBaseUrl = baseUrl,
+                    searchQuery = "",
+                    sortId = NEWLY_ADDED_CATALOG_SORT_ID,
+                    filterIds = emptyList(),
+                )
+            }
+        }
         val hasScopedCatalogQuery =
-            initialCatalogSearch.isNotBlank() ||
-                initialCatalogFilterIds.isNotEmpty() ||
-                initialCatalogSortId != "relevance"
-        if (cachedMain != null || cachedLibrary != null || cachedCatalog != null) {
+            isScopedCatalogQuery(initialCatalogSearch, initialCatalogSortId, initialCatalogFilterIds)
+        if (cachedMain != null || cachedLibrary != null || cachedCatalog != null || cachedNewlyAdded != null) {
             val cachedMergedLibrary = withContext(Dispatchers.Default) {
                 mergeKnownLibraryGames(
                     cachedLibrary.orEmpty(),
@@ -3184,24 +3681,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             _state.update {
+                val nextGames = cachedCatalog?.games ?: if (hasScopedCatalogQuery) {
+                    emptyList()
+                } else {
+                    it.games.ifEmpty { cachedMain.orEmpty() }
+                }
+                val nextCatalogResult = cachedCatalog ?: if (hasScopedCatalogQuery) {
+                    it.catalogResult.copy(games = emptyList())
+                } else {
+                    it.catalogResult
+                }
+                // The Store grid renders from these two and nothing else, so a warm library cache
+                // is not a reason to tell the reader the load has finished.
+                val hasGamesToShow = nextGames.isNotEmpty() || nextCatalogResult.games.isNotEmpty()
                 it.copy(
-                    games = cachedCatalog?.games ?: if (hasScopedCatalogQuery) {
-                        emptyList()
-                    } else {
-                        it.games.ifEmpty { cachedMain.orEmpty() }
-                    },
+                    games = nextGames,
+                    newlyAddedGames = cachedNewlyAdded?.games?.ifEmpty { it.newlyAddedGames } ?: it.newlyAddedGames,
                     libraryGames = cachedMergedLibrary.ifEmpty { cachedLibrary ?: it.libraryGames },
-                    catalogResult = cachedCatalog ?: if (hasScopedCatalogQuery) {
-                        it.catalogResult.copy(games = emptyList())
-                    } else {
-                        it.catalogResult
-                    },
-                    loadingGames = if (hasScopedCatalogQuery && cachedCatalog == null) {
-                        true
-                    } else {
-                        keepRefreshVisibleWithCache
-                    },
-                    catalogQueryLoading = hasScopedCatalogQuery && cachedCatalog == null,
+                    catalogResult = nextCatalogResult,
+                    loadingGames = catalogStillLoadingAfterCache(hasGamesToShow, keepRefreshVisibleWithCache),
+                    catalogQueryLoading = !hasGamesToShow,
                     error = null,
                 )
             }
@@ -3297,6 +3796,41 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             }
                     }
                     val catalog = catalogDeferred.await()
+                    val newlyAddedCatalog = when {
+                        androidTvProfile -> null
+                        isNewlyAddedCatalogQuery(
+                            searchQuery = initialCatalogSearch,
+                            sortId = initialCatalogSortId,
+                            filterIds = initialCatalogFilterIds,
+                        ) -> catalog
+                        else -> try {
+                            withContext(Dispatchers.IO) {
+                                catalogRepository.browseCatalog(
+                                    token = token,
+                                    providerStreamingBaseUrl = baseUrl,
+                                    searchQuery = "",
+                                    sortId = NEWLY_ADDED_CATALOG_SORT_ID,
+                                    filterIds = emptyList(),
+                                    maxPages = 1,
+                                    includeSupplementalPublicVariants = false,
+                                )
+                            }
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            recordDebugEvent("catalog", "Newly added hero refresh failed error=${error.debugMessage()}")
+                            cachedNewlyAdded
+                        }
+                    }
+                    newlyAddedCatalog?.let { newest ->
+                        _state.update { current ->
+                            if (current.authSession?.user?.userId == session.user.userId) {
+                                current.copy(newlyAddedGames = newest.games)
+                            } else {
+                                current
+                            }
+                        }
+                    }
                     val main = mainDeferred?.await() ?: catalog.games
                     val library = libraryDeferred.await()
                     val mergedLibrary = withContext(Dispatchers.Default) {
@@ -3319,10 +3853,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             filterIds = initialCatalogFilterIds,
                             result = catalog,
                         )
+                        newlyAddedCatalog?.let { newest ->
+                            catalogCacheStore.saveCatalog(
+                                userId = session.user.userId,
+                                providerStreamingBaseUrl = baseUrl,
+                                searchQuery = "",
+                                sortId = NEWLY_ADDED_CATALOG_SORT_ID,
+                                filterIds = emptyList(),
+                                result = newest,
+                            )
+                        }
                     }
-                    Triple(main, mergedLibrary, catalog)
+                    Triple(mergedLibrary, catalog, newlyAddedCatalog)
                 }
-            }.onSuccess { (_, library, catalog) ->
+            }.onSuccess { (library, catalog, newlyAddedCatalog) ->
                 _state.update { current ->
                     if (
                         current.authSession?.user?.userId == session.user.userId &&
@@ -3334,6 +3878,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             // The browse result owns catalogue order and filtering. MainV2 is
                             // supplemental metadata and must never replace a user-sorted page.
                             games = catalog.games,
+                            newlyAddedGames = newlyAddedCatalog?.games ?: current.newlyAddedGames,
                             libraryGames = library,
                             catalogResult = catalog,
                             loadingGames = false,
@@ -3344,6 +3889,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         current
                     }
                 }
+                catalogRetryJob?.cancel()
+                catalogRetryAttempt = 0
                 refreshActiveSession()
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
@@ -3361,6 +3908,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         error = if (hasUsableGames) null else error.message ?: "Failed to load games",
                     )
                 }
+                recordDebugEvent("catalog", "Catalog load failed error=${error.debugMessage()}")
+                // An empty Store with an error on it used to be terminal until someone pulled to
+                // refresh. Nothing else in the app ever asks again.
+                if (!state.value.hasLoadedCatalogGames()) {
+                    scheduleCatalogRetry()
+                }
             }
         }
         subscriptionJob.join()
@@ -3376,6 +3929,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val searchQuery = state.value.catalogSearch
             val sortId = state.value.catalogSortId
             val filterIds = state.value.catalogFilterIds
+            val newlyAddedQuery = isNewlyAddedCatalogQuery(searchQuery, sortId, filterIds)
             val unboundedCachedCatalog = withContext(Dispatchers.IO) {
                 catalogCacheStore.loadCatalog(
                     userId = auth.user.userId,
@@ -3396,9 +3950,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     current.catalogSortId == sortId &&
                     current.catalogFilterIds == filterIds
                 ) {
+                    // A cached result that exists but holds no games still leaves the grid blank.
+                    val hasGamesToShow = cachedCatalog?.games?.isNotEmpty() == true
                     current.copy(
-                        loadingGames = cachedCatalog == null,
-                        catalogQueryLoading = cachedCatalog == null,
+                        loadingGames = catalogStillLoadingAfterCache(hasGamesToShow, keepRefreshVisible = false),
+                        catalogQueryLoading = !hasGamesToShow,
                         catalogResult = cachedCatalog ?: current.catalogResult.copy(games = emptyList()),
                         games = cachedCatalog?.games ?: emptyList(),
                         error = null,
@@ -3435,6 +3991,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         filterIds = filterIds,
                         result = result,
                     )
+                    if (newlyAddedQuery && sortId != NEWLY_ADDED_CATALOG_SORT_ID) {
+                        catalogCacheStore.saveCatalog(
+                            userId = auth.user.userId,
+                            providerStreamingBaseUrl = baseUrl,
+                            searchQuery = "",
+                            sortId = NEWLY_ADDED_CATALOG_SORT_ID,
+                            filterIds = emptyList(),
+                            result = result,
+                        )
+                    }
                 }
                 _state.update {
                     if (
@@ -3444,6 +4010,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     ) {
                         it.copy(
                             catalogResult = result,
+                            newlyAddedGames = if (newlyAddedQuery) result.games else it.newlyAddedGames,
                             loadingGames = false,
                             catalogQueryLoading = false,
                             games = result.games,
@@ -3507,21 +4074,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 val queueData = queue.await()
                 val mappingData = mapping.await()
                 val regions = queueData
-                    .filter { (zoneId, _) -> isStandardPrintedWasteZoneId(zoneId) && mappingData[zoneId]?.nuked != true }
+                    .filter { (zoneId, _) -> isStandardPrintedWasteZone(zoneId) && mappingData[zoneId]?.nuked != true }
                     .map { (zoneId, _) ->
-                        StreamRegion(name = zoneId, url = printedWasteZoneUrlForId(zoneId), pingMs = null)
+                        StreamRegion(name = zoneId, url = printedWasteZoneUrl(zoneId), pingMs = null)
                     }
                 val pings = printedWasteRepository.pingRegions(regions).associate { it.url to it.pingMs }
                 Triple(queueData, mappingData, pings)
             }
         }.onSuccess { (queue, mapping, pings) ->
             val usableZones = queue
-                .filter { (zoneId, _) -> isStandardPrintedWasteZoneId(zoneId) && mapping[zoneId]?.nuked != true }
+                .filter { (zoneId, _) -> isStandardPrintedWasteZone(zoneId) && mapping[zoneId]?.nuked != true }
                 .keys
             val bestZone = usableZones
                 .mapNotNull { zoneId ->
                     val zone = queue[zoneId] ?: return@mapNotNull null
-                    val url = printedWasteZoneUrlForId(zoneId)
+                    val url = printedWasteZoneUrl(zoneId)
                     Triple(zoneId, zone.QueuePosition, pings[url])
                 }
                 .minWithOrNull(
@@ -3778,12 +4345,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         return host.isNotBlank() && !host.endsWith(".nvidiagrid.net", ignoreCase = true)
     }
 
-    private fun isStandardPrintedWasteZoneId(zoneId: String): Boolean =
-        zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-")
-
-    private fun printedWasteZoneUrlForId(zoneId: String): String =
-        "https://${zoneId.lowercase()}.cloudmatchbeta.nvidiagrid.net/"
-
     private fun chooseQueueAdActiveId(currentId: String?, session: SessionInfo?): String? {
         val ads = sessionAdItems(session?.adState)
         if (!isSessionAdsRequired(session?.adState) || ads.isEmpty()) return null
@@ -3939,7 +4500,7 @@ private fun Throwable.debugMessage(): String {
 }
 
 private fun StreamSettings.debugSummary(): String =
-    "res=$resolution aspect=$aspectRatio fps=$fps bitrate=$maxBitrateMbps codec=$codec color=${colorQuality.name} hdr=$hdrEnabled l4s=$enableL4S gsync=$enableCloudGsync sharp=$streamSharpeningEnabled"
+    "res=$resolution aspect=$aspectRatio fps=$fps bitrate=$maxBitrateMbps codec=$codec color=${colorQuality.name} hdr=$hdrEnabled l4s=$enableL4S sharp=$streamSharpeningEnabled"
 
 private fun StreamRuntimeStats.hasDebugValues(): Boolean =
     bitrateKbps != null ||
@@ -3977,11 +4538,11 @@ private fun ActiveSessionInfo.debugSummary(): String =
     "id=${shortDebugId()} app=$appId status=$status queue=${queuePosition ?: "-"} seat=${seatSetupStep ?: "-"} base=${hostForDebug(streamingBaseUrl)} server=${serverIp.orEmpty().take(80)} res=${resolution.orEmpty()} fps=${fps ?: 0}"
 
 private fun NegotiatedStreamProfile.debugSummary(): String =
-    "res=${resolution.orEmpty()} fps=${fps ?: 0} codec=${codec?.name.orEmpty()} color=${colorQuality?.name.orEmpty()} l4s=$enableL4S gsync=$enableCloudGsync reflex=$enableReflex"
+    "res=${resolution.orEmpty()} fps=${fps ?: 0} codec=${codec?.name.orEmpty()} color=${colorQuality?.name.orEmpty()} l4s=$enableL4S reflex=$enableReflex"
 
 private fun SessionMonitorSnapshot.debugSummary(): String =
     "requested=${requestedResolution.orEmpty()}@${requestedFps ?: 0} " +
         "returned=${returnedResolution.orEmpty()}@${returnedFps ?: 0} final=${finalSelectedResolution.orEmpty()}"
 
 private fun StreamingFeatures.debugSummary(): String =
-    "reflex=$reflex bitDepth=$bitDepth gsync=$cloudGsync chroma=$chromaFormat l4s=$enabledL4S hdr=$trueHdr"
+    "reflex=$reflex bitDepth=$bitDepth chroma=$chromaFormat l4s=$enabledL4S hdr=$trueHdr"

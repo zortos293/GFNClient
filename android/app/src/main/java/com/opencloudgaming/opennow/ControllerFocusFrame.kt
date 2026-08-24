@@ -43,6 +43,25 @@ internal fun shouldShowActiveSelectionOutline(
     enabled: Boolean,
 ): Boolean = selected && enabled
 
+internal fun shouldAnimateControllerFocusFrame(
+    absoluteCinemaEnabled: Boolean,
+    reduceMotion: Boolean,
+): Boolean = absoluteCinemaEnabled && !reduceMotion
+
+/**
+ * Catalog cards are borderless unless Absolute Cinema is active. Its accent-coloured base stroke
+ * sits under the animated sibling frame; every ordinary theme keeps the artwork edge clean.
+ */
+internal fun catalogCardBorderColor(
+    selectionColor: Color,
+    absoluteCinemaEnabled: Boolean,
+): Color = if (absoluteCinemaEnabled) selectionColor else Color.Transparent
+
+internal fun cinemaBorderColor(
+    absoluteCinemaEnabled: Boolean,
+    cinemaColor: Color,
+): Color = if (absoluteCinemaEnabled) cinemaColor else Color.Transparent
+
 private fun controllerFocusLoopProgress(progress: Float): Float {
     val clamped = progress.coerceIn(0f, 1f)
     return if (clamped >= 1f) 0f else clamped
@@ -75,13 +94,18 @@ internal fun BoxScope.ControllerFocusFrame(
     secondaryTint: Color? = null,
     verticalInset: Dp = 0.dp,
 ) {
-    if (!visible) return
-    val staticWhiteOutline = tint == Color.White && (secondaryTint == null || secondaryTint == Color.White)
-    if (staticWhiteOutline) {
+    // This component used to fall back to a solid white outline. Borders now belong exclusively
+    // to the opt-in Absolute Cinema mode.
+    if (!visible || !LocalAbsoluteCinemaEffects.current) return
+    val animateEnergy = shouldAnimateControllerFocusFrame(
+        absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current,
+        reduceMotion = LocalReduceMotion.current,
+    )
+    if (!animateEnergy) {
         Canvas(Modifier.matchParentSize()) {
             val insetPx = verticalInset.toPx().coerceIn(0f, size.height / 2f)
             drawRoundRect(
-                color = Color.White.copy(alpha = 0.96f),
+                color = (tint ?: Color.White).copy(alpha = 0.96f),
                 topLeft = Offset(0f, insetPx),
                 size = Size(size.width, (size.height - insetPx * 2f).coerceAtLeast(0f)),
                 cornerRadius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx()),
@@ -90,20 +114,15 @@ internal fun BoxScope.ControllerFocusFrame(
         }
         return
     }
-    val reduceMotion = LocalReduceMotion.current
-    val orbitProgress = if (reduceMotion) {
-        null
-    } else {
-        rememberInfiniteTransition(label = "controller-focus-energy").animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(ENERGY_ORBIT_DURATION_MS, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart,
-            ),
-            label = "controller-focus-energy-orbit",
-        ).value
-    }
+    val orbitProgress = rememberInfiniteTransition(label = "controller-focus-energy").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(ENERGY_ORBIT_DURATION_MS, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "controller-focus-energy-orbit",
+    ).value
 
     Canvas(Modifier.matchParentSize()) {
         // The path is centered on the parent's exact bounds. Callers place this Canvas beside the
@@ -116,7 +135,7 @@ internal fun BoxScope.ControllerFocusFrame(
             2f * (borderSize.width + borderSize.height - 4f * radius) +
                 2f * PI.toFloat() * radius
             ).coerceAtLeast(1f)
-        val progress = orbitProgress ?: 0f
+        val progress = orbitProgress
         val orbitPhase = controllerFocusOrbitPhasePx(progress, perimeter)
         val arcIntervals = floatArrayOf(perimeter * 0.44f, perimeter * 0.56f)
         val blueArc = PathEffect.dashPathEffect(arcIntervals, orbitPhase)
@@ -136,7 +155,7 @@ internal fun BoxScope.ControllerFocusFrame(
             ).toComposePathEffect(),
             fireArc,
         )
-        val flicker = orbitProgress?.let(::controllerFocusFlickerAlpha) ?: 0.9f
+        val flicker = controllerFocusFlickerAlpha(orbitProgress)
         val topLeft = Offset(0f, insetPx)
         val roundedCorner = CornerRadius(radius, radius)
 

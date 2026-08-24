@@ -302,6 +302,40 @@ class InputEncoder {
             return KeyboardPayload(vk, resolvedScanCode, modifiers, timestampUs)
         }
 
+        /**
+         * The character to send as text because the key path cannot reproduce it faithfully.
+         *
+         * Two cases, both of which silently lost symbols while letters kept working:
+         *
+         * 1. **No mapping.** Android emits dedicated keycodes for some symbols — `KEYCODE_AT`,
+         *    `KEYCODE_POUND`, `KEYCODE_STAR`, `KEYCODE_PLUS`, the numpad operators — and none of
+         *    them have a [fallbackScanCode]. With no hardware scancode to fall back on,
+         *    [mapKeyboardPayload] returned null and `dispatchKey` swallowed the key.
+         *
+         * 2. **An AltGr layer.** [virtualKey] translates a keycode to its *US-layout* virtual key
+         *    and ignores the character the reader actually typed. On a layout where `@` is AltGr+Q
+         *    that reaches the host as Ctrl+Alt+Q. Letters survive because they sit at the same
+         *    keycode on every Latin layout; symbols do not, which is exactly the shape of the bug.
+         *
+         * A US layout is unaffected: Android resolves no printable character while Ctrl is held, so
+         * game shortcuts like Ctrl+Alt+F keep going down the key path untouched.
+         */
+        internal fun keyboardTextFallbackChar(
+            unicodeChar: Int,
+            baseUnicodeChar: Int,
+            mapped: Boolean,
+            altGraph: Boolean,
+        ): Char? {
+            // Control characters have their own keycodes (Enter, Tab, Backspace) and must never be
+            // re-sent as text — the host would type a literal control byte instead of pressing them.
+            if (unicodeChar < 0x20 || unicodeChar == 0x7f) return null
+            if (unicodeChar > Char.MAX_VALUE.code) return null
+            val char = unicodeChar.toChar()
+            if (!mapped) return char
+            // A key that maps *and* whose character is unchanged by AltGr is already correct.
+            return char.takeIf { altGraph && unicodeChar != baseUnicodeChar }
+        }
+
         internal fun mapTextCharToKeySpec(char: Char): TextKeySpec? {
             val mapped = when (char) {
                 in 'a'..'z' -> textKeySpecFromAndroidKeyCode(KeyEvent.KEYCODE_A + (char - 'a'))

@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import androidx.activity.compose.BackHandler
 import android.content.res.Configuration
 import android.os.Build
 import androidx.compose.foundation.BorderStroke
@@ -772,4 +773,57 @@ private fun LoadingScreen(text: String) {
             Text(text, color = TextMuted)
         }
     }
+}
+
+/**
+ * Shown when Play is pressed on a game whose membership tier the account does not meet.
+ *
+ * Informational, not a block. GeForce NOW is the authority on entitlement and it can change under
+ * us — a new promotion, a plan that just renewed, a label the catalogue has wrong — so the launch
+ * stays one tap away. What the warning buys is that a refusal further down now has an explanation
+ * attached to it, instead of looking like OpenNOW failing to start the game.
+ */
+@Composable
+internal fun MembershipRequirementDialog(
+    notice: PendingMembershipNotice,
+    onCancel: () -> Unit,
+    onContinue: () -> Unit,
+) {
+    BackHandler(onBack = onCancel)
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = {
+            Text(
+                stringResource(R.string.membership_gate_title, notice.requirement.requiredPlanLabel),
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    stringResource(
+                        R.string.membership_gate_body,
+                        notice.game.title,
+                        notice.requirement.requiredPlanLabel,
+                        notice.requirement.currentPlanLabel,
+                    ),
+                )
+                Text(
+                    stringResource(R.string.membership_gate_hint),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onContinue) {
+                Text(stringResource(R.string.membership_gate_continue))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
 }

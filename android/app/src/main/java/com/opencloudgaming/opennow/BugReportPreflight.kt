@@ -52,6 +52,7 @@ internal data class BugReportPreflightEvidence(
     val codecReport: RuntimeCodecReport? = null,
     val androidTvProfile: Boolean = false,
     val serverZone: String? = null,
+    val manuallySelectedServer: Boolean = false,
     val inputDiagnostics: String = "",
 )
 
@@ -106,6 +107,7 @@ internal fun buildBugReportPreflightDeck(
                     packetLossPct = packetLossPct,
                     jitterMs = averageJitterMs,
                     serverZone = evidence.serverZone,
+                    manuallySelectedServer = evidence.manuallySelectedServer,
                     recommendations = networkRecommendations,
                 ),
             )
@@ -154,6 +156,7 @@ private fun buildConnectionPreflightCard(
     packetLossPct: Double?,
     jitterMs: Double?,
     serverZone: String?,
+    manuallySelectedServer: Boolean,
     recommendations: List<SessionReportFinding>,
 ): BugReportPreflightCard {
     val facts = buildList {
@@ -173,8 +176,22 @@ private fun buildConnectionPreflightCard(
         }
         downstreamKbps?.takeIf { it > 0 }?.let { add("~${formatPreflightMbps(it)} Mbps link") }
         serverZone?.trim()?.takeIf { it.isNotEmpty() }?.let { add("Server $it") }
+        if (manuallySelectedServer) add("Manual server selection")
     }
-    val warningRecommendations = recommendations.filter { it.kind == SessionReportFindingKind.Warning }
+    val warningRecommendations = buildList {
+        if (manuallySelectedServer) {
+            add(
+                SessionReportFinding(
+                    title = MANUAL_SERVER_SELECTION_ACTION_TITLE,
+                    detail =
+                        "Switch Region to Auto, start a new cloud session, and reproduce the issue. " +
+                            "Reports captured while a server is manually selected may not be investigated because the selected route can cause the reported symptoms.",
+                    kind = SessionReportFindingKind.Warning,
+                ),
+            )
+        }
+        addAll(recommendations.filter { it.kind == SessionReportFindingKind.Warning })
+    }.distinctBy { it.title }
     val hasMeasurements = facts.size > 1 || networkKind !in setOf(AndroidNetworkKind.Unknown, AndroidNetworkKind.Other)
     val tone = when {
         warningRecommendations.isNotEmpty() || networkKind == AndroidNetworkKind.None -> BugReportPreflightTone.Warning
@@ -182,11 +199,17 @@ private fun buildConnectionPreflightCard(
         else -> BugReportPreflightTone.Notice
     }
     val title = when (tone) {
-        BugReportPreflightTone.Warning -> "The connection may explain the issue"
+        BugReportPreflightTone.Warning -> if (manuallySelectedServer) {
+            "A manually selected server may explain the issue"
+        } else {
+            "The connection may explain the issue"
+        }
         BugReportPreflightTone.Healthy -> "The connection looks healthy"
         BugReportPreflightTone.Notice -> "Connection evidence is limited"
     }
     val summary = when {
+        manuallySelectedServer ->
+            "Reports from manually selected servers may not be investigated. Reproduce on Auto so server routing is ruled out first."
         warningRecommendations.isNotEmpty() ->
             "These suggestions are based on this session's measured network, not generic Wi-Fi advice."
         networkKind == AndroidNetworkKind.None ->
@@ -433,6 +456,22 @@ internal fun bugReportKnownIssueBlock(
     val connection = deck.cards.firstOrNull {
         it.area == BugReportPreflightArea.Connection && it.tone == BugReportPreflightTone.Warning
     }
+    val manualServerSelection = connection?.recommendations?.any {
+        it.title == MANUAL_SERVER_SELECTION_ACTION_TITLE
+    } == true
+    if (
+        connection != null &&
+        manualServerSelection &&
+        reportText.containsAnyWholeTerm(BUG_REPORT_MANUAL_SERVER_SYMPTOM_PATTERNS)
+    ) {
+        return BugReportKnownIssueBlock(
+            key = "network-manual-server",
+            title = "Manual server selection must be ruled out",
+            action =
+                "Switch Region to Auto, start a new cloud session, and reproduce the issue. " +
+                    "Reports from manually selected servers may not be investigated.",
+        )
+    }
     if (connection != null && reportText.containsAnyWholeTerm(BUG_REPORT_NETWORK_SYMPTOM_PATTERNS)) {
         val twoPointFourGhz = connection.facts.any { it.contains("2.4 GHz", ignoreCase = true) }
         return BugReportKnownIssueBlock(
@@ -512,6 +551,10 @@ private val BUG_REPORT_INPUT_SYMPTOM_PATTERNS = bugReportTermPatterns(
     "stick", "click", "cursor",
 )
 
+private val BUG_REPORT_MANUAL_SERVER_SYMPTOM_PATTERNS =
+    BUG_REPORT_NETWORK_SYMPTOM_PATTERNS + BUG_REPORT_VIDEO_SYMPTOM_PATTERNS
+
+private const val MANUAL_SERVER_SELECTION_ACTION_TITLE = "Use Auto server selection and reproduce"
 private const val DEVICE_RECOMMENDATION_ACTION_TITLE = "Use the detected Recommended profile"
 
 private fun streamResolutionLabelForPreflight(settings: StreamSettings): String {

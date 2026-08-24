@@ -10,6 +10,17 @@ import org.junit.Test
 
 class AndroidTvUiBehaviorTest {
     @Test
+    fun chosenWallpaperAlsoBacksSettingsButNeverTheStream() {
+        val wallpaper = AppSettings(nerdCatalogBackground = true)
+
+        assertTrue(shouldShowAppWallpaper(AppPage.Home, inStream = false, wallpaper))
+        assertTrue(shouldShowAppWallpaper(AppPage.Library, inStream = false, wallpaper))
+        assertTrue(shouldShowAppWallpaper(AppPage.Settings, inStream = false, wallpaper))
+        assertFalse(shouldShowAppWallpaper(AppPage.Stream, inStream = true, wallpaper))
+        assertFalse(shouldShowAppWallpaper(AppPage.Settings, inStream = false, AppSettings()))
+    }
+
+    @Test
     fun settingsFocusScrollLeavesRoomBelowTheWholeFocusedCard() {
         assertEquals(
             30f,
@@ -37,7 +48,7 @@ class AndroidTvUiBehaviorTest {
 
     @Test
     fun defaultThemeUsesNvidiaStyleGreenAndWhiteSelectionEnergy() {
-        val style = AppSettings().activeSelectionEffectStyle(physicalControllerConnected = false)
+        val style = AppSettings().activeSelectionEffectStyle()
 
         assertEquals(OpenNowPalette.AccentDefault, UiAccent.OpenNow.color)
         assertEquals(OpenNowPalette.AccentDefaultSecondary, UiAccent.OpenNow.secondaryColor)
@@ -49,24 +60,21 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun absoluteCinemaRequiresControllerAndKeepsTheSelectedAccent() {
+    fun absoluteCinemaRequiresItsToggleAndKeepsTheSelectedAccent() {
         val hotPink = AppSettings(uiAccent = UiAccent.HotPink)
         val cinema = hotPink.copy(absoluteCinemaEffects = true)
         val switch = AppSettings(uiAccent = UiAccent.Switch)
-        val hotPinkStyle = hotPink.activeSelectionEffectStyle(physicalControllerConnected = false)
-        val cinemaWithoutController = cinema.activeSelectionEffectStyle(physicalControllerConnected = false)
-        val cinemaWithController = cinema.activeSelectionEffectStyle(physicalControllerConnected = true)
-        val switchStyle = switch.activeSelectionEffectStyle(physicalControllerConnected = false)
+        val hotPinkStyle = hotPink.activeSelectionEffectStyle()
+        val cinemaStyle = cinema.activeSelectionEffectStyle()
+        val switchStyle = switch.activeSelectionEffectStyle()
         val orangeStyle = AppSettings(uiAccent = UiAccent.AbsoluteCinema)
-            .activeSelectionEffectStyle(physicalControllerConnected = false)
+            .activeSelectionEffectStyle()
 
         assertEquals(OpenNowPalette.AccentHotPink, hotPink.uiAccent.color)
         assertEquals(OpenNowPalette.AccentHotPink, hotPinkStyle.color)
-        assertEquals(OpenNowPalette.AccentHotPink, cinemaWithoutController.color)
-        assertFalse(cinemaWithoutController.absoluteCinemaActive)
-        assertEquals(OpenNowPalette.AccentHotPink, cinemaWithController.color)
-        assertEquals(OpenNowPalette.AccentHotPink, cinemaWithController.secondaryColor)
-        assertTrue(cinemaWithController.absoluteCinemaActive)
+        assertEquals(OpenNowPalette.AccentHotPink, cinemaStyle.color)
+        assertEquals(OpenNowPalette.AccentHotPink, cinemaStyle.secondaryColor)
+        assertTrue(cinemaStyle.absoluteCinemaActive)
         assertEquals(OpenNowPalette.AccentHotPink, cinema.uiAccent.color)
         assertEquals(OpenNowPalette.AccentSwitchRed, switchStyle.color)
         assertEquals(OpenNowPalette.AccentSwitchBlue, switchStyle.secondaryColor)
@@ -75,30 +83,47 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun liveSelectionEffectsStayOffForDefaultAndRespectCustomThemeOptOut() {
-        assertFalse(AppSettings().activeSelectionEffectStyle(physicalControllerConnected = false).enabled)
-        assertTrue(AppSettings(uiAccent = UiAccent.Pixel).activeSelectionEffectStyle(physicalControllerConnected = false).enabled)
+    fun selectionBordersOnlyEnableWithAbsoluteCinema() {
+        assertFalse(AppSettings().activeSelectionEffectStyle().enabled)
+        assertFalse(AppSettings(uiAccent = UiAccent.Pixel).activeSelectionEffectStyle().enabled)
         assertFalse(
             AppSettings(uiAccent = UiAccent.Pixel, liveSelectedOutlines = false)
-                .activeSelectionEffectStyle(physicalControllerConnected = true)
+                .activeSelectionEffectStyle()
                 .enabled,
         )
         val absoluteCinema = AppSettings(liveSelectedOutlines = false, absoluteCinemaEffects = true)
-        assertFalse(absoluteCinema.activeSelectionEffectStyle(physicalControllerConnected = false).enabled)
-        assertTrue(absoluteCinema.activeSelectionEffectStyle(physicalControllerConnected = true).enabled)
+        assertTrue(absoluteCinema.activeSelectionEffectStyle().enabled)
     }
 
     @Test
-    fun crazyCinemaRemovesTheControllerGateButStillRequiresAbsoluteCinema() {
+    fun catalogBordersAreTransparentOutsideAbsoluteCinema() {
+        val accent = OpenNowPalette.AccentHotPink
+
+        assertEquals(
+            Color.Transparent,
+            catalogCardBorderColor(selectionColor = accent, absoluteCinemaEnabled = false),
+        )
+        assertEquals(
+            Color.Transparent,
+            cinemaBorderColor(absoluteCinemaEnabled = false, cinemaColor = Color.White),
+        )
+        assertEquals(
+            accent,
+            catalogCardBorderColor(selectionColor = accent, absoluteCinemaEnabled = true),
+        )
+    }
+
+    @Test
+    fun crazyCinemaBroadeningStillRequiresAbsoluteCinema() {
         val crazy = AppSettings(
             liveSelectedOutlines = false,
             absoluteCinemaEffects = true,
             absoluteCinemaEverywhere = true,
-        ).activeSelectionEffectStyle(physicalControllerConnected = false)
+        ).activeSelectionEffectStyle()
         val orphanedToggle = AppSettings(
             absoluteCinemaEffects = false,
             absoluteCinemaEverywhere = true,
-        ).activeSelectionEffectStyle(physicalControllerConnected = false)
+        ).activeSelectionEffectStyle()
 
         assertTrue(crazy.enabled)
         assertTrue(crazy.absoluteCinemaActive)
@@ -159,7 +184,29 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun mobileCatalogCardsUseFullQualityGameBoxArtWithoutTitleOverlay() {
+    fun localAppsProfileActionRequiresSupportAndExplicitOptIn() {
+        assertFalse(
+            shouldShowLocalAppsProfileAction(
+                localAppLauncherSupported = true,
+                localAppsEnabled = false,
+            ),
+        )
+        assertFalse(
+            shouldShowLocalAppsProfileAction(
+                localAppLauncherSupported = false,
+                localAppsEnabled = true,
+            ),
+        )
+        assertTrue(
+            shouldShowLocalAppsProfileAction(
+                localAppLauncherSupported = true,
+                localAppsEnabled = true,
+            ),
+        )
+    }
+
+    @Test
+    fun mobileCatalogCardsUseDisplaySizedGameBoxArtWithoutTitleOverlay() {
         val gameBoxArt = "https://img.nvidiagrid.net/apps/123/ZZ/GAME_BOX_ART_01_example.jpg"
         val game = GameInfo(
             id = "game",
@@ -168,7 +215,7 @@ class AndroidTvUiBehaviorTest {
             tvCardImageUrl = gameBoxArt,
         )
 
-        assertEquals(gameBoxArt, catalogCardImageUrl(game, tvProfile = false))
+        assertEquals("$gameBoxArt;f=webp;w=512", catalogCardImageUrl(game, tvProfile = false))
         assertFalse(shouldOverlayCatalogCardTitle(tvProfile = false))
     }
 
@@ -276,13 +323,6 @@ class AndroidTvUiBehaviorTest {
                 physicalControllerConnected = true,
             ),
         )
-    }
-
-    @Test
-    fun tvCatalogCardsNeverShowStoreLabels() {
-        assertFalse(shouldShowGameStoreLabels(tvProfile = true, enabled = true))
-        assertTrue(shouldShowGameStoreLabels(tvProfile = false, enabled = true))
-        assertFalse(shouldShowGameStoreLabels(tvProfile = false, enabled = false))
     }
 
     @Test
@@ -436,21 +476,27 @@ class AndroidTvUiBehaviorTest {
             lowPowerGpuProfile = false,
             constrainedRuntimeProfile = false,
         )
-        assertTrue(shouldAnimateOpenNowAppIcon(capableReport, reduceMotion = false))
-        assertFalse(shouldAnimateOpenNowAppIcon(null, reduceMotion = false))
-        assertFalse(shouldAnimateOpenNowAppIcon(capableReport, reduceMotion = true))
+        assertTrue(shouldAnimateOpenNowAppIcon(capableReport, reduceMotion = false, absoluteCinemaEnabled = true))
+        assertFalse(shouldAnimateOpenNowAppIcon(null, reduceMotion = false, absoluteCinemaEnabled = true))
+        assertFalse(shouldAnimateOpenNowAppIcon(capableReport, reduceMotion = true, absoluteCinemaEnabled = true))
+        assertFalse(shouldAnimateOpenNowAppIcon(capableReport, reduceMotion = false, absoluteCinemaEnabled = false))
         assertFalse(
             shouldAnimateOpenNowAppIcon(
                 capableReport.copy(lowPowerGpuProfile = true),
                 reduceMotion = false,
+                absoluteCinemaEnabled = true,
             ),
         )
         assertFalse(
             shouldAnimateOpenNowAppIcon(
                 capableReport.copy(constrainedRuntimeProfile = true),
                 reduceMotion = false,
+                absoluteCinemaEnabled = true,
             ),
         )
+        assertTrue(shouldAnimateControllerFocusFrame(absoluteCinemaEnabled = true, reduceMotion = false))
+        assertFalse(shouldAnimateControllerFocusFrame(absoluteCinemaEnabled = false, reduceMotion = false))
+        assertFalse(shouldAnimateControllerFocusFrame(absoluteCinemaEnabled = true, reduceMotion = true))
     }
 
     @Test

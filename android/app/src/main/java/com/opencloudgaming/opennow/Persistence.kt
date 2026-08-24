@@ -4,21 +4,20 @@ import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.decodeFromJsonElement
-import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.put
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.serializer
 import java.security.MessageDigest
 import java.util.UUID
 import android.util.Xml
 import org.xmlpull.v1.XmlPullParser
 import java.io.File
 import java.io.FileInputStream
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 private const val STORE_NAME = "opennow_native"
@@ -31,6 +30,26 @@ private const val KEY_CATALOG_CACHE_PREFIX = "catalog_cache_"
 private const val KEY_ANDROID_UPDATE_DISMISSED_NOTICE = "android_update_dismissed_notice"
 private const val KEY_QUEUED_GAME_KEYS = "queued_game_keys"
 private const val CATALOG_CACHE_TTL_MS = 12L * 60L * 60L * 1000L
+
+/**
+ * Largest compressed catalogue entry worth retaining on disk.
+ *
+ * This is both a storage bound and a decompression-memory guard. See `CatalogCacheStore.save`.
+ */
+private const val MAX_COMPRESSED_CATALOG_CACHE_BYTES = 768 * 1024
+private const val CATALOG_CACHE_DIRECTORY_NAME = "catalog-cache-v2"
+
+/**
+ * Games kept in a cached list or browse result.
+ *
+ * A cache entry exists to put something on screen instantly at launch, not to mirror the whole
+ * catalogue — the live fetch replaces it within seconds regardless. Bounding it up front means the
+ * oversized case never reaches the encoder at all, rather than being detected by
+ * [MAX_COMPRESSED_CATALOG_CACHE_BYTES] after compression. Android TV already
+ * bounded what it restored (`TV_INITIAL_CATALOG_GAME_LIMIT`); this applies the same idea to what
+ * gets written, on every profile.
+ */
+private const val MAX_CACHED_CATALOG_GAMES = 400
 private const val QUEUED_GAME_LIMIT = 24
 // Keys that must never be written to the external (potentially world-readable) file.
 private val SENSITIVE_KEYS = setOf(KEY_AUTH, KEY_DEVICE_ID)
@@ -285,6 +304,15 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
             streamDefaults.streamSharpeningAmount,
         ),
     )
+    val normalizedCatalogSortId = catalogSortId.trim().ifBlank { DEFAULT_CATALOG_SORT_ID }
+    val migratedCatalogSortId = if (
+        catalogSortDefaultVersion < CATALOG_SORT_DEFAULT_VERSION &&
+        normalizedCatalogSortId == "relevance"
+    ) {
+        DEFAULT_CATALOG_SORT_ID
+    } else {
+        normalizedCatalogSortId
+    }
     return copy(
         stream = lowPowerSafe,
         posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
@@ -294,7 +322,17 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
             scale = androidTouch.scale.finiteIn(0.6f, 1.4f, touchDefaults.scale),
             buttonScale = androidTouch.buttonScale.finiteIn(0.65f, 1.5f, touchDefaults.buttonScale),
             stickScale = androidTouch.stickScale.finiteIn(0.65f, 1.5f, touchDefaults.stickScale),
+            faceButtonScale = androidTouch.faceButtonScale.finiteIn(0.6f, 1.5f, touchDefaults.faceButtonScale),
+            dpadScale = androidTouch.dpadScale.finiteIn(0.6f, 1.5f, touchDefaults.dpadScale),
+            shoulderButtonScale = androidTouch.shoulderButtonScale.finiteIn(0.6f, 1.5f, touchDefaults.shoulderButtonScale),
+            centerButtonScale = androidTouch.centerButtonScale.finiteIn(0.6f, 1.5f, touchDefaults.centerButtonScale),
+            leftStickScale = androidTouch.leftStickScale.finiteIn(0.6f, 1.5f, touchDefaults.leftStickScale),
+            rightStickScale = androidTouch.rightStickScale.finiteIn(0.6f, 1.5f, touchDefaults.rightStickScale),
+            stickKnobScale = androidTouch.stickKnobScale.finiteIn(0.28f, 0.72f, touchDefaults.stickKnobScale),
             joystickDeadZone = androidTouch.joystickDeadZone.finiteIn(0f, 0.3f, touchDefaults.joystickDeadZone),
+            gyroscopeSensitivity = androidTouch.gyroscopeSensitivity.finiteIn(0.25f, 3f, touchDefaults.gyroscopeSensitivity),
+            gyroscopeDeadZone = androidTouch.gyroscopeDeadZone.finiteIn(0f, 0.2f, touchDefaults.gyroscopeDeadZone),
+            gyroscopeSmoothing = androidTouch.gyroscopeSmoothing.finiteIn(0f, 0.9f, touchDefaults.gyroscopeSmoothing),
             edgePaddingDp = androidTouch.edgePaddingDp.finiteIn(0f, 72f, touchDefaults.edgePaddingDp),
             bottomPaddingDp = androidTouch.bottomPaddingDp.finiteIn(0f, 120f, touchDefaults.bottomPaddingDp),
             leftOffsetXDp = androidTouch.leftOffsetXDp.finiteIn(-220f, 220f, touchDefaults.leftOffsetXDp),
@@ -326,7 +364,8 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         nerdCatalogBackgroundUri = nerdCatalogBackgroundUri?.trim()?.takeIf { it.isNotBlank() },
         localAppPackageNames = normalizeLocalAppPackageNames(localAppPackageNames),
         absoluteCinemaEverywhere = absoluteCinemaEffects && absoluteCinemaEverywhere,
-        catalogSortId = catalogSortId.trim().ifBlank { "relevance" },
+        catalogSortId = migratedCatalogSortId,
+        catalogSortDefaultVersion = CATALOG_SORT_DEFAULT_VERSION,
         catalogFilterIds = catalogFilterIds.map(String::trim).filter(String::isNotBlank).distinct(),
         librarySortId = librarySortId.takeIf {
             it in setOf(LIBRARY_SORT_DEFAULT, LIBRARY_SORT_RECENT, LIBRARY_SORT_TITLE)
@@ -349,31 +388,50 @@ class SettingsStore(context: Context) {
     )
     val settings: StateFlow<AppSettings> = _settings
 
+    /**
+     * Serializing [AppSettings] used to happen on whichever thread called [update] — in practice the
+     * main thread, on every favourite tap, every toggle and every frame of a slider drag. The object
+     * carries the full favourite list, the local-app list, the per-game variant map and the touch
+     * layout offsets, so that encode is not cheap.
+     *
+     * The store is last-write-wins, so persistence conflates: [collectLatest] cancels an in-flight
+     * encode the moment a newer value arrives, and a drag that produces fifty values writes once.
+     * Reads stay synchronous off [_settings], so nothing observable is deferred — only the disk.
+     */
+    private val persistScope = CoroutineScope(Dispatchers.IO.limitedParallelism(1))
+
+    init {
+        persistScope.launch {
+            // drop(1): the initial value came off disk; rewriting it verbatim on every launch would
+            // burn a startup write for nothing.
+            _settings.drop(1).collectLatest { snapshot ->
+                runCatching {
+                    prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(snapshot)).apply()
+                }
+            }
+        }
+    }
+
     private fun load(): AppSettings {
         val raw = prefs.getString(KEY_SETTINGS, null) ?: return AppSettings()
         return runCatching { OpenNowJson.decodeFromString<AppSettings>(raw) }.getOrElse { AppSettings() }
     }
 
     fun update(transform: (AppSettings) -> AppSettings) {
-        val next = transform(_settings.value)
+        _settings.value = transform(_settings.value)
             .withCurrentStreamPresentationDefaults(androidTvProfile)
             .normalizedForAndroid()
-        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(next)).apply()
-        _settings.value = next
     }
 
     fun replace(next: AppSettings) {
-        val normalized = next
+        _settings.value = next
             .withCurrentStreamPresentationDefaults(androidTvProfile)
             .normalizedForAndroid()
-        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(normalized)).apply()
-        _settings.value = normalized
     }
 
     fun reset() {
         replace(AppSettings())
     }
-
 }
 
 class AuthStore(context: Context) {
@@ -489,26 +547,45 @@ class AuthStore(context: Context) {
     }
 }
 
-class CatalogCacheStore(context: Context) {
-    private val appContext = context.applicationContext
+private fun List<GameInfo>.boundedForCache(): List<GameInfo> =
+    if (size <= MAX_CACHED_CATALOG_GAMES) this else take(MAX_CACHED_CATALOG_GAMES)
+
+/**
+ * The on-disk shape of a cache entry. Named rather than hand-built so reads and writes cannot
+ * drift, and so decoding never has to go through an intermediate `JsonElement` tree.
+ */
+@kotlinx.serialization.Serializable
+private data class CachedCatalogEntry<T>(val expiresAt: Long, val data: T)
+
+private fun clearLegacyCatalogCache(context: Context) {
+    // Older builds stored all catalogue entries in XML maps. Besides dropping oversized entries,
+    // changing one result rewrote the entire cache file. Remove those disposable formats once.
+    val legacyPrefs = ExternalPrefs.get(context, STORE_NAME)
+    val legacyKeys = legacyPrefs.all.keys.filter { it.startsWith(KEY_CATALOG_CACHE_PREFIX) }
+    if (legacyKeys.isNotEmpty()) {
+        legacyPrefs.edit().apply {
+            legacyKeys.forEach(::remove)
+        }.apply()
+    }
+    listOfNotNull(
+        context.getExternalFilesDir(null)?.let { File(it, "$CATALOG_CACHE_STORE_NAME.xml") },
+        File(context.filesDir, "$CATALOG_CACHE_STORE_NAME.xml"),
+    ).distinct().forEach(File::delete)
+}
+
+class CatalogCacheStore private constructor(
+    private val cacheDirectory: File,
+    clearLegacyCache: () -> Unit,
+) {
+    constructor(context: Context) : this(
+        cacheDirectory = File(context.applicationContext.cacheDir, CATALOG_CACHE_DIRECTORY_NAME),
+        clearLegacyCache = { clearLegacyCatalogCache(context.applicationContext) },
+    )
+
+    internal constructor(cacheDirectory: File) : this(cacheDirectory, {})
 
     init {
-        // Catalog payloads reached multiple megabytes and shared a file with ordinary
-        // settings. Every small settings commit therefore rewrote the entire catalog on
-        // the UI thread. Drop the old cache (it is disposable) and keep it isolated.
-        val legacyPrefs = ExternalPrefs.get(appContext, STORE_NAME)
-        val legacyKeys = legacyPrefs.all.keys.filter { it.startsWith(KEY_CATALOG_CACHE_PREFIX) }
-        if (legacyKeys.isNotEmpty()) {
-            legacyPrefs.edit().apply {
-                legacyKeys.forEach(::remove)
-            }.apply()
-        }
-    }
-
-    // Cache construction can parse a sizeable file, so defer it until a caller already
-    // running on Dispatchers.IO asks for cache data.
-    private val prefs by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        ExternalPrefs.get(appContext, CATALOG_CACHE_STORE_NAME)
+        clearLegacyCache()
     }
 
     fun loadMainGames(userId: String, providerStreamingBaseUrl: String): List<GameInfo>? =
@@ -542,69 +619,141 @@ class CatalogCacheStore(context: Context) {
         filterIds: List<String>,
         result: CatalogBrowseResult,
     ) {
-        save(key("catalog", userId, providerStreamingBaseUrl, searchQuery, sortId, filterIds.sorted().joinToString(",")), result)
+        save(
+            key("catalog", userId, providerStreamingBaseUrl, searchQuery, sortId, filterIds.sorted().joinToString(",")),
+            result.copy(games = result.games.boundedForCache()),
+        )
     }
 
+    @Synchronized
     fun clear(): Int {
-        val keys = prefs.all.keys.filter { it.startsWith(KEY_CATALOG_CACHE_PREFIX) }
-        if (keys.isEmpty()) return 0
-        prefs.edit().apply {
-            keys.forEach(::remove)
-        }.apply()
-        return keys.size
+        val files = cacheDirectory.listFiles()?.filter { it.isFile }.orEmpty()
+        files.forEach(File::delete)
+        return files.size
     }
 
     private fun loadGameList(key: String): List<GameInfo>? =
         load(key, ListSerializer(GameInfo.serializer()))
 
     private fun saveGameList(key: String, games: List<GameInfo>) {
-        save(key, games, ListSerializer(GameInfo.serializer()))
+        save(key, games.boundedForCache(), ListSerializer(GameInfo.serializer()))
     }
 
     private inline fun <reified T> load(key: String): T? =
-        runCatching {
-            val raw = prefs.getString(storageKey(key), null) ?: return null
-            val obj = OpenNowJson.parseToJsonElement(raw).jsonObject
-            val expiresAt = obj["expiresAt"]?.jsonPrimitive?.longOrNull ?: return null
-            if (System.currentTimeMillis() > expiresAt) return null
-            val data = obj["data"] ?: return null
-            OpenNowJson.decodeFromJsonElement<T>(data)
-        }.getOrNull()
+        load(key, OpenNowJson.serializersModule.serializer())
 
-    private fun <T> load(key: String, serializer: kotlinx.serialization.KSerializer<T>): T? =
-        runCatching {
-            val raw = prefs.getString(storageKey(key), null) ?: return null
-            val obj = OpenNowJson.parseToJsonElement(raw).jsonObject
-            val expiresAt = obj["expiresAt"]?.jsonPrimitive?.longOrNull ?: return null
-            if (System.currentTimeMillis() > expiresAt) return null
-            val data = obj["data"] ?: return null
-            OpenNowJson.decodeFromJsonElement(serializer, data)
-        }.getOrNull()
-
-    private inline fun <reified T> save(key: String, data: T) {
-        val now = System.currentTimeMillis()
-        val payload = kotlinx.serialization.json.buildJsonObject {
-            put("expiresAt", kotlinx.serialization.json.JsonPrimitive(now + CATALOG_CACHE_TTL_MS))
-            put("data", OpenNowJson.encodeToJsonElement(data))
+    /**
+     * Streams straight from the stored string into [T].
+     *
+     * The previous version parsed the whole entry into a `JsonElement` tree first and only then
+     * decoded it, so reading a large catalogue held the string, the tree, and the result at once.
+     */
+    @Synchronized
+    private fun <T> load(key: String, serializer: kotlinx.serialization.KSerializer<T>): T? {
+        val file = cacheFile(key)
+        recoverInterruptedReplacement(file)
+        if (!file.isFile || file.length() <= 0L) return null
+        return runCatching {
+            val raw = GZIPInputStream(file.inputStream().buffered()).bufferedReader(Charsets.UTF_8).use { reader ->
+                reader.readText()
+            }
+            val entry = OpenNowJson.decodeFromString(CachedCatalogEntry.serializer(serializer), raw)
+            if (System.currentTimeMillis() > entry.expiresAt) {
+                file.delete()
+                null
+            } else {
+                entry.data
+            }
+        }.getOrElse {
+            file.delete()
+            null
         }
-        prefs.edit().putString(storageKey(key), payload.toString()).apply()
     }
 
+    private inline fun <reified T> save(key: String, data: T) {
+        save(key, data, OpenNowJson.serializersModule.serializer())
+    }
+
+    /**
+     * Writes an entry to its own compressed file, or drops it when the compressed result is too big.
+     *
+     * Two things changed here, both about peak memory rather than disk. Encoding goes straight to a
+     * string instead of building a `JsonElement` tree and then calling `toString()` on it, which
+     * used to mean three copies of a multi-megabyte catalogue alive at the same time. And a result
+     * over [MAX_COMPRESSED_CATALOG_CACHE_BYTES] is now simply not cached.
+     *
+     * The size guard is what makes the touch-controls filter safe. `catalogPageLimit` lifts mobile
+     * from three pages to [MAX_CATALOG_REQUEST_PAGES] when that filter is on, because the
+     * capability is evaluated locally and every page has to be inspected — so applying it produced
+     * by far the largest payload the app ever writes, and writing it exhausted the heap on
+     * low-memory devices. That is why the crash looked like it belonged to filtering. Skipping the
+     * cache costs one refetch on the next launch; the alternative was an OutOfMemoryError.
+     *
+     * The stale entry is removed rather than left in place so a smaller, older result cannot go on
+     * being served for a query that now returns much more.
+     */
+    @Synchronized
     private fun <T> save(key: String, data: T, serializer: kotlinx.serialization.KSerializer<T>) {
-        val now = System.currentTimeMillis()
-        val payload = kotlinx.serialization.json.buildJsonObject {
-            put("expiresAt", kotlinx.serialization.json.JsonPrimitive(now + CATALOG_CACHE_TTL_MS))
-            put("data", OpenNowJson.encodeToJsonElement(serializer, data))
+        cacheDirectory.mkdirs()
+        val target = cacheFile(key)
+        recoverInterruptedReplacement(target)
+        val staged = File(cacheDirectory, "${target.name}.stage")
+        staged.delete()
+        val entry = CachedCatalogEntry(System.currentTimeMillis() + CATALOG_CACHE_TTL_MS, data)
+        val payload = runCatching {
+            OpenNowJson.encodeToString(CachedCatalogEntry.serializer(serializer), entry)
+        }.getOrNull()
+        if (payload == null) {
+            target.delete()
+            return
         }
-        prefs.edit().putString(storageKey(key), payload.toString()).apply()
+        val wrote = runCatching {
+            GZIPOutputStream(staged.outputStream().buffered()).bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.write(payload)
+            }
+        }.isSuccess
+        if (!wrote || staged.length() > MAX_COMPRESSED_CATALOG_CACHE_BYTES) {
+            staged.delete()
+            target.delete()
+            return
+        }
+        replaceCacheFile(staged, target)
     }
 
     private fun key(vararg parts: String): String =
         parts.joinToString("|") { it.trim() }
 
+    private fun cacheFile(key: String): File = File(cacheDirectory, "${storageKey(key)}.json.gz")
+
     private fun storageKey(key: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
         return KEY_CATALOG_CACHE_PREFIX + digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun recoverInterruptedReplacement(target: File) {
+        val backup = File(cacheDirectory, "${target.name}.backup")
+        if (!target.exists() && backup.isFile) {
+            backup.renameTo(target)
+        } else if (target.exists()) {
+            backup.delete()
+        }
+        File(cacheDirectory, "${target.name}.stage").takeIf { it.isFile }?.delete()
+    }
+
+    private fun replaceCacheFile(staged: File, target: File) {
+        val backup = File(cacheDirectory, "${target.name}.backup")
+        backup.delete()
+        val hadTarget = target.isFile
+        if (hadTarget && !target.renameTo(backup)) {
+            staged.delete()
+            return
+        }
+        if (!staged.renameTo(target)) {
+            if (hadTarget) backup.renameTo(target)
+            staged.delete()
+            return
+        }
+        backup.delete()
     }
 }
 

@@ -15,6 +15,29 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class LocalTvConnectorInstrumentedTest {
     @Test
+    fun localDiscoveryFindsTheTvWithoutBroadcastingItsPairingCode() = runBlocking {
+        val tv = LocalTvConnector()
+        val phone = LocalTvConnector()
+        try {
+            tv.startHosting()
+            val pairingState = awaitState(tv) { it.hosting && it.pairUri != null }
+
+            phone.discoverTvs()
+            val discoveryState = awaitState(phone) { it.discoveryCompleted || it.error != null }
+            assertTrue(discoveryState.error.orEmpty(), discoveryState.discoveredTvs.isNotEmpty())
+            val discoveredTv = discoveryState.discoveredTvs.first()
+            assertTrue(!discoveredTv.pairUri.contains("c="))
+
+            phone.pairDiscoveredTv(discoveredTv, pairingState.pairingCode!!)
+            val phoneState = awaitState(phone) { it.phoneConnected || it.error != null }
+            assertTrue(phoneState.error.orEmpty(), phoneState.phoneConnected)
+        } finally {
+            phone.close()
+            tv.close()
+        }
+    }
+
+    @Test
     fun encryptedLocalPairingTransfersLaunchAndSignIn() = runBlocking {
         val tv = LocalTvConnector()
         val phone = LocalTvConnector()

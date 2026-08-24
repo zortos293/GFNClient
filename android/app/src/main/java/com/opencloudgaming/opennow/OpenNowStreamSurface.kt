@@ -100,11 +100,12 @@ internal fun StreamScreen(
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val view = LocalView.current
+    val openNowHaptics = LocalOpenNowHaptics.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val density = LocalDensity.current
     val audioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
+    val gyroscopeAvailable = remember(context) { hasMobileGyroscope(context) }
     val session = state.streamSession
     val game = state.streamGame
     var streamState by remember { mutableStateOf("Preparing") }
@@ -611,7 +612,8 @@ internal fun StreamScreen(
                 externalMouseRoot = activity?.window?.decorView,
                 onMouseCaptureInput = { (activity as? MainActivity)?.enforceStreamSystemUiFromInput() },
                 stretchToFit = stretchToFit,
-                phoneRumbleFallback = state.settings.phoneRumbleFallback,
+                vibrationEnabled = state.settings.vibrationEnabled,
+                hapticsOutput = state.settings.hapticsOutput,
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -625,6 +627,11 @@ internal fun StreamScreen(
                     modifier = Modifier.align(statsAlignment),
                 )
             }
+            MobileGyroscopeAim(
+                client = client,
+                settings = state.settings.androidTouch,
+                active = streamReady && touchControlsVisible && !streamOverlayOpen,
+            )
             if (networkNotice != null || activeStreamMode != null) {
                 Column(
                     modifier = Modifier
@@ -653,14 +660,10 @@ internal fun StreamScreen(
                 TouchOverlay(
                     client = client,
                     touch = state.settings.androidTouch.copy(enabled = true),
-                    onButtonTone = {
-                        if (state.settings.phoneRumbleFallback) {
-                            view.performHapticFeedback(
-                                android.view.HapticFeedbackConstants.KEYBOARD_TAP,
-                                android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING
-                            )
-                        }
-                    },
+                    // FLAG_IGNORE_GLOBAL_SETTING stopped working in Android 13, so the on-screen
+                    // buttons went silent on any device with system touch feedback off. Drive the
+                    // vibrator directly instead — see OpenNowHaptics.
+                    onButtonTone = { openNowHaptics?.play(HapticCue.Activate) },
                     layoutEditing = touchLayoutEditing,
                     onSaveAllOffsets = { allOffsets ->
                         var touch = state.settings.androidTouch
@@ -786,6 +789,7 @@ internal fun StreamScreen(
                     touchControlsVisible = touchControlsVisible,
                     builtInGameTouchSupported = builtInGameTouchSupported,
                     nativeTouchActive = nativeTouchActive,
+                    gyroscopeAvailable = gyroscopeAvailable,
                     controllerMouseAssistEnabled = controllerMouseAssistEnabled,
                     controllerMouseEmulationEnabled = controllerMouseEmulationEnabled,
                     showSessionTimer = state.settings.sessionCounterEnabled,
@@ -818,6 +822,7 @@ internal fun StreamScreen(
                                 codecReport = state.codecReport,
                                 androidTvProfile = tvProfile,
                                 serverZone = session.zone,
+                                manuallySelectedServer = state.manuallySelectedServerForReport,
                                 inputDiagnostics = NativeInputDiagnostics.snapshot(),
                             ),
                         )
@@ -852,8 +857,8 @@ internal fun StreamScreen(
                             state.settings.copy(hideStreamButtons = !state.settings.hideStreamButtons),
                         )
                     },
-                    onPhoneRumbleFallbackToggle = {
-                        viewModel.updateSettings(state.settings.copy(phoneRumbleFallback = !state.settings.phoneRumbleFallback))
+                    onVibrationToggle = {
+                        viewModel.updateSettings(state.settings.copy(vibrationEnabled = !state.settings.vibrationEnabled))
                     },
                     onTouchLayoutEditingToggle = {
                         touchLayoutEditing = !touchLayoutEditing
@@ -934,14 +939,22 @@ internal fun StreamScreen(
                         )
                     },
                     onToggleTouchControllerStyle = {
-                        val nextStyle = if (state.settings.androidTouch.touchControllerStyle == TouchControllerStyle.V1) {
-                            TouchControllerStyle.V2
-                        } else {
-                            TouchControllerStyle.V1
-                        }
                         viewModel.updateSettings(
                             state.settings.copy(
-                                androidTouch = state.settings.androidTouch.copy(touchControllerStyle = nextStyle),
+                                androidTouch = state.settings.androidTouch.copy(
+                                    touchControllerStyle = nextTouchControllerStyle(
+                                        state.settings.androidTouch.touchControllerStyle,
+                                    ),
+                                ),
+                            ),
+                        )
+                    },
+                    onTouchButtonLabelsToggle = {
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(
+                                    touchButtonLabels = !state.settings.androidTouch.touchButtonLabels,
+                                ),
                             ),
                         )
                     },
@@ -1046,6 +1059,9 @@ internal fun StreamScreen(
                                 androidTouch = state.settings.androidTouch.withResetOffsets()
                             )
                         )
+                    },
+                    onTouchSettingsChange = { touch ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = touch))
                     },
                     onBugReportSubmit = { title, description, knownIssueOverrideKey ->
                         viewModel.submitBugReport(title, description, knownIssueOverrideKey)
@@ -1247,7 +1263,8 @@ private fun StreamVideoSurface(
     externalMouseRoot: android.view.View?,
     onMouseCaptureInput: () -> Unit,
     stretchToFit: Boolean,
-    phoneRumbleFallback: Boolean,
+    vibrationEnabled: Boolean,
+    hapticsOutput: HapticsOutputPreference,
     modifier: Modifier = Modifier,
 ) {
     val rootView = LocalView.current
@@ -1341,9 +1358,10 @@ private fun StreamVideoSurface(
         settings.streamSharpeningEnabled,
         settings.streamSharpeningAmount,
         stretchToFit,
-        phoneRumbleFallback,
+        vibrationEnabled,
+        hapticsOutput,
     ) {
-        client.applyLiveSettings(settings, phoneRumbleFallback, stretchToFit)
+        client.applyLiveSettings(settings, vibrationEnabled, hapticsOutput, stretchToFit)
     }
     LaunchedEffect(streamAspectRatio) {
         NativeStreamInputRouter.setRenderingAspectRatio(streamAspectRatio)
@@ -1418,7 +1436,7 @@ private fun StreamVideoSurface(
                     }
                 },
                 update = { renderer ->
-                    client.applyLiveSettings(settings, phoneRumbleFallback, stretchToFit)
+                    client.applyLiveSettings(settings, vibrationEnabled, hapticsOutput, stretchToFit)
                     renderer.scaleX = stretchScale.first
                     renderer.scaleY = stretchScale.second
                     renderer.isFocusable = false

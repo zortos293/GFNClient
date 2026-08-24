@@ -112,7 +112,15 @@ internal fun TouchOverlay(
         }
     }
 
-    CompositionLocalProvider(LocalTouchControllerStyle provides touch.touchControllerStyle) {
+    val skin = remember(touch.touchControllerStyle, touch.opacity, touch.touchSkinTint) {
+        touchSkinColors(touch.touchControllerStyle, touch.opacity, touchSkinAccent(touch))
+    }
+    CompositionLocalProvider(
+        LocalTouchControllerStyle provides touch.touchControllerStyle,
+        LocalTouchSkin provides skin,
+        LocalTouchButtonLabels provides touch.touchButtonLabels,
+        LocalTouchStickKnobScale provides touch.stickKnobScale,
+    ) {
         BoxWithConstraints(
             modifier
                 .fillMaxSize()
@@ -138,6 +146,12 @@ internal fun TouchOverlay(
                         layoutScale = layoutScale,
                         buttonScale = buttonScale,
                         stickScale = stickScale,
+                        faceButtonScale = touch.faceButtonScale,
+                        dpadScale = touch.dpadScale,
+                        shoulderButtonScale = touch.shoulderButtonScale,
+                        centerButtonScale = touch.centerButtonScale,
+                        leftStickScale = touch.leftStickScale,
+                        rightStickScale = touch.rightStickScale,
                         joystickMode = touch.joystickMode,
                         aimMode = touch.aimMode,
                         joystickDeadZone = touch.joystickDeadZone,
@@ -154,6 +168,12 @@ internal fun TouchOverlay(
                         layoutScale = layoutScale,
                         buttonScale = buttonScale,
                         stickScale = stickScale,
+                        faceButtonScale = touch.faceButtonScale,
+                        dpadScale = touch.dpadScale,
+                        shoulderButtonScale = touch.shoulderButtonScale,
+                        centerButtonScale = touch.centerButtonScale,
+                        leftStickScale = touch.leftStickScale,
+                        rightStickScale = touch.rightStickScale,
                         joystickMode = touch.joystickMode,
                         aimMode = touch.aimMode,
                         joystickDeadZone = touch.joystickDeadZone,
@@ -175,6 +195,12 @@ private fun PortraitTouchControls(
     layoutScale: Float,
     buttonScale: Float,
     stickScale: Float,
+    faceButtonScale: Float,
+    dpadScale: Float,
+    shoulderButtonScale: Float,
+    centerButtonScale: Float,
+    leftStickScale: Float,
+    rightStickScale: Float,
     joystickMode: TouchJoystickMode,
     aimMode: TouchAimMode,
     joystickDeadZone: Float,
@@ -183,10 +209,11 @@ private fun PortraitTouchControls(
     onLocalOffsetChange: (String, Float, Float) -> Unit,
     onButtonTone: () -> Unit,
 ) {
-    val leftStickDiameter = 116.dp * stickScale * layoutScale
-    val rightStickDiameter = 104.dp * stickScale * layoutScale
-    val buttonSize48 = 48.dp * buttonScale * layoutScale
-    val buttonSize44 = 44.dp * buttonScale * layoutScale
+    val leftStickDiameter = 116.dp * stickScale * leftStickScale * layoutScale
+    val rightStickDiameter = 104.dp * stickScale * rightStickScale * layoutScale
+    val centerScale = buttonScale * centerButtonScale * layoutScale
+    val buttonSize48 = 48.dp * centerScale
+    val buttonSize44 = 44.dp * centerScale
     val faceWidth = buttonSize48 * 2.44f
 
     Box(
@@ -205,9 +232,9 @@ private fun PortraitTouchControls(
                     .fillMaxHeight(0.48f),
             )
         }
-        val scale = buttonScale * layoutScale
-        val triggerWidth = 64.dp * scale
-        val bumperHeight = 32.dp * scale
+        val shoulderScale = buttonScale * shoulderButtonScale * layoutScale
+        val triggerWidth = 64.dp * shoulderScale
+        val bumperHeight = 32.dp * shoulderScale
         val triggerTouchHeight = if (bumperHeight < 48.dp) 48.dp else bumperHeight
 
         TouchControlGroup(
@@ -222,7 +249,6 @@ private fun PortraitTouchControls(
                 label = "LT",
                 left = true,
                 client = client,
-                opacity = opacity,
                 width = triggerWidth,
                 height = bumperHeight,
                 shape = RoundedCornerShape(50),
@@ -242,7 +268,6 @@ private fun PortraitTouchControls(
                 label = "LB",
                 mask = 0x0100,
                 client = client,
-                opacity = opacity,
                 width = triggerWidth,
                 height = bumperHeight,
                 onPressTone = onButtonTone,
@@ -260,7 +285,6 @@ private fun PortraitTouchControls(
             VirtualStick(
                 label = "L",
                 client = client,
-                opacity = opacity,
                 diameter = leftStickDiameter,
                 mode = joystickMode,
                 deadZone = joystickDeadZone,
@@ -279,7 +303,7 @@ private fun PortraitTouchControls(
                 bottom = leftStickDiameter + 6.dp
             ),
         ) {
-            GamepadButton("LS", GamepadButtonMapping.LEFT_THUMB, client, opacity, buttonSize48, onButtonTone)
+            GamepadButton("LS", GamepadButtonMapping.LEFT_THUMB, client, buttonSize48, onButtonTone)
         }
 
         TouchControlGroup(
@@ -290,7 +314,7 @@ private fun PortraitTouchControls(
             onOffsetChange = { x, y -> onLocalOffsetChange("dpad", x, y) },
             modifier = Modifier.align(Alignment.BottomStart).padding(start = leftStickDiameter + 12.dp),
         ) {
-            DpadCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
+            DpadCluster(client, buttonScale * dpadScale * layoutScale, onButtonTone)
         }
 
         TouchControlGroup(
@@ -305,7 +329,6 @@ private fun PortraitTouchControls(
                 label = "RT",
                 left = false,
                 client = client,
-                opacity = opacity,
                 width = triggerWidth,
                 height = bumperHeight,
                 shape = RoundedCornerShape(50),
@@ -325,7 +348,6 @@ private fun PortraitTouchControls(
                 label = "RB",
                 mask = 0x0200,
                 client = client,
-                opacity = opacity,
                 width = triggerWidth,
                 height = bumperHeight,
                 onPressTone = onButtonTone,
@@ -340,7 +362,7 @@ private fun PortraitTouchControls(
             onOffsetChange = { x, y -> onLocalOffsetChange("select", x, y) },
             modifier = Modifier.align(Alignment.TopEnd).padding(top = buttonSize48 + 8.dp, end = buttonSize44 + 8.dp),
         ) {
-            GamepadButton("◀", 0x0020, client, opacity, buttonSize44, onButtonTone)
+            GamepadButton("◀", 0x0020, client, buttonSize44, onButtonTone)
         }
 
         TouchControlGroup(
@@ -351,7 +373,7 @@ private fun PortraitTouchControls(
             onOffsetChange = { x, y -> onLocalOffsetChange("start", x, y) },
             modifier = Modifier.align(Alignment.TopEnd).padding(top = buttonSize48 + 8.dp),
         ) {
-            GamepadButton("▶", 0x0010, client, opacity, buttonSize44, onButtonTone)
+            GamepadButton("▶", 0x0010, client, buttonSize44, onButtonTone)
         }
 
         if (aimMode == TouchAimMode.LockJoystick) {
@@ -366,7 +388,6 @@ private fun PortraitTouchControls(
                 VirtualStick(
                     label = "R",
                     client = client,
-                    opacity = opacity,
                     diameter = rightStickDiameter,
                     mode = joystickMode,
                     deadZone = joystickDeadZone,
@@ -386,7 +407,7 @@ private fun PortraitTouchControls(
                 bottom = rightStickDiameter + 6.dp
             ),
         ) {
-            GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, opacity, buttonSize48, onButtonTone)
+            GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, buttonSize48, onButtonTone)
         }
 
         TouchControlGroup(
@@ -397,7 +418,7 @@ private fun PortraitTouchControls(
             onOffsetChange = { x, y -> onLocalOffsetChange("face", x, y) },
             modifier = Modifier.align(Alignment.BottomEnd),
         ) {
-            FaceButtonCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
+            FaceButtonCluster(client, buttonScale * faceButtonScale * layoutScale, onButtonTone)
         }
     }
 }
@@ -409,6 +430,12 @@ private fun BoxScope.LandscapeTouchControls(
     layoutScale: Float,
     buttonScale: Float,
     stickScale: Float,
+    faceButtonScale: Float,
+    dpadScale: Float,
+    shoulderButtonScale: Float,
+    centerButtonScale: Float,
+    leftStickScale: Float,
+    rightStickScale: Float,
     joystickMode: TouchJoystickMode,
     aimMode: TouchAimMode,
     joystickDeadZone: Float,
@@ -419,7 +446,9 @@ private fun BoxScope.LandscapeTouchControls(
     onButtonTone: () -> Unit,
 ) {
     val controlScale = buttonScale * layoutScale
-    val topControlClearance = landscapeTouchTopControlClearanceDp(viewportHeight.value, controlScale).dp
+    val shoulderScale = controlScale * shoulderButtonScale
+    val centerScale = controlScale * centerButtonScale
+    val topControlClearance = landscapeTouchTopControlClearanceDp(viewportHeight.value, shoulderScale).dp
     Box(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
         if (aimMode == TouchAimMode.LockZone) {
             LockZoneAimSurface(
@@ -434,8 +463,8 @@ private fun BoxScope.LandscapeTouchControls(
                     .fillMaxHeight(0.72f),
             )
         }
-        val triggerWidth = 76.dp * controlScale
-        val bumperHeight = 36.dp * controlScale
+        val triggerWidth = 76.dp * shoulderScale
+        val bumperHeight = 36.dp * shoulderScale
         val triggerTouchHeight = if (bumperHeight < 48.dp) 48.dp else bumperHeight
 
         TouchControlGroup(
@@ -450,7 +479,6 @@ private fun BoxScope.LandscapeTouchControls(
                 label = "LT",
                 left = true,
                 client = client,
-                opacity = opacity,
                 width = triggerWidth,
                 height = bumperHeight,
                 shape = RoundedCornerShape(50),
@@ -470,14 +498,13 @@ private fun BoxScope.LandscapeTouchControls(
                 label = "LB",
                 mask = 0x0100,
                 client = client,
-                opacity = opacity,
                 width = triggerWidth,
                 height = bumperHeight,
                 onPressTone = onButtonTone,
             )
         }
 
-        val selectSize = 42.dp * controlScale
+        val selectSize = 42.dp * centerScale
         TouchControlGroup(
             id = "landscape-select",
             layoutEditing = layoutEditing,
@@ -486,7 +513,7 @@ private fun BoxScope.LandscapeTouchControls(
             onOffsetChange = { x, y -> onLocalOffsetChange("select", x, y) },
             modifier = Modifier.align(Alignment.BottomCenter).padding(end = selectSize / 2 + 27.dp),
         ) {
-            GamepadButton("◀", 0x0020, client, opacity, selectSize, onButtonTone)
+            GamepadButton("◀", 0x0020, client, selectSize, onButtonTone)
         }
 
         TouchControlGroup(
@@ -497,7 +524,7 @@ private fun BoxScope.LandscapeTouchControls(
             onOffsetChange = { x, y -> onLocalOffsetChange("start", x, y) },
             modifier = Modifier.align(Alignment.BottomCenter).padding(start = selectSize / 2 + 27.dp),
         ) {
-            GamepadButton("▶", 0x0010, client, opacity, selectSize, onButtonTone)
+            GamepadButton("▶", 0x0010, client, selectSize, onButtonTone)
         }
 
         TouchControlGroup(
@@ -512,7 +539,6 @@ private fun BoxScope.LandscapeTouchControls(
                 label = "RB",
                 mask = 0x0200,
                 client = client,
-                opacity = opacity,
                 width = triggerWidth,
                 height = bumperHeight,
                 onPressTone = onButtonTone,
@@ -531,7 +557,6 @@ private fun BoxScope.LandscapeTouchControls(
                 label = "RT",
                 left = false,
                 client = client,
-                opacity = opacity,
                 width = triggerWidth,
                 height = bumperHeight,
                 shape = RoundedCornerShape(50),
@@ -539,8 +564,8 @@ private fun BoxScope.LandscapeTouchControls(
             )
         }
 
-        val dpadScale = controlScale * 0.88f
-        val dpadButtonSize = 54.dp * dpadScale
+        val effectiveDpadScale = controlScale * dpadScale * 0.88f
+        val dpadButtonSize = 54.dp * effectiveDpadScale
         val dpadWidth = dpadButtonSize * 2.44f
         TouchControlGroup(
             id = "landscape-dpad",
@@ -550,10 +575,10 @@ private fun BoxScope.LandscapeTouchControls(
             onOffsetChange = { x, y -> onLocalOffsetChange("dpad", x, y) },
             modifier = Modifier.align(Alignment.BottomStart),
         ) {
-            DpadCluster(client, opacity, dpadScale, onButtonTone)
+            DpadCluster(client, effectiveDpadScale, onButtonTone)
         }
 
-        val leftStickDiameter = 112.dp * stickScale * layoutScale
+        val leftStickDiameter = 112.dp * stickScale * leftStickScale * layoutScale
         TouchControlGroup(
             id = "landscape-lstick",
             layoutEditing = layoutEditing,
@@ -565,7 +590,6 @@ private fun BoxScope.LandscapeTouchControls(
             VirtualStick(
                 label = "L",
                 client = client,
-                opacity = opacity,
                 diameter = leftStickDiameter,
                 mode = joystickMode,
                 deadZone = joystickDeadZone,
@@ -573,7 +597,7 @@ private fun BoxScope.LandscapeTouchControls(
             )
         }
 
-        val l3Size = 54.dp * controlScale
+        val l3Size = 54.dp * centerScale
         TouchControlGroup(
             id = "landscape-l3",
             layoutEditing = layoutEditing,
@@ -585,13 +609,13 @@ private fun BoxScope.LandscapeTouchControls(
                 bottom = leftStickDiameter + 6.dp
             ),
         ) {
-            GamepadButton("LS", GamepadButtonMapping.LEFT_THUMB, client, opacity, l3Size, onButtonTone)
+            GamepadButton("LS", GamepadButtonMapping.LEFT_THUMB, client, l3Size, onButtonTone)
         }
 
-        val faceScale = controlScale * 0.9f
+        val faceScale = controlScale * faceButtonScale * 0.9f
         val faceButtonSize = 54.dp * faceScale
         val faceWidth = faceButtonSize * 2.44f
-        val rightStickDiameter = 112.dp * stickScale * layoutScale
+        val rightStickDiameter = 112.dp * stickScale * rightStickScale * layoutScale
         if (aimMode == TouchAimMode.LockJoystick) {
             TouchControlGroup(
                 id = "landscape-rstick",
@@ -604,7 +628,6 @@ private fun BoxScope.LandscapeTouchControls(
                 VirtualStick(
                     label = "R",
                     client = client,
-                    opacity = opacity,
                     diameter = rightStickDiameter,
                     mode = joystickMode,
                     deadZone = joystickDeadZone,
@@ -613,7 +636,7 @@ private fun BoxScope.LandscapeTouchControls(
             }
         }
 
-        val r3Size = 54.dp * controlScale
+        val r3Size = 54.dp * centerScale
         TouchControlGroup(
             id = "landscape-r3",
             layoutEditing = layoutEditing,
@@ -625,7 +648,7 @@ private fun BoxScope.LandscapeTouchControls(
                 bottom = rightStickDiameter + 6.dp
             ),
         ) {
-            GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, opacity, r3Size, onButtonTone)
+            GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, r3Size, onButtonTone)
         }
 
         TouchControlGroup(
@@ -636,7 +659,7 @@ private fun BoxScope.LandscapeTouchControls(
             onOffsetChange = { x, y -> onLocalOffsetChange("face", x, y) },
             modifier = Modifier.align(Alignment.BottomEnd),
         ) {
-            FaceButtonCluster(client, opacity, faceScale, onButtonTone)
+            FaceButtonCluster(client, faceScale, onButtonTone)
         }
     }
 }
@@ -856,7 +879,6 @@ private fun StickWithThumbButton(
     thumbLabel: String,
     thumbMask: Int,
     client: NativeStreamClient,
-    opacity: Float,
     diameter: Dp,
     buttonScale: Float,
     mode: TouchJoystickMode = TouchJoystickMode.Fixed,
@@ -872,7 +894,6 @@ private fun StickWithThumbButton(
             label = thumbLabel,
             mask = thumbMask,
             client = client,
-            opacity = opacity,
             width = 56.dp * buttonScale,
             height = 34.dp * buttonScale,
             onPressTone = onButtonTone,
@@ -880,7 +901,6 @@ private fun StickWithThumbButton(
         VirtualStick(
             label = stickLabel,
             client = client,
-            opacity = opacity,
             diameter = diameter,
             mode = mode,
             deadZone = deadZone,
@@ -893,7 +913,6 @@ private fun StickWithThumbButton(
 private fun VirtualStick(
     label: String,
     client: NativeStreamClient,
-    opacity: Float,
     diameter: androidx.compose.ui.unit.Dp,
     mode: TouchJoystickMode,
     deadZone: Float,
@@ -902,7 +921,7 @@ private fun VirtualStick(
     val currentOnChange by rememberUpdatedState(onChange)
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
     var baseOffset by remember { mutableStateOf(Offset.Zero) }
-    val style = LocalTouchControllerStyle.current
+    val skin = LocalTouchSkin.current
 
     DisposableEffect(client) {
         onDispose {
@@ -950,16 +969,9 @@ private fun VirtualStick(
             },
         contentAlignment = Alignment.Center,
     ) {
-        val knobBackground = if (style == TouchControllerStyle.V2) {
-            Color.White.copy(alpha = opacity * 0.2f)
-        } else {
-            Color.LightGray.copy(alpha = opacity * 0.8f)
-        }
-        val knobBorderModifier = if (style == TouchControllerStyle.V2) {
-            Modifier.border(1.dp, Color.White.copy(alpha = opacity * 0.5f), CircleShape)
-        } else {
-            Modifier
-        }
+        val knobBorderModifier = skin.stickKnobBorder
+            ?.let { Modifier.border(1.dp, it, CircleShape) }
+            ?: Modifier
         Box(
             Modifier
                 .size(diameter)
@@ -969,18 +981,18 @@ private fun VirtualStick(
                 }
                 .clip(CircleShape)
                 .background(Color.Transparent)
-                .border(1.dp, Color.White.copy(alpha = opacity * 0.3f), CircleShape),
+                .border(1.dp, skin.stickTrack, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             Box(
                 Modifier
-                    .size(diameter * 0.44f)
+                    .size(diameter * LocalTouchStickKnobScale.current.coerceIn(0.28f, 0.72f))
                     .graphicsLayer {
                         translationX = knobOffset.x
                         translationY = knobOffset.y
                     }
                     .clip(CircleShape)
-                    .background(knobBackground)
+                    .background(skin.stickKnob)
                     .then(knobBorderModifier)
             )
         }
@@ -990,22 +1002,22 @@ private fun VirtualStick(
 private const val LOCK_ZONE_MAX_TRAVEL_DP = 72f
 
 @Composable
-private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
+private fun FaceButtonCluster(client: NativeStreamClient, scale: Float, onButtonTone: () -> Unit) {
     val buttonSize = 54.dp * scale
     val distance = buttonSize * 1.05f
     val boxSize = distance * 2 + buttonSize
     Box(Modifier.size(boxSize)) {
         Box(Modifier.align(Alignment.Center).offset(y = -distance)) {
-            GamepadButton("Y", 0x8000, client, opacity, buttonSize, onButtonTone)
+            GamepadButton("Y", 0x8000, client, buttonSize, onButtonTone)
         }
         Box(Modifier.align(Alignment.Center).offset(y = distance)) {
-            GamepadButton("A", 0x1000, client, opacity, buttonSize, onButtonTone)
+            GamepadButton("A", 0x1000, client, buttonSize, onButtonTone)
         }
         Box(Modifier.align(Alignment.Center).offset(x = -distance)) {
-            GamepadButton("X", 0x4000, client, opacity, buttonSize, onButtonTone)
+            GamepadButton("X", 0x4000, client, buttonSize, onButtonTone)
         }
         Box(Modifier.align(Alignment.Center).offset(x = distance)) {
-            GamepadButton("B", 0x2000, client, opacity, buttonSize, onButtonTone)
+            GamepadButton("B", 0x2000, client, buttonSize, onButtonTone)
         }
     }
 }
@@ -1014,13 +1026,8 @@ private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale:
 private fun DpadArrowhead(
     label: String,
     pressed: Boolean,
-    opacity: Float,
 ) {
-    val arrowColor = if (pressed) {
-        Color.White
-    } else {
-        Color.White.copy(alpha = opacity * 0.8f)
-    }
+    val arrowColor = LocalTouchSkin.current.glyphFor(pressed)
     Text(
         text = label,
         fontWeight = FontWeight.Bold,
@@ -1030,7 +1037,7 @@ private fun DpadArrowhead(
 }
 
 @Composable
-private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
+private fun DpadCluster(client: NativeStreamClient, scale: Float, onButtonTone: () -> Unit) {
     val currentOnButtonTone by rememberUpdatedState(onButtonTone)
     val buttonSize = 54.dp * scale
     val distance = buttonSize * 1.05f
@@ -1041,10 +1048,10 @@ private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float
     var leftPressed by remember { mutableStateOf(false) }
     var rightPressed by remember { mutableStateOf(false) }
 
-    val style = LocalTouchControllerStyle.current
-    val crossColor = if (style == TouchControllerStyle.V2) Color.Transparent else Color.Black.copy(alpha = opacity * 0.6f)
-    val crossBorderColor = if (style == TouchControllerStyle.V2) Color.White.copy(alpha = opacity * 0.5f) else Color.White.copy(alpha = opacity * 0.4f)
-    val crossBorderWidth = 1.dp
+    val skin = LocalTouchSkin.current
+    val crossColor = skin.dpadFill
+    val crossBorderColor = skin.border
+    val crossBorderWidth = skin.borderWidth
 
     DisposableEffect(client) {
         onDispose {
@@ -1144,15 +1151,11 @@ private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float
                 )
             }
 
-            if (style != TouchControllerStyle.V2) {
+            if (crossColor != Color.Transparent) {
                 drawPath(crossPath, crossColor)
             }
 
-            val pressedColor = if (style == TouchControllerStyle.V2) {
-                Color.White.copy(alpha = opacity * 0.15f)
-            } else {
-                Color.White.copy(alpha = opacity * 0.2f)
-            }
+            val pressedColor = skin.pressedFill
 
             val pressedPath = Path()
             if (upPressed) {
@@ -1213,16 +1216,16 @@ private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float
         }
 
         Box(Modifier.align(Alignment.Center).offset(y = -distance)) {
-            DpadArrowhead("▲", upPressed, opacity)
+            DpadArrowhead("▲", upPressed)
         }
         Box(Modifier.align(Alignment.Center).offset(y = distance)) {
-            DpadArrowhead("▼", downPressed, opacity)
+            DpadArrowhead("▼", downPressed)
         }
         Box(Modifier.align(Alignment.Center).offset(x = -distance)) {
-            DpadArrowhead("◀", leftPressed, opacity)
+            DpadArrowhead("◀", leftPressed)
         }
         Box(Modifier.align(Alignment.Center).offset(x = distance)) {
-            DpadArrowhead("▶", rightPressed, opacity)
+            DpadArrowhead("▶", rightPressed)
         }
     }
 }
@@ -1257,7 +1260,6 @@ private fun GamepadTriggerButton(
     label: String,
     left: Boolean,
     client: NativeStreamClient,
-    opacity: Float,
     width: androidx.compose.ui.unit.Dp,
     height: androidx.compose.ui.unit.Dp,
     shape: androidx.compose.ui.graphics.Shape,
@@ -1271,23 +1273,11 @@ private fun GamepadTriggerButton(
             if (down) onPressTone()
         }
     }
-    val style = LocalTouchControllerStyle.current
-    val buttonColor = if (style == TouchControllerStyle.V2) {
-        Color.Transparent
-    } else {
-        Color.Black.copy(alpha = opacity * 0.6f)
-    }
-    val pressedColor = if (style == TouchControllerStyle.V2) {
-        Color.White.copy(alpha = opacity * 0.15f)
-    } else {
-        Color.White.copy(alpha = opacity * 0.2f)
-    }
-    val borderColor = if (style == TouchControllerStyle.V2) {
-        if (pressed) Color.White.copy(alpha = opacity * 0.9f) else Color.White.copy(alpha = opacity * 0.5f)
-    } else {
-        Color.White.copy(alpha = opacity * 0.4f)
-    }
-    val borderWidth = if (style == TouchControllerStyle.V2 && pressed) 2.dp else 1.dp
+    val skin = LocalTouchSkin.current
+    val buttonColor = skin.fill
+    val pressedColor = skin.pressedFill
+    val borderColor = skin.borderFor(pressed)
+    val borderWidth = skin.borderWidthFor(pressed)
     Box(
         Modifier
             .width(width)
@@ -1304,7 +1294,7 @@ private fun GamepadTriggerButton(
                 .border(borderWidth, borderColor, shape),
             contentAlignment = Alignment.Center,
         ) {
-            Text(label, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = opacity * 0.9f))
+            TouchButtonLabel(label, pressed, skin)
         }
     }
     DisposableEffect(client, left) {
@@ -1319,7 +1309,6 @@ private fun GamepadBumperButton(
     label: String,
     mask: Int,
     client: NativeStreamClient,
-    opacity: Float,
     width: androidx.compose.ui.unit.Dp,
     height: androidx.compose.ui.unit.Dp,
     onPressTone: () -> Unit = {},
@@ -1332,23 +1321,11 @@ private fun GamepadBumperButton(
             if (down) onPressTone()
         }
     }
-    val style = LocalTouchControllerStyle.current
-    val buttonColor = if (style == TouchControllerStyle.V2) {
-        Color.Transparent
-    } else {
-        Color.Black.copy(alpha = opacity * 0.6f)
-    }
-    val pressedColor = if (style == TouchControllerStyle.V2) {
-        Color.White.copy(alpha = opacity * 0.15f)
-    } else {
-        Color.White.copy(alpha = opacity * 0.2f)
-    }
-    val borderColor = if (style == TouchControllerStyle.V2) {
-        if (pressed) Color.White.copy(alpha = opacity * 0.9f) else Color.White.copy(alpha = opacity * 0.5f)
-    } else {
-        Color.White.copy(alpha = opacity * 0.4f)
-    }
-    val borderWidth = if (style == TouchControllerStyle.V2 && pressed) 2.dp else 1.dp
+    val skin = LocalTouchSkin.current
+    val buttonColor = skin.fill
+    val pressedColor = skin.pressedFill
+    val borderColor = skin.borderFor(pressed)
+    val borderWidth = skin.borderWidthFor(pressed)
     val shape = RoundedCornerShape(50)
     Box(
         Modifier
@@ -1360,7 +1337,7 @@ private fun GamepadBumperButton(
             .virtualPressInput(client, mask, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = opacity * 0.9f))
+        TouchButtonLabel(label, pressed, skin)
     }
     DisposableEffect(client, mask) {
         onDispose {
@@ -1374,7 +1351,6 @@ private fun GamepadButton(
     label: String,
     mask: Int,
     client: NativeStreamClient,
-    opacity: Float,
     size: androidx.compose.ui.unit.Dp,
     onPressTone: () -> Unit = {},
 ) {
@@ -1387,23 +1363,11 @@ private fun GamepadButton(
             if (down) currentOnPressTone()
         }
     }
-    val style = LocalTouchControllerStyle.current
-    val buttonColor = if (style == TouchControllerStyle.V2) {
-        Color.Transparent
-    } else {
-        Color.Black.copy(alpha = opacity * 0.6f)
-    }
-    val pressedColor = if (style == TouchControllerStyle.V2) {
-        Color.White.copy(alpha = opacity * 0.15f)
-    } else {
-        Color.White.copy(alpha = opacity * 0.2f)
-    }
-    val borderColor = if (style == TouchControllerStyle.V2) {
-        if (pressed) Color.White.copy(alpha = opacity * 0.9f) else Color.White.copy(alpha = opacity * 0.5f)
-    } else {
-        Color.White.copy(alpha = opacity * 0.4f)
-    }
-    val borderWidth = if (style == TouchControllerStyle.V2 && pressed) 2.dp else 1.dp
+    val skin = LocalTouchSkin.current
+    val buttonColor = skin.fill
+    val pressedColor = skin.pressedFill
+    val borderColor = skin.borderFor(pressed)
+    val borderWidth = skin.borderWidthFor(pressed)
     Box(
         Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
@@ -1418,11 +1382,7 @@ private fun GamepadButton(
                 .border(borderWidth, borderColor, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = label,
-                fontWeight = FontWeight.SemiBold,
-                color = Color.White.copy(alpha = opacity * 0.9f),
-            )
+            TouchButtonLabel(label, pressed, skin)
         }
     }
     DisposableEffect(client, mask) {
@@ -1437,7 +1397,6 @@ private fun GamepadPillButton(
     label: String,
     mask: Int,
     client: NativeStreamClient,
-    opacity: Float,
     width: androidx.compose.ui.unit.Dp,
     height: androidx.compose.ui.unit.Dp,
     onPressTone: () -> Unit = {},
@@ -1451,23 +1410,11 @@ private fun GamepadPillButton(
             if (down) currentOnPressTone()
         }
     }
-    val style = LocalTouchControllerStyle.current
-    val buttonColor = if (style == TouchControllerStyle.V2) {
-        Color.Transparent
-    } else {
-        Color.Black.copy(alpha = opacity * 0.6f)
-    }
-    val pressedColor = if (style == TouchControllerStyle.V2) {
-        Color.White.copy(alpha = opacity * 0.15f)
-    } else {
-        Color.White.copy(alpha = opacity * 0.2f)
-    }
-    val borderColor = if (style == TouchControllerStyle.V2) {
-        if (pressed) Color.White.copy(alpha = opacity * 0.9f) else Color.White.copy(alpha = opacity * 0.5f)
-    } else {
-        Color.White.copy(alpha = opacity * 0.4f)
-    }
-    val borderWidth = if (style == TouchControllerStyle.V2 && pressed) 2.dp else 1.dp
+    val skin = LocalTouchSkin.current
+    val buttonColor = skin.fill
+    val pressedColor = skin.pressedFill
+    val borderColor = skin.borderFor(pressed)
+    val borderWidth = skin.borderWidthFor(pressed)
     Box(
         Modifier
             .width(width)
@@ -1478,17 +1425,24 @@ private fun GamepadPillButton(
             .virtualPressInput(client, mask, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            label,
-            fontWeight = FontWeight.SemiBold,
-            color = Color.White.copy(alpha = opacity * 0.9f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        TouchButtonLabel(label, pressed, skin)
     }
     DisposableEffect(client, mask) {
         onDispose {
             client.setVirtualButton(mask, false)
         }
     }
+}
+
+/** Blank caps are a supported look; the d-pad arrowheads are not optional, a bare cross is unusable. */
+@Composable
+private fun TouchButtonLabel(label: String, pressed: Boolean, skin: TouchSkinColors) {
+    if (!LocalTouchButtonLabels.current) return
+    Text(
+        text = label,
+        fontWeight = FontWeight.SemiBold,
+        color = skin.glyphFor(pressed),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
 }

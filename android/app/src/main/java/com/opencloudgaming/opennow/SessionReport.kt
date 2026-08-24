@@ -580,8 +580,7 @@ private fun StreamSettings.hasSameSessionReportProfile(other: StreamSettings): B
         maxBitrateMbps == other.maxBitrateMbps &&
         codec == other.codec &&
         colorQuality == other.colorQuality &&
-        hdrEnabled == other.hdrEnabled &&
-        enableCloudGsync == other.enableCloudGsync
+        hdrEnabled == other.hdrEnabled
 
 private fun formatMbps(kbps: Int): String =
     "%.1f".format(java.util.Locale.US, kbps.coerceAtLeast(0) / 1000.0)

@@ -146,6 +146,7 @@ class LaunchOwnershipTest {
             variants = listOf(variant(id = "steam", store = "Steam")),
         ).copy(
             description = "Enriched description",
+            genres = listOf("ACTION", "ROLE_PLAYING"),
             imageUrl = "game-box-art",
             screenshotUrls = listOf("screenshot-one", "screenshot-two"),
         )
@@ -160,6 +161,7 @@ class LaunchOwnershipTest {
         assertEquals("MANUAL", merged.variants.single().libraryStatus)
         assertEquals(true, merged.variants.single().librarySelected)
         assertEquals("Enriched description", merged.description)
+        assertEquals(listOf("ACTION", "ROLE_PLAYING"), merged.genres)
         assertEquals("game-box-art", merged.imageUrl)
         assertEquals(listOf("screenshot-one", "screenshot-two"), merged.screenshotUrls)
     }
@@ -216,6 +218,18 @@ class LaunchOwnershipTest {
         )
 
         assertEquals(listOf("Xbox"), libraryStoreDisplayNames(game))
+    }
+
+    @Test
+    fun detailMetadataHydrationOnlyRunsWhenCatalogGenresAreMissing() {
+        val catalogGame = game(
+            variants = listOf(variant(libraryStatus = "NOT_OWNED")),
+            uuid = "catalog-app",
+        )
+
+        assertTrue(shouldHydrateGameDetails(catalogGame))
+        assertFalse(shouldHydrateGameDetails(catalogGame.copy(genres = listOf("ACTION"))))
+        assertFalse(shouldHydrateGameDetails(catalogGame.copy(uuid = null)))
     }
 
     private fun variant(

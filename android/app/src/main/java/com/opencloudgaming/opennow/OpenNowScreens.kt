@@ -220,7 +220,6 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInteropFilter
@@ -240,7 +239,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -353,40 +351,87 @@ internal val UiAccent.secondaryColor: Color
 internal data class ActiveSelectionEffectStyle(
     val color: Color,
     val secondaryColor: Color,
+    /** Flat selected fills, icon tints, and menu highlights — everything that is not an effect. */
+    val tintColor: Color,
     val enabled: Boolean,
     val absoluteCinemaActive: Boolean,
     val absoluteCinemaEverywhere: Boolean,
 )
 
 /**
- * Absolute Cinema effects are normally a controller-focus treatment, not a color override. The
- * everywhere suboption deliberately removes that controller gate and broadens the same treatment
- * to pointer and non-controller interactions. The user's selected accent remains the color owner.
+ * The fixed tint for selected navigation — the tab bar and its rotated form, the rail.
+ *
+ * Navigation chrome deliberately does not follow the interface accent. It is the one surface that
+ * is always on screen, and an accent there reads as the app changing identity rather than as a
+ * highlight.
  */
-internal fun AppSettings.activeSelectionEffectStyle(
-    physicalControllerConnected: Boolean,
-): ActiveSelectionEffectStyle {
+internal val NavigationSelectionColor = Color.White
+
+/**
+ * Absolute Cinema is an explicit animation toggle, not a color override. The everywhere suboption
+ * broadens the same treatment to additional hovered and focused surfaces. The user's selected
+ * accent remains the color owner.
+ *
+ * [ActiveSelectionEffectStyle.tintColor] splits the flat parts of selection away from the animated
+ * ones. Absolute Cinema keeps its orange and blue in the energy frames — that is the whole point of
+ * it — but takes the default white for selected menu rows and icons, where a saturated orange on
+ * every highlighted row is loud rather than cinematic.
+ */
+internal fun AppSettings.activeSelectionEffectStyle(): ActiveSelectionEffectStyle {
     val cinemaEverywhere = absoluteCinemaEffects && absoluteCinemaEverywhere
-    val cinemaActive = absoluteCinemaEffects && (physicalControllerConnected || cinemaEverywhere)
+    val cinemaActive = absoluteCinemaEffects
     val baseColor = if (uiAccent == UiAccent.OpenNow) Color.White else uiAccent.color
     val baseSecondaryColor = if (uiAccent == UiAccent.OpenNow) Color.White else uiAccent.secondaryColor
     return ActiveSelectionEffectStyle(
         color = baseColor,
         secondaryColor = baseSecondaryColor,
-        enabled = cinemaActive || (liveSelectedOutlines && uiAccent != UiAccent.OpenNow),
+        tintColor = if (uiAccent.usesDefaultSelectionTint()) Color.White else uiAccent.color,
+        // Selection borders are an Absolute Cinema effect. Other accents still own fills, icon
+        // tints, and text emphasis, but no longer draw outlines around ordinary controls.
+        enabled = cinemaActive,
         absoluteCinemaActive = cinemaActive,
         absoluteCinemaEverywhere = cinemaEverywhere,
     )
 }
 
+/** Accents whose flat selection colour stays the default white regardless of the effect colour. */
+internal fun UiAccent.usesDefaultSelectionTint(): Boolean =
+    this == UiAccent.OpenNow || this == UiAccent.AbsoluteCinema
+
+/**
+ * The Material palette colour for an accent.
+ *
+ * Absolute Cinema is an *effects* theme, not a colour theme: its orange and blue belong to the
+ * energy frames. Painting the whole Material surface — every menu highlight, settings icon, and
+ * control — in the same orange was overwhelming, so it takes the default palette here and shows
+ * its colour only where something is actually animating.
+ */
+internal val UiAccent.themeColor: Color
+    get() = if (this == UiAccent.AbsoluteCinema) OpenNowPalette.AccentDefault else color
+
+internal val UiAccent.themeSecondaryColor: Color
+    get() = if (this == UiAccent.AbsoluteCinema) OpenNowPalette.AccentDefaultSecondary else secondaryColor
+
 internal val LocalActiveSelectionColor = staticCompositionLocalOf { Color.White }
 internal val LocalActiveSelectionSecondaryColor = staticCompositionLocalOf { Color.White }
+/** Flat selected fills and icon tints. See [ActiveSelectionEffectStyle.tintColor]. */
+internal val LocalSelectionTintColor = staticCompositionLocalOf { Color.White }
 internal val LocalActiveSelectionEnabled = staticCompositionLocalOf { true }
 internal val LocalAbsoluteCinemaEffects = staticCompositionLocalOf { false }
 internal val LocalAbsoluteCinemaEverywhere = staticCompositionLocalOf { false }
+internal val LocalVibrationEnabled = staticCompositionLocalOf { true }
 // Leave a full control-height runway below the last item so mobile focus/hover frames do not
 // collide with the viewport edge in Settings, Library, or Store.
 internal val AppScrollEndSpacing = 72.dp
+
+internal fun shouldShowAppWallpaper(
+    page: AppPage,
+    inStream: Boolean,
+    settings: AppSettings,
+): Boolean =
+    !inStream &&
+        (page == AppPage.Home || page == AppPage.Library || page == AppPage.Settings) &&
+        shouldShowCatalogWallpaper(settings)
 
 @Composable
 fun OpenNowTheme(
@@ -395,7 +440,7 @@ fun OpenNowTheme(
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
-    val accent = settings.uiAccent.color
+    val accent = settings.uiAccent.themeColor
     val fallbackScheme = darkColorScheme(
         primary = accent,
         onPrimary = OpenNowPalette.OnAccent,
@@ -405,7 +450,7 @@ fun OpenNowTheme(
         onBackground = TextPrimary,
         onSurface = TextPrimary,
         onSurfaceVariant = TextMuted,
-        secondary = settings.uiAccent.secondaryColor,
+        secondary = settings.uiAccent.themeSecondaryColor,
         errorContainer = OpenNowPalette.ErrorContainer,
         onErrorContainer = OpenNowPalette.OnErrorContainer,
     )
@@ -413,7 +458,7 @@ fun OpenNowTheme(
         dynamicDarkColorScheme(context).copy(
             primary = accent,
             onPrimary = OpenNowPalette.OnAccent,
-            secondary = settings.uiAccent.secondaryColor,
+            secondary = settings.uiAccent.themeSecondaryColor,
             tertiary = Green,
             errorContainer = OpenNowPalette.ErrorContainer,
             onErrorContainer = OpenNowPalette.OnErrorContainer,
@@ -433,14 +478,23 @@ fun OpenNowTheme(
         }.getOrDefault(1f)
         systemScale == 0f || !settings.controllerBackgroundAnimations
     }
-    val selectionEffectStyle = settings.activeSelectionEffectStyle(physicalControllerConnected)
+    val selectionEffectStyle = settings.activeSelectionEffectStyle()
+    val gamingHandheld = remember { isGamingHandheldDevice() }
+    val openNowHaptics = rememberOpenNowHaptics(
+        enabled = settings.vibrationEnabled,
+        navigationEnabled = settings.vibrationEnabled && (gamingHandheld || physicalControllerConnected),
+        handheldFeedback = gamingHandheld,
+    )
     CompositionLocalProvider(
         LocalReduceMotion provides reduceMotion,
+        LocalOpenNowHaptics provides openNowHaptics,
         LocalActiveSelectionColor provides selectionEffectStyle.color,
         LocalActiveSelectionSecondaryColor provides selectionEffectStyle.secondaryColor,
+        LocalSelectionTintColor provides selectionEffectStyle.tintColor,
         LocalActiveSelectionEnabled provides selectionEffectStyle.enabled,
         LocalAbsoluteCinemaEffects provides selectionEffectStyle.absoluteCinemaActive,
         LocalAbsoluteCinemaEverywhere provides selectionEffectStyle.absoluteCinemaEverywhere,
+        LocalVibrationEnabled provides settings.vibrationEnabled,
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
@@ -481,7 +535,10 @@ fun OpenNowApp(
     var hiddenUpdatePromptKey by remember { mutableStateOf<String?>(null) }
     var completedSessionBugReportOpen by rememberSaveable { mutableStateOf(false) }
     val updatePromptKey = state.androidUpdate.visibleNoticeKey(state.dismissedAndroidUpdateNoticeKey)
-    val showAnalyticsConsent = !state.settings.analyticsConsentAsked
+    // After sign-in, not before: the appearance step previews the user's own box art, and there is
+    // no catalog to draw from until an account is attached.
+    val showSetupFlow = state.authSession != null && shouldShowSetupFlow(state.settings)
+    val showAnalyticsConsent = !showSetupFlow && !state.settings.analyticsConsentAsked
     val diagnosticDialogVisible = state.diagnosticShare.awaitingConsent ||
         state.diagnosticShare.uploading ||
         state.diagnosticShare.pasteUrl != null
@@ -493,6 +550,7 @@ fun OpenNowApp(
         !showCompletedSessionBugReport
     val showUpdatePrompt = updatePromptKey != null &&
         updatePromptKey != hiddenUpdatePromptKey &&
+        !showSetupFlow &&
         !showAnalyticsConsent &&
         !showSessionReport &&
         !showCompletedSessionBugReport &&
@@ -641,6 +699,7 @@ fun OpenNowApp(
             ) {
                 Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
                     when {
+                        showSetupFlow -> SetupFlowScreen(state = state, viewModel = viewModel)
                         state.authSession != null -> MainShell(
                             state = state,
                             viewModel = viewModel,
@@ -694,6 +753,7 @@ fun OpenNowApp(
                                     codecReport = state.codecReport,
                                     androidTvProfile = state.androidTvProfile,
                                     serverZone = state.streamSession?.zone,
+                                    manuallySelectedServer = state.manuallySelectedServerForReport,
                                     inputDiagnostics = NativeInputDiagnostics.snapshot(),
                                 ),
                             )
@@ -765,7 +825,9 @@ private fun MainShell(
     val context = LocalContext.current
     val inStream = state.page == AppPage.Stream
     val streamingActive = inStream && state.streamStatus != "idle"
-    val modalPickerOpen = state.pendingPrintedWasteGame != null || state.pendingStoreChoiceGame != null
+    val modalPickerOpen = state.pendingPrintedWasteGame != null ||
+        state.pendingStoreChoiceGame != null ||
+        state.pendingMembershipNotice != null
     val tvProfile = state.androidTvProfile
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !tvProfile)
     val navAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
@@ -848,6 +910,7 @@ private fun MainShell(
         val portraitChrome = !inStream && maxHeight >= maxWidth
         val showNavigationRail = !inStream && (tvProfile || phoneLandscapeChrome)
         val scrollChromePage = state.page == AppPage.Home || state.page == AppPage.Library
+        val wallpaperPage = scrollChromePage || state.page == AppPage.Settings
         val tvCatalogChrome = tvProfile && scrollChromePage
         val mobileCatalogControlsInTopBar = !tvProfile && portraitChrome
         val storeControlsInTopBar = (mobileCatalogControlsInTopBar || phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Home
@@ -863,13 +926,18 @@ private fun MainShell(
             }
         }
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
-        if (!inStream && (state.page == AppPage.Home || state.page == AppPage.Library)) {
+        // A chosen app wallpaper stays visible through Settings as well as Store and Library.
+        // Stream surfaces remain opaque so custom art can never compete with video or overlays.
+        val wallpaperVisible = shouldShowAppWallpaper(state.page, inStream, state.settings)
+        if (wallpaperVisible) {
             CatalogWallpaperBackdrop(
                 settings = state.settings,
                 tvProfile = tvProfile,
                 width = maxWidth,
                 height = maxHeight,
             )
+        } else if (!inStream && state.settings.ambientBackgroundEnabled) {
+            AmbientBackground()
         }
 
         Scaffold(
@@ -948,7 +1016,7 @@ private fun MainShell(
                             state = state,
                             activeSearchTarget = visibleSearchTarget,
                             largeIcons = phoneLandscapeChrome,
-                            darkenForCatalogBackground = state.settings.nerdCatalogBackground && scrollChromePage,
+                            darkenForCatalogBackground = state.settings.nerdCatalogBackground && wallpaperPage,
                             showSettingsBack = shouldShowSettingsBackRail(
                                 tvProfile = tvProfile,
                                 settingsPageOpen = state.page == AppPage.Settings,
@@ -985,9 +1053,6 @@ private fun MainShell(
                                     onResumeActiveSession = viewModel::resumeActiveSession,
                                     onOpenSettings = { navigateFromAppChrome(AppPage.Settings) },
                                     onOpenLocalApps = {
-                                        if (!state.settings.localAppsEnabled) {
-                                            viewModel.updateSettings(state.settings.copy(localAppsEnabled = true))
-                                        }
                                         visibleSearchTarget = null
                                         viewModel.setPage(AppPage.Library)
                                     },
@@ -1006,11 +1071,15 @@ private fun MainShell(
                                             )
                                         } else {
                                             Spacer(Modifier.weight(1f))
-                                            val filterGroups = catalogVisibleFilterGroups(state.catalogResult.filterGroups)
+                                            val filterOptions = rememberCatalogFilterOptions(
+                                                remember(state.catalogResult.filterGroups) {
+                                                    catalogVisibleFilterGroups(state.catalogResult.filterGroups)
+                                                },
+                                            )
                                             CatalogSortFilterMenu(
                                                 sortOptions = state.catalogResult.sortOptions,
                                                 selectedSortId = state.catalogSortId,
-                                                filterOptions = catalogFilterOptions(filterGroups),
+                                                filterOptions = filterOptions,
                                                 selectedFilterIds = state.catalogFilterIds,
                                                 onSortChange = viewModel::setCatalogSort,
                                                 onFilterToggle = viewModel::toggleCatalogFilter,
@@ -1160,6 +1229,15 @@ private fun MainShell(
                         AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
                             PrintedWasteSelector(state, game, viewModel)
                         }
+                    }
+                }
+                state.pendingMembershipNotice?.let { notice ->
+                    ControllerModalDialog(onDismissRequest = viewModel::dismissMembershipNotice) {
+                        MembershipRequirementDialog(
+                            notice = notice,
+                            onCancel = viewModel::dismissMembershipNotice,
+                            onContinue = viewModel::continuePastMembershipNotice,
+                        )
                     }
                 }
                 state.pendingStoreChoiceGame?.let { game ->
@@ -1324,11 +1402,18 @@ internal fun navigationRailScrim(darkenForCatalogBackground: Boolean): Color =
 internal fun shouldShowLocalTvConnectionDot(tvProfile: Boolean, pairedDeviceName: String?): Boolean =
     tvProfile && !pairedDeviceName.isNullOrBlank()
 
+internal fun shouldShowLocalAppsProfileAction(
+    localAppLauncherSupported: Boolean,
+    localAppsEnabled: Boolean,
+): Boolean = localAppLauncherSupported && localAppsEnabled
+
 internal fun shouldAnimateOpenNowAppIcon(
     codecReport: RuntimeCodecReport?,
     reduceMotion: Boolean,
+    absoluteCinemaEnabled: Boolean,
 ): Boolean =
-    !reduceMotion &&
+    absoluteCinemaEnabled &&
+        !reduceMotion &&
         codecReport != null &&
         !codecReport.lowPowerGpuProfile &&
         !codecReport.constrainedRuntimeProfile
@@ -1352,15 +1437,17 @@ private fun AppNavigationRailItem(
     showConnectionDot: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val haptics = LocalHapticFeedback.current
-    val accent = LocalActiveSelectionColor.current
-    val secondaryAccent = LocalActiveSelectionSecondaryColor.current
+    val haptics = LocalOpenNowHaptics.current
+    // Flat rail chrome is fixed; only the animated frame around it follows the accent.
+    val navTint = NavigationSelectionColor
+    val frameTint = LocalActiveSelectionColor.current
+    val frameSecondaryTint = LocalActiveSelectionSecondaryColor.current
     val showActiveFrame =
         (selected && LocalActiveSelectionEnabled.current) ||
             (focused && LocalAbsoluteCinemaEffects.current)
     val contentColor = when {
         focused -> Color.White
-        selected -> accent
+        selected -> navTint
         else -> TextMuted
     }
     Box(
@@ -1370,20 +1457,17 @@ private fun AppNavigationRailItem(
     ) {
         Surface(
             onClick = {
-                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                haptics?.play(HapticCue.Activate)
                 onClick()
             },
             modifier = Modifier
                 .fillMaxWidth()
                 .onFocusChanged { focused = it.isFocused }
+                .focusMoveHaptics()
                 .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier),
             shape = RoundedCornerShape(18.dp),
-            color = if (selected && !focused) accent.copy(alpha = 0.12f) else Color.Transparent,
-            border = when {
-                focused -> BorderStroke(2.dp, Color.White.copy(alpha = 0.96f))
-                selected -> BorderStroke(3.dp, accent)
-                else -> null
-            },
+            color = if (selected && !focused) navTint.copy(alpha = 0.12f) else Color.Transparent,
+            border = null,
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
         ) {
@@ -1424,8 +1508,8 @@ private fun AppNavigationRailItem(
         ControllerFocusFrame(
             visible = showActiveFrame,
             cornerRadius = 18.dp,
-            tint = accent,
-            secondaryTint = secondaryAccent,
+            tint = frameTint,
+            secondaryTint = frameSecondaryTint,
         )
     }
 }
@@ -1444,18 +1528,19 @@ private fun RowScope.BottomNavItem(
     iconRes: Int,
     label: String,
 ) {
-    val haptics = LocalHapticFeedback.current
-    val accent = LocalActiveSelectionColor.current
+    val haptics = LocalOpenNowHaptics.current
+    // See AppNavigationRailItem: the tab bar is the rail rotated, and keeps the same fixed tint.
+    val navTint = NavigationSelectionColor
     NavigationBarItem(
         selected = selected,
         onClick = {
-            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+            haptics?.play(HapticCue.Activate)
             onClick()
         },
         colors = NavigationBarItemDefaults.colors(
-            selectedIconColor = accent,
-            selectedTextColor = accent,
-            indicatorColor = accent.copy(alpha = 0.20f),
+            selectedIconColor = navTint,
+            selectedTextColor = navTint,
+            indicatorColor = navTint.copy(alpha = 0.20f),
             unselectedIconColor = TextMuted,
             unselectedTextColor = TextMuted,
         ),
@@ -1572,8 +1657,7 @@ private fun TopBarProfileMenu(
         ?: savedAccount?.email?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.profile_not_available)
     val profileDescription = stringResource(R.string.profile_menu_description)
-    val shape = RoundedCornerShape(14.dp)
-    val haptics = LocalHapticFeedback.current
+    val haptics = LocalOpenNowHaptics.current
     val launcherControl = rememberDefaultLauncherControl()
 
     Box {
@@ -1587,30 +1671,23 @@ private fun TopBarProfileMenu(
                     } ?: Modifier,
                 )
                 .onFocusChanged { focused = it.isFocused }
+                .focusMoveHaptics()
                 .semantics {
                     contentDescription = profileDescription
                     role = Role.Button
                 }
                 .clickable {
-                    haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                    haptics?.play(HapticCue.Activate)
                     expanded = true
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .border(
-                        width = 1.dp,
-                        color = if (focused) Color.Transparent else Color.White.copy(alpha = 0.14f),
-                        shape = shape,
-                    ),
-            )
             OpenNowAppIcon(
                 size = 32.dp,
                 animate = shouldAnimateOpenNowAppIcon(
                     codecReport = state.codecReport,
                     reduceMotion = LocalReduceMotion.current,
+                    absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current,
                 ),
             )
             ControllerFocusFrame(
@@ -1660,36 +1737,43 @@ private fun TopBarProfileMenu(
                     },
                     onClick = {
                         expanded = false
-                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                        haptics?.play(HapticCue.Activate)
                         launcherControl.request()
                     },
                 )
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            stringResource(R.string.settings_local_apps),
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    },
-                    onClick = {
-                        expanded = false
-                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
-                        onOpenLocalApps()
-                    },
-                )
+                if (
+                    shouldShowLocalAppsProfileAction(
+                        localAppLauncherSupported = BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED,
+                        localAppsEnabled = state.settings.localAppsEnabled,
+                    )
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                stringResource(R.string.settings_local_apps),
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        },
+                        onClick = {
+                            expanded = false
+                            haptics?.play(HapticCue.Activate)
+                            onOpenLocalApps()
+                        },
+                    )
+                }
             }
             HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
             DropdownMenuItem(
                 text = {
                     Text(
                         stringResource(R.string.nav_settings),
-                        color = LocalActiveSelectionColor.current,
+                        color = LocalSelectionTintColor.current,
                         fontWeight = FontWeight.Bold,
                     )
                 },
                 onClick = {
                     expanded = false
-                    haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                    haptics?.play(HapticCue.Activate)
                     onOpenSettings()
                 },
             )
@@ -1714,6 +1798,7 @@ private fun TopStatusDetails(
             modifier = Modifier
                 .height(TopBarCompactControlHeight)
                 .onFocusChanged { focused = it.isFocused }
+                .focusMoveHaptics()
                 .semantics { contentDescription = "Open Stream settings: $summary" }
                 .clickable(onClick = onOpenStreamSettings)
                 .then(

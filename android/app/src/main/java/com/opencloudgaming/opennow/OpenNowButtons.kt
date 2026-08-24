@@ -16,7 +16,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
 
@@ -51,7 +50,11 @@ internal fun Button(
         shape = shape,
         colors = colors,
         elevation = elevation,
-        border = if (focused && controllerFocusEnabled) BorderStroke(4.dp, Color.White) else border,
+        border = if (focused && controllerFocusEnabled && LocalAbsoluteCinemaEffects.current) {
+            BorderStroke(4.dp, LocalActiveSelectionColor.current)
+        } else {
+            border
+        },
         contentPadding = contentPadding,
         interactionSource = interactionSource,
         content = content,

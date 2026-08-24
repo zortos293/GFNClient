@@ -3,6 +3,7 @@ package com.opencloudgaming.opennow
 import kotlinx.serialization.decodeFromString
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -20,7 +21,22 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.absoluteCinemaEffects)
         assertFalse(settings.absoluteCinemaEverywhere)
         assertFalse(settings.localAppsEnabled)
+        assertTrue(settings.ambientBackgroundEnabled)
         assertTrue(settings.localAppPackageNames.isEmpty())
+        // The shelf opens on first sight; folding it is a choice the reader makes and keeps.
+        assertFalse(settings.localAppsCollapsed)
+        assertTrue(settings.libraryHeroCarousel)
+        // Rumble routing stays automatic until someone's hardware proves it needs forcing.
+        assertEquals(HapticsOutputPreference.Auto, settings.hapticsOutput)
+        assertEquals(TouchControllerStyle.V1, settings.androidTouch.touchControllerStyle)
+        assertNull(settings.androidTouch.touchSkinTint)
+        assertTrue(settings.androidTouch.touchButtonLabels)
+        assertFalse(settings.androidTouch.gyroscopeEnabled)
+        assertEquals(1f, settings.androidTouch.faceButtonScale, 0.0001f)
+        assertEquals(1f, settings.androidTouch.leftStickScale, 0.0001f)
+        assertEquals(1f, settings.androidTouch.rightStickScale, 0.0001f)
+        // Developer options are a hidden gesture, never a shipped or migrated-in default.
+        assertFalse(settings.developerOptionsUnlocked)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertTrue(metrics.fps)
         assertTrue(metrics.ping)
@@ -54,6 +70,8 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.absoluteCinemaEverywhere)
         assertFalse(settings.localAppsEnabled)
         assertTrue(settings.localAppPackageNames.isEmpty())
+        // Developer options are a hidden gesture, never a shipped or migrated-in default.
+        assertFalse(settings.developerOptionsUnlocked)
         assertTrue(settings.showSessionReportAfterStream)
         assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
         assertEquals(TouchAimMode.LockJoystick, settings.androidTouch.aimMode)
@@ -131,6 +149,18 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
+    fun legacyRelevanceDefaultMigratesOnceToMostPopular() {
+        val migrated = OpenNowJson.decodeFromString<AppSettings>(
+            """{"catalogSortId":"relevance"}""",
+        ).normalizedForAndroid()
+        val explicitRelevance = migrated.copy(catalogSortId = "relevance").normalizedForAndroid()
+
+        assertEquals(DEFAULT_CATALOG_SORT_ID, migrated.catalogSortId)
+        assertEquals(CATALOG_SORT_DEFAULT_VERSION, migrated.catalogSortDefaultVersion)
+        assertEquals("relevance", explicitRelevance.catalogSortId)
+    }
+
+    @Test
     fun touchAimZoneIsOptInAndPersistsWhenSelected() {
         val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
         val optedIn = OpenNowJson.decodeFromString<AppSettings>(
@@ -148,6 +178,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.nerdMode)
         assertEquals(CatalogBackgroundPreset.ColorfulAbstract, settings.catalogBackgroundPreset)
         assertTrue(settings.controllerUiSounds)
+        assertTrue(settings.vibrationEnabled)
         assertEquals(AppLaunchPage.Store, settings.launchPage)
         assertEquals(StreamPreset.Recommended, settings.streamPreset)
         assertFalse(settings.streamIntroMusic)
@@ -158,6 +189,15 @@ class AppSettingsDefaultsTest {
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)
         assertFalse(settings.stream.streamSharpeningEnabled)
+    }
+
+    @Test
+    fun legacyPhoneRumbleSettingControlsTheUnifiedVibrationToggle() {
+        val disabled = OpenNowJson.decodeFromString<AppSettings>(
+            """{"phoneRumbleFallback":false}""",
+        )
+
+        assertFalse(disabled.vibrationEnabled)
     }
 
     @Test
@@ -183,23 +223,35 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
-    fun phonePresentationKeepsAspectFitByDefaultAndPreservesLaterOptIn() {
+    fun phonePresentationFillsTheDisplayByDefaultAndRunsOnce() {
         val migrated = AppSettings().withCurrentStreamPresentationDefaults(androidTvProfile = false)
 
+        // Filling is a stretch on one axis, never a crop, so no part of the picture is lost.
+        assertTrue(migrated.stretchStreamToFit)
         assertFalse(migrated.legacyCropStreamToFill)
-        assertFalse(migrated.stretchStreamToFit)
         assertEquals(STREAM_PRESENTATION_PROFILE_VERSION, migrated.streamPresentationProfileVersion)
 
-        val optedIn = migrated.copy(stretchStreamToFit = true)
-        assertEquals(optedIn, optedIn.withCurrentStreamPresentationDefaults(androidTvProfile = false))
+        // Already migrated: a later opt-out is the user's, and must survive every launch after it.
+        val optedOut = migrated.copy(stretchStreamToFit = false)
+        assertEquals(optedOut, optedOut.withCurrentStreamPresentationDefaults(androidTvProfile = false))
     }
 
     @Test
-    fun tvPresentationKeepsAspectFitByDefault() {
+    fun anExistingInstallIsMovedOntoTheFillingDefault() {
+        // A profile written by the previous release: migrated to version 1, letterboxed.
+        val existing = AppSettings(stretchStreamToFit = false, streamPresentationProfileVersion = 1)
+
+        assertTrue(existing.withCurrentStreamPresentationDefaults(androidTvProfile = false).stretchStreamToFit)
+    }
+
+    @Test
+    fun tvPresentationKeepsExactGeometry() {
+        // A TV panel and a 16:9 stream already agree; filling would be a no-op that misreports.
         val migrated = AppSettings().withCurrentStreamPresentationDefaults(androidTvProfile = true)
 
         assertFalse(migrated.legacyCropStreamToFill)
         assertFalse(migrated.stretchStreamToFit)
+        assertEquals(STREAM_PRESENTATION_PROFILE_VERSION, migrated.streamPresentationProfileVersion)
     }
 
     @Test

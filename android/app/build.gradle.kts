@@ -60,8 +60,8 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 23
         targetSdk = 36
-        versionCode = 92
-        versionName = "1.3.6"
+        versionCode = 94
+        versionName = "1.3.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
@@ -71,7 +71,8 @@ android {
         buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", "true")
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            // Keep legacy Intel TV devices eligible; App Bundles deliver only the matching ABI.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
 
     }
@@ -175,6 +176,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.4.0")
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
     implementation("com.google.android.play:app-update:2.1.0")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.mlkit:language-id:17.0.6")
     // Includes upstream Android AudioRecord restart and stopped-transceiver stats crash fixes.
     implementation("io.github.webrtc-sdk:android:144.7559.12")

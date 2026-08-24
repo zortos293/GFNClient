@@ -307,7 +307,9 @@ internal fun ActiveStreamModePill(
 ) {
     val context = LocalContext.current
     val appLocale = currentAndroidAppLocale(context)
-    val changes = remember(status) { activeStreamModeDisplayChanges(status) }
+    // Only the changes that still raise a notice. Resolution and colour negotiation is recorded
+    // silently — see activeStreamModeNoticeChanges.
+    val changes = remember(status) { activeStreamModeNoticeChanges(status) }
     if (changes.isEmpty()) return
     val causeAssessment = remember(status, recoveryReason) {
         activeStreamModeCauseAssessment(status, recoveryReason)
@@ -576,11 +578,39 @@ internal fun ActiveStreamModePill(
     }
 }
 
+internal enum class ActiveStreamModeChangeKind {
+    Resolution,
+    Codec,
+    Fps,
+    Bitrate,
+    Hdr,
+    Color,
+    L4S,
+    Sharpening,
+}
+
 internal data class ActiveStreamModeDisplayChange(
     val label: String,
     val requestedValue: String,
     val actualValue: String,
+    val kind: ActiveStreamModeChangeKind,
 )
+
+/**
+ * Changes the player is worth interrupting for.
+ *
+ * Resolution and colour-depth differences are routine session negotiation — the cloud allocates a
+ * mode, the decoder reports another — and every one of them was raising an in-stream notice whose
+ * only action is uploading a diagnostic report. They stay in the session report and the debug log,
+ * where they are useful, and no longer prompt.
+ */
+private val SILENT_ACTIVE_STREAM_MODE_CHANGES = setOf(
+    ActiveStreamModeChangeKind.Resolution,
+    ActiveStreamModeChangeKind.Color,
+)
+
+internal fun activeStreamModeNoticeChanges(status: ActiveStreamModeStatus): List<ActiveStreamModeDisplayChange> =
+    activeStreamModeDisplayChanges(status).filterNot { it.kind in SILENT_ACTIVE_STREAM_MODE_CHANGES }
 
 internal fun activeStreamModeDisplayChanges(status: ActiveStreamModeStatus): List<ActiveStreamModeDisplayChange> {
     val requested = status.requestedProfile
@@ -592,14 +622,29 @@ internal fun activeStreamModeDisplayChanges(status: ActiveStreamModeStatus): Lis
                     label = "Resolution",
                     requestedValue = formatRuntimeResolution(status.requestedResolution),
                     actualValue = formatRuntimeResolution(status.displayedResolution),
+                    kind = ActiveStreamModeChangeKind.Resolution,
                 ),
             )
         }
         if (requested.codec != actual.codec) {
-            add(ActiveStreamModeDisplayChange("Codec", requested.codec.name, actual.codec.name))
+            add(
+                ActiveStreamModeDisplayChange(
+                    "Codec",
+                    requested.codec.name,
+                    actual.codec.name,
+                    ActiveStreamModeChangeKind.Codec,
+                ),
+            )
         }
         if (requested.fps != actual.fps) {
-            add(ActiveStreamModeDisplayChange("FPS", requested.fps.toString(), actual.fps.toString()))
+            add(
+                ActiveStreamModeDisplayChange(
+                    "FPS",
+                    requested.fps.toString(),
+                    actual.fps.toString(),
+                    ActiveStreamModeChangeKind.Fps,
+                ),
+            )
         }
         if (requested.maxBitrateMbps != actual.maxBitrateMbps) {
             add(
@@ -607,26 +652,39 @@ internal fun activeStreamModeDisplayChanges(status: ActiveStreamModeStatus): Lis
                     "Bitrate",
                     "${requested.maxBitrateMbps} Mbps",
                     "${actual.maxBitrateMbps} Mbps",
+                    ActiveStreamModeChangeKind.Bitrate,
                 ),
             )
         }
         if (requested.hdrEnabled != actual.hdrEnabled) {
-            add(ActiveStreamModeDisplayChange("HDR", requested.hdrEnabled.onOffLabel(), actual.hdrEnabled.onOffLabel()))
-        }
-        if (requested.colorQuality != actual.colorQuality) {
-            add(ActiveStreamModeDisplayChange("Color", requested.colorQuality.label, actual.colorQuality.label))
-        }
-        if (requested.enableCloudGsync != actual.enableCloudGsync) {
             add(
                 ActiveStreamModeDisplayChange(
-                    "Cloud G-Sync",
-                    requested.enableCloudGsync.onOffLabel(),
-                    actual.enableCloudGsync.onOffLabel(),
+                    "HDR",
+                    requested.hdrEnabled.onOffLabel(),
+                    actual.hdrEnabled.onOffLabel(),
+                    ActiveStreamModeChangeKind.Hdr,
+                ),
+            )
+        }
+        if (requested.colorQuality != actual.colorQuality) {
+            add(
+                ActiveStreamModeDisplayChange(
+                    "Color",
+                    requested.colorQuality.label,
+                    actual.colorQuality.label,
+                    ActiveStreamModeChangeKind.Color,
                 ),
             )
         }
         if (requested.enableL4S != actual.enableL4S) {
-            add(ActiveStreamModeDisplayChange("L4S", requested.enableL4S.onOffLabel(), actual.enableL4S.onOffLabel()))
+            add(
+                ActiveStreamModeDisplayChange(
+                    "L4S",
+                    requested.enableL4S.onOffLabel(),
+                    actual.enableL4S.onOffLabel(),
+                    ActiveStreamModeChangeKind.L4S,
+                ),
+            )
         }
         if (requested.streamSharpeningEnabled != actual.streamSharpeningEnabled) {
             add(
@@ -634,6 +692,7 @@ internal fun activeStreamModeDisplayChanges(status: ActiveStreamModeStatus): Lis
                     "Sharpening",
                     requested.streamSharpeningEnabled.onOffLabel(),
                     actual.streamSharpeningEnabled.onOffLabel(),
+                    ActiveStreamModeChangeKind.Sharpening,
                 ),
             )
         }
@@ -693,7 +752,7 @@ internal fun activeStreamModeDeveloperReport(
     recoveryReason: String?,
 ): ActiveStreamModeDeveloperReport {
     val changes = activeStreamModeDisplayChanges(status)
-    val primary = changes.first()
+    val primary = activeStreamModeNoticeChanges(status).firstOrNull() ?: changes.first()
     val cause = activeStreamModeCauseAssessment(status, recoveryReason)
     return ActiveStreamModeDeveloperReport(
         title = "Automatic stream change: ${primary.label} ${primary.requestedValue} to ${primary.actualValue}",

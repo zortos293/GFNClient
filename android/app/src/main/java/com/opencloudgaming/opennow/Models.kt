@@ -194,7 +194,6 @@ data class StreamSettings(
     val sessionProxyEnabled: Boolean = false,
     val sessionProxyUrl: String = "",
     val enableL4S: Boolean = false,
-    val enableCloudGsync: Boolean = false,
     val mouseSensitivity: Float = 1f,
     val mouseAcceleration: Int = 1,
     val streamSharpeningEnabled: Boolean = false,
@@ -210,10 +209,48 @@ internal fun StreamSettings.withMicrophoneSettingsFrom(source: StreamSettings): 
         microphoneDeviceId = source.microphoneDeviceId,
     )
 
+/**
+ * Where in-stream rumble is sent.
+ *
+ * [Auto] prefers the controller and falls back to the device, which is right for a phone plus a
+ * separate pad. It is wrong on handhelds whose built-in pad advertises a vibrator that drives
+ * nothing — the motor is wired to the *device* vibrator there — and no amount of probing
+ * distinguishes "advertised and silent" from "advertised and working", so this is a choice.
+ */
+@Serializable
+enum class HapticsOutputPreference {
+    Auto,
+    Controller,
+    Device,
+}
+
+/**
+ * A skin for the on-screen controller.
+ *
+ * [V1] and [V2] keep their original names because they are already on disk in saved settings; the
+ * labels people see come from `touchControllerStyleLabel`. Everything a skin decides lives in
+ * [touchSkinColors] rather than in the button composables, so adding a skin is one entry here plus
+ * one branch there.
+ */
 @Serializable
 enum class TouchControllerStyle {
+    /** The original: filled black caps with a hairline. */
     V1,
-    V2
+
+    /** Outline-only, so the game shows through the controls. */
+    V2,
+
+    /** Outline in the accent colour, filling with it under a finger. */
+    Neon,
+
+    /** Frosted white caps — legible over dark scenes without blacking them out. */
+    Frost,
+
+    /** Opaque black on a heavy white outline, for bright or busy games. */
+    Contrast,
+
+    /** Solid accent-coloured caps with dark glyphs. */
+    Retro,
 }
 
 @Serializable
@@ -252,9 +289,25 @@ data class AndroidTouchSettings(
     val scale: Float = 1f,
     val buttonScale: Float = 1.102468f,
     val stickScale: Float = 1f,
+    /** Fine-grained multipliers applied after the two global size controls above. */
+    val faceButtonScale: Float = 1f,
+    val dpadScale: Float = 1f,
+    val shoulderButtonScale: Float = 1f,
+    val centerButtonScale: Float = 1f,
+    val leftStickScale: Float = 1f,
+    val rightStickScale: Float = 1f,
+    /** Diameter of the movable stick cap as a fraction of its track. */
+    val stickKnobScale: Float = 0.44f,
     val joystickMode: TouchJoystickMode = TouchJoystickMode.Fixed,
     val aimMode: TouchAimMode = TouchAimMode.LockJoystick,
     val joystickDeadZone: Float = 0f,
+    /** Opt-in motion aiming. Kept off for compatibility and to avoid unexpected camera motion. */
+    val gyroscopeEnabled: Boolean = false,
+    val gyroscopeSensitivity: Float = 1f,
+    val gyroscopeDeadZone: Float = 0.035f,
+    val gyroscopeSmoothing: Float = 0.35f,
+    val gyroscopeInvertHorizontal: Boolean = false,
+    val gyroscopeInvertVertical: Boolean = false,
     val edgePaddingDp: Float = 14f,
     val bottomPaddingDp: Float = 10f,
     val leftOffsetXDp: Float = 0f,
@@ -287,6 +340,10 @@ data class AndroidTouchSettings(
         "rt_landscape" to TouchOffset(-30.344517f, -57.420998f)
     ),
     val touchControllerStyle: TouchControllerStyle = TouchControllerStyle.V1,
+    /** Overrides the skin's own accent. Null keeps whatever the chosen skin ships with. */
+    val touchSkinTint: ControllerThemeRgb? = null,
+    /** Off leaves the caps blank — the layout is muscle memory once it is learned. */
+    val touchButtonLabels: Boolean = true,
 ) {
     fun getOffset(key: String): TouchOffset = offsets[key] ?: TouchOffset()
 
@@ -303,6 +360,13 @@ data class AndroidTouchSettings(
             scale = defaultSettings.scale,
             buttonScale = defaultSettings.buttonScale,
             stickScale = defaultSettings.stickScale,
+            faceButtonScale = defaultSettings.faceButtonScale,
+            dpadScale = defaultSettings.dpadScale,
+            shoulderButtonScale = defaultSettings.shoulderButtonScale,
+            centerButtonScale = defaultSettings.centerButtonScale,
+            leftStickScale = defaultSettings.leftStickScale,
+            rightStickScale = defaultSettings.rightStickScale,
+            stickKnobScale = defaultSettings.stickKnobScale,
             edgePaddingDp = defaultSettings.edgePaddingDp,
             bottomPaddingDp = defaultSettings.bottomPaddingDp,
             leftOffsetXDp = defaultSettings.leftOffsetXDp,
@@ -314,6 +378,10 @@ data class AndroidTouchSettings(
     }
 }
 
+internal const val DEFAULT_CATALOG_SORT_ID = "most_popular"
+internal const val NEWLY_ADDED_CATALOG_SORT_ID = "last_added"
+internal const val CATALOG_SORT_DEFAULT_VERSION = 1
+
 @Serializable
 data class AppSettings(
     val stream: StreamSettings = StreamSettings(),
@@ -323,18 +391,19 @@ data class AppSettings(
     val handheldLandscapeFourColumnGrid: Boolean = false,
     val handheldLandscapeSquareCards: Boolean = false,
     val nerdCatalogBackground: Boolean = false,
+    /** The subtle accent-colour wash used when no catalogue wallpaper is selected. */
+    val ambientBackgroundEnabled: Boolean = true,
     val catalogBackgroundPreset: CatalogBackgroundPreset = CatalogBackgroundPreset.ColorfulAbstract,
     val nerdCatalogBackgroundUri: String? = null,
     val tvSafeAreaPaddingDp: Float = 16f,
     val tvLayoutProfileVersion: Int = 0,
     val localTvRemoteEnabled: Boolean = false,
-    val showGameStoreLabels: Boolean = true,
     /** Game titles under the poster in the catalog grid. Off makes the grid pure box art. */
     val showCardTitles: Boolean = true,
     /** Optional favorite affordance over catalogue artwork on mobile, handheld, and TV layouts. */
     val showFavoriteIconOnGameCards: Boolean = false,
     val expressiveUi: Boolean = true,
-    /** Animated active-state frames for non-default interface themes. */
+    /** Legacy persisted preference retained for settings compatibility; borders now require Absolute Cinema. */
     val liveSelectedOutlines: Boolean = true,
     /** Orange/blue live focus rings, independent of the selected interface accent. */
     val absoluteCinemaEffects: Boolean = false,
@@ -346,8 +415,19 @@ data class AppSettings(
     val localAppsEnabled: Boolean = false,
     /** Package names are stable across app updates and avoid persisting labels or icons. */
     val localAppPackageNames: List<String> = emptyList(),
+    /**
+     * Whether the "My own apps" shelf is folded away.
+     *
+     * Persisted rather than screen state: someone who keeps a dozen Android apps pinned but browses
+     * the cloud catalogue most of the time wants that fold to survive leaving the Library.
+     */
+    val localAppsCollapsed: Boolean = false,
+    /** Rotating featured banner above the Library grid, portrait phones only. */
+    val libraryHeroCarousel: Boolean = true,
     /** Catalogue presentation is user preference, not disposable screen state. */
-    val catalogSortId: String = "relevance",
+    val catalogSortId: String = DEFAULT_CATALOG_SORT_ID,
+    /** Lets the old relevance default migrate once without overriding a later explicit choice. */
+    val catalogSortDefaultVersion: Int = 0,
     val catalogFilterIds: List<String> = emptyList(),
     val librarySortId: String = "library",
     val libraryFilterIds: List<String> = emptyList(),
@@ -360,7 +440,10 @@ data class AppSettings(
     val streamStatsStyle: StreamStatsStyle = StreamStatsStyle.Compact,
     val streamStatsPosition: StreamStatsPosition = StreamStatsPosition.Right,
     val streamStatsMetrics: StreamStatsMetrics = StreamStatsMetrics(),
-    val phoneRumbleFallback: Boolean = true,
+    /** Controller rumble when available, with device haptics as the fallback output. */
+    @SerialName("phoneRumbleFallback")
+    val vibrationEnabled: Boolean = true,
+    val hapticsOutput: HapticsOutputPreference = HapticsOutputPreference.Auto,
     val hideServerSelector: Boolean = false,
     val controllerMode: Boolean = false,
     val controllerUiSounds: Boolean = true,
@@ -378,8 +461,16 @@ data class AppSettings(
     val queueReadyMusic: Boolean = false,
     @SerialName("stretchStreamToFill")
     val legacyCropStreamToFill: Boolean = false,
+    /**
+     * Fills the display instead of letterboxing.
+     *
+     * On by default. Phones are 19.5:9 or 20:9 and almost every stream is 16:9, so the honest
+     * letterbox left thick bars down both sides and players read that as the picture being cut off.
+     * The trade is a stretch on the mismatched axis only — 1.25x on a 20:9 phone — and never a crop,
+     * so nothing on screen is lost. Off restores exact geometry.
+     */
     @SerialName("stretchStreamToZoom")
-    val stretchStreamToFit: Boolean = false,
+    val stretchStreamToFit: Boolean = true,
     val streamPresentationProfileVersion: Int = 0,
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
@@ -397,17 +488,42 @@ data class AppSettings(
     val analyticsConsentAsked: Boolean = false,
     val allowEscapeToExitFullscreen: Boolean = false,
     val nativeLowLatencyDecoder: Boolean = false,
+    /**
+     * Highest [SETUP_FLOW_VERSION] whose first-run setup this install has been through. Versioned
+     * rather than a boolean so a later release that adds a step can show the flow again, and so
+     * "run setup again" is expressible as resetting the field.
+     */
+    val setupFlowCompletedVersion: Int = 0,
+    /**
+     * Whether the About > build-number gesture has revealed Settings > Developer options.
+     *
+     * Persisted so the section survives a restart, and clearable from inside it. See
+     * `AndroidDeveloperOptions.kt`.
+     */
+    val developerOptionsUnlocked: Boolean = false,
 )
 
 internal const val MIN_GAME_CARD_SCALE = 0.75f
 internal const val MAX_GAME_CARD_SCALE = 1.4f
-internal const val STREAM_PRESENTATION_PROFILE_VERSION = 1
+internal const val STREAM_PRESENTATION_PROFILE_VERSION = 2
 
+/**
+ * Re-asserts the stream presentation defaults once per profile version.
+ *
+ * Version 2 turns [AppSettings.stretchStreamToFit] on. A new default alone would only reach fresh
+ * installs, and the complaint it answers — bars down the sides read as a cut-off picture — is
+ * loudest for people who already have the app. Installs that had deliberately turned it off are
+ * moved too; that is what this mechanism is for, and the toggle is one tap away in Settings > Stream
+ * and in the in-stream panel.
+ *
+ * Android TV is exempt: a TV panel and a 16:9 stream already agree, so there is nothing to fill and
+ * the stretch would be a no-op that misreports itself in diagnostics.
+ */
 internal fun AppSettings.withCurrentStreamPresentationDefaults(androidTvProfile: Boolean): AppSettings {
     if (streamPresentationProfileVersion >= STREAM_PRESENTATION_PROFILE_VERSION) return this
     return copy(
         legacyCropStreamToFill = false,
-        stretchStreamToFit = false,
+        stretchStreamToFit = !androidTvProfile,
         streamPresentationProfileVersion = STREAM_PRESENTATION_PROFILE_VERSION,
     )
 }
@@ -448,7 +564,6 @@ internal data class ActiveStreamTransportProfile(
     val codec: VideoCodec,
     val colorQuality: ColorQuality,
     val hdrEnabled: Boolean,
-    val enableCloudGsync: Boolean,
     val enableL4S: Boolean,
     val streamSharpeningEnabled: Boolean,
 )
@@ -462,7 +577,6 @@ internal fun StreamSettings.toActiveStreamTransportProfile(): ActiveStreamTransp
         codec = codec,
         colorQuality = colorQuality,
         hdrEnabled = hdrEnabled,
-        enableCloudGsync = enableCloudGsync,
         enableL4S = enableL4S,
         streamSharpeningEnabled = streamSharpeningEnabled,
     )
@@ -634,7 +748,6 @@ internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
         "color=${compatible.colorQuality.name}",
         "hdr=${if (compatible.hdrEnabled) 1 else 0}",
         "l4s=${if (compatible.enableL4S) 1 else 0}",
-        "gsync=${if (compatible.enableCloudGsync) 1 else 0}",
         "keyboard=${compatible.keyboardLayout.trim()}",
         "language=${compatible.gameLanguage.trim()}",
     ).joinToString(";")
@@ -675,11 +788,7 @@ internal data class StreamResolutionChoice(
         get() = "$width x $height"
 
     val requiredPlanLabel: String?
-        get() = when (requiredPlan) {
-            StreamResolutionPlan.Free -> null
-            StreamResolutionPlan.Priority -> "Performance"
-            StreamResolutionPlan.Ultimate -> "Ultimate"
-        }
+        get() = streamResolutionPlanLabel(requiredPlan).takeIf { requiredPlan != StreamResolutionPlan.Free }
 
     fun isAvailableFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Boolean {
         if (requiredPlan == StreamResolutionPlan.Free) return true
@@ -704,11 +813,55 @@ internal fun StreamSettings.withFpsAllowed(subscriptionInfo: SubscriptionInfo?, 
     return if (allowedFps == fps) this else copy(fps = allowedFps)
 }
 
+/**
+ * What the signed-in plan actually allows, in the same terms the stream settings use.
+ *
+ * First-run setup shows this beside the quality choices. Without it, a Free account being offered
+ * 1080p60 at most reads as OpenNOW deciding the device cannot manage more, when the cap is the
+ * membership tier — so the tier, and the ceiling it buys, are stated outright.
+ */
+internal data class StreamPlanEntitlements(
+    val plan: StreamResolutionPlan,
+    val planLabel: String,
+    val maxResolutionLabel: String,
+    val maxFps: Int,
+    val hdrAllowed: Boolean,
+) {
+    /** True when a higher tier would unlock resolutions or frame rates this one cannot reach. */
+    val cappedBelowTopTier: Boolean get() = plan != StreamResolutionPlan.Ultimate
+}
+
+internal fun streamPlanEntitlements(
+    subscriptionInfo: SubscriptionInfo?,
+    fallbackMembershipTier: String?,
+): StreamPlanEntitlements {
+    val plan = effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)
+    val bestResolution = STREAM_RESOLUTION_OPTIONS
+        .map { it.toChoice() }
+        .filter { it.isAvailableFor(subscriptionInfo, fallbackMembershipTier) }
+        .maxByOrNull { it.width.toLong() * it.height }
+    return StreamPlanEntitlements(
+        plan = plan,
+        planLabel = streamResolutionPlanLabel(plan),
+        maxResolutionLabel = bestResolution?.label ?: "1280 x 720",
+        maxFps = maxStreamFpsFor(subscriptionInfo, fallbackMembershipTier),
+        hdrAllowed = hasHdrStreamingPlan(subscriptionInfo, fallbackMembershipTier),
+    )
+}
+
+internal fun streamResolutionPlanLabel(plan: StreamResolutionPlan): String = when (plan) {
+    StreamResolutionPlan.Free -> "Free"
+    StreamResolutionPlan.Priority -> "Performance"
+    StreamResolutionPlan.Ultimate -> "Ultimate"
+}
+
 internal fun smartSessionLimitFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): SmartSessionLimit {
-    return when (effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)) {
-        StreamResolutionPlan.Ultimate -> SmartSessionLimit("Ultimate", 8, SessionTimerMode.Stopwatch)
-        StreamResolutionPlan.Priority -> SmartSessionLimit("Performance", 6, SessionTimerMode.Stopwatch)
-        StreamResolutionPlan.Free -> SmartSessionLimit("Free", 1, SessionTimerMode.Countdown)
+    val plan = effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)
+    val label = streamResolutionPlanLabel(plan)
+    return when (plan) {
+        StreamResolutionPlan.Ultimate -> SmartSessionLimit(label, 8, SessionTimerMode.Stopwatch)
+        StreamResolutionPlan.Priority -> SmartSessionLimit(label, 6, SessionTimerMode.Stopwatch)
+        StreamResolutionPlan.Free -> SmartSessionLimit(label, 1, SessionTimerMode.Countdown)
     }
 }
 
@@ -819,7 +972,7 @@ internal fun StreamSettings.applyingStreamPreset(preset: StreamPreset): StreamSe
 }
 
 internal fun StreamSettings.withoutExperimentalTransportRequests(): StreamSettings =
-    if (!enableL4S && !enableCloudGsync) this else copy(enableL4S = false, enableCloudGsync = false)
+    if (!enableL4S) this else copy(enableL4S = false)
 
 internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
     val providerCompatible = withProviderCompatibleUltrawideGeometry()
@@ -985,6 +1138,44 @@ private fun resolutionTierForHeight(height: Int): String =
         height >= 740 -> "768"
         else -> "720"
     }
+
+/**
+ * What a game's `minimumMembershipTierLabel` demands, when the signed-in plan cannot meet it.
+ *
+ * Null whenever the game names no tier, names one this account already has, or names something the
+ * normalizer does not recognise. Guessing here would be worse than staying quiet: a spurious
+ * "requires Ultimate" in front of the Play button reads as the app refusing to launch a game the
+ * player owns.
+ */
+data class GameMembershipRequirement(
+    val requiredPlanLabel: String,
+    val currentPlanLabel: String,
+)
+
+/** The launch a membership warning is holding, so continuing resumes exactly what was asked for. */
+data class PendingMembershipNotice(
+    val game: GameInfo,
+    val requirement: GameMembershipRequirement,
+    val streamingBaseUrlOverride: String?,
+    val skipPrintedWaste: Boolean,
+    val skipStoreChoice: Boolean,
+)
+
+internal fun gameMembershipRequirement(
+    game: GameInfo,
+    subscriptionInfo: SubscriptionInfo?,
+    fallbackMembershipTier: String?,
+): GameMembershipRequirement? {
+    val label = game.membershipTierLabel?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val requiredPlan = planForMembershipTier(label)
+    if (requiredPlan == StreamResolutionPlan.Free) return null
+    val currentPlan = effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)
+    if (streamResolutionPlanRank(currentPlan) >= streamResolutionPlanRank(requiredPlan)) return null
+    return GameMembershipRequirement(
+        requiredPlanLabel = streamResolutionPlanLabel(requiredPlan),
+        currentPlanLabel = streamResolutionPlanLabel(currentPlan),
+    )
+}
 
 private fun planForMembershipTier(membershipTier: String?): StreamResolutionPlan {
     val normalized = membershipTier.orEmpty().uppercase(Locale.US).replace(Regex("[^A-Z0-9]+"), "")
@@ -1152,6 +1343,7 @@ val AccountConnector.isLinked: Boolean
 data class GameVariant(
     val id: String,
     val store: String,
+    val storeUrl: String? = null,
     val supportedControls: List<String> = emptyList(),
     val librarySelected: Boolean? = null,
     val libraryStatus: String? = null,
@@ -1388,6 +1580,7 @@ internal fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
 private fun mergeGameVariant(left: GameVariant, right: GameVariant): GameVariant =
     left.copy(
         store = left.store.takeUnless { it.isBlank() || it.equals("Unknown", ignoreCase = true) } ?: right.store,
+        storeUrl = left.storeUrl?.takeIf { it.isNotBlank() } ?: right.storeUrl,
         supportedControls = (left.supportedControls + right.supportedControls).distinct(),
         librarySelected = when {
             left.librarySelected == true || right.librarySelected == true -> true
@@ -1493,7 +1686,6 @@ data class NegotiatedStreamProfile(
     val codec: VideoCodec? = null,
     val colorQuality: ColorQuality? = null,
     val enableL4S: Boolean? = null,
-    val enableCloudGsync: Boolean? = null,
     val enableReflex: Boolean? = null,
 )
 
@@ -1554,7 +1746,6 @@ data class SessionAdState(
 data class StreamingFeatures(
     val reflex: Boolean? = null,
     val bitDepth: Int? = null,
-    val cloudGsync: Boolean? = null,
     val chromaFormat: Int? = null,
     val enabledL4S: Boolean? = null,
     val trueHdr: Boolean? = null,
@@ -1804,7 +1995,6 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
             maxBitrateMbps = minOf(maxBitrateMbps, LOW_POWER_TV_BITRATE_CAP_MBPS),
             fps = minOf(fps, LOW_POWER_TV_FPS_CAP),
             hdrEnabled = false,
-            enableCloudGsync = false,
         ).withStableAndroidCloudMatchProfile()
             .withoutAndroidTvSharpening(report)
         // A codec probe may be incomplete or conservative, especially on Android TV. It can
@@ -1905,7 +2095,6 @@ internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
         codec = VideoCodec.H264,
         colorQuality = ColorQuality.EightBit420,
         hdrEnabled = false,
-        enableCloudGsync = false,
         streamSharpeningEnabled = false,
     )
 
@@ -1938,7 +2127,6 @@ private fun StreamSettings.withStableAndroidCloudMatchProfile(): StreamSettings 
         resolution = normalizedResolution,
         fps = minOf(fps, geometryCompatibleFps),
         hdrEnabled = hdrEnabled && codec != VideoCodec.H264,
-        enableCloudGsync = enableCloudGsync && codec != VideoCodec.H264,
     )
 }
 
@@ -1952,7 +2140,6 @@ internal fun StreamSettings.lowPowerPerformanceWarningReasons(report: RuntimeCod
         if (fps > LOW_POWER_RECOMMENDED_FPS) add("$fps FPS")
         if (maxBitrateMbps > LOW_POWER_RECOMMENDED_BITRATE_MBPS) add("$maxBitrateMbps Mbps bitrate")
         if (hdrEnabled) add("HDR")
-        if (enableCloudGsync) add("Cloud G-Sync")
         if (streamSharpeningEnabled) add("stream sharpening")
     }
 }

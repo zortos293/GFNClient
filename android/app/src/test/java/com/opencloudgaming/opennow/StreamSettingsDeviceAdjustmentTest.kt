@@ -179,12 +179,10 @@ class StreamSettingsDeviceAdjustmentTest {
             codec = VideoCodec.AV1,
             colorQuality = ColorQuality.EightBit444,
             enableL4S = true,
-            enableCloudGsync = true,
         )
 
         val custom = base.applyingStreamPreset(StreamPreset.Custom)
         assertTrue(custom.enableL4S)
-        assertTrue(custom.enableCloudGsync)
 
         val low = base.applyingStreamPreset(StreamPreset.LowDataSaver)
         assertEquals("1680x720", low.resolution)
@@ -194,25 +192,21 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(VideoCodec.AV1, low.codec)
         assertEquals(ColorQuality.EightBit420, low.colorQuality)
         assertFalse(low.enableL4S)
-        assertFalse(low.enableCloudGsync)
 
         val medium = base.applyingStreamPreset(StreamPreset.Medium)
         assertEquals("2560x1080", medium.resolution)
         assertEquals(60, medium.fps)
         assertEquals(35, medium.maxBitrateMbps)
         assertFalse(medium.enableL4S)
-        assertFalse(medium.enableCloudGsync)
 
         val high = base.applyingStreamPreset(StreamPreset.High)
         assertEquals("3440x1440", high.resolution)
         assertEquals(360, high.fps)
         assertEquals(75, high.maxBitrateMbps)
         assertFalse(high.enableL4S)
-        assertFalse(high.enableCloudGsync)
 
         val recommended = base.applyingStreamPreset(StreamPreset.Recommended)
         assertFalse(recommended.enableL4S)
-        assertFalse(recommended.enableCloudGsync)
     }
 
     @Test
@@ -429,7 +423,6 @@ class StreamSettingsDeviceAdjustmentTest {
             colorQuality = ColorQuality.TenBit444,
             hdrEnabled = true,
             enableL4S = true,
-            enableCloudGsync = true,
             streamSharpeningEnabled = true,
         ).adjustedForDevice(codecReport(VideoCodec.H264, hardwareDecoder = true, realtimeSafe = true))
 
@@ -440,7 +433,6 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals(false, adjusted.hdrEnabled)
-        assertEquals(false, adjusted.enableCloudGsync)
         assertEquals(true, adjusted.enableL4S)
     }
 
@@ -455,7 +447,6 @@ class StreamSettingsDeviceAdjustmentTest {
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
             enableL4S = true,
-            enableCloudGsync = true,
             streamSharpeningEnabled = true,
         ).adjustedForDevice(
             codecReport(
@@ -475,7 +466,6 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
         assertEquals(true, adjusted.hdrEnabled)
-        assertEquals(true, adjusted.enableCloudGsync)
         assertEquals(true, adjusted.enableL4S)
     }
 
@@ -489,7 +479,6 @@ class StreamSettingsDeviceAdjustmentTest {
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
-            enableCloudGsync = true,
             streamSharpeningEnabled = true,
         ).androidSafeVideoFallback()
 
@@ -500,7 +489,6 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(VideoCodec.H264, fallback.codec)
         assertEquals(ColorQuality.EightBit420, fallback.colorQuality)
         assertEquals(false, fallback.hdrEnabled)
-        assertEquals(false, fallback.enableCloudGsync)
         assertEquals(false, fallback.streamSharpeningEnabled)
     }
 
@@ -514,7 +502,6 @@ class StreamSettingsDeviceAdjustmentTest {
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
-            enableCloudGsync = true,
             streamSharpeningEnabled = true,
         ).androidSafeVideoFallback()
 
@@ -606,7 +593,6 @@ class StreamSettingsDeviceAdjustmentTest {
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
-            enableCloudGsync = true,
             streamSharpeningEnabled = true,
         ).adjustedForDevice(
             codecReport(
@@ -629,7 +615,6 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
         assertEquals(true, adjusted.hdrEnabled)
-        assertEquals(true, adjusted.enableCloudGsync)
         assertEquals(true, adjusted.streamSharpeningEnabled)
     }
 
@@ -643,7 +628,6 @@ class StreamSettingsDeviceAdjustmentTest {
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
-            enableCloudGsync = true,
             streamSharpeningEnabled = true,
         ).adjustedForDevice(
             codecReport(
@@ -666,7 +650,6 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
         assertEquals(true, adjusted.hdrEnabled)
-        assertEquals(true, adjusted.enableCloudGsync)
         assertEquals(true, adjusted.streamSharpeningEnabled)
     }
 
@@ -678,7 +661,6 @@ class StreamSettingsDeviceAdjustmentTest {
             fps = 60,
             maxBitrateMbps = 35,
             hdrEnabled = true,
-            enableCloudGsync = true,
             streamSharpeningEnabled = true,
         )
         val report = codecReport(
@@ -695,7 +677,6 @@ class StreamSettingsDeviceAdjustmentTest {
                 "60 FPS",
                 "35 Mbps bitrate",
                 "HDR",
-                "Cloud G-Sync",
                 "stream sharpening",
             ),
             settings.lowPowerPerformanceWarningReasons(report),
@@ -731,7 +712,6 @@ class StreamSettingsDeviceAdjustmentTest {
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
-            enableCloudGsync = true,
             streamSharpeningEnabled = true,
         ).adjustedForDevice(
             codecReport(
@@ -752,7 +732,6 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(60, adjusted.fps)
         assertEquals(25, adjusted.maxBitrateMbps)
         assertEquals(false, adjusted.hdrEnabled)
-        assertEquals(false, adjusted.enableCloudGsync)
         assertEquals(false, adjusted.streamSharpeningEnabled)
     }
 

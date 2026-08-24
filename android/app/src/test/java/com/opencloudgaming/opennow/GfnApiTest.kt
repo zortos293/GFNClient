@@ -20,6 +20,44 @@ import org.junit.Test
 
 class GfnApiTest {
     @Test
+    fun mostPopularIsTheDefaultWithoutReplacingRelevance() {
+        val options = listOf(
+            CatalogSortOption("relevance", "Relevance", "relevance-order"),
+            CatalogSortOption("last_played", "Last played", "same-order"),
+            CatalogSortOption("most_popular", "Most popular", "popular-order"),
+        )
+
+        assertEquals("most_popular", DEFAULT_CATALOG_SORT_ID)
+        assertEquals("most_popular", resolveCatalogSort(options, DEFAULT_CATALOG_SORT_ID).id)
+        assertEquals("relevance", resolveCatalogSort(options, "relevance").id)
+        assertEquals(CatalogSortKind.Relevance, catalogSortKind("relevance"))
+        assertEquals(CatalogSortKind.Popular, catalogSortKind("most_popular"))
+        assertEquals(
+            "variants.gfn.library.lastPlayedDate:DESC,sortName:ASC",
+            catalogSortOrder(options[1]),
+        )
+        assertEquals("popular-order", catalogSortOrder(options[2]))
+        assertEquals(
+            "itemMetadata.relevance:DESC,sortName:ASC",
+            catalogSortOrder(options[2].copy(orderBy = "")),
+        )
+    }
+
+    @Test
+    fun lastPlayedIsDistinctFromProviderOrderedNewGames() {
+        val newGame = GameInfo(id = "new", title = "New game")
+        val recentlyPlayed = GameInfo(id = "played", title = "Played", lastPlayed = "2026-08-23T18:00:00Z")
+        val olderPlayed = GameInfo(id = "older", title = "Older", lastPlayed = "2026-08-20T18:00:00Z")
+        val providerOrder = listOf(newGame, olderPlayed, recentlyPlayed)
+
+        assertEquals(
+            listOf("played", "older", "new"),
+            applyCatalogSortGuarantees(providerOrder, "last_played").map { it.id },
+        )
+        assertEquals(providerOrder, applyCatalogSortGuarantees(providerOrder, "last_added"))
+    }
+
+    @Test
     fun shieldDetectionRequiresAnNvidiaShieldAndroidTv() {
         assertTrue(isNvidiaShieldTvDevice(true, "NVIDIA", "SHIELD Android TV"))
         assertTrue(isNvidiaShieldTvDevice(true, " nvidia ", "Nvidia Shield"))

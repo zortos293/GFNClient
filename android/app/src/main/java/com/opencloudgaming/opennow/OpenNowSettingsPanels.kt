@@ -27,6 +27,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,6 +51,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
@@ -66,6 +69,10 @@ import android.provider.Settings
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Spacer
 import kotlinx.coroutines.delay
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.opencloudgaming.opennow.ui.controls.ControlNavigationRow
 
 @Composable
 internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
@@ -481,7 +488,222 @@ private fun formatUpdateBytes(bytes: Long): String {
 }
 
 @Composable
-internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+internal fun LocalTvSettingsPanel(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    showTitle: Boolean = true,
+) {
+    val connector = state.localTvConnector
+    val context = LocalContext.current
+    val scannerOptions = remember {
+        GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .enableAutoZoom()
+            .build()
+    }
+    LaunchedEffect(state.androidTvProfile) {
+        if (!state.androidTvProfile && connector.connectedTvName == null) {
+            viewModel.discoverLocalTvs()
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (showTitle) {
+            Text(
+                stringResource(R.string.tv_pair_settings_title),
+                color = SettingsText,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        if (state.androidTvProfile) {
+            TvPhonePairingPanel(state = state, viewModel = viewModel)
+        } else {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
+            ) {
+                Column(
+                    Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        stringResource(R.string.tv_pair_phone_title),
+                        color = SettingsText,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        connector.connectedTvName?.let {
+                            stringResource(R.string.tv_pair_phone_connected, it)
+                        } ?: stringResource(R.string.tv_pair_phone_instructions),
+                        color = SettingsTextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (connector.connectedTvName == null) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Button(
+                                onClick = {
+                                    runCatching {
+                                        GmsBarcodeScanning
+                                            .getClient(context.applicationContext, scannerOptions)
+                                            .startScan()
+                                    }.onSuccess { scanTask ->
+                                        scanTask
+                                            .addOnSuccessListener { barcode ->
+                                                viewModel.pairLocalTvQrValue(barcode.rawValue)
+                                            }
+                                            .addOnFailureListener { error ->
+                                                Toast.makeText(
+                                                    context,
+                                                    error.message ?: context.getString(R.string.tv_pair_scan_failed),
+                                                    Toast.LENGTH_LONG,
+                                                ).show()
+                                            }
+                                    }.onFailure { error ->
+                                        Toast.makeText(
+                                            context,
+                                            error.message ?: context.getString(R.string.tv_pair_scan_failed),
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    }
+                                },
+                                enabled = !connector.busy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(stringResource(R.string.tv_pair_scan_qr), maxLines = 1)
+                            }
+                            OutlinedButton(
+                                onClick = viewModel::discoverLocalTvs,
+                                enabled = !connector.discovering && !connector.busy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(
+                                    stringResource(
+                                        if (connector.discovering) R.string.tv_pair_discovering
+                                        else R.string.tv_pair_find_tv,
+                                    ),
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                        connector.discoveredTvs.forEach { tv ->
+                            DiscoveredTvPairingRow(
+                                tv = tv,
+                                busy = connector.busy,
+                                onPair = { code -> viewModel.pairDiscoveredLocalTv(tv, code) },
+                            )
+                        }
+                        if (connector.discoveryCompleted && connector.discoveredTvs.isEmpty() && connector.error == null) {
+                            Text(
+                                stringResource(R.string.tv_pair_none_found),
+                                color = SettingsTextMuted,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    connector.message?.let { message ->
+                        Text(message, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+                    }
+                    connector.error?.let { error ->
+                        Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (connector.connectedTvName != null) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Button(
+                                onClick = viewModel::signInLocalTv,
+                                enabled = !connector.busy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(stringResource(R.string.tv_pair_phone_sign_in), maxLines = 1)
+                            }
+                            OutlinedButton(
+                                onClick = viewModel::forgetLocalTvConnector,
+                                enabled = !connector.busy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(stringResource(R.string.tv_pair_phone_forget), maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoveredTvPairingRow(
+    tv: DiscoveredLocalTv,
+    busy: Boolean,
+    onPair: (String) -> Unit,
+) {
+    var code by remember(tv.pairUri) { mutableStateOf("") }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(tv.name, color = SettingsText, fontWeight = FontWeight.SemiBold)
+            Text(
+                stringResource(R.string.tv_pair_code_hint),
+                color = SettingsTextMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { next -> code = next.filter(Char::isDigit).take(4) },
+                    label = { Text(stringResource(R.string.tv_pair_code)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = { onPair(code) },
+                    enabled = code.length == 4 && !busy,
+                ) {
+                    Text(stringResource(R.string.tv_pair_pair_action))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AccountSettingsPanel(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    onOpenTvPairing: () -> Unit,
+    searchMode: Boolean = false,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!searchMode) {
+            ControlNavigationRow(
+                label = stringResource(R.string.tv_pair_settings_title),
+                value = state.localTvConnector.connectedTvName?.let {
+                    stringResource(R.string.tv_pair_phone_connected_short, it)
+                } ?: stringResource(R.string.tv_pair_settings_summary),
+                onClick = onOpenTvPairing,
+            )
+        }
+        AccountServicesSettingsPanel(state = state, viewModel = viewModel)
+    }
+}
+
+@Composable
+private fun AccountServicesSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val currentSession = state.authSession
     val currentUserId = currentSession?.user?.userId
     val context = LocalContext.current
@@ -1309,13 +1531,42 @@ internal fun StreamStatsPosition.next(): StreamStatsPosition =
         StreamStatsPosition.Right -> StreamStatsPosition.Left
     }
 
+/**
+ * About > version, and the gesture that reveals Settings > Developer options.
+ *
+ * Tapping the build number is the platform convention for this, so it is the one place a developer
+ * will look. The counter is local to the composable: it resets whenever About is left, which is
+ * what stops a handful of stray taps spread over a session from eventually tripping it.
+ */
 @Composable
-internal fun AppVersionPanel() {
+internal fun AppVersionPanel(settings: AppSettings, onSettingsChange: (AppSettings) -> Unit) {
+    val context = LocalContext.current
+    var tapCount by remember { mutableStateOf(0) }
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(SettingsPanelAlt)
+            .clickable {
+                tapCount += 1
+                when (val result = developerOptionsTapResult(tapCount, settings.developerOptionsUnlocked)) {
+                    is DeveloperOptionsTapResult.Silent -> Unit
+                    is DeveloperOptionsTapResult.Countdown -> Toast.makeText(
+                        context,
+                        context.getString(R.string.dev_unlock_countdown, result.remaining),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    is DeveloperOptionsTapResult.Unlocked -> {
+                        tapCount = 0
+                        onSettingsChange(settings.unlockingDeveloperOptions())
+                        Toast.makeText(context, R.string.dev_unlock_done, Toast.LENGTH_LONG).show()
+                    }
+                    is DeveloperOptionsTapResult.AlreadyUnlocked -> {
+                        tapCount = 0
+                        Toast.makeText(context, R.string.dev_unlock_already, Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
             .padding(horizontal = 14.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,

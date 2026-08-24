@@ -13,18 +13,22 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -36,9 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,34 +52,39 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.opencloudgaming.opennow.ui.controls.ControlRow
 import com.opencloudgaming.opennow.ui.controls.ControlRowLabels
 import com.opencloudgaming.opennow.ui.controls.controlRowStyle
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import java.util.Locale
 
 internal data class LocalAppEntry(
     val packageName: String,
@@ -88,11 +95,28 @@ internal data class LocalAppEntry(
 internal fun normalizeLocalAppPackageNames(packageNames: List<String>): List<String> =
     packageNames.map(String::trim).filter(String::isNotEmpty).distinct()
 
+/**
+ * Icon-sized so the shelf reads as a different kind of thing from the poster grid below it.
+ *
+ * A cloud game is a 628x888 key art poster; an Android app is a launcher icon with no artwork
+ * behind it. Blowing that icon up to poster size made every tile look like a mis-cropped game, so
+ * the tile is sized to the icon instead and the shelf sits visibly above the catalogue rather than
+ * pretending to be the first row of it.
+ */
+private val LOCAL_APP_ICON_SIZE = 56.dp
+private val LOCAL_APP_TILE_SIZE = 72.dp
+private val LOCAL_APP_TILE_WIDTH = 78.dp
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun LocalAppsShelf(
     packageNames: List<String>,
+    collapsed: Boolean,
+    onCollapsedChange: (Boolean) -> Unit,
     onAddPackage: (String) -> Unit,
     onRemovePackage: (String) -> Unit,
+    horizontalPadding: Dp,
+    headerFocusRequester: FocusRequester? = null,
     focusRequester: FocusRequester? = null,
     topFocusRequester: FocusRequester? = null,
 ) {
@@ -112,36 +136,44 @@ internal fun LocalAppsShelf(
         }
     }
     var pickerOpen by remember { mutableStateOf(false) }
+    var pendingRemoval by remember { mutableStateOf<LocalAppEntry?>(null) }
 
     Column(
         Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            stringResource(R.string.library_local_apps),
-            color = TextPrimary,
-            fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.titleMedium,
+        LocalAppsSectionHeader(
+            collapsed = collapsed,
+            appCount = apps.size,
+            onToggle = { onCollapsedChange(!collapsed) },
+            focusRequester = headerFocusRequester,
+            topFocusRequester = topFocusRequester,
+            modifier = Modifier.padding(horizontal = horizontalPadding),
         )
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            item(key = "add-local-app") {
-                AddLocalAppTile(
-                    onClick = { pickerOpen = true },
-                    focusRequester = focusRequester,
-                    topFocusRequester = topFocusRequester,
-                )
-            }
-            items(apps, key = { it.packageName }) { app ->
-                LocalAppTile(
-                    app = app,
-                    onLaunch = {
-                        if (!launchLocalApp(context, app.packageName)) {
-                            Toast.makeText(context, R.string.library_local_app_unavailable, Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onRemove = { onRemovePackage(app.packageName) },
-                    topFocusRequester = topFocusRequester,
-                )
+        AnimatedVisibility(visible = !collapsed) {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(horizontal = horizontalPadding),
+            ) {
+                item(key = "add-local-app") {
+                    AddLocalAppTile(
+                        onClick = { pickerOpen = true },
+                        focusRequester = focusRequester,
+                        topFocusRequester = headerFocusRequester ?: topFocusRequester,
+                    )
+                }
+                items(apps, key = { it.packageName }) { app ->
+                    LocalAppTile(
+                        app = app,
+                        onLaunch = {
+                            if (!launchLocalApp(context, app.packageName)) {
+                                Toast.makeText(context, R.string.library_local_app_unavailable, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onRemove = { pendingRemoval = app },
+                        topFocusRequester = headerFocusRequester ?: topFocusRequester,
+                    )
+                }
             }
         }
     }
@@ -155,6 +187,100 @@ internal fun LocalAppsShelf(
                 pickerOpen = false
             },
         )
+    }
+
+    pendingRemoval?.let { app ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoval = null },
+            title = { Text(stringResource(R.string.library_remove_local_app, app.label), color = TextPrimary) },
+            text = { Text(stringResource(R.string.library_remove_local_app_body), color = TextMuted) },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRemovePackage(app.packageName)
+                    pendingRemoval = null
+                }) { Text(stringResource(R.string.library_remove_local_app_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoval = null }) { Text(stringResource(R.string.action_cancel)) }
+            },
+            containerColor = Panel,
+        )
+    }
+}
+
+/** The whole header is the fold control, so it stays a single focus stop on a controller. */
+@Composable
+private fun LocalAppsSectionHeader(
+    collapsed: Boolean,
+    appCount: Int,
+    onToggle: () -> Unit,
+    focusRequester: FocusRequester?,
+    topFocusRequester: FocusRequester?,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val haptics = LocalOpenNowHaptics.current
+    val shape = RoundedCornerShape(10.dp)
+    val toggle = {
+        haptics?.play(HapticCue.Activate)
+        onToggle()
+    }
+    // One chevron drawable, rotated: right when folded, down when open.
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (collapsed) 0f else 90f,
+        label = "local-apps-chevron",
+    )
+    val description = stringResource(
+        if (collapsed) R.string.library_local_apps_show else R.string.library_local_apps_hide,
+        appCount,
+    )
+    Row(
+        modifier
+            .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
+            .then(
+                topFocusRequester?.let { top -> Modifier.focusProperties { up = top } } ?: Modifier,
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .focusMoveHaptics()
+            .clip(shape)
+            .semantics {
+                role = Role.Button
+                contentDescription = description
+            }
+            .clickable(onClick = toggle)
+            .onPreviewKeyEvent { event ->
+                if (isTvActivateKey(event)) {
+                    toggle()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable()
+            .border(2.dp, if (focused) LocalSelectionTintColor.current else Color.Transparent, shape)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.ic_chevron_right),
+            contentDescription = null,
+            tint = if (focused) Color.White else TextMuted,
+            modifier = Modifier.size(18.dp).rotate(chevronRotation),
+        )
+        Text(
+            stringResource(R.string.library_local_apps),
+            color = TextPrimary,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleMedium,
+        )
+        if (appCount > 0) {
+            Text(
+                appCount.toString(),
+                color = TextMuted,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
     }
 }
 
@@ -255,7 +381,11 @@ private fun LocalAppPickerRow(
             .fillMaxWidth()
             .onFocusChanged { focused = it.isFocused }
             .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
-            .border(2.dp, if (focused) Color.White else Color.White.copy(alpha = 0.2f), shape)
+            .border(
+                2.dp,
+                cinemaBorderColor(LocalAbsoluteCinemaEffects.current, LocalActiveSelectionColor.current),
+                shape,
+            )
             .clip(shape)
             .clickable(onClick = onSelect)
             .onPreviewKeyEvent { event ->
@@ -321,61 +451,62 @@ private fun AddLocalAppTile(
     topFocusRequester: FocusRequester?,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(16.dp)
-    val haptics = LocalHapticFeedback.current
+    val shape = RoundedCornerShape(18.dp)
+    val haptics = LocalOpenNowHaptics.current
     val activate = {
-        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        haptics?.play(HapticCue.Activate)
         onClick()
     }
-    Box(Modifier.width(104.dp).height(126.dp)) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
-                .then(
-                    topFocusRequester?.let { top ->
-                        Modifier.focusProperties { up = top }
-                    } ?: Modifier,
-                )
-                .onFocusChanged { focused = it.isFocused }
-                .border(3.dp, if (focused) LocalActiveSelectionColor.current else Color.White.copy(alpha = 0.56f), shape)
-                .semantics { role = Role.Button }
-                .clickable(onClick = activate)
-                .onPreviewKeyEvent { event ->
-                    if (isTvActivateKey(event)) {
-                        activate()
-                        true
-                    } else {
-                        false
+    LocalAppTileFrame(label = stringResource(R.string.library_add_local_app), focused = focused) {
+        // The focus frame is a sibling of the clipped tile, not a child: inside it, the glow would
+        // be cut off at the tile's own corners.
+        Box(Modifier.size(LOCAL_APP_TILE_SIZE)) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
+                    .then(
+                        topFocusRequester?.let { top -> Modifier.focusProperties { up = top } } ?: Modifier,
+                    )
+                    .onFocusChanged { focused = it.isFocused }
+                    .focusMoveHaptics()
+                    .clip(shape)
+                    .background(PanelAlt.copy(alpha = 0.86f))
+                    .border(
+                        2.dp,
+                        cinemaBorderColor(LocalAbsoluteCinemaEffects.current, LocalActiveSelectionColor.current),
+                        shape,
+                    )
+                    .semantics { role = Role.Button }
+                    .clickable(onClick = activate)
+                    .onPreviewKeyEvent { event ->
+                        if (isTvActivateKey(event)) {
+                            activate()
+                            true
+                        } else {
+                            false
+                        }
                     }
-                }
-                .focusable(),
-            shape = shape,
-            color = PanelAlt.copy(alpha = 0.86f),
-        ) {
-            Column(
-                Modifier.padding(10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
+                    .focusable(),
+                contentAlignment = Alignment.Center,
             ) {
-                Text("+", color = LocalActiveSelectionColor.current, style = MaterialTheme.typography.displaySmall)
                 Text(
-                    stringResource(R.string.library_add_local_app),
-                    color = TextPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.Center,
+                    "+",
+                    color = LocalSelectionTintColor.current,
+                    style = MaterialTheme.typography.headlineMedium,
                 )
             }
+            ControllerFocusFrame(
+                visible = focused && LocalActiveSelectionEnabled.current,
+                cornerRadius = 18.dp,
+                tint = LocalActiveSelectionColor.current,
+                secondaryTint = LocalActiveSelectionSecondaryColor.current,
+            )
         }
-        ControllerFocusFrame(
-            visible = focused && LocalActiveSelectionEnabled.current,
-            cornerRadius = 16.dp,
-            tint = LocalActiveSelectionColor.current,
-            secondaryTint = LocalActiveSelectionSecondaryColor.current,
-        )
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LocalAppTile(
     app: LocalAppEntry,
@@ -383,83 +514,100 @@ private fun LocalAppTile(
     onRemove: () -> Unit,
     topFocusRequester: FocusRequester?,
 ) {
-    var tileFocused by remember { mutableStateOf(false) }
-    var containsFocus by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(16.dp)
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(18.dp)
     val bitmap = remember(app.packageName, app.icon) { app.icon.toBitmap().asImageBitmap() }
-    val haptics = LocalHapticFeedback.current
+    val haptics = LocalOpenNowHaptics.current
     val launch = {
-        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        haptics?.play(HapticCue.Activate)
         onLaunch()
     }
-    Box(Modifier.width(104.dp).height(126.dp)) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .then(
-                    topFocusRequester?.let { top ->
-                        Modifier.focusProperties { up = top }
-                    } ?: Modifier,
-                )
-                .onFocusChanged {
-                    tileFocused = it.isFocused
-                    containsFocus = it.hasFocus
-                }
-                .border(3.dp, if (containsFocus) LocalActiveSelectionColor.current else Color.White.copy(alpha = 0.44f), shape)
-                .semantics { role = Role.Button }
-                .clickable(onClick = launch)
-                .onPreviewKeyEvent { event ->
-                    if (tileFocused && isTvActivateKey(event)) {
-                        launch()
-                        true
-                    } else {
-                        false
+    val remove = {
+        haptics?.play(HapticCue.Boundary)
+        onRemove()
+    }
+    LocalAppTileFrame(label = app.label, focused = focused) {
+        Box(Modifier.size(LOCAL_APP_TILE_SIZE)) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .then(
+                        topFocusRequester?.let { top -> Modifier.focusProperties { up = top } } ?: Modifier,
+                    )
+                    .onFocusChanged { focused = it.isFocused }
+                    .focusMoveHaptics()
+                    .clip(shape)
+                    .background(PanelAlt.copy(alpha = 0.72f))
+                    .border(
+                        2.dp,
+                        cinemaBorderColor(LocalAbsoluteCinemaEffects.current, LocalActiveSelectionColor.current),
+                        shape,
+                    )
+                    .semantics { role = Role.Button }
+                    // Long-press removes, matching how a launcher un-pins an icon, and keeps the
+                    // tile free of a delete affordance that would crowd an icon this size.
+                    .combinedClickable(
+                        onClick = launch,
+                        onLongClick = remove,
+                        onLongClickLabel = stringResource(R.string.library_remove_local_app, app.label),
+                    )
+                    .onPreviewKeyEvent { event ->
+                        when {
+                            !focused -> false
+                            isTvActivateKey(event) -> {
+                                launch()
+                                true
+                            }
+                            // Y removes, the same button the catalogue cards use for their
+                            // secondary action, so a controller never needs the long-press.
+                            event.type == KeyEventType.KeyUp && event.key == Key.ButtonY -> {
+                                remove()
+                                true
+                            }
+                            else -> false
+                        }
                     }
-                }
-                .focusable(),
-            shape = shape,
-            color = PanelAlt.copy(alpha = 0.9f),
-        ) {
-            Box(Modifier.padding(9.dp)) {
-                Column(
-                    Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Image(
-                        bitmap = bitmap,
-                        contentDescription = null,
-                        modifier = Modifier.size(56.dp).clip(RoundedCornerShape(13.dp)),
-                        contentScale = ContentScale.Fit,
-                    )
-                    Text(
-                        app.label,
-                        color = TextPrimary,
-                        fontWeight = if (containsFocus) FontWeight.ExtraBold else FontWeight.SemiBold,
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-                IconButton(
-                    onClick = onRemove,
-                    modifier = Modifier.align(Alignment.TopEnd).size(28.dp),
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_clear),
-                        contentDescription = stringResource(R.string.library_remove_local_app, app.label),
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
+                    .focusable(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = null,
+                    modifier = Modifier.size(LOCAL_APP_ICON_SIZE).clip(RoundedCornerShape(14.dp)),
+                    contentScale = ContentScale.Fit,
+                )
             }
+            ControllerFocusFrame(
+                visible = focused && LocalActiveSelectionEnabled.current,
+                cornerRadius = 18.dp,
+                tint = LocalActiveSelectionColor.current,
+                secondaryTint = LocalActiveSelectionSecondaryColor.current,
+            )
         }
-        ControllerFocusFrame(
-            visible = containsFocus && LocalActiveSelectionEnabled.current,
-            cornerRadius = 16.dp,
-            tint = LocalActiveSelectionColor.current,
-            secondaryTint = LocalActiveSelectionSecondaryColor.current,
+    }
+}
+
+/** Caption below the icon rather than inside it, so the icon keeps its full square. */
+@Composable
+private fun LocalAppTileFrame(
+    label: String,
+    focused: Boolean,
+    tile: @Composable () -> Unit,
+) {
+    Column(
+        Modifier.width(LOCAL_APP_TILE_WIDTH),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        tile()
+        Text(
+            label,
+            color = if (focused) TextPrimary else TextMuted,
+            fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
         )
     }
 }

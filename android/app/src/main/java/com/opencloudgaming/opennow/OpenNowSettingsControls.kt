@@ -175,6 +175,7 @@ internal fun ChoiceRow(
     label: String,
     options: List<String>,
     selected: String,
+    description: String? = null,
     activeOutlineColor: Color? = null,
     activeOutlineSecondaryColor: Color? = null,
     onSelect: (String) -> Unit,
@@ -183,6 +184,7 @@ internal fun ChoiceRow(
         label = label,
         options = options.map { ChoiceMenuOption(value = it, label = it) },
         selectedLabel = selected,
+        description = description,
         activeOutlineColor = activeOutlineColor,
         activeOutlineSecondaryColor = activeOutlineSecondaryColor,
         onSelect = onSelect,
@@ -286,9 +288,15 @@ internal fun ChoiceMenuRow(
 }
 
 @Composable
-internal fun ChoiceOptionRow(label: String, options: List<SettingsChoiceOption>, selectedValue: String, onSelect: (String) -> Unit) {
+internal fun ChoiceOptionRow(
+    label: String,
+    options: List<SettingsChoiceOption>,
+    selectedValue: String,
+    description: String? = null,
+    onSelect: (String) -> Unit,
+) {
     val selectedLabel = options.firstOrNull { it.value == selectedValue }?.label ?: selectedValue
-    ChoiceRow(label, options.map { it.label }, selectedLabel) { selected ->
+    ChoiceRow(label, options.map { it.label }, selectedLabel, description = description) { selected ->
         options.firstOrNull { it.label == selected }?.value?.let(onSelect)
     }
 }

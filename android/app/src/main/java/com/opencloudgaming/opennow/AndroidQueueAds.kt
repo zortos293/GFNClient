@@ -56,6 +56,22 @@ internal fun removeSessionAdItem(adState: SessionAdState?, adId: String): Sessio
 internal fun removeSessionAdItem(session: SessionInfo, adId: String): SessionInfo =
     session.copy(adState = removeSessionAdItem(session.adState, adId))
 
+internal fun mergeQueueAdReportResult(
+    previous: SessionInfo,
+    updated: SessionInfo,
+    adId: String,
+    terminalAction: Boolean,
+): SessionInfo {
+    val sanitizedUpdate = if (
+        terminalAction && sessionAdItems(updated.adState).any { it.adId == adId }
+    ) {
+        removeSessionAdItem(updated, adId)
+    } else {
+        updated
+    }
+    return mergeQueueSessionState(previous, sanitizedUpdate)
+}
+
 internal fun nextSessionAdId(adState: SessionAdState?, completedAdId: String): String? {
     val ads = sessionAdItems(adState)
     val completedIndex = ads.indexOfFirst { it.adId == completedAdId }

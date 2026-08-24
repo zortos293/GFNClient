@@ -625,6 +625,7 @@ internal fun StreamControlsPanel(
     touchControlsVisible: Boolean,
     builtInGameTouchSupported: Boolean,
     nativeTouchActive: Boolean,
+    gyroscopeAvailable: Boolean,
     controllerMouseAssistEnabled: Boolean,
     controllerMouseEmulationEnabled: Boolean,
     showSessionTimer: Boolean,
@@ -649,7 +650,7 @@ internal fun StreamControlsPanel(
     onStatsPositionCycle: () -> Unit,
     onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
     onKeyboardButtonToggle: () -> Unit,
-    onPhoneRumbleFallbackToggle: () -> Unit,
+    onVibrationToggle: () -> Unit,
     onTouchLayoutEditingToggle: () -> Unit,
     onKeyboardOpen: () -> Unit,
     onEsc: () -> Unit,
@@ -663,6 +664,7 @@ internal fun StreamControlsPanel(
     onMousePadToggle: () -> Unit,
     onMouseDirectClickToggle: () -> Unit,
     onToggleTouchControllerStyle: () -> Unit,
+    onTouchButtonLabelsToggle: () -> Unit,
     onJoystickModeToggle: () -> Unit,
     onTouchAimModeToggle: () -> Unit,
     onJoystickDeadZoneChange: (Float) -> Unit,
@@ -683,6 +685,7 @@ internal fun StreamControlsPanel(
     onTouchLeftOffsetChange: (Float) -> Unit,
     onTouchRightOffsetChange: (Float) -> Unit,
     onTouchLayoutReset: () -> Unit,
+    onTouchSettingsChange: (AndroidTouchSettings) -> Unit,
     onBugReportSubmit: (String, String, String?) -> Unit,
     onBugReportReset: () -> Unit,
     onBugReportVersionCheck: () -> Unit,
@@ -782,25 +785,50 @@ internal fun StreamControlsPanel(
                                 },
                             )
                             if (touchControlsVisible) {
-                                val cleanStyle = settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2
-                                ControlSwitchRow(
-                                    label = stringResource(R.string.stream_panel_clean_style),
-                                    checked = cleanStyle,
-                                    onCheckedChange = {
+                                // Cycles rather than opens a menu: this row is used mid-session,
+                                // often one-handed, and each press shows its result immediately
+                                // behind the panel.
+                                ControlActionRow(
+                                    label = stringResource(R.string.stream_panel_touch_skin),
+                                    actionLabel = stringResource(R.string.common_next),
+                                    value = touchControllerStyleLabel(settings.androidTouch.touchControllerStyle),
+                                    onClick = {
                                         onButtonTone()
                                         onToggleTouchControllerStyle()
                                     },
-                                    value = onOffLabel(cleanStyle),
+                                )
+                                ControlActionRow(
+                                    label = stringResource(R.string.settings_touch_skin_tint),
+                                    actionLabel = stringResource(R.string.common_next),
+                                    value = touchSkinTintLabel(settings.androidTouch.touchSkinTint),
+                                    onClick = {
+                                        onButtonTone()
+                                        onTouchSettingsChange(
+                                            settings.androidTouch.copy(
+                                                touchSkinTint = nextTouchSkinTint(settings.androidTouch.touchSkinTint),
+                                            ),
+                                        )
+                                    },
+                                )
+                                ControlSwitchRow(
+                                    label = stringResource(R.string.settings_touch_button_labels),
+                                    checked = settings.androidTouch.touchButtonLabels,
+                                    onCheckedChange = {
+                                        onButtonTone()
+                                        onTouchButtonLabelsToggle()
+                                    },
+                                    value = onOffLabel(settings.androidTouch.touchButtonLabels),
                                 )
                             }
                             ControlSwitchRow(
-                                label = stringResource(R.string.stream_panel_phone_rumble),
-                                checked = settings.phoneRumbleFallback,
+                                label = stringResource(R.string.stream_panel_vibration),
+                                checked = settings.vibrationEnabled,
                                 onCheckedChange = {
                                     onButtonTone()
-                                    onPhoneRumbleFallbackToggle()
+                                    onVibrationToggle()
                                 },
-                                value = onOffLabel(settings.phoneRumbleFallback),
+                                value = onOffLabel(settings.vibrationEnabled),
+                                description = stringResource(R.string.stream_panel_vibration_summary),
                             )
                         }
                     }
@@ -883,11 +911,105 @@ internal fun StreamControlsPanel(
                             // against the game without leaving the stream.
                             TouchLayoutSlider(R.string.stream_panel_layout_scale, settings.androidTouch.scale, 0.6f, 1.4f, TOUCH_SCALE_SLIDER_STEP, onTouchScaleChange)
                             TouchLayoutSlider(R.string.stream_panel_button_size, settings.androidTouch.buttonScale, 0.65f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onButtonScaleChange)
+                            TouchLayoutSlider(R.string.settings_touch_face_size, settings.androidTouch.faceButtonScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                                onTouchSettingsChange(settings.androidTouch.copy(faceButtonScale = value))
+                            })
+                            TouchLayoutSlider(R.string.settings_touch_dpad_size, settings.androidTouch.dpadScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                                onTouchSettingsChange(settings.androidTouch.copy(dpadScale = value))
+                            })
+                            TouchLayoutSlider(R.string.settings_touch_shoulders_size, settings.androidTouch.shoulderButtonScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                                onTouchSettingsChange(settings.androidTouch.copy(shoulderButtonScale = value))
+                            })
+                            TouchLayoutSlider(R.string.settings_touch_center_size, settings.androidTouch.centerButtonScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                                onTouchSettingsChange(settings.androidTouch.copy(centerButtonScale = value))
+                            })
+                            TouchLayoutSlider(R.string.settings_touch_left_stick_size, settings.androidTouch.leftStickScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                                onTouchSettingsChange(settings.androidTouch.copy(leftStickScale = value))
+                            })
+                            TouchLayoutSlider(R.string.settings_touch_right_stick_size, settings.androidTouch.rightStickScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                                onTouchSettingsChange(settings.androidTouch.copy(rightStickScale = value))
+                            })
+                            TouchLayoutSlider(R.string.settings_touch_stick_knob_size, settings.androidTouch.stickKnobScale, 0.28f, 0.72f, 0.02f, onChange = { value ->
+                                onTouchSettingsChange(settings.androidTouch.copy(stickKnobScale = value))
+                            })
                             TouchLayoutSlider(R.string.stream_panel_opacity, settings.androidTouch.opacity, 0f, 1f, TOUCH_SCALE_SLIDER_STEP, onOpacityChange)
                             TouchLayoutSlider(R.string.stream_panel_edge_padding, settings.androidTouch.edgePaddingDp, 0f, 72f, TOUCH_DP_SLIDER_STEP, onTouchEdgePaddingChange, unit = DP_UNIT)
                             TouchLayoutSlider(R.string.stream_panel_bottom_padding, settings.androidTouch.bottomPaddingDp, 0f, 120f, TOUCH_DP_SLIDER_STEP, onTouchBottomPaddingChange, unit = DP_UNIT)
                             TouchLayoutSlider(R.string.stream_panel_left_position, settings.androidTouch.leftOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchLeftOffsetChange, unit = DP_UNIT)
                             TouchLayoutSlider(R.string.stream_panel_right_position, settings.androidTouch.rightOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchRightOffsetChange, unit = DP_UNIT)
+                        }
+                    }
+                    item {
+                        ControlSection(stringResource(R.string.stream_panel_section_motion_aiming)) {
+                            ControlSwitchRow(
+                                label = stringResource(R.string.settings_touch_gyro),
+                                checked = settings.androidTouch.gyroscopeEnabled && gyroscopeAvailable,
+                                enabled = gyroscopeAvailable,
+                                onCheckedChange = { enabled ->
+                                    onButtonTone()
+                                    onTouchSettingsChange(settings.androidTouch.copy(gyroscopeEnabled = enabled))
+                                },
+                                value = if (gyroscopeAvailable) {
+                                    onOffLabel(settings.androidTouch.gyroscopeEnabled)
+                                } else {
+                                    stringResource(R.string.common_unavailable)
+                                },
+                                description = stringResource(
+                                    if (gyroscopeAvailable) R.string.settings_touch_gyro_desc
+                                    else R.string.settings_touch_gyro_unavailable,
+                                ),
+                            )
+                            if (settings.androidTouch.gyroscopeEnabled && gyroscopeAvailable) {
+                                ControlSliderRow(
+                                    label = stringResource(R.string.settings_touch_gyro_sensitivity),
+                                    value = settings.androidTouch.gyroscopeSensitivity,
+                                    min = 0.25f,
+                                    max = 3f,
+                                    step = 0.05f,
+                                    onChange = { value ->
+                                        onTouchSettingsChange(settings.androidTouch.copy(gyroscopeSensitivity = value))
+                                    },
+                                    onChangePreview = { value ->
+                                        onTouchSettingsChange(settings.androidTouch.copy(gyroscopeSensitivity = value))
+                                    },
+                                )
+                                ControlSliderRow(
+                                    label = stringResource(R.string.settings_touch_gyro_smoothing),
+                                    value = settings.androidTouch.gyroscopeSmoothing,
+                                    min = 0f,
+                                    max = 0.9f,
+                                    step = 0.05f,
+                                    onChange = { value ->
+                                        onTouchSettingsChange(settings.androidTouch.copy(gyroscopeSmoothing = value))
+                                    },
+                                )
+                                ControlSliderRow(
+                                    label = stringResource(R.string.settings_touch_gyro_dead_zone),
+                                    value = settings.androidTouch.gyroscopeDeadZone,
+                                    min = 0f,
+                                    max = 0.2f,
+                                    step = 0.005f,
+                                    onChange = { value ->
+                                        onTouchSettingsChange(settings.androidTouch.copy(gyroscopeDeadZone = value))
+                                    },
+                                )
+                                ControlSwitchRow(
+                                    label = stringResource(R.string.settings_touch_gyro_invert_horizontal),
+                                    checked = settings.androidTouch.gyroscopeInvertHorizontal,
+                                    onCheckedChange = { enabled ->
+                                        onTouchSettingsChange(settings.androidTouch.copy(gyroscopeInvertHorizontal = enabled))
+                                    },
+                                    value = onOffLabel(settings.androidTouch.gyroscopeInvertHorizontal),
+                                )
+                                ControlSwitchRow(
+                                    label = stringResource(R.string.settings_touch_gyro_invert_vertical),
+                                    checked = settings.androidTouch.gyroscopeInvertVertical,
+                                    onCheckedChange = { enabled ->
+                                        onTouchSettingsChange(settings.androidTouch.copy(gyroscopeInvertVertical = enabled))
+                                    },
+                                    value = onOffLabel(settings.androidTouch.gyroscopeInvertVertical),
+                                )
+                            }
                         }
                     }
                 }
@@ -1727,7 +1849,11 @@ private fun BugReportPreflightDeckView(
                                 Surface(
                                     shape = RoundedCornerShape(999.dp),
                                     color = PanelAlt,
-                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                                    border = if (LocalAbsoluteCinemaEffects.current) {
+                                        BorderStroke(1.dp, LocalActiveSelectionColor.current)
+                                    } else {
+                                        null
+                                    },
                                 ) {
                                     Text(
                                         fact,

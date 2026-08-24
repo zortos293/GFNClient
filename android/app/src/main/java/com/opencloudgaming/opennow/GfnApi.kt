@@ -296,7 +296,9 @@ internal fun gfnLocaleForAndroidLanguageTag(languageTag: String): String {
 private const val DEFAULT_CATALOG_FETCH_COUNT = 120
 private const val MAX_CATALOG_PAGES = 3
 internal const val MAX_CATALOG_REQUEST_PAGES = 50
-private const val DEFAULT_SORT_ID = "relevance"
+private const val DEFAULT_SORT_ID = DEFAULT_CATALOG_SORT_ID
+private const val POPULAR_SORT_ORDER = "itemMetadata.relevance:DESC,sortName:ASC"
+private const val LAST_PLAYED_SORT_ORDER = "variants.gfn.library.lastPlayedDate:DESC,sortName:ASC"
 private const val LIBRARY_APPS_FETCH_COUNT = 200
 private const val MAX_LIBRARY_APPS_PAGES = 25
 private const val LIBRARY_APPS_SORT_ORDER =
@@ -434,9 +436,11 @@ private fun monitorSettings(
 
 private fun requestedStreamingFeatures(settings: StreamSettings, profile: StreamRequestProfile): JsonObject =
     buildJsonObject {
-        put("reflex", settings.enableCloudGsync || settings.fps >= 120)
+        put("reflex", settings.fps >= 120)
         put("bitDepth", profile.bitDepth)
-        put("cloudGsync", settings.enableCloudGsync)
+        // OpenNOW no longer requests cloud G-Sync. The key stays on the wire with its previous
+        // default so the request shape CloudMatch validates against is unchanged.
+        put("cloudGsync", false)
         put("enabledL4S", settings.enableL4S)
         put("trueHdr", profile.hdrEnabled)
         put("mouseMovementFlags", 0)
@@ -1761,14 +1765,77 @@ internal fun mergeSupplementalPublicGameVariants(
     }
 }
 
+internal enum class CatalogSortKind {
+    Relevance,
+    Popular,
+    NewlyAdded,
+    LastPlayed,
+    Other,
+}
+
+internal fun catalogSortKind(sortId: String): CatalogSortKind =
+    when (sortId.trim().lowercase(Locale.US)) {
+        "relevance" -> CatalogSortKind.Relevance
+        "popular", "most_popular" -> CatalogSortKind.Popular
+        "last_added", "latest", "new_games", "newly_added" -> CatalogSortKind.NewlyAdded
+        "last_played", "recently_played" -> CatalogSortKind.LastPlayed
+        else -> CatalogSortKind.Other
+    }
+
+internal fun resolveCatalogSort(
+    options: List<CatalogSortOption>,
+    requestedSortId: String,
+): CatalogSortOption {
+    val requestedKind = catalogSortKind(requestedSortId)
+    return options.firstOrNull { it.id == requestedSortId }
+        ?: requestedKind.takeUnless { it == CatalogSortKind.Other }?.let { kind ->
+            options.firstOrNull { catalogSortKind(it.id) == kind }
+        }
+        ?: options.firstOrNull { catalogSortKind(it.id) == CatalogSortKind.Popular }
+        ?: CatalogSortOption(DEFAULT_SORT_ID, "Most Popular", POPULAR_SORT_ORDER)
+}
+
+internal fun catalogSortOrder(option: CatalogSortOption): String =
+    when (catalogSortKind(option.id)) {
+        CatalogSortKind.LastPlayed -> LAST_PLAYED_SORT_ORDER
+        CatalogSortKind.Popular -> option.orderBy.ifBlank { POPULAR_SORT_ORDER }
+        else -> option.orderBy
+    }
+
+/**
+ * The provider has returned identical order strings for Last added and Last played on some
+ * catalogue versions. Last played has trustworthy per-game timestamps, so enforce that one
+ * locally while preserving the provider order for Popular and New games.
+ */
+internal fun applyCatalogSortGuarantees(
+    games: List<GameInfo>,
+    sortId: String,
+): List<GameInfo> =
+    if (catalogSortKind(sortId) == CatalogSortKind.LastPlayed) {
+        games.sortedWith(
+            compareByDescending<GameInfo> { game ->
+                game.lastPlayed?.takeIf(String::isNotBlank)
+                    ?: game.variants.mapNotNull { it.lastPlayedDate?.takeIf(String::isNotBlank) }.maxOrNull()
+            },
+        )
+    } else {
+        games
+    }
+
 class GfnCatalogRepository(
     private val http: OkHttpClient = defaultHttpClient(),
     private val localeProvider: () -> String = { DEFAULT_LOCALE },
 ) {
     private data class CachedVpcId(val value: String, val expiresAtElapsedMs: Long)
+    private data class CachedCatalogDefinitions(val value: CatalogDefinitions, val expiresAtElapsedMs: Long)
+    private data class CachedPublicGames(val value: List<GameInfo>, val expiresAtElapsedMs: Long)
 
     private val vpcIdMutex = Mutex()
     private val vpcIdCache = mutableMapOf<String, CachedVpcId>()
+    private val catalogDefinitionsMutex = Mutex()
+    private val catalogDefinitionsCache = mutableMapOf<String, CachedCatalogDefinitions>()
+    private val publicGamesMutex = Mutex()
+    private var publicGamesCache: CachedPublicGames? = null
 
     private fun requestLocale(): String = localeProvider().takeIf {
         it.matches(Regex("^[a-z]{2}_[A-Z]{2}$"))
@@ -1835,6 +1902,24 @@ class GfnCatalogRepository(
         return if (includeSupplementalPublicVariants) mergePublicGameVariants(games, fetchPublicGames()) else games
     }
 
+    /**
+     * Browse pages intentionally stay lightweight. Hydrate the one game whose details were opened
+     * so Store entries get genres and the rest of the metadata response without delaying the whole
+     * catalogue behind hundreds of detail records.
+     */
+    suspend fun hydrateGameDetails(
+        token: String,
+        providerStreamingBaseUrl: String,
+        game: GameInfo,
+    ): GameInfo {
+        val appId = game.uuid?.takeIf { it.isNotBlank() } ?: return game
+        val vpcId = getVpcId(token, providerStreamingBaseUrl)
+        val metadata = fetchAppMetaData(token, listOf(appId), vpcId)
+            .firstOrNull { it.string("id") == appId }
+            ?: return game
+        return mergePanelGameWithMetadata(game, appToGame(metadata))
+    }
+
     suspend fun browseCatalog(
         token: String,
         providerStreamingBaseUrl: String,
@@ -1846,9 +1931,7 @@ class GfnCatalogRepository(
     ): CatalogBrowseResult {
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
         val definitions = fetchFilterAndSortDefinitions(token)
-        val selectedSort = definitions.sortOptions.firstOrNull { it.id == sortId }
-            ?: definitions.sortOptions.firstOrNull { it.id == DEFAULT_SORT_ID }
-            ?: CatalogSortOption(DEFAULT_SORT_ID, "Relevance", "itemMetadata.relevance:DESC,sortName:ASC")
+        val selectedSort = resolveCatalogSort(definitions.sortOptions, sortId)
         val selectedFilters = filterIds.filter { definitions.filterPayloadById.containsKey(it) }
         val filters = selectedFilters.mapNotNull { definitions.filterPayloadById[it]?.asObject() }
             .fold(mutableMapOf<String, JsonElement>()) { acc, obj ->
@@ -1859,7 +1942,7 @@ class GfnCatalogRepository(
             token = token,
             vpcId = vpcId,
             searchQuery = searchQuery,
-            sortOrder = selectedSort.orderBy,
+            sortOrder = catalogSortOrder(selectedSort),
             fetchCount = DEFAULT_CATALOG_FETCH_COUNT,
             filters = JsonObject(filters),
             maxPages = maxPages,
@@ -1872,11 +1955,12 @@ class GfnCatalogRepository(
             dedupeGames(games + publicGames.filter { it.matchesSearch(searchQuery) })
         }
         val merged = if (publicGames.isEmpty()) withSearchFallbacks else mergePublicGameVariants(withSearchFallbacks, publicGames)
+        val ordered = applyCatalogSortGuarantees(merged, selectedSort.id)
         return CatalogBrowseResult(
-            games = merged,
+            games = ordered,
             numberReturned = page.numberReturned,
-            numberSupported = max(page.numberSupported, merged.size),
-            totalCount = max(page.totalCount, merged.size),
+            numberSupported = max(page.numberSupported, ordered.size),
+            totalCount = max(page.totalCount, ordered.size),
             hasNextPage = page.hasNextPage,
             endCursor = page.endCursor?.takeIf { it.isNotBlank() },
             searchQuery = searchQuery,
@@ -1939,7 +2023,23 @@ class GfnCatalogRepository(
         )
     }
 
-    suspend fun fetchPublicGames(): List<GameInfo> {
+    suspend fun fetchPublicGames(): List<GameInfo> = publicGamesMutex.withLock {
+        val now = SystemClock.elapsedRealtime()
+        publicGamesCache
+            ?.takeIf { it.expiresAtElapsedMs > now }
+            ?.value
+            ?.let { return@withLock it }
+
+        requestPublicGames().also { games ->
+            // The public list is static supplemental metadata. Cache successful responses so Store,
+            // Library, search, and sort refreshes do not download and parse the same large JSON.
+            if (games.isNotEmpty()) {
+                publicGamesCache = CachedPublicGames(games, now + PUBLIC_GAMES_CACHE_TTL_MS)
+            }
+        }
+    }
+
+    private suspend fun requestPublicGames(): List<GameInfo> {
         val request = Request.Builder()
             .url("https://static.nvidiagrid.net/supported-public-game-list/locales/gfnpc-en-US.json")
             .header("User-Agent", GFN_USER_AGENT)
@@ -2061,6 +2161,8 @@ class GfnCatalogRepository(
 
     private companion object {
         const val VPC_ID_CACHE_TTL_MS = 5 * 60 * 1_000L
+        const val CATALOG_DEFINITIONS_CACHE_TTL_MS = 30 * 60 * 1_000L
+        const val PUBLIC_GAMES_CACHE_TTL_MS = 6 * 60 * 60 * 1_000L
     }
 
     private suspend fun fetchPanels(token: String, panelNames: List<String>, vpcId: String, withLibraryTime: Boolean): JsonObject {
@@ -2145,6 +2247,7 @@ class GfnCatalogRepository(
             GameVariant(
                 id = obj.string("id") ?: return@mapNotNull null,
                 store = obj.string("appStore") ?: "Unknown",
+                storeUrl = obj.string("storeUrl"),
                 supportedControls = obj.arr("supportedControls")?.mapNotNull { it.asString() }.orEmpty(),
                 librarySelected = library?.boolean("selected"),
                 libraryStatus = library?.string("status"),
@@ -2212,22 +2315,40 @@ class GfnCatalogRepository(
     }
 
     private suspend fun fetchFilterAndSortDefinitions(token: String): CatalogDefinitions {
+        val locale = requestLocale()
+        return catalogDefinitionsMutex.withLock {
+            val now = SystemClock.elapsedRealtime()
+            catalogDefinitionsCache[locale]
+                ?.takeIf { it.expiresAtElapsedMs > now }
+                ?.value
+                ?.let { return@withLock it }
+
+            requestFilterAndSortDefinitions(token, locale).also { definitions ->
+                catalogDefinitionsCache[locale] = CachedCatalogDefinitions(
+                    definitions,
+                    now + CATALOG_DEFINITIONS_CACHE_TTL_MS,
+                )
+            }
+        }
+    }
+
+    private suspend fun requestFilterAndSortDefinitions(token: String, locale: String): CatalogDefinitions {
         val query = """
             query GetFilterGroupAndSortOrderDefinitions(${'$'}locale: String!) {
               filterGroupDefinitions(language: ${'$'}locale) { id label filters { id label filters } }
               sortOrderDefinitions(language: ${'$'}locale) { id label orderBy }
             }
         """.trimIndent()
-        val payload = postGraphQl(query, buildJsonObject { put("locale", requestLocale()) }, token).checkGraphQlErrors()
+        val payload = postGraphQl(query, buildJsonObject { put("locale", locale) }, token).checkGraphQlErrors()
         val data = payload.obj("data")
         val filterPayloadById = mutableMapOf<String, JsonElement>()
-        val groups = data?.arr("filterGroupDefinitions")?.mapNotNull { raw ->
-            val group = raw.asObject() ?: return@mapNotNull null
-            val options = group.arr("filters")?.mapNotNull { filterRaw ->
-                val filter = filterRaw.asObject() ?: return@mapNotNull null
-                val filterJson = filter.arr("filters")?.firstOrNull()?.asString() ?: return@mapNotNull null
-                val parsed = runCatching { OpenNowJson.parseToJsonElement(filterJson) }.getOrNull() ?: return@mapNotNull null
-                val id = filter.string("id") ?: return@mapNotNull null
+        val groups = data?.arr("filterGroupDefinitions")?.mapNotNull groupMap@ { raw ->
+            val group = raw.asObject() ?: return@groupMap null
+            val options = group.arr("filters")?.mapNotNull filterMap@ { filterRaw ->
+                val filter = filterRaw.asObject() ?: return@filterMap null
+                val filterJson = filter.arr("filters")?.firstOrNull()?.asString() ?: return@filterMap null
+                val parsed = runCatching { OpenNowJson.parseToJsonElement(filterJson) }.getOrNull() ?: return@filterMap null
+                val id = filter.string("id") ?: return@filterMap null
                 filterPayloadById[id] = parsed
                 CatalogFilterOption(
                     id = id,
@@ -2292,6 +2413,7 @@ class GfnCatalogRepository(
         variants {
           id
           appStore
+          storeUrl
           supportedControls
           paymentModels { __typename }
           gfn { status library { status selected lastPlayedDate } }
@@ -2312,7 +2434,7 @@ class GfnCatalogRepository(
               publisherName
               images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
               computedValues { paymentModels { __typename } }
-              variants { id appStore supportedControls paymentModels { __typename } gfn { status library { status selected lastPlayedDate } } }
+              variants { id appStore storeUrl supportedControls paymentModels { __typename } gfn { status library { status selected lastPlayedDate } } }
               gfn { playType playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
               itemMetadata { campaignIds }
             }
@@ -3281,12 +3403,11 @@ class GfnSessionRepository(
         val normalized = StreamingFeatures(
             reflex = features.boolean("reflex"),
             bitDepth = features.int("bitDepth"),
-            cloudGsync = features.boolean("cloudGsync"),
             chromaFormat = features.int("chromaFormat"),
             enabledL4S = features.boolean("enabledL4S"),
             trueHdr = features.boolean("trueHdr"),
         )
-        return if (listOf(normalized.reflex, normalized.bitDepth, normalized.cloudGsync, normalized.chromaFormat, normalized.enabledL4S, normalized.trueHdr).all { it == null }) null else normalized
+        return if (listOf(normalized.reflex, normalized.bitDepth, normalized.chromaFormat, normalized.enabledL4S, normalized.trueHdr).all { it == null }) null else normalized
     }
 
     private fun extractNegotiatedStreamProfile(session: JsonObject): NegotiatedStreamProfile? {
@@ -3311,10 +3432,9 @@ class GfnSessionRepository(
             fps = fps,
             colorQuality = cq,
             enableL4S = finalized?.boolean("enabledL4S") ?: requested?.boolean("enabledL4S"),
-            enableCloudGsync = finalized?.boolean("cloudGsync") ?: requested?.boolean("cloudGsync"),
             enableReflex = finalized?.boolean("reflex") ?: requested?.boolean("reflex"),
         ).takeIf {
-            it.resolution != null || it.fps != null || it.colorQuality != null || it.enableL4S != null || it.enableCloudGsync != null || it.enableReflex != null
+            it.resolution != null || it.fps != null || it.colorQuality != null || it.enableL4S != null || it.enableReflex != null
         }
     }
 

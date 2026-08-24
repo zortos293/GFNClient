@@ -73,7 +73,6 @@ class RuntimeQualityRecoveryWatchdogTest {
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
-            enableCloudGsync = true,
             streamSharpeningEnabled = true,
         ).runtimeQualityRecoveryProfile(RuntimeQualityRecoveryReason.NetworkDegraded)
 
@@ -83,7 +82,6 @@ class RuntimeQualityRecoveryWatchdogTest {
         assertEquals(12, recovered.maxBitrateMbps)
         assertEquals(ColorQuality.EightBit420, recovered.colorQuality)
         assertEquals(false, recovered.hdrEnabled)
-        assertEquals(false, recovered.enableCloudGsync)
         assertEquals(false, recovered.streamSharpeningEnabled)
     }
 

@@ -8,6 +8,38 @@ import org.junit.Test
 
 class InputHapticsParserTest {
     @Test
+    fun vibrationPrefersControllerAndFallsBackToDeviceHaptics() {
+        assertEquals(
+            HapticsOutputTarget.Controller,
+            selectHapticsOutputTarget(
+                vibrationEnabled = true,
+                controllerRumbleAvailable = true,
+                deviceHapticsAvailable = true,
+            ),
+        )
+        assertEquals(
+            HapticsOutputTarget.Device,
+            selectHapticsOutputTarget(
+                vibrationEnabled = true,
+                controllerRumbleAvailable = false,
+                deviceHapticsAvailable = true,
+            ),
+        )
+    }
+
+    @Test
+    fun disabledVibrationSuppressesEveryOutput() {
+        assertEquals(
+            HapticsOutputTarget.None,
+            selectHapticsOutputTarget(
+                vibrationEnabled = false,
+                controllerRumbleAvailable = true,
+                deviceHapticsAvailable = true,
+            ),
+        )
+    }
+
+    @Test
     fun parsesLegacyHapticPacket() {
         val packet = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN).apply {
             putShort(267.toShort())

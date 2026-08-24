@@ -475,7 +475,6 @@ internal fun StreamSettings.runtimeQualityRecoveryProfile(
         maxBitrateMbps = minOf(maxBitrateMbps, RUNTIME_NETWORK_BITRATE_CAP_MBPS),
         colorQuality = ColorQuality.EightBit420,
         hdrEnabled = false,
-        enableCloudGsync = false,
         streamSharpeningEnabled = false,
     ).withCodecColorCompatibility()
     RuntimeQualityRecoveryReason.DecoderOverloaded -> androidSafeVideoFallback().copy(

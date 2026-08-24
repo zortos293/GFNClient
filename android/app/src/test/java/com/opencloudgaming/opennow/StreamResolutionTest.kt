@@ -139,7 +139,7 @@ class StreamResolutionTest {
         assertEquals("1366x768", serverFallback?.displayedResolution)
         assertEquals(false, serverFallback?.safeVideoRecoveryActive)
         assertEquals(
-            ActiveStreamModeDisplayChange("Resolution", "1680x720", "1366x768"),
+            ActiveStreamModeDisplayChange("Resolution", "1680x720", "1366x768", ActiveStreamModeChangeKind.Resolution),
             serverFallback?.let(::activeStreamModeDisplayChanges)?.first(),
         )
         assertEquals(StreamResolutionChangeSource.ProviderOrGameModeChange, laterModeChange?.resolutionSource)
@@ -202,7 +202,7 @@ class StreamResolutionTest {
             status?.let(::activeStreamModeDisplayChanges)?.map { it.label },
         )
         assertEquals(
-            ActiveStreamModeDisplayChange("Codec", "AV1", "H264"),
+            ActiveStreamModeDisplayChange("Codec", "AV1", "H264", ActiveStreamModeChangeKind.Codec),
             status?.let(::activeStreamModeDisplayChanges)?.first(),
         )
         assertFalse(status?.let(::activeStreamModeDisplayChanges).orEmpty().any { it.label == "Resolution" })

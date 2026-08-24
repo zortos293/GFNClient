@@ -134,6 +134,33 @@ internal fun isCurrentPeerOperation(
         operationGeneration == currentGeneration &&
         (expectedPeer == null || expectedPeer === activePeer)
 
+internal enum class HapticsOutputTarget {
+    Controller,
+    Device,
+    None,
+}
+
+/**
+ * A forced [HapticsOutputPreference] is a hard selection, not a hint: picking Controller or Device
+ * and then silently falling back to the other would defeat the point of the setting, which exists
+ * precisely because one of the two is lying about its capability.
+ */
+internal fun selectHapticsOutputTarget(
+    vibrationEnabled: Boolean,
+    controllerRumbleAvailable: Boolean,
+    deviceHapticsAvailable: Boolean,
+    preference: HapticsOutputPreference = HapticsOutputPreference.Auto,
+): HapticsOutputTarget = when {
+    !vibrationEnabled -> HapticsOutputTarget.None
+    preference == HapticsOutputPreference.Controller ->
+        if (controllerRumbleAvailable) HapticsOutputTarget.Controller else HapticsOutputTarget.None
+    preference == HapticsOutputPreference.Device ->
+        if (deviceHapticsAvailable) HapticsOutputTarget.Device else HapticsOutputTarget.None
+    controllerRumbleAvailable -> HapticsOutputTarget.Controller
+    deviceHapticsAvailable -> HapticsOutputTarget.Device
+    else -> HapticsOutputTarget.None
+}
+
 class NativeStreamClient(
     context: Context,
     private val onState: (String) -> Unit,
@@ -281,6 +308,10 @@ class NativeStreamClient(
     private var virtualRightStickActive = false
     private var virtualRightStickX = 0
     private var virtualRightStickY = 0
+    /** Separate from touch so a finger on the right stick can temporarily take precedence. */
+    private var gyroscopeRightStickActive = false
+    private var gyroscopeRightStickX = 0
+    private var gyroscopeRightStickY = 0
     private var virtualControllerVisible = false
     @Volatile
     private var touchMouseEnabled = false
@@ -348,8 +379,9 @@ class NativeStreamClient(
     private val lastRumbleEffectAtMs = LongArray(GAMEPAD_MAX_CONTROLLERS)
     private val hapticsSupportLogged = BooleanArray(GAMEPAD_MAX_CONTROLLERS)
     private var lastHapticsWarningAtMs = 0L
-    private var phoneRumbleFallbackEnabled = true
-    private var phoneRumbleSupportLogged = false
+    private var vibrationEnabled = true
+    private var hapticsOutputPreference = HapticsOutputPreference.Auto
+    private var deviceHapticsSupportLogged = false
     private var released = false
     private var controllerMouseLoopJob: Job? = null
     private var physicalLeftStickX = 0f
@@ -655,11 +687,15 @@ class NativeStreamClient(
         setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
     }
 
-    fun updateHapticsSettings(phoneFallbackEnabled: Boolean) {
-        if (phoneRumbleFallbackEnabled == phoneFallbackEnabled) return
-        phoneRumbleFallbackEnabled = phoneFallbackEnabled
-        if (!phoneFallbackEnabled) {
-            cancelPhoneRumble()
+    fun updateHapticsSettings(enabled: Boolean, preference: HapticsOutputPreference) {
+        if (vibrationEnabled == enabled && hapticsOutputPreference == preference) return
+        val outputChanged = hapticsOutputPreference != preference
+        vibrationEnabled = enabled
+        hapticsOutputPreference = preference
+        // Switching output mid-rumble has to silence the old one: the stop that eventually arrives
+        // from the host is routed to the *new* target and would leave the old motor running.
+        if (!enabled || outputChanged) {
+            stopAllGamepadRumble()
         }
         updateHapticsAdvertisement(force = true)
     }
@@ -672,11 +708,12 @@ class NativeStreamClient(
      */
     fun applyLiveSettings(
         rendererSettings: StreamSettings,
-        phoneRumbleFallback: Boolean,
+        vibrationEnabled: Boolean,
+        hapticsOutput: HapticsOutputPreference,
         stretchToFit: Boolean,
     ) {
         updateRendererSettings(rendererSettings)
-        updateHapticsSettings(phoneRumbleFallback)
+        updateHapticsSettings(vibrationEnabled, hapticsOutput)
         NativeStreamInputRouter.setStretchToFit(stretchToFit)
     }
 
@@ -868,6 +905,9 @@ class NativeStreamClient(
         virtualRightStickActive = false
         virtualRightStickX = 0
         virtualRightStickY = 0
+        gyroscopeRightStickActive = false
+        gyroscopeRightStickX = 0
+        gyroscopeRightStickY = 0
         virtualControllerVisible = false
         physicalControllerConnected = false
         physicalControllerActive = false
@@ -939,6 +979,22 @@ class NativeStreamClient(
             )
         }
         if (shouldSuppressHardwareKeyboardRepeat(hardwareKeyboard, event.action, event.repeatCount)) {
+            return true
+        }
+        val textFallback = InputEncoder.keyboardTextFallbackChar(
+            unicodeChar = event.unicodeChar,
+            baseUnicodeChar = event.getUnicodeChar(0),
+            mapped = key != null,
+            altGraph = event.isAltPressed && event.isCtrlPressed,
+        )
+        if (textFallback != null) {
+            // Send once, on the press. The release carries the same character and would double it.
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                sendKeyboardTextFallback(textFallback)
+                NativeInputDiagnostics.add(
+                    "keyboard text fallback key=${event.keyCode} char=$textFallback mapped=${key != null}",
+                )
+            }
             return true
         }
         val packet = key?.let { if (event.action == KeyEvent.ACTION_DOWN) inputEncoder.encodeKeyDown(it) else inputEncoder.encodeKeyUp(it) }
@@ -1334,6 +1390,18 @@ class NativeStreamClient(
         }
     }
 
+    /**
+     * Routes one character down the same reliable text channel the on-screen keyboard bar uses, and
+     * behind the same mutex, so a physical keystroke cannot overtake text already being replayed.
+     */
+    private fun sendKeyboardTextFallback(char: Char) {
+        scope.launch {
+            textSendMutex.withLock {
+                sendTextLocked(char.toString())
+            }
+        }
+    }
+
     private suspend fun sendTextLocked(text: String) {
         inputEncoder.encodeTextInput(text).forEach { packet ->
             if (!sendTextPacketWithRetry(packet)) return
@@ -1634,6 +1702,21 @@ class NativeStreamClient(
         virtualRightStickActive = normalizedX != 0f || normalizedY != 0f
         virtualRightStickX = normalizeToInt16(normalizedX)
         virtualRightStickY = normalizeToInt16(-normalizedY)
+        sendBurstLimitedGamepadState()
+    }
+
+    fun setGyroscopeRightStick(x: Float, y: Float) {
+        if (controllerMouseEmulationActive) {
+            gyroscopeRightStickActive = false
+            gyroscopeRightStickX = 0
+            gyroscopeRightStickY = 0
+            return
+        }
+        val normalizedX = x.takeIf(Float::isFinite)?.coerceIn(-1f, 1f) ?: 0f
+        val normalizedY = y.takeIf(Float::isFinite)?.coerceIn(-1f, 1f) ?: 0f
+        gyroscopeRightStickActive = normalizedX != 0f || normalizedY != 0f
+        gyroscopeRightStickX = normalizeToInt16(normalizedX)
+        gyroscopeRightStickY = normalizeToInt16(-normalizedY)
         sendBurstLimitedGamepadState()
     }
 
@@ -3385,7 +3468,11 @@ class NativeStreamClient(
             ) {
                 "gamepad stick packet slot=$controllerId sent=$sent left=$leftStickX,$leftStickY right=$rightStickX,$rightStickY " +
                     "leftSource=${if (virtualLeftStickActive) "virtual" else "physical"} " +
-                    "rightSource=${if (virtualRightStickActive) "virtual" else "physical"} " +
+                    "rightSource=${when {
+                        virtualRightStickActive -> "virtual"
+                        gyroscopeRightStickActive -> "gyroscope"
+                        else -> "physical"
+                    }} " +
                     inputChannelStateSummary()
             }
         }
@@ -3431,10 +3518,20 @@ class NativeStreamClient(
     private fun effectiveLeftStickX(): Int = if (virtualLeftStickActive) virtualLeftStickX else lastLeftStickX
     private fun effectiveLeftStickY(): Int = if (virtualLeftStickActive) virtualLeftStickY else lastLeftStickY
     private fun effectiveRightStickX(): Int =
-        if (virtualRightStickActive) virtualRightStickX else if (controllerMouseAssistActive) 0 else lastRightStickX
+        when {
+            virtualRightStickActive -> virtualRightStickX
+            gyroscopeRightStickActive -> gyroscopeRightStickX
+            controllerMouseAssistActive -> 0
+            else -> lastRightStickX
+        }
 
     private fun effectiveRightStickY(): Int =
-        if (virtualRightStickActive) virtualRightStickY else if (controllerMouseAssistActive) 0 else lastRightStickY
+        when {
+            virtualRightStickActive -> virtualRightStickY
+            gyroscopeRightStickActive -> gyroscopeRightStickY
+            controllerMouseAssistActive -> 0
+            else -> lastRightStickY
+        }
 
     private fun hasAnyControllerState(): Boolean =
         physicalControllerConnected ||
@@ -3453,7 +3550,8 @@ class NativeStreamClient(
             lastRightStickX != 0 ||
             lastRightStickY != 0 ||
             virtualLeftStickActive ||
-            virtualRightStickActive
+            virtualRightStickActive ||
+            gyroscopeRightStickActive
 
     private fun hasActiveControllerInput(): Boolean =
         physicalButtons != 0 ||
@@ -3789,7 +3887,12 @@ class NativeStreamClient(
     }
 
     private fun hapticsOutputAvailable(): Boolean =
-        hapticControllerDevices().isNotEmpty() || hasPhoneRumbleFallback()
+        selectHapticsOutputTarget(
+            vibrationEnabled = vibrationEnabled,
+            controllerRumbleAvailable = hapticControllerDevices().isNotEmpty(),
+            deviceHapticsAvailable = hasDeviceHaptics(),
+            preference = hapticsOutputPreference,
+        ) != HapticsOutputTarget.None
 
     private fun hapticControllerDevices(): List<InputDevice> =
         buildList {
@@ -3820,16 +3923,27 @@ class NativeStreamClient(
             return
         }
         val device = findHapticControllerDevice(slot)
-        val usePhoneFallback = device == null && hasPhoneRumbleFallback()
-        if (device == null && !usePhoneFallback) {
-            logHapticsWarning("input haptics no vibrator controller=$controllerId phoneFallback=$phoneRumbleFallbackEnabled")
+        val outputTarget = selectHapticsOutputTarget(
+            vibrationEnabled = vibrationEnabled,
+            controllerRumbleAvailable = device != null,
+            deviceHapticsAvailable = hasDeviceHaptics(),
+            preference = hapticsOutputPreference,
+        )
+        if (outputTarget == HapticsOutputTarget.None) {
+            logHapticsWarning(
+                "input haptics unavailable controller=$controllerId vibrationEnabled=$vibrationEnabled " +
+                    "output=$hapticsOutputPreference controllerRumble=${device != null} device=${hasDeviceHaptics()}",
+            )
             return
         }
         lastRumbleEffectAtMs[slot] = if (isStop) 0L else now
 
         if (isStop) {
-            device?.let(::cancelControllerRumble)
-            cancelPhoneRumble()
+            when (outputTarget) {
+                HapticsOutputTarget.Controller -> device?.let(::cancelControllerRumble)
+                HapticsOutputTarget.Device -> cancelDeviceHaptics()
+                HapticsOutputTarget.None -> Unit
+            }
             return
         }
         if (device != null && !hapticsSupportLogged[slot]) {
@@ -3837,17 +3951,17 @@ class NativeStreamClient(
             NativeInputDiagnostics.add("gamepad haptics available controller=$slot device=${device.id}:${device.name}")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (device != null) {
-                vibrateController(device, profile)
-            } else {
-                vibratePhoneRumble(profile)
+            when (outputTarget) {
+                HapticsOutputTarget.Controller -> device?.let { vibrateController(it, profile) }
+                HapticsOutputTarget.Device -> vibrateDeviceHaptics(profile)
+                HapticsOutputTarget.None -> Unit
             }
         } else {
             @Suppress("DEPRECATION")
-            if (device != null) {
-                device.vibrator.vibrate(RUMBLE_EFFECT_MS)
-            } else {
-                vibratePhoneRumbleLegacy()
+            when (outputTarget) {
+                HapticsOutputTarget.Controller -> device?.vibrator?.vibrate(RUMBLE_EFFECT_MS)
+                HapticsOutputTarget.Device -> vibrateDeviceHapticsLegacy()
+                HapticsOutputTarget.None -> Unit
             }
         }
     }
@@ -3856,12 +3970,12 @@ class NativeStreamClient(
         hapticControllerDevices().forEach { device ->
             cancelControllerRumble(device)
         }
-        cancelPhoneRumble()
+        cancelDeviceHaptics()
         for (index in 0 until GAMEPAD_MAX_CONTROLLERS) {
             lastRumbleEffectAtMs[index] = 0L
             hapticsSupportLogged[index] = false
         }
-        phoneRumbleSupportLogged = false
+        deviceHapticsSupportLogged = false
         lastHapticsWarningAtMs = 0L
     }
 
@@ -3918,14 +4032,30 @@ class NativeStreamClient(
             }
         }
         @Suppress("DEPRECATION")
-        device.vibrator.vibrate(createRumbleEffect(profile.combinedAmplitude))
+        device.vibrator.vibrateAsMedia(createRumbleEffect(profile.combinedAmplitude))
     }
 
     private fun updateControllerVibrator(vibrator: Vibrator, amplitude: Int) {
         if (amplitude <= 0) {
             vibrator.cancel()
         } else {
-            vibrator.vibrate(createRumbleEffect(amplitude))
+            vibrator.vibrateAsMedia(createRumbleEffect(amplitude))
+        }
+    }
+
+    /**
+     * Rumble is media output, not touch feedback.
+     *
+     * A bare `vibrate(effect)` is classified `USAGE_UNKNOWN`, which the platform folds into the
+     * system "Touch feedback" setting — off by default on several gaming handhelds, and the reason
+     * rumble could arrive from the host and produce nothing at all. Tagging it `USAGE_MEDIA` puts
+     * it where game rumble belongs and takes it out from under that switch.
+     */
+    private fun Vibrator.vibrateAsMedia(effect: VibrationEffect) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            vibrate(effect, mediaVibrationAttributes())
+        } else {
+            vibrate(effect, gameAudioAttributes())
         }
     }
 
@@ -3943,46 +4073,50 @@ class NativeStreamClient(
         device.vibrator.cancel()
     }
 
-    private fun hasPhoneRumbleFallback(): Boolean {
-        if (!phoneRumbleFallbackEnabled) return false
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val manager = appContext.getSystemService(VibratorManager::class.java) ?: return false
-            manager.vibratorIds.any { manager.getVibrator(it).hasVibrator() }
+    private fun hasDeviceHaptics(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            appContext.getSystemService(VibratorManager::class.java)?.let { manager ->
+                manager.vibratorIds.any { manager.getVibrator(it).hasVibrator() }
+            } == true
         } else {
             @Suppress("DEPRECATION")
             (appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.hasVibrator() == true
         }
-    }
 
     private fun createRumbleEffect(amplitude: Int): VibrationEffect =
         VibrationEffect.createOneShot(RUMBLE_EFFECT_MS, amplitude.coerceIn(1, 255))
 
-    private fun vibratePhoneRumble(profile: RumbleEffectProfile) {
-        if (!phoneRumbleSupportLogged) {
-            phoneRumbleSupportLogged = true
-            NativeInputDiagnostics.add("gamepad haptics using phone fallback")
+    private fun vibrateDeviceHaptics(profile: RumbleEffectProfile) {
+        if (!deviceHapticsSupportLogged) {
+            deviceHapticsSupportLogged = true
+            NativeInputDiagnostics.add("gamepad haptics using device fallback")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val manager = appContext.getSystemService(VibratorManager::class.java)
             if (manager != null && manager.vibratorIds.any { manager.getVibrator(it).hasVibrator() }) {
-                manager.vibrate(CombinedVibration.createParallel(createRumbleEffect(profile.combinedAmplitude)))
+                // VibratorManager is API 31+, so VibrationAttributes is always available here.
+                manager.vibrate(
+                    CombinedVibration.createParallel(createRumbleEffect(profile.combinedAmplitude)),
+                    mediaVibrationAttributes(),
+                )
                 return
             }
         }
         @Suppress("DEPRECATION")
-        (appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.vibrate(createRumbleEffect(profile.combinedAmplitude))
+        (appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)
+            ?.vibrateAsMedia(createRumbleEffect(profile.combinedAmplitude))
     }
 
     @Suppress("DEPRECATION")
-    private fun vibratePhoneRumbleLegacy() {
-        if (!phoneRumbleSupportLogged) {
-            phoneRumbleSupportLogged = true
-            NativeInputDiagnostics.add("gamepad haptics using phone fallback")
+    private fun vibrateDeviceHapticsLegacy() {
+        if (!deviceHapticsSupportLogged) {
+            deviceHapticsSupportLogged = true
+            NativeInputDiagnostics.add("gamepad haptics using device fallback")
         }
         (appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.vibrate(RUMBLE_EFFECT_MS)
     }
 
-    private fun cancelPhoneRumble() {
+    private fun cancelDeviceHaptics() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             appContext.getSystemService(VibratorManager::class.java)?.cancel()
             return

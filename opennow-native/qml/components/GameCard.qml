@@ -9,9 +9,12 @@ FocusCard {
     property string badge: ""
     property int variant: 0
     property real progress: 0
+    property bool selected: false
 
     implicitWidth: 260
-    implicitHeight: 226
+    implicitHeight: 248
+
+    background: Rectangle { color: "transparent" }
 
     contentItem: Item {
         anchors.fill: parent
@@ -21,16 +24,27 @@ FocusCard {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            height: 156
+            height: 180
             variant: card.variant
             kicker: card.badge
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: 180
+            radius: 14
+            color: "transparent"
+            border.width: card.selected || card.activeFocus ? 3 : 0
+            border.color: Theme.accent
         }
 
         Column {
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.margins: 14
+            anchors.top: art.bottom
+            anchors.topMargin: 12
             spacing: 4
 
             Text {
@@ -38,14 +52,16 @@ FocusCard {
                 text: card.title
                 color: Theme.ink
                 elide: Text.ElideRight
+                font.family: Theme.bodyFont.family
                 font.pixelSize: 16
-                font.weight: Font.DemiBold
+                font.weight: Font.Bold
             }
             Text {
                 width: parent.width
                 text: card.subtitle
                 color: Theme.inkMuted
                 elide: Text.ElideRight
+                font.family: Theme.bodyFont.family
                 font.pixelSize: 12
             }
         }
@@ -55,7 +71,7 @@ FocusCard {
             anchors.left: parent.left
             anchors.bottom: parent.bottom
             width: parent.width * card.progress
-            height: 3
+            height: 2
             color: Theme.accent
         }
     }

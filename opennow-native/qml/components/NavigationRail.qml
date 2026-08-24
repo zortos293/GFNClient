@@ -8,101 +8,72 @@ Rectangle {
     signal navigate(int index)
 
     width: Theme.railWidth
-    color: "#dd090b09"
-    border.color: Theme.divider
+    color: Theme.canvas
+    border.color: "#18201c"
     border.width: 1
 
-    Image {
-        id: logo
+    BrandMark {
         anchors.top: parent.top
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.topMargin: 27
-        source: "qrc:/OpenNOW/assets/opennow-mark.png"
-        sourceSize.width: 60
-        sourceSize.height: 34
-        fillMode: Image.PreserveAspectFit
+        anchors.topMargin: 28
+        width: 40
+        height: 40
     }
 
     Column {
-        id: nav
-        anchors.centerIn: parent
-        spacing: 14
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: 365
+        spacing: 8
 
         Repeater {
-            model: [
-                { icon: "⌂", label: "Home" },
-                { icon: "▦", label: "Library" },
-                { icon: "⌕", label: "Search" },
-                { icon: "⚙", label: "Settings" }
-            ]
+            model: ["⌂", "▥", "⌕", "▥", "☼"]
 
             Button {
                 id: navButton
-                required property var modelData
+                required property string modelData
                 required property int index
-                width: 76
-                height: 66
+                width: 56
+                height: 56
                 hoverEnabled: true
                 focusPolicy: Qt.StrongFocus
-                onClicked: rail.navigate(index)
+                onClicked: rail.navigate(Math.min(index, 3))
 
-                contentItem: Column {
+                contentItem: Text {
                     anchors.centerIn: parent
-                    spacing: 3
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: navButton.modelData.icon
-                        color: rail.currentIndex === navButton.index ? Theme.accent : Theme.inkSoft
-                        font.pixelSize: 25
-                        font.weight: Font.Light
-                    }
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: navButton.modelData.label
-                        color: rail.currentIndex === navButton.index ? Theme.ink : Theme.inkMuted
-                        font.pixelSize: 10
-                        font.weight: Font.DemiBold
-                    }
+                    text: navButton.modelData
+                    color: rail.currentIndex === navButton.index ? Theme.accent : Theme.inkMuted
+                    font.family: Theme.bodyFont.family
+                    font.pixelSize: navButton.index === 0 ? 27 : 23
+                    font.weight: Font.Light
                 }
 
                 background: Rectangle {
-                    radius: 15
-                    color: rail.currentIndex === navButton.index
-                           ? "#1b2b20"
-                           : (navButton.hovered || navButton.activeFocus ? Theme.surfaceRaised : "transparent")
-                    border.width: navButton.activeFocus ? 2 : 0
+                    radius: 14
+                    color: "transparent"
+                    border.width: rail.currentIndex === navButton.index || navButton.activeFocus ? 2 : 0
                     border.color: Theme.accent
                 }
             }
         }
     }
 
-    Column {
+    Rectangle {
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottomMargin: 24
-        spacing: 8
-        Rectangle {
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: 42
-            height: 42
-            radius: 21
-            color: "#26392d"
-            border.color: "#44624c"
-            Text {
-                anchors.centerIn: parent
-                text: "Z"
-                color: Theme.accent
-                font.pixelSize: 16
-                font.weight: Font.Bold
-            }
-        }
+        anchors.bottomMargin: 28
+        width: 44
+        height: 44
+        radius: 22
+        color: "#18211c"
+        border.color: "#344039"
         Text {
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: controllerInput.connected ? "GAMEPAD" : "ONLINE"
-            color: Theme.accent
-            font.pixelSize: 8
-            font.letterSpacing: 1.4
+            anchors.centerIn: parent
+            text: "Z"
+            color: Theme.ink
+            font.family: Theme.bodyFont.family
+            font.pixelSize: 14
+            font.weight: Font.Bold
         }
     }
 }

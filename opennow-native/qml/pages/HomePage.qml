@@ -9,196 +9,205 @@ FocusScope {
     signal openGame(var game)
     signal startGame(var game)
 
-    Flickable {
-        anchors.fill: parent
-        contentHeight: content.height + 50
+    Text {
+        x: Theme.pageMargin
+        y: 35
+        text: "FRI 21:47"
+        color: Theme.accent
+        font.family: Theme.monoFont.family
+        font.pixelSize: 13
+        font.weight: Font.Bold
+        font.letterSpacing: 1.8
+    }
+
+    Text {
+        x: Theme.pageMargin
+        y: 66
+        text: "Good evening, Zortos"
+        color: Theme.ink
+        font.family: Theme.displayFont.family
+        font.pixelSize: 42
+        font.weight: Font.DemiBold
+    }
+
+    Rectangle {
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.rightMargin: Theme.pageMargin
+        anchors.topMargin: 46
+        width: 374
+        height: 58
+        radius: 16
+        color: "#0d120f"
+        border.width: 1
+        border.color: "#202a24"
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 24
+            anchors.rightMargin: 24
+            Rectangle { width: 8; height: 8; radius: 4; color: Theme.accent }
+            Text { text: "EU-WEST"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
+            Rectangle { width: 1; height: 24; color: Theme.divider }
+            Text { text: "RTX 4080 rig"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 12 }
+            Rectangle { width: 1; height: 24; color: Theme.divider }
+            Text { text: "9 ms"; color: Theme.accent; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
+        }
+    }
+
+    Rectangle {
+        id: hero
+        x: Theme.pageMargin
+        y: 146
+        width: parent.width - Theme.pageMargin * 2
+        height: 430
+        radius: 24
+        color: Theme.surface
+        border.width: 1
+        border.color: "#202a24"
         clip: true
-        boundsBehavior: Flickable.StopAtBounds
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: 190
+            color: Theme.surfaceBright
+        }
 
         Column {
-            id: content
-            x: Theme.pageMargin
-            y: 30
-            width: parent.width - Theme.pageMargin * 2
-            spacing: 28
-
-            RowLayout {
-                width: parent.width
-                ColumnLayout {
-                    spacing: 3
-                    Text {
-                        text: "GOOD EVENING"
-                        color: Theme.accent
-                        font.pixelSize: 10
-                        font.weight: Font.Bold
-                        font.letterSpacing: 2.4
-                    }
-                    Text {
-                        text: "Pick up where you left off"
-                        color: Theme.ink
-                        font.pixelSize: 30
-                        font.weight: Font.DemiBold
-                    }
-                }
-                Item { Layout.fillWidth: true }
-                Rectangle {
-                    Layout.preferredWidth: 178
-                    Layout.preferredHeight: 42
-                    radius: 21
-                    color: Theme.surfaceRaised
-                    border.color: Theme.divider
-                    Row {
-                        anchors.centerIn: parent
-                        spacing: 9
-                        Rectangle { width: 8; height: 8; radius: 4; color: Theme.accent }
-                        Text {
-                            text: "EU Northeast · 18 ms"
-                            color: Theme.inkSoft
-                            font.pixelSize: 11
-                        }
-                    }
-                }
+            anchors.left: parent.left
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 44
+            anchors.bottomMargin: 43
+            spacing: 12
+            Text {
+                text: "CONTINUE PLAYING"
+                color: Theme.accent
+                font.family: Theme.monoFont.family
+                font.pixelSize: 12
+                font.weight: Font.Bold
+                font.letterSpacing: 2.4
             }
+            Text {
+                text: page.games[0].title
+                color: Theme.ink
+                font.family: Theme.displayFont.family
+                font.pixelSize: 58
+                font.weight: Font.DemiBold
+            }
+            Text {
+                text: "Last played 2 h ago   ·   Steam   ·   1440p   ·   120 FPS"
+                color: Theme.inkSoft
+                font.family: Theme.bodyFont.family
+                font.pixelSize: 15
+            }
+        }
 
-            FocusCard {
-                id: hero
-                width: parent.width
-                height: Math.min(390, page.height * 0.46)
+        Row {
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.rightMargin: 45
+            anchors.bottomMargin: 39
+            spacing: 14
+            ActionButton {
+                id: playButton
+                width: 220
+                height: 78
+                text: "PLAY   Ⓐ"
+                glyph: "▶"
+                primary: true
                 focus: page.visible
-                onClicked: page.openGame(page.games[0])
+                onClicked: page.startGame(page.games[0])
                 Keys.onReturnPressed: page.startGame(page.games[0])
-                KeyNavigation.down: continueRow
-
-                contentItem: Item {
-                    GameArtwork {
-                        anchors.fill: parent
-                        variant: page.games[0].variant
-                    }
-                    Rectangle {
-                        anchors.fill: parent
-                        gradient: Gradient {
-                            orientation: Gradient.Horizontal
-                            GradientStop { position: 0; color: "#e9070a08" }
-                            GradientStop { position: 0.52; color: "#78070a08" }
-                            GradientStop { position: 1; color: "#08070a08" }
-                        }
-                    }
-                    Column {
-                        anchors.left: parent.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.leftMargin: 40
-                        width: Math.min(510, parent.width * 0.48)
-                        spacing: 12
-                        Text {
-                            text: "READY TO RESUME"
-                            color: Theme.accent
-                            font.pixelSize: 10
-                            font.weight: Font.Bold
-                            font.letterSpacing: 2.2
-                        }
-                        Text {
-                            text: page.games[0].title
-                            color: Theme.ink
-                            font.pixelSize: Math.min(42, page.width * 0.035)
-                            font.weight: Font.Bold
-                        }
-                        Text {
-                            width: parent.width
-                            text: "Your save is synchronized. RTX Ultimate is ready on a low-latency rig nearby."
-                            color: Theme.inkSoft
-                            font.pixelSize: 14
-                            wrapMode: Text.WordWrap
-                            lineHeight: 1.25
-                        }
-                        Row {
-                            spacing: 10
-                            topPadding: 7
-                            ActionButton {
-                                text: "Resume session"
-                                glyph: "▶"
-                                primary: true
-                                onClicked: page.startGame(page.games[0])
-                            }
-                            ActionButton {
-                                text: "View details"
-                                onClicked: page.openGame(page.games[0])
-                            }
-                        }
-                    }
-                    Row {
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        anchors.margins: 22
-                        spacing: 8
-                        Repeater {
-                            model: ["4K", "120 FPS", "HDR", "RTX"]
-                            Rectangle {
-                                required property string modelData
-                                width: badgeText.implicitWidth + 18
-                                height: 26
-                                radius: 13
-                                color: "#b8181c19"
-                                border.color: "#3effffff"
-                                Text {
-                                    id: badgeText
-                                    anchors.centerIn: parent
-                                    text: modelData
-                                    color: Theme.inkSoft
-                                    font.pixelSize: 9
-                                    font.weight: Font.Bold
-                                }
-                            }
-                        }
-                    }
-                }
+                KeyNavigation.right: detailsButton
             }
-
-            RowLayout {
-                width: parent.width
-                Text {
-                    text: "Continue playing"
-                    color: Theme.ink
-                    font.pixelSize: 20
-                    font.weight: Font.DemiBold
-                }
-                Item { Layout.fillWidth: true }
-                Text {
-                    text: "VIEW LIBRARY  →"
-                    color: Theme.inkMuted
-                    font.pixelSize: 10
-                    font.weight: Font.Bold
-                    font.letterSpacing: 1.3
-                }
+            ActionButton {
+                id: detailsButton
+                width: 172
+                height: 78
+                text: "Details   ⓧ"
+                onClicked: page.openGame(page.games[0])
+                KeyNavigation.left: playButton
             }
+        }
+    }
 
-            GridView {
-                id: continueRow
-                width: parent.width
-                height: 232
-                interactive: false
-                cellWidth: width / 3
-                cellHeight: 232
-                model: page.games.slice(1, 4)
-                focus: false
-                keyNavigationWraps: true
+    Text {
+        x: Theme.pageMargin
+        y: 614
+        text: "Your library"
+        color: Theme.ink
+        font.family: Theme.displayFont.family
+        font.pixelSize: 22
+        font.weight: Font.Bold
+    }
 
-                delegate: Item {
-                    required property var modelData
-                    required property int index
-                    width: continueRow.cellWidth
-                    height: continueRow.cellHeight
-                    GameCard {
-                        anchors.fill: parent
-                        anchors.rightMargin: index === 2 ? 0 : 14
-                        title: modelData.title
-                        subtitle: modelData.subtitle
-                        badge: modelData.badge
-                        variant: modelData.variant
-                        progress: modelData.progress
-                        onClicked: page.openGame(modelData)
-                    }
-                }
+    Row {
+        anchors.right: parent.right
+        y: 610
+        anchors.rightMargin: Theme.pageMargin
+        spacing: 10
+        KeyHint { keyText: "LB"; label: ""; scale: 0.8 }
+        KeyHint { keyText: "RB"; label: "Browse rows"; scale: 0.8 }
+    }
+
+    GridView {
+        id: libraryRow
+        x: Theme.pageMargin
+        y: 672
+        width: parent.width - Theme.pageMargin * 2
+        height: 250
+        interactive: false
+        model: page.games.slice(1, 6)
+        cellWidth: width / 5
+        cellHeight: 250
+        focus: false
+        keyNavigationWraps: true
+        Keys.onReturnPressed: page.openGame(model[currentIndex])
+
+        delegate: Item {
+            required property var modelData
+            required property int index
+            width: libraryRow.cellWidth
+            height: libraryRow.cellHeight
+            GameCard {
+                anchors.fill: parent
+                anchors.rightMargin: index === 4 ? 0 : 24
+                title: modelData.title
+                subtitle: modelData.subtitle
+                badge: modelData.badge
+                variant: modelData.variant
+                selected: index === 0
+                onClicked: page.openGame(modelData)
             }
+        }
+    }
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: Theme.pageMargin
+        anchors.rightMargin: Theme.pageMargin
+        height: 80
+        color: Theme.canvas
+        border.color: "#18201c"
+        Text {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: "library: 214 titles · synced 4 min ago"
+            color: "#455048"
+            font.family: Theme.monoFont.family
+            font.pixelSize: 11
+            font.letterSpacing: 1.2
+        }
+        Row {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 22
+            KeyHint { keyText: "A"; label: "Play" }
+            KeyHint { keyText: "Y"; label: "Search" }
+            KeyHint { keyText: "ENTER"; label: "Keyboard OK" }
         }
     }
 }

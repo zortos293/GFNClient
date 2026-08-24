@@ -40,11 +40,14 @@ qt_add_qml_module(opennow-native
         qml/Main.qml
         qml/Theme.qml
         qml/components/ActionButton.qml
+        qml/components/BrandMark.qml
         qml/components/FocusCard.qml
         qml/components/GameArtwork.qml
         qml/components/GameCard.qml
+        qml/components/KeyHint.qml
         qml/components/NavigationRail.qml
         qml/components/SettingRow.qml
+        qml/pages/SignInPage.qml
         qml/pages/HomePage.qml
         qml/pages/LibraryPage.qml
         qml/pages/SearchPage.qml

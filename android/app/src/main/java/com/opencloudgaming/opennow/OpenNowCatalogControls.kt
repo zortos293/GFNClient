@@ -262,7 +262,7 @@ internal fun FilterMenu(
                 onDismissRequest = { expanded = false },
                 title = {
                     Text(
-                        "Filters",
+                        stringResource(R.string.catalog_filters),
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleMedium,
                         color = TextPrimary,
@@ -615,7 +615,7 @@ internal fun PrintedWasteSelector(
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(game.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("Free tier queue routing", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                                Text(stringResource(R.string.catalog_free_tier_routing), color = TextMuted, style = MaterialTheme.typography.bodySmall)
                             }
                         }
                         PrintedWasteOptionsColumn(
@@ -656,7 +656,7 @@ private fun PrintedWasteGameSummary(
         )
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(game.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text("Free tier queue routing", color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+            Text(stringResource(R.string.catalog_free_tier_routing), color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1)
         }
     }
 }
@@ -713,7 +713,7 @@ private fun PrintedWasteOptionsColumn(
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                    Text("Checking PrintedWaste queues and latency", color = TextMuted)
+                    Text(stringResource(R.string.catalog_checking_queues), color = TextMuted)
                 }
             }
         } else if (state.printedWasteError != null) {

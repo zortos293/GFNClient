@@ -3669,5 +3669,10 @@ suspend fun fetchDynamicRegions(
     }.getOrDefault(emptyList<StreamRegion>() to null)
 }
 
-private fun String.normalizedTitleKey(): String = trim().lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), " ").trim()
+private val NON_ALNUM_RUN = Regex("[^a-z0-9]+")
+
+// Runs once per catalogue entry during the merge; compiling the pattern per call showed up on
+// large libraries.
+private fun String.normalizedTitleKey(): String =
+    trim().lowercase(Locale.US).replace(NON_ALNUM_RUN, " ").trim()
 private fun String.isNumeric(): Boolean = all(Char::isDigit)

@@ -81,8 +81,8 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
     if (clearCacheConfirmOpen) {
         AlertDialog(
             onDismissRequest = { clearCacheConfirmOpen = false },
-            title = { Text("Clear game cache?") },
-            text = { Text("Cached store, library, and search results will be removed. Your account and settings stay unchanged.") },
+            title = { Text(stringResource(R.string.settings_clear_cache_title)) },
+            text = { Text(stringResource(R.string.settings_clear_cache_body)) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -103,8 +103,8 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
     if (resetSettingsConfirmOpen) {
         AlertDialog(
             onDismissRequest = { resetSettingsConfirmOpen = false },
-            title = { Text("Reset settings and app data?") },
-            text = { Text("Accounts, settings, cached games, tutorial state, and local app files will be removed. OpenNOW will relaunch like a fresh install.") },
+            title = { Text(stringResource(R.string.settings_reset_title)) },
+            text = { Text(stringResource(R.string.settings_reset_body)) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -124,7 +124,7 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
     }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            "Reset tutorial only makes the stream guide appear again. Reset settings is destructive: it clears local app data and relaunches OpenNOW.",
+            stringResource(R.string.settings_reset_explainer),
             color = SettingsTextMuted,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -390,7 +390,7 @@ private fun UpdateReleaseNotes(notes: String?) {
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                "Release notes",
+                stringResource(R.string.settings_release_notes),
                 color = SettingsText,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
@@ -793,7 +793,7 @@ private fun AccountServicesSettingsPanel(state: OpenNowUiState, viewModel: OpenN
             storageAddon = state.subscriptionInfo?.storageAddon,
             openExternal = { url ->
                 if (!openExternalUrl(context, url)) {
-                    Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.error_no_browser), Toast.LENGTH_SHORT).show()
                 }
             },
         )
@@ -805,7 +805,7 @@ private fun AccountServicesSettingsPanel(state: OpenNowUiState, viewModel: OpenN
             onConnect = { connector ->
                 viewModel.connectAccountConnector(connector.store) { url ->
                     if (!openExternalUrl(context, url)) {
-                        Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.error_no_browser), Toast.LENGTH_SHORT).show()
                     }
                 }
             },
@@ -814,7 +814,7 @@ private fun AccountServicesSettingsPanel(state: OpenNowUiState, viewModel: OpenN
             },
             openExternal = { url ->
                 if (!openExternalUrl(context, url)) {
-                    Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.error_no_browser), Toast.LENGTH_SHORT).show()
                 }
             },
         )
@@ -842,7 +842,7 @@ private fun AddAccountProviderDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    "Select the GeForce NOW provider to use for the new account.",
+                    stringResource(R.string.settings_select_provider),
                     color = SettingsTextMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -1093,7 +1093,7 @@ private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.account_cloud_storage), color = SettingsText, fontWeight = FontWeight.SemiBold)
             if (storageAddon == null) {
-                Text("No persistent storage add-on is active for this account.", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.settings_no_storage_addon), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
                 OutlinedButton(onClick = { openExternal(GFN_ADD_STORAGE_URL) }, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(R.string.account_add_storage), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -1114,7 +1114,7 @@ private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                             Text(
-                                "Storage usage",
+                                stringResource(R.string.settings_storage_usage),
                                 color = SettingsText,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.SemiBold,
@@ -1194,7 +1194,7 @@ private fun AccountConnectorsPanel(
                         onDisconnect(connector)
                     },
                 ) {
-                    Text("Disconnect")
+                    Text(stringResource(R.string.action_disconnect))
                 }
             },
             dismissButton = {
@@ -1211,7 +1211,7 @@ private fun AccountConnectorsPanel(
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Game store connections", color = SettingsText, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.settings_store_connections), color = SettingsText, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 if (!controllerNavigationEnabled) {
                     TextButton(onClick = onRefresh, enabled = !loading) {
                         Text(if (loading) "Refreshing..." else "Refresh")
@@ -1240,7 +1240,7 @@ private fun AccountConnectorsPanel(
                 }
             }
             OutlinedButton(onClick = { openExternal(GFN_ACCOUNT_HELP_URL) }, modifier = Modifier.fillMaxWidth()) {
-                Text("Connection help", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.settings_connection_help), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -1626,7 +1626,7 @@ internal fun DeveloperPanel() {
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(developer.name, color = SettingsText, fontWeight = FontWeight.SemiBold)
-                    Text("Developer", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.settings_developer_label), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 OutlinedButton(onClick = { openExternalUrlOrCopy(context, clipboard, developer.githubUrl, "GitHub link copied") }) {
                     Text("GitHub", maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1706,7 +1706,7 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
         }
     }
     Text(
-        "Exports launch state, queue state, stream updates, recovery events, settings, codec capabilities, and recent sanitized CloudMatch JSON responses.",
+        stringResource(R.string.settings_debug_logs_desc),
         color = SettingsTextMuted,
     )
     if (state.androidTvProfile) {
@@ -1714,10 +1714,10 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
             onClick = viewModel::uploadDiagnosticShare,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Upload logs and show QR", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(stringResource(R.string.settings_upload_logs_qr), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Text(
-            "Sensitive values are removed before an unlisted, temporary paste is created. Scan the QR code with your phone to share it.",
+            stringResource(R.string.settings_upload_logs_desc),
             color = SettingsTextMuted,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -1752,7 +1752,7 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
                 copied = true
             },
         ) {
-            Text("Copy error")
+            Text(stringResource(R.string.action_copy_error))
         }
     }
     saveError?.let {
@@ -1804,7 +1804,7 @@ internal fun BatteryOptimizationPanel() {
         modifier = Modifier.fillMaxWidth()
     ) {
         Text(
-            text = "Android battery optimization restricts the app's background activity, which can cause connection timeouts or pause GFN queue progress when the app is minimized.",
+            text = stringResource(R.string.settings_battery_optimization_desc),
             style = MaterialTheme.typography.bodyMedium,
             color = SettingsTextMuted
         )
@@ -1816,12 +1816,18 @@ internal fun BatteryOptimizationPanel() {
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Background activity",
+                    text = stringResource(R.string.settings_background_activity),
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    text = if (isIgnoring) "Unlimited (Allowed in background)" else "Optimized (May timeout in background)",
+                    text = stringResource(
+                        if (isIgnoring) {
+                            R.string.settings_background_activity_unlimited
+                        } else {
+                            R.string.settings_background_activity_optimized
+                        },
+                    ),
                     color = if (isIgnoring) Color(0xff81c784) else Color(0xffffb74d),
                     style = MaterialTheme.typography.bodySmall
                 )

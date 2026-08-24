@@ -222,11 +222,16 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
                                             state = state,
                                             viewModel = viewModel,
                                         )
+                                        SetupStep.Play -> SetupPlayStep(
+                                            settings = settings,
+                                            tvProfile = tvProfile,
+                                            onSettingsChange = viewModel::updateSettings,
+                                        )
                                         SetupStep.Feedback -> SetupFeedbackStep(
                                             settings = settings,
                                             onSettingsChange = viewModel::updateSettings,
                                         )
-                                        else -> SetupReadyStep(settings = settings)
+                                        else -> SetupReadyStep(settings = settings, tvProfile = tvProfile)
                                     }
                                     Spacer(Modifier.height(OpenNowSpacing.sm))
                                 }
@@ -910,15 +915,176 @@ private fun SetupStreamingStep(state: OpenNowUiState, viewModel: OpenNowViewMode
                 fallbackMembershipTier = fallbackMembershipTier,
             )
         }
+    }
+}
+
+@Composable
+private fun SetupPlayStep(
+    settings: AppSettings,
+    tvProfile: Boolean,
+    onSettingsChange: (AppSettings) -> Unit,
+) {
+    val touchChoice = setupTouchMouseChoiceFor(settings)
+    Column(
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+    ) {
+        SetupSectionLabel(
+            title = stringResource(R.string.setup_play_preview),
+            value = if (tvProfile) {
+                if (settings.showStatsOnLaunch) settings.streamStatsPosition.label
+                else stringResource(R.string.setup_summary_off)
+            } else {
+                setupTouchMouseChoiceLabel(touchChoice)
+            },
+        )
+        SetupStreamExperiencePreview(settings = settings, showTouchHint = !tvProfile)
+
+        if (!tvProfile) {
+            SetupSectionLabel(
+                title = stringResource(R.string.setup_play_touch),
+                value = setupTouchMouseChoiceLabel(touchChoice),
+            )
+            SetupChoiceRow(
+                label = stringResource(R.string.setup_play_touch_direct),
+                value = stringResource(R.string.setup_play_touch_direct_desc),
+                selected = touchChoice == SetupTouchMouseChoice.Direct,
+            ) {
+                onSettingsChange(settings.withSetupTouchMouseChoice(SetupTouchMouseChoice.Direct))
+            }
+            SetupChoiceRow(
+                label = stringResource(R.string.setup_play_touch_trackpad),
+                value = stringResource(R.string.setup_play_touch_trackpad_desc),
+                selected = touchChoice == SetupTouchMouseChoice.Trackpad,
+            ) {
+                onSettingsChange(settings.withSetupTouchMouseChoice(SetupTouchMouseChoice.Trackpad))
+            }
+            SetupChoiceRow(
+                label = stringResource(R.string.setup_play_touch_off),
+                value = stringResource(R.string.setup_play_touch_off_desc),
+                selected = touchChoice == SetupTouchMouseChoice.Off,
+            ) {
+                onSettingsChange(settings.withSetupTouchMouseChoice(SetupTouchMouseChoice.Off))
+            }
+        }
+
         SettingSwitch(
-            label = stringResource(R.string.setup_streaming_stats),
+            label = stringResource(R.string.setup_play_status),
             checked = settings.showStatsOnLaunch,
-            description = stringResource(R.string.setup_streaming_stats_desc),
-        ) {
-            viewModel.updateSettings(settings.copy(showStatsOnLaunch = it))
+            description = stringResource(R.string.setup_play_status_desc),
+        ) { enabled ->
+            onSettingsChange(settings.copy(showStatsOnLaunch = enabled))
+        }
+        AnimatedVisibility(visible = settings.showStatsOnLaunch) {
+            ChoiceMenuRow(
+                label = stringResource(R.string.setup_play_status_position),
+                options = StreamStatsPosition.entries.map { position ->
+                    ChoiceMenuOption(value = position.name, label = position.label)
+                },
+                selectedLabel = settings.streamStatsPosition.label,
+            ) { value ->
+                StreamStatsPosition.entries.firstOrNull { it.name == value }?.let { position ->
+                    onSettingsChange(settings.copy(streamStatsPosition = position))
+                }
+            }
         }
     }
 }
+
+/** A deliberately quiet mock stream: every setup choice changes the chrome in this frame live. */
+@Composable
+private fun SetupStreamExperiencePreview(settings: AppSettings, showTouchHint: Boolean) {
+    val touchChoice = setupTouchMouseChoiceFor(settings)
+    val statusAlignment = when (settings.streamStatsPosition) {
+        StreamStatsPosition.Left -> Alignment.TopStart
+        StreamStatsPosition.Center -> Alignment.TopCenter
+        StreamStatsPosition.Right -> Alignment.TopEnd
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+        shape = RoundedCornerShape(OpenNowRadius.lg),
+        color = Color(0xFF08141C),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0xFF17364A), Color(0xFF0D2630), Color(0xFF091117)),
+                    ),
+                ),
+        ) {
+            // A small fake game objective gives the cursor treatment a meaningful destination.
+            Surface(
+                modifier = Modifier.align(Alignment.Center),
+                shape = RoundedCornerShape(OpenNowRadius.full),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
+            ) {
+                Text(
+                    text = stringResource(R.string.setup_play_preview_target),
+                    modifier = Modifier.padding(horizontal = OpenNowSpacing.lg, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+
+            AnimatedVisibility(
+                visible = settings.showStatsOnLaunch,
+                modifier = Modifier.align(statusAlignment),
+                enter = fadeIn(tween(120)),
+                exit = fadeOut(tween(90)),
+            ) {
+                Surface(
+                    modifier = Modifier.padding(10.dp),
+                    shape = RoundedCornerShape(OpenNowRadius.full),
+                    color = Color.Black.copy(alpha = 0.58f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                ) {
+                    Text(
+                        text = stringResource(R.string.setup_play_status_preview),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                    )
+                }
+            }
+
+            if (showTouchHint) {
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(10.dp),
+                    shape = RoundedCornerShape(OpenNowRadius.full),
+                    color = Color.Black.copy(alpha = 0.48f),
+                ) {
+                    Text(
+                        text = stringResource(
+                            when (touchChoice) {
+                                SetupTouchMouseChoice.Direct -> R.string.setup_play_preview_direct
+                                SetupTouchMouseChoice.Trackpad -> R.string.setup_play_preview_trackpad
+                                SetupTouchMouseChoice.Off -> R.string.setup_play_preview_off
+                            },
+                        ),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        color = Color.White.copy(alpha = 0.9f),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun setupTouchMouseChoiceLabel(choice: SetupTouchMouseChoice): String =
+    stringResource(
+        when (choice) {
+            SetupTouchMouseChoice.Direct -> R.string.setup_play_touch_direct
+            SetupTouchMouseChoice.Trackpad -> R.string.setup_play_touch_trackpad
+            SetupTouchMouseChoice.Off -> R.string.setup_play_touch_off
+        },
+    )
 
 /**
  * The membership tier, stated plainly, above the quality choices.
@@ -1063,7 +1229,7 @@ private fun SetupFeedbackStep(settings: AppSettings, onSettingsChange: (AppSetti
 }
 
 @Composable
-private fun SetupReadyStep(settings: AppSettings) {
+private fun SetupReadyStep(settings: AppSettings, tvProfile: Boolean) {
     val backgroundValue = when {
         appBackgroundChoiceFor(settings) == AppBackgroundChoice.Default ->
             stringResource(R.string.setup_background_default)
@@ -1079,6 +1245,17 @@ private fun SetupReadyStep(settings: AppSettings) {
         SetupSummaryRow(
             stringResource(R.string.setup_summary_streaming),
             settings.stream.recommendationSummary(),
+        )
+        if (!tvProfile) {
+            SetupSummaryRow(
+                stringResource(R.string.setup_summary_touch),
+                setupTouchMouseChoiceLabel(setupTouchMouseChoiceFor(settings)),
+            )
+        }
+        SetupSummaryRow(
+            stringResource(R.string.setup_summary_status),
+            if (settings.showStatsOnLaunch) settings.streamStatsPosition.label
+            else stringResource(R.string.setup_summary_off),
         )
         SetupSummaryRow(
             stringResource(R.string.setup_feedback_analytics),
@@ -1274,6 +1451,7 @@ private val SetupStep.titleRes: Int
         SetupStep.Welcome -> R.string.app_name
         SetupStep.Appearance -> R.string.setup_appearance_title
         SetupStep.Streaming -> R.string.setup_streaming_title
+        SetupStep.Play -> R.string.setup_play_title
         SetupStep.Feedback -> R.string.setup_feedback_title
         SetupStep.Ready -> R.string.setup_ready_title
     }
@@ -1283,6 +1461,7 @@ private val SetupStep.subtitleRes: Int
         SetupStep.Welcome -> R.string.setup_welcome_tagline
         SetupStep.Appearance -> R.string.setup_appearance_subtitle
         SetupStep.Streaming -> R.string.setup_streaming_subtitle
+        SetupStep.Play -> R.string.setup_play_subtitle
         SetupStep.Feedback -> R.string.setup_feedback_subtitle
         SetupStep.Ready -> R.string.setup_ready_subtitle
     }

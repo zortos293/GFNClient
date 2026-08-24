@@ -8,6 +8,13 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
+
+// Hoisted out of the per-game/per-store helpers below: these run across the whole catalogue, and
+// compiling the pattern on each call was measurable on low-end devices.
+private val NON_ALNUM_UPPER_RUN = Regex("[^A-Z0-9]+")
+private val STORE_SEPARATOR_RUN = Regex("[\\s-]+")
+private val WHITESPACE_RUN = Regex("\\s+")
+
 @Serializable
 enum class VideoCodec {
     H264,
@@ -1183,7 +1190,7 @@ internal fun gameMembershipRequirement(
 }
 
 private fun planForMembershipTier(membershipTier: String?): StreamResolutionPlan {
-    val normalized = membershipTier.orEmpty().uppercase(Locale.US).replace(Regex("[^A-Z0-9]+"), "")
+    val normalized = membershipTier.orEmpty().uppercase(Locale.US).replace(NON_ALNUM_UPPER_RUN, "")
     return when {
         normalized.contains("ULTIMATE") || normalized.contains("RTX3080") -> StreamResolutionPlan.Ultimate
         normalized.contains("PRIORITY") || normalized.contains("PERFORMANCE") || normalized.contains("FOUNDERS") -> StreamResolutionPlan.Priority
@@ -1463,7 +1470,7 @@ internal fun mergePanelGameWithMetadata(panelGame: GameInfo, metadataGame: GameI
     )
 
 internal fun normalizeGameStore(store: String): String =
-    store.uppercase(Locale.US).replace(Regex("[\\s-]+"), "_")
+    store.uppercase(Locale.US).replace(STORE_SEPARATOR_RUN, "_")
 
 internal fun splitGameStoreKeys(store: String): List<String> =
     store.split(",")
@@ -1487,7 +1494,7 @@ internal fun gameStoreDisplayName(store: String): String {
             "XBOX", "XBOX_GAME_PASS" -> "Xbox"
             "MICROSOFT", "MICROSOFT_STORE" -> "Microsoft Store"
             else -> part.replace('_', ' ').lowercase(Locale.US)
-                .split(Regex("\\s+"))
+                .split(WHITESPACE_RUN)
                 .filter { it.isNotBlank() }
                 .joinToString(" ") { word -> word.replaceFirstChar { char -> char.titlecase(Locale.US) } }
                 .ifBlank { "Unknown" }

@@ -80,4 +80,33 @@ class CatalogPresentationTest {
         assertTrue(gameMatchesLibraryFilters(touchSteam, filters))
         assertFalse(gameMatchesLibraryFilters(touchEpic, filters))
     }
+
+    @Test
+    fun searchTermsAreSplitOncePerQueryAndAllMustMatch() {
+        val game = GameInfo(
+            id = "a",
+            title = "Alpha Strike",
+            description = "A tactical shooter",
+            publisherName = "Beta Studios",
+        )
+
+        // Every term has to hit somewhere in the haystack, not just the first.
+        assertTrue(gameMatchesSearch(game, searchTermsFor("alpha shooter")))
+        assertTrue(gameMatchesSearch(game, searchTermsFor("beta strike")))
+        assertFalse(gameMatchesSearch(game, searchTermsFor("alpha racing")))
+
+        // Blank and whitespace-only queries match everything rather than filtering to nothing.
+        assertEquals(emptyList<String>(), searchTermsFor("   "))
+        assertTrue(gameMatchesSearch(game, searchTermsFor("")))
+        assertTrue(gameMatchesSearch(game, searchTermsFor("   ")))
+
+        // Runs of whitespace collapse, and matching stays case-insensitive.
+        assertEquals(listOf("alpha", "strike"), searchTermsFor("  ALPHA   Strike "))
+        assertTrue(gameMatchesSearch(game, searchTermsFor("  ALPHA   Strike ")))
+
+        // The String overload stays equivalent to splitting first.
+        assertTrue(gameMatchesSearch(game, "alpha shooter"))
+        assertFalse(gameMatchesSearch(game, "alpha racing"))
+    }
+
 }

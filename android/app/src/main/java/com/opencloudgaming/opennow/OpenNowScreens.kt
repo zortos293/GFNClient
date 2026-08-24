@@ -1099,8 +1099,9 @@ private fun MainShell(
                                             )
                                         }
                                         val visibleLibraryGames = remember(orderedLibraryGames, state.librarySearch, state.libraryFilterIds) {
+                                            val searchTerms = searchTermsFor(state.librarySearch)
                                             orderedLibraryGames.filter { game ->
-                                                gameMatchesSearch(game, state.librarySearch) &&
+                                                gameMatchesSearch(game, searchTerms) &&
                                                     gameMatchesLibraryFilters(game, state.libraryFilterIds)
                                             }
                                         }

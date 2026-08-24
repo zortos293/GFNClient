@@ -60,6 +60,7 @@ class AndroidSetupFlowTest {
                 SetupStep.Welcome,
                 SetupStep.Appearance,
                 SetupStep.Streaming,
+                SetupStep.Play,
                 SetupStep.Feedback,
                 SetupStep.Ready,
             ),
@@ -82,7 +83,13 @@ class AndroidSetupFlowTest {
 
     @Test
     fun `leaving before the diagnostics step still lets the consent dialog ask`() {
-        listOf(SetupStep.Welcome, SetupStep.Appearance, SetupStep.Streaming, SetupStep.Feedback)
+        listOf(
+            SetupStep.Welcome,
+            SetupStep.Appearance,
+            SetupStep.Streaming,
+            SetupStep.Play,
+            SetupStep.Feedback,
+        )
             .forEach { furthest ->
                 val settings = AppSettings().completingSetupFlow(furthest)
 
@@ -157,6 +164,28 @@ class AndroidSetupFlowTest {
                 setupStreamingCustomControlsVisible(choice),
             )
         }
+    }
+
+    @Test
+    fun `touch mouse choices write one authoritative mode`() {
+        SetupTouchMouseChoice.entries.forEach { choice ->
+            val settings = AppSettings().withSetupTouchMouseChoice(choice)
+
+            assertEquals(choice, setupTouchMouseChoiceFor(settings))
+            assertEquals(choice != SetupTouchMouseChoice.Off, settings.androidTouch.mousePad)
+            assertEquals(choice == SetupTouchMouseChoice.Direct, settings.androidTouch.mouseDirectClick)
+        }
+    }
+
+    @Test
+    fun `a disabled finger mouse does not retain direct click`() {
+        val settings = AppSettings(
+            androidTouch = AndroidTouchSettings(mousePad = true, mouseDirectClick = true),
+        ).withSetupTouchMouseChoice(SetupTouchMouseChoice.Off)
+
+        assertFalse(settings.androidTouch.mousePad)
+        assertFalse(settings.androidTouch.mouseDirectClick)
+        assertEquals(SetupTouchMouseChoice.Off, setupTouchMouseChoiceFor(settings))
     }
 
     @Test

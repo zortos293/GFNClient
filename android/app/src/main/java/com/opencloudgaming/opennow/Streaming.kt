@@ -22,6 +22,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
+import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -4051,6 +4052,8 @@ class NativeStreamClient(
         return vibrator.hasVibrator()
     }
 
+    // Dispatched only from the SDK_INT >= O branch of the haptics entry point.
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun vibrateController(device: InputDevice, profile: RumbleEffectProfile) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val manager = device.vibratorManager
@@ -4075,6 +4078,7 @@ class NativeStreamClient(
         device.vibrator.vibrateAsMedia(createRumbleEffect(profile.combinedAmplitude))
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun updateControllerVibrator(vibrator: Vibrator, amplitude: Int) {
         if (amplitude <= 0) {
             vibrator.cancel()
@@ -4091,6 +4095,7 @@ class NativeStreamClient(
      * rumble could arrive from the host and produce nothing at all. Tagging it `USAGE_MEDIA` puts
      * it where game rumble belongs and takes it out from under that switch.
      */
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun Vibrator.vibrateAsMedia(effect: VibrationEffect) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             vibrate(effect, mediaVibrationAttributes())
@@ -4123,9 +4128,12 @@ class NativeStreamClient(
             (appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.hasVibrator() == true
         }
 
+    // Only reached from the SDK_INT >= O branch of the haptics dispatcher.
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun createRumbleEffect(amplitude: Int): VibrationEffect =
         VibrationEffect.createOneShot(RUMBLE_EFFECT_MS, amplitude.coerceIn(1, 255))
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun vibrateDeviceHaptics(profile: RumbleEffectProfile) {
         if (!deviceHapticsSupportLogged) {
             deviceHapticsSupportLogged = true

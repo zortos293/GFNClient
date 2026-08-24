@@ -1471,7 +1471,7 @@ private fun DeviceStreamRecommendationWarning(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
-                "These settings are above the detected recommendation",
+                stringResource(R.string.settings_above_recommendation),
                 color = warningColor,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.labelLarge,
@@ -1800,7 +1800,7 @@ private fun SettingsDetailHeader(
                             when (controllerFamily) {
                                 null, AndroidControllerFamily.Google -> Icon(
                                     painter = painterResource(R.drawable.ic_arrow_back),
-                                    contentDescription = "Remote Back button",
+                                    contentDescription = stringResource(R.string.cd_remote_back),
                                     tint = Color.Black,
                                     modifier = Modifier.size(17.dp),
                                 )
@@ -1823,7 +1823,7 @@ private fun SettingsDetailHeader(
                         }
                     }
                     Text(
-                        "BACK",
+                        stringResource(R.string.remote_back_label),
                         color = SettingsText,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.labelSmall,

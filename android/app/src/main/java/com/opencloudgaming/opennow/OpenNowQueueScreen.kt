@@ -741,7 +741,7 @@ private fun LandscapeQueuePositionDock(queuePosition: Int, modifier: Modifier = 
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    "Queue",
+                    stringResource(R.string.queue_title),
                     color = TextMuted,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
@@ -749,7 +749,7 @@ private fun LandscapeQueuePositionDock(queuePosition: Int, modifier: Modifier = 
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "Live position",
+                    stringResource(R.string.queue_live_position),
                     color = TextMuted.copy(alpha = 0.78f),
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
@@ -895,7 +895,7 @@ private fun QueueAdPlayback(
 private fun QueueAdHeading(game: GameInfo?, compact: Boolean) {
     Column(Modifier.fillMaxWidth()) {
         Text(
-            "Advertisement",
+            stringResource(R.string.queue_advertisement),
             color = TextMuted,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,

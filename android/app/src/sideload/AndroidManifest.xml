@@ -16,7 +16,11 @@
     </queries>
 
     <application>
-        <activity android:name=".MainActivity">
+        <!-- Matches the value the main manifest already merges in; stated here so the
+             fragment is self-describing and Android 12's exported requirement is explicit. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.DEFAULT" />

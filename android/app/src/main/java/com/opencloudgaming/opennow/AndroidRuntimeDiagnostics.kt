@@ -295,7 +295,10 @@ internal object AndroidRuntimeDiagnostics {
         } else {
             null
         }
-        val wifiInfo = networkInfo ?: (context.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.connectionInfo
+        // WIFI_SERVICE must be resolved from the application context: on API < 24 holding it from an
+        // Activity context leaks that Activity, and this module still ships to API 23.
+        val wifiInfo = networkInfo
+            ?: (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.connectionInfo
         return wifiInfo?.frequency?.takeIf { it > 0 }
     }
 

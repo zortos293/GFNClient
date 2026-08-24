@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
@@ -41,8 +42,19 @@ private fun buildAppRelaunchIntent(context: Context): Intent =
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
     }
 
+/**
+ * [Context.getDataDir] is API 24. On API 23 the same directory is the parent of `filesDir`, which
+ * keeps the destructive reset path from throwing NoSuchMethodError instead of clearing data.
+ */
+private val Context.appDataDirCompat: File
+    get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        dataDir
+    } else {
+        filesDir.parentFile ?: filesDir
+    }
+
 private fun clearAppDataDirectories(context: Context) {
-    val dataDir = context.dataDir
+    val dataDir = context.appDataDirCompat
     val children = dataDir.listFiles().orEmpty()
     if (children.isEmpty()) {
         deleteKnownAppDataDirectories(context)
@@ -60,8 +72,8 @@ private fun deleteKnownAppDataDirectories(context: Context) {
         context.cacheDir,
         context.codeCacheDir,
         context.noBackupFilesDir,
-        File(context.dataDir, "shared_prefs"),
-        File(context.dataDir, "databases"),
+        File(context.appDataDirCompat, "shared_prefs"),
+        File(context.appDataDirCompat, "databases"),
     ).forEach(::deleteAppDataPath)
 }
 

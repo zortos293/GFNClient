@@ -59,6 +59,19 @@ internal data class AndroidAppLocaleState(
         }
 }
 
+/**
+ * [Configuration.getLocales] landed in API 24, but this module ships to API 23. Reading the
+ * deprecated single-locale field below that level keeps locale detection — which runs on the
+ * startup path — from throwing NoSuchMethodError on the oldest supported devices.
+ */
+private val Configuration.primaryLocale: Locale?
+    get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        locales.get(0)
+    } else {
+        @Suppress("DEPRECATION")
+        locale
+    }
+
 internal fun currentAndroidAppLocale(context: Context): AndroidAppLocaleState {
     val selected = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         context.getSystemService(LocaleManager::class.java)
@@ -72,7 +85,7 @@ internal fun currentAndroidAppLocale(context: Context): AndroidAppLocaleState {
             .orEmpty()
     }
     val effective = selected.ifBlank {
-        context.resources.configuration.locales.get(0)?.toLanguageTag().orEmpty()
+        context.resources.configuration.primaryLocale?.toLanguageTag().orEmpty()
     }
     val device = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         context.getSystemService(LocaleManager::class.java)
@@ -81,9 +94,9 @@ internal fun currentAndroidAppLocale(context: Context): AndroidAppLocaleState {
             ?.toLanguageTag()
             .orEmpty()
     } else {
-        Resources.getSystem().configuration.locales.get(0)?.toLanguageTag().orEmpty()
+        Resources.getSystem().configuration.primaryLocale?.toLanguageTag().orEmpty()
     }).ifBlank {
-        Resources.getSystem().configuration.locales.get(0)?.toLanguageTag().orEmpty()
+        Resources.getSystem().configuration.primaryLocale?.toLanguageTag().orEmpty()
     }
     return AndroidAppLocaleState(
         selectedLanguageTag = selected,

@@ -12,7 +12,7 @@ package com.opencloudgaming.opennow
  * Bump when a step is added that existing installs should be shown. Installs whose
  * [AppSettings.setupFlowCompletedVersion] is lower run the flow again.
  */
-internal const val SETUP_FLOW_VERSION = 1
+internal const val SETUP_FLOW_VERSION = 2
 
 internal enum class SetupStep {
     /** What OpenNOW is, and what the next few screens will ask. */
@@ -23,6 +23,9 @@ internal enum class SetupStep {
 
     /** Quality preset for this specific device. */
     Streaming,
+
+    /** Touch-mouse behavior and the small status line shown over a stream. */
+    Play,
 
     /** Bug reporter, session reports, and diagnostics sharing. */
     Feedback,
@@ -43,6 +46,17 @@ internal enum class SetupStreamingChoice {
 
     /** Resolution, frame rate, and bitrate set by hand, on this screen. */
     Custom,
+}
+
+internal enum class SetupTouchMouseChoice {
+    /** A tap moves the cursor to that point and clicks it in one gesture. */
+    Direct,
+
+    /** The screen behaves like a laptop trackpad: swipe to move, then tap to click. */
+    Trackpad,
+
+    /** Finger input does not drive the host cursor. */
+    Off,
 }
 
 internal fun setupSteps(): List<SetupStep> = SetupStep.entries.toList()
@@ -113,6 +127,21 @@ internal fun setupStreamingPresetFor(choice: SetupStreamingChoice): StreamPreset
  */
 internal fun setupStreamingCustomControlsVisible(choice: SetupStreamingChoice): Boolean =
     choice == SetupStreamingChoice.Custom
+
+internal fun setupTouchMouseChoiceFor(settings: AppSettings): SetupTouchMouseChoice = when {
+    !settings.androidTouch.mousePad -> SetupTouchMouseChoice.Off
+    settings.androidTouch.mouseDirectClick -> SetupTouchMouseChoice.Direct
+    else -> SetupTouchMouseChoice.Trackpad
+}
+
+/** Writes both persisted switches together so setup cannot leave an impossible half-selected mode. */
+internal fun AppSettings.withSetupTouchMouseChoice(choice: SetupTouchMouseChoice): AppSettings =
+    copy(
+        androidTouch = androidTouch.copy(
+            mousePad = choice != SetupTouchMouseChoice.Off,
+            mouseDirectClick = choice == SetupTouchMouseChoice.Direct,
+        ),
+    )
 
 internal enum class AppBackgroundChoice {
     Default,

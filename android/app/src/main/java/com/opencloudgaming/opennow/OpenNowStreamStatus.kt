@@ -152,7 +152,7 @@ internal fun StreamKeyboardBar(
                     color = Color.White,
                     fontWeight = FontWeight.Medium,
                 ),
-                placeholder = { Text("Type or edit stream text", color = TextMuted) },
+                placeholder = { Text(stringResource(R.string.stream_text_placeholder), color = TextMuted) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
@@ -373,7 +373,7 @@ internal fun ActiveStreamModePill(
             onDismissRequest = {
                 if (!bugReportSubmission.uploading) detailsOpen = false
             },
-            title = { Text("Stream profile changed") },
+            title = { Text(stringResource(R.string.stream_profile_changed_title)) },
             text = {
                 Column(
                     modifier = Modifier
@@ -393,7 +393,7 @@ internal fun ActiveStreamModePill(
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Text(
-                                text = "Why it happened",
+                                text = stringResource(R.string.stream_profile_changed_why),
                                 color = OpenNowPalette.StatusNotice,
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
@@ -423,7 +423,7 @@ internal fun ActiveStreamModePill(
                     }
                     when {
                         bugReportSubmission.uploading -> Text(
-                            text = "Sending the report and redacted diagnostics…",
+                            text = stringResource(R.string.stream_profile_sending),
                             color = TextMuted,
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -455,7 +455,7 @@ internal fun ActiveStreamModePill(
                         }
                     }
                     Text(
-                        text = "Your saved stream settings were not changed.",
+                        text = stringResource(R.string.stream_profile_settings_unchanged),
                         color = TextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -483,7 +483,7 @@ internal fun ActiveStreamModePill(
                             color = MaterialTheme.colorScheme.onPrimary,
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Sending…")
+                        Text(stringResource(R.string.bug_report_sending))
                     }
                     bugReportSubmission.submitted -> TextButton(onClick = { detailsOpen = false }) {
                         Text(stringResource(R.string.stream_panel_done))
@@ -491,13 +491,13 @@ internal fun ActiveStreamModePill(
                     !appLocale.bugReportsAllowed -> Button(
                         onClick = { setAndroidAppLanguage(context, ANDROID_APP_LANGUAGE_ENGLISH) },
                     ) {
-                        Text("Use English for OpenNOW")
+                        Text(stringResource(R.string.bug_report_use_english))
                     }
                     !androidBugReportsAllowed(update, bugReportVersionCheck) -> when {
                         update.status == AndroidUpdateStatus.Available ||
                             bugReportVersionCheck.status == AndroidBugReportVersionCheckStatus.UpdateRequired ->
                             Button(onClick = onOpenUpdate) {
-                                Text("Update in Google Play")
+                                Text(stringResource(R.string.bug_report_update_play))
                             }
                         bugReportVersionCheck.status == AndroidBugReportVersionCheckStatus.Checking -> Button(
                             enabled = false,
@@ -509,10 +509,10 @@ internal fun ActiveStreamModePill(
                                 color = MaterialTheme.colorScheme.onPrimary,
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text("Checking Google Play…")
+                            Text(stringResource(R.string.bug_report_checking_play))
                         }
                         else -> Button(onClick = onBugReportVersionCheck) {
-                            Text("Retry version check")
+                            Text(stringResource(R.string.bug_report_retry_version))
                         }
                     }
                     else -> Button(
@@ -542,11 +542,11 @@ internal fun ActiveStreamModePill(
                 reportConfirmationOpen = false
                 detailsOpen = true
             },
-            title = { Text("Send stream diagnostics?") },
+            title = { Text(stringResource(R.string.stream_diag_confirm_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "This sends the profile-change summary and likely cause to PrintedWaste and OpenNOW maintainers so they can investigate it.",
+                        stringResource(R.string.stream_diag_confirm_body),
                     )
                     BugReportDataDisclosure(
                         includeTypedTextWarning = false,
@@ -561,7 +561,7 @@ internal fun ActiveStreamModePill(
                         detailsOpen = true
                     },
                 ) {
-                    Text("Send diagnostics")
+                    Text(stringResource(R.string.stream_diag_send))
                 }
             },
             dismissButton = {

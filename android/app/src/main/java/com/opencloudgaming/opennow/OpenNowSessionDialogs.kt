@@ -95,7 +95,7 @@ internal fun SessionReportDialog(
             Modifier
         },
         properties = DialogProperties(usePlatformDefaultWidth = !landscapeLayout),
-        title = { Text("Session report") },
+        title = { Text(stringResource(R.string.session_report_title)) },
         text = {
             if (landscapeLayout) {
                 Row(
@@ -194,7 +194,7 @@ private fun SessionReportSummary(report: SessionReport, scoreColor: Color) {
         }
         if (report.limitedData) {
             Text(
-                "This was a short session, so the score may vary more than usual.",
+                stringResource(R.string.session_report_limited_data),
                 color = TextMuted,
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -271,7 +271,7 @@ private fun SessionReportConnection(report: SessionReport) {
 
 @Composable
 private fun SessionReportOutcome(report: SessionReport, onReportBug: () -> Unit) {
-    Text("Delivered profile", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Text(stringResource(R.string.session_report_delivered_profile), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
     Text(
         buildString {
             append(formatRuntimeResolution(report.deliveredResolution ?: report.requestedResolution))
@@ -289,18 +289,18 @@ private fun SessionReportOutcome(report: SessionReport, onReportBug: () -> Unit)
         style = MaterialTheme.typography.bodyMedium,
     )
     if (report.downgrades.isNotEmpty()) {
-        Text("Why the profile changed", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(stringResource(R.string.session_report_why_changed), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         report.downgrades.forEach { finding -> SessionReportFindingRow(finding) }
     }
-    Text("What to do next", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Text(stringResource(R.string.session_report_what_next), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
     report.recommendations.forEach { finding -> SessionReportFindingRow(finding) }
     TextButton(
         onClick = onReportBug,
         contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
     ) {
-        Text("Experienced a bug? ", color = TextMuted)
+        Text(stringResource(R.string.session_report_bug_prompt), color = TextMuted)
         Text(
-            "Report it",
+            stringResource(R.string.session_report_bug_action),
             color = MaterialTheme.colorScheme.primary,
             textDecoration = TextDecoration.Underline,
         )
@@ -364,7 +364,7 @@ internal fun CompletedSessionBugReportDialog(
                 when {
                     submission.submitted -> {
                         Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
-                        Text("Bug report sent", color = Green, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.bug_report_sent), color = Green, fontWeight = FontWeight.Bold)
                         submission.reference?.let { reference ->
                             Text("Reference: $reference", color = TextMuted, style = MaterialTheme.typography.bodySmall)
                         }
@@ -378,7 +378,7 @@ internal fun CompletedSessionBugReportDialog(
                     )
                     else -> {
                         Text(
-                            "Describe the bug in English. Session diagnostics are attached.",
+                            stringResource(R.string.bug_report_describe_english),
                             color = TextMuted,
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -391,7 +391,7 @@ internal fun CompletedSessionBugReportDialog(
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !submission.uploading,
                             singleLine = true,
-                            label = { Text("Issue title") },
+                            label = { Text(stringResource(R.string.bug_report_title_label)) },
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                         )
                         OutlinedTextField(
@@ -404,7 +404,7 @@ internal fun CompletedSessionBugReportDialog(
                             enabled = !submission.uploading,
                             minLines = 4,
                             maxLines = 7,
-                            label = { Text("What happened?") },
+                            label = { Text(stringResource(R.string.bug_report_description_label)) },
                             supportingText = {
                                 Text(
                                     androidBugReportDescriptionError(description)
@@ -434,7 +434,7 @@ internal fun CompletedSessionBugReportDialog(
                                 enabled = !submission.uploading,
                             )
                             Text(
-                                "I consent to send this report.",
+                                stringResource(R.string.bug_report_consent),
                                 color = TextMuted,
                                 style = MaterialTheme.typography.bodySmall,
                             )
@@ -466,7 +466,7 @@ internal fun CompletedSessionBugReportDialog(
                         color = MaterialTheme.colorScheme.onPrimary,
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("Sending…")
+                    Text(stringResource(R.string.bug_report_sending))
                 }
                 appLocale.bugReportsAllowed && androidBugReportsAllowed(update, versionCheck) -> Button(
                     onClick = { confirmationOpen = true },
@@ -475,7 +475,7 @@ internal fun CompletedSessionBugReportDialog(
                         consentChecked &&
                         bugReportKnownIssueAllowsSubmission(knownIssueBlock, acknowledgedKnownIssueKey),
                 ) {
-                    Text(if (knownIssueBlock == null) "Review & send" else "Send anyway")
+                    Text(stringResource(if (knownIssueBlock == null) R.string.bug_report_review_send else R.string.bug_report_send_anyway))
                 }
             }
         },
@@ -491,14 +491,14 @@ internal fun CompletedSessionBugReportDialog(
     if (confirmationOpen) {
         AlertDialog(
             onDismissRequest = { confirmationOpen = false },
-            title = { Text("Send bug report?") },
+            title = { Text(stringResource(R.string.bug_report_confirm_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     knownIssueBlock?.let { block ->
                         Text(block.title, color = Color(0xffffc266), fontWeight = FontWeight.Bold)
                         Text(block.action, color = TextMuted, style = MaterialTheme.typography.bodySmall)
                     }
-                    Text("Send this report and the attached redacted diagnostics to PrintedWaste API?")
+                    Text(stringResource(R.string.bug_report_confirm_body))
                 }
             },
             confirmButton = {
@@ -616,11 +616,11 @@ internal fun DiagnosticShareDialog(
     when {
         share.uploading -> AlertDialog(
             onDismissRequest = {},
-            title = { Text("Preparing diagnostics") },
+            title = { Text(stringResource(R.string.diagnostics_preparing_title)) },
             text = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     CircularProgressIndicator(Modifier.size(28.dp))
-                    Text("Removing sensitive values and creating a temporary paste…")
+                    Text(stringResource(R.string.diagnostics_preparing_body))
                 }
             },
             confirmButton = {},
@@ -629,7 +629,7 @@ internal fun DiagnosticShareDialog(
             val qrCode = remember(share.pasteUrl) { QrCode.encodeText(share.pasteUrl) }
             AlertDialog(
                 onDismissRequest = onDismiss,
-                title = { Text(if (state.androidTvProfile) "Scan diagnostics link" else "Diagnostics copied") },
+                title = { Text(stringResource(if (state.androidTvProfile) R.string.diagnostics_scan_title else R.string.diagnostics_copied_title)) },
                 text = {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -638,12 +638,12 @@ internal fun DiagnosticShareDialog(
                         if (state.androidTvProfile) {
                             if (qrCode != null) {
                                 QrCodeView(qrCode, Modifier.size(240.dp))
-                                Text("Scan this QR code on your phone. The sanitized paste expires within 24 hours.")
+                                Text(stringResource(R.string.diagnostics_scan_body))
                             } else {
-                                Text("Could not create the QR code. Close this dialog and try again.")
+                                Text(stringResource(R.string.diagnostics_qr_failed))
                             }
                         } else {
-                            Text("Device, account type, stream profile, current status, and the temporary paste URL were copied to the clipboard.")
+                            Text(stringResource(R.string.diagnostics_clipboard_body))
                             Text(
                                 share.pasteUrl,
                                 color = MaterialTheme.colorScheme.primary,
@@ -658,15 +658,15 @@ internal fun DiagnosticShareDialog(
         }
         else -> AlertDialog(
             onDismissRequest = onDismiss,
-            title = { Text("Create temporary diagnostics paste?") },
+            title = { Text(stringResource(R.string.diagnostics_create_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("OpenNOW will remove tokens, account identifiers, email addresses, session IDs, and network addresses before uploading.")
-                    Text("The randomized link is unlisted but not encrypted, and the paste service deletes uploads within 24 hours.", color = TextMuted)
+                    Text(stringResource(R.string.diagnostics_create_body))
+                    Text(stringResource(R.string.diagnostics_create_caveat), color = TextMuted)
                     share.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             },
-            confirmButton = { Button(onClick = onUpload) { Text(if (share.error == null) "Sanitize and upload" else "Retry") } },
+            confirmButton = { Button(onClick = onUpload) { Text(stringResource(if (share.error == null) R.string.diagnostics_upload_action else R.string.action_retry)) } },
             dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
@@ -679,14 +679,14 @@ internal fun AnalyticsConsentDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDecline,
-        title = { Text("Share diagnostics?") },
+        title = { Text(stringResource(R.string.analytics_consent_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "Share anonymous diagnostics to help us find patterns in bugs, crashes, and performance problems. Sensitive data is removed, and we do not sell your data.",
+                    stringResource(R.string.analytics_consent_body),
                 )
                 Text(
-                    "If sharing is off during a crash, we may not have enough information to investigate your report. It is off by default and can be changed in Privacy settings.",
+                    stringResource(R.string.analytics_consent_caveat),
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -694,12 +694,12 @@ internal fun AnalyticsConsentDialog(
         },
         confirmButton = {
             Button(onClick = onAllow) {
-                Text("Share analytics")
+                Text(stringResource(R.string.analytics_consent_allow))
             }
         },
         dismissButton = {
             TextButton(onClick = onDecline) {
-                Text("Keep off")
+                Text(stringResource(R.string.analytics_consent_decline))
             }
         },
     )
@@ -754,7 +754,7 @@ internal fun AndroidUpdatePromptDialog(
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = onDetails) {
-                    Text("Details")
+                    Text(stringResource(R.string.common_details))
                 }
                 TextButton(onClick = onDismiss) {
                     Text(stringResource(R.string.action_cancel))

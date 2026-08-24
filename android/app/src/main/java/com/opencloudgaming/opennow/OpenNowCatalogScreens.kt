@@ -159,6 +159,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.intl.Locale as ComposeLocale
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -484,7 +485,7 @@ private fun compactErrorTitle(error: String): String =
 private fun compactErrorBody(error: String): String =
     error
         .replace('\n', ' ')
-        .replace(Regex("\\s+"), " ")
+        .replace(SEARCH_WHITESPACE_RUN, " ")
         .let { if (it.length > 180) "${it.take(177)}..." else it }
 
 @Composable
@@ -534,8 +535,9 @@ internal fun LibraryScreen(
         libraryStoreFilterOptions(orderedGames, touchFilterLabel)
     }
     val games = remember(orderedGames, state.librarySearch, state.libraryFilterIds) {
+        val searchTerms = searchTermsFor(state.librarySearch)
         orderedGames.filter { game ->
-            gameMatchesSearch(game, state.librarySearch) && gameMatchesLibraryFilters(game, state.libraryFilterIds)
+            gameMatchesSearch(game, searchTerms) && gameMatchesLibraryFilters(game, state.libraryFilterIds)
         }
     }
     val gridState = rememberLazyGridState()
@@ -877,8 +879,12 @@ private fun LibraryHeroCarousel(
                             .padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
+                        // Uppercasing has to follow the *app* locale, and be read observably so a
+                        // language change recomposes it: Turkish maps i -> \u0130, not I.
+                        val heroLabelTag = ComposeLocale.current.toLanguageTag()
+                        val heroLabelLocale = remember(heroLabelTag) { Locale.forLanguageTag(heroLabelTag) }
                         Text(
-                            stringResource(R.string.library_hero_featured).uppercase(Locale.getDefault()),
+                            stringResource(R.string.library_hero_featured).uppercase(heroLabelLocale),
                             color = MaterialTheme.colorScheme.primary,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
@@ -996,7 +1002,8 @@ internal fun libraryStoreFilterOptions(
     val labelsById = linkedMapOf<String, String>()
     games.forEach { game ->
         libraryStoreFilterIds(game).forEach { (id, label) ->
-            labelsById.putIfAbsent(id, label)
+            // Map.putIfAbsent is API 24; this module ships to 23 without core library desugaring.
+            if (id !in labelsById) labelsById[id] = label
         }
     }
     val storeOptions = labelsById.entries
@@ -2506,7 +2513,9 @@ private fun GameInfo.recentPlaySortKey(): String? =
 private fun distinctStoreGames(games: List<GameInfo>): List<GameInfo> {
     val byKey = linkedMapOf<String, GameInfo>()
     games.forEach { game ->
-        byKey.putIfAbsent(storeRailGameKey(game), game)
+        // Map.putIfAbsent is API 24; this module ships to 23 without core library desugaring.
+        val key = storeRailGameKey(game)
+        if (key !in byKey) byKey[key] = game
     }
     return byKey.values.toList()
 }
@@ -4254,7 +4263,7 @@ private fun GameScreenshotGallery(game: GameInfo, compact: Boolean) {
         verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp),
     ) {
         Text(
-            "Screenshots",
+            stringResource(R.string.catalog_screenshots),
             color = TextPrimary,
             style = if (compact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
@@ -4440,7 +4449,7 @@ private fun GameDescriptionDisclosure(
             Column(Modifier.padding(horizontal = 12.dp, vertical = if (compact) 8.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Description",
+                        stringResource(R.string.catalog_description),
                         color = TextPrimary,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
@@ -4483,8 +4492,8 @@ private fun formatGameMetadataLabel(raw: String): String {
     val compact = raw.trim()
         .removePrefix("GFN_")
         .removePrefix("GAME_")
-        .replace(Regex("[_-]+"), " ")
-        .replace(Regex("\\s+"), " ")
+        .replace(METADATA_SEPARATOR_RUN, " ")
+        .replace(SEARCH_WHITESPACE_RUN, " ")
         .trim()
     if (compact.isBlank()) return ""
     val lower = compact.lowercase(Locale.US)
@@ -4648,7 +4657,7 @@ private fun DetailRow(row: GameDetailRow, compact: Boolean) {
                     runCatching {
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     }.onFailure {
-                        Toast.makeText(context, "Couldn't open store page", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.error_open_store_page), Toast.LENGTH_SHORT).show()
                     }
                 },
                 onLongClick = {
@@ -4687,9 +4696,24 @@ private fun DetailRow(row: GameDetailRow, compact: Boolean) {
     }
 }
 
-internal fun gameMatchesSearch(game: GameInfo, query: String): Boolean {
+private val SEARCH_WHITESPACE_RUN = Regex("\\s+")
+private val METADATA_SEPARATOR_RUN = Regex("[_-]+")
+
+/**
+ * Splits a raw search box value into the terms [gameMatchesSearch] tests against.
+ *
+ * Filtering runs this once per query rather than once per game: the old shape compiled a fresh
+ * `Regex` and re-split the query inside the per-game predicate, so a keystroke over a large
+ * library paid for both several thousand times.
+ */
+internal fun searchTermsFor(query: String): List<String> {
     val normalized = query.trim().lowercase()
-    if (normalized.isBlank()) return true
+    if (normalized.isEmpty()) return emptyList()
+    return normalized.split(SEARCH_WHITESPACE_RUN)
+}
+
+internal fun gameMatchesSearch(game: GameInfo, terms: List<String>): Boolean {
+    if (terms.isEmpty()) return true
     val haystack = buildString {
         append(game.title).append(' ')
         append(game.description.orEmpty()).append(' ')
@@ -4699,8 +4723,11 @@ internal fun gameMatchesSearch(game: GameInfo, query: String): Boolean {
         append(game.featureLabels.joinToString(" ")).append(' ')
         append(displayStoresForGame(game))
     }.lowercase()
-    return normalized.split(Regex("\\s+")).all { it in haystack }
+    return terms.all { it in haystack }
 }
+
+internal fun gameMatchesSearch(game: GameInfo, query: String): Boolean =
+    gameMatchesSearch(game, searchTermsFor(query))
 
 internal fun favoriteOrderedGames(games: List<GameInfo>, favoriteIds: List<String>): List<GameInfo> {
     val favorites = games.filter { it.id in favoriteIds }

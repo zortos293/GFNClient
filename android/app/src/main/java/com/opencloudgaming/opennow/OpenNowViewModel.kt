@@ -1269,7 +1269,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     loadingGames = true,
                 )
             }
-            Toast.makeText(getApplication(), "Signed in securely from phone", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                getApplication(),
+                getApplication<Application>().getString(R.string.toast_signed_in_from_phone),
+                Toast.LENGTH_SHORT,
+            ).show()
             recordDebugEvent("tv-connector", "Accepted encrypted local sign-in provider=${restored.provider.code}")
             refreshAfterAuth(restored)
         }
@@ -1969,13 +1973,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun resetSettings() {
-        Toast.makeText(getApplication(), "Clearing app data and relaunching OpenNOW", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            getApplication(),
+            getApplication<Application>().getString(R.string.toast_clearing_app_data),
+            Toast.LENGTH_SHORT,
+        ).show()
         wipeAppDataAndRelaunch(getApplication())
     }
 
     fun resetStreamTutorial() {
         settingsStore.update { it.copy(androidStreamGuideDismissed = false) }
-        Toast.makeText(getApplication(), "Tutorial will show on the next stream", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            getApplication(),
+            getApplication<Application>().getString(R.string.toast_tutorial_reset),
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     fun clearCatalogCache() {
@@ -1983,7 +1995,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val removed = withContext(Dispatchers.IO) { catalogCacheStore.clear() }
             Toast.makeText(
                 getApplication(),
-                if (removed == 0) "Game cache was already clear" else "Cleared game cache",
+                getApplication<Application>().getString(
+                    if (removed == 0) R.string.toast_cache_already_clear else R.string.toast_cache_cleared,
+                ),
                 Toast.LENGTH_SHORT,
             ).show()
             state.value.authSession?.let { refreshAfterAuth(it) }
@@ -2055,7 +2069,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
-                    val message = error.message ?: "Failed to start store connection"
+                    val message = error.message
+                        ?: getApplication<Application>().getString(R.string.error_store_connect_failed)
                     Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()
                     _state.update { it.copy(connectorActionStore = null, error = message) }
                 }
@@ -2083,13 +2098,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             _state.update { it.copy(connectorActionStore = store, error = null) }
             runCatching { accountConnectorRepository.disconnect(store, token) }
                 .onSuccess {
-                    Toast.makeText(getApplication(), "Store disconnected", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        getApplication(),
+                        getApplication<Application>().getString(R.string.toast_store_disconnected),
+                        Toast.LENGTH_SHORT,
+                    ).show()
                     _state.update { it.copy(connectorActionStore = null) }
                     refreshAccountConnectors()
                 }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
-                    val message = error.message ?: "Failed to disconnect store"
+                    val message = error.message
+                        ?: getApplication<Application>().getString(R.string.error_store_disconnect_failed)
                     Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()
                     _state.update { it.copy(connectorActionStore = null, error = message) }
                 }

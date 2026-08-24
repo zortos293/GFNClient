@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.RequiresApi
 import android.util.Rational
 import android.view.Display
 import android.view.InputDevice
@@ -454,6 +455,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Both callers gate on SDK_INT >= O; the annotation is what lets lint see that.
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun buildStreamPictureInPictureParams(): PictureInPictureParams =
         PictureInPictureParams.Builder()
             .setAspectRatio(streamPictureInPictureAspectRatio)

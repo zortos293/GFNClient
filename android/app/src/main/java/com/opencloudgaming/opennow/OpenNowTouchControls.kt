@@ -717,7 +717,7 @@ private fun TouchControlGroup(
                     modifier = Modifier.padding(top = 4.dp),
                 ) {
                     Text(
-                        "Drag",
+                        stringResource(R.string.touch_drag_label),
                         color = MaterialTheme.colorScheme.onPrimary,
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),

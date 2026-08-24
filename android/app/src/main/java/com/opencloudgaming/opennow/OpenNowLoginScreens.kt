@@ -90,9 +90,13 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 output.write(pendingLogText.toByteArray(Charsets.UTF_8))
             } ?: error("Could not open log file")
         }.onSuccess {
-            Toast.makeText(context, "Logs exported", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.login_logs_exported), Toast.LENGTH_SHORT).show()
         }.onFailure { error ->
-            Toast.makeText(context, error.message ?: "Could not export logs", Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                context,
+                error.message ?: context.getString(R.string.login_logs_export_failed),
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
     val tvLogin = state.androidTvProfile
@@ -149,7 +153,7 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    "Native Android GeForce NOW client",
+                    stringResource(R.string.login_tagline),
                     color = TextMuted,
                     style = if (compactForPhonePairing) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
                 )
@@ -186,7 +190,7 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     }
                     if (!tvLogin && deviceCodeLoginAvailable) {
                         TextButton(onClick = { viewModel.loginWithCode() }, enabled = !normalLoginBusy) {
-                            Text("Use code sign-in")
+                            Text(stringResource(R.string.login_use_code))
                         }
                     }
                     if (tvLogin) {
@@ -204,10 +208,10 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     if (state.loginToolsVisible) {
         AlertDialog(
             onDismissRequest = viewModel::dismissLoginTools,
-            title = { Text("Sign-in tools") },
+            title = { Text(stringResource(R.string.login_tools_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Use a token to sign in without the browser, or export diagnostics before signing in.")
+                    Text(stringResource(R.string.login_tools_body))
                     Button(
                         onClick = {
                             viewModel.dismissLoginTools()
@@ -216,7 +220,7 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         enabled = !normalLoginBusy,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Sign in with token")
+                        Text(stringResource(R.string.login_token_title))
                     }
                     OutlinedButton(
                         onClick = {
@@ -255,15 +259,15 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 tokenInput = ""
                 tokenDialogVisible = false
             },
-            title = { Text("Sign in with token") },
+            title = { Text(stringResource(R.string.login_token_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Paste an NVIDIA access token or token-response JSON. OpenNOW verifies the access token before saving the account.")
+                    Text(stringResource(R.string.login_token_body))
                     OutlinedTextField(
                         value = tokenInput,
                         onValueChange = { tokenInput = it },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Access token") },
+                        label = { Text(stringResource(R.string.login_access_token)) },
                         minLines = 3,
                         maxLines = 6,
                         visualTransformation = PasswordVisualTransformation(),
@@ -277,7 +281,7 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         singleLine = false,
                     )
                     Text(
-                        "Only use credentials for an account you control.",
+                        stringResource(R.string.login_token_warning),
                         color = TextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -288,7 +292,7 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     onClick = submitToken,
                     enabled = tokenInput.isNotBlank() && !normalLoginBusy,
                 ) {
-                    Text("Sign in")
+                    Text(stringResource(R.string.action_sign_in))
                 }
             },
             dismissButton = {
@@ -411,7 +415,7 @@ internal fun TvPhonePairingPanel(
 private fun PairingCodeDisplay(code: String?, compact: Boolean) {
     val digits = code?.takeIf { it.length == 4 && it.all(Char::isDigit) } ?: "----"
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("PAIRING CODE", color = TextMuted, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+        Text(stringResource(R.string.login_pairing_code), color = TextMuted, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 8.dp)) {
             digits.forEach { digit ->
                 Surface(

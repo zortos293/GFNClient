@@ -158,7 +158,7 @@ internal fun ActiveSessionDecisionScreen(
                             .clip(RoundedCornerShape(10.dp)),
                     )
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Cloud session already active", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.stream_session_active_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
                             activeGame?.title ?: "App ${active.appId}",
                             color = TextPrimary,
@@ -185,7 +185,7 @@ internal fun ActiveSessionDecisionScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     TextButton(onClick = onCancel) { Text(stringResource(R.string.action_cancel)) }
-                    OutlinedButton(onClick = onReplaceSession) { Text("Terminate and start new") }
+                    OutlinedButton(onClick = onReplaceSession) { Text(stringResource(R.string.stream_session_terminate_start)) }
                     Button(onClick = onResumeSession) { Text(stringResource(R.string.action_resume)) }
                 }
             }
@@ -211,7 +211,7 @@ internal fun NoActiveStreamScreen(
         Text(stringResource(R.string.stream_no_active), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(
-            "OpenNOW does not have a local stream attached right now.",
+            stringResource(R.string.stream_no_local_stream),
             color = TextMuted,
             textAlign = TextAlign.Center,
         )
@@ -1347,7 +1347,7 @@ internal fun BugReportDataDisclosure(
                     style = MaterialTheme.typography.labelLarge,
                 )
                 Text(
-                    "What is collected?",
+                    stringResource(R.string.bug_report_collected_title),
                     color = TextPrimary,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
@@ -1364,32 +1364,32 @@ internal fun BugReportDataDisclosure(
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     Text(
-                        "PrintedWaste and OpenNOW maintainers may view the report text, app version/build, device model, Android version, provider and membership category, current game, stream status/settings, a pseudonymous installation identifier for abuse prevention, and a redacted diagnostic log.",
+                        stringResource(R.string.bug_report_collected_viewers),
                         color = TextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        "The automatic log removes account names, credentials, session IDs, and network addresses before upload. The raw device ID is not sent.",
+                        stringResource(R.string.bug_report_collected_redaction),
                         color = TextPrimary,
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.SemiBold,
                     )
                     if (includeTypedTextWarning) {
                         Text(
-                            "Your typed title and description are sent exactly as written, so do not include personal or sensitive information.",
+                            stringResource(R.string.bug_report_collected_verbatim),
                             color = TextPrimary,
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
                     Text(
-                        "Your data is not sold and is used only to investigate and fix bugs.",
+                        stringResource(R.string.bug_report_collected_not_sold),
                         color = TextPrimary,
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        "The same timestamped log available from Settings > Advanced > Debug Logs is attached automatically. No other files are added.",
+                        stringResource(R.string.bug_report_collected_log),
                         color = TextMuted,
                         style = MaterialTheme.typography.labelSmall,
                     )
@@ -1630,20 +1630,20 @@ internal fun BugReportLocaleGateCard(modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                "English language required",
+                stringResource(R.string.bug_report_english_required),
                 color = MaterialTheme.colorScheme.error,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.labelLarge,
             )
             Text(
-                "Set either OpenNOW or the device language to English before reporting.",
+                stringResource(R.string.bug_report_english_required_body),
                 color = TextMuted,
                 style = MaterialTheme.typography.bodySmall,
             )
             Button(
                 onClick = { setAndroidAppLanguage(context, ANDROID_APP_LANGUAGE_ENGLISH) },
             ) {
-                Text("Use English for OpenNOW")
+                Text(stringResource(R.string.bug_report_use_english))
             }
         }
     }
@@ -1684,7 +1684,7 @@ internal fun BugReportKnownIssueOverride(
                     modifier = Modifier.size(36.dp),
                 )
                 Text(
-                    "I understand OpenNOW found a likely cause. Send anyway; I may lose future reporting access.",
+                    stringResource(R.string.bug_report_known_issue_override),
                     modifier = Modifier.weight(1f),
                     color = TextMuted,
                     style = MaterialTheme.typography.labelSmall,
@@ -1734,17 +1734,17 @@ internal fun BugReportVersionGateCard(
             )
             when {
                 updateRequired -> Button(onClick = onOpenUpdate) {
-                    Text("Update in Google Play")
+                    Text(stringResource(R.string.bug_report_update_play))
                 }
                 checking -> Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Text("Checking latest build…", style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.bug_report_checking_build), style = MaterialTheme.typography.bodySmall)
                 }
                 else -> OutlinedButton(onClick = onRetry) {
-                    Text("Retry version check")
+                    Text(stringResource(R.string.bug_report_retry_version))
                 }
             }
         }
@@ -1774,9 +1774,9 @@ private fun BugReportPreflightDeckView(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("Before you report", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.bug_report_preflight_title), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Live checks from this device and session",
+                    stringResource(R.string.bug_report_preflight_subtitle),
                     color = TextMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -1867,7 +1867,7 @@ private fun BugReportPreflightDeckView(
                     }
                     if (targetCard.recommendations.isNotEmpty()) {
                         Text(
-                            "MATCHED SUGGESTIONS",
+                            stringResource(R.string.bug_report_matched_suggestions),
                             color = targetAccent,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
@@ -1900,7 +1900,7 @@ private fun BugReportPreflightDeckView(
                         }
                     } else {
                         Text(
-                            "No irrelevant fixes are being suggested for this check.",
+                            stringResource(R.string.bug_report_no_suggestions),
                             color = targetAccent,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
@@ -1911,7 +1911,7 @@ private fun BugReportPreflightDeckView(
         }
 
         Text(
-            "Still happening after any matched suggestion? Continue and the measured evidence will be attached automatically.",
+            stringResource(R.string.bug_report_still_happening),
             color = TextMuted,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -1962,8 +1962,8 @@ internal fun BugReportFormInputs(
             modifier = Modifier.fillMaxWidth(),
             enabled = !submission.uploading,
             singleLine = true,
-            label = { Text("Issue title") },
-            placeholder = { Text("Stream froze after reconnecting") },
+            label = { Text(stringResource(R.string.bug_report_title_label)) },
+            placeholder = { Text(stringResource(R.string.bug_report_title_placeholder)) },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
         )
         OutlinedTextField(
@@ -1975,8 +1975,8 @@ internal fun BugReportFormInputs(
             enabled = !submission.uploading,
             minLines = 4,
             maxLines = 7,
-            label = { Text("What happened?") },
-            placeholder = { Text("What were you doing, what went wrong, and can you reproduce it?") },
+            label = { Text(stringResource(R.string.bug_report_description_label)) },
+            placeholder = { Text(stringResource(R.string.bug_report_description_placeholder)) },
             supportingText = {
                 Text(
                     descriptionError
@@ -2006,7 +2006,7 @@ internal fun BugReportFormInputs(
                 enabled = !submission.uploading,
             )
             Text(
-                "I understand what will be uploaded and consent to send it to the PrintedWaste API.",
+                stringResource(R.string.bug_report_consent_upload),
                 modifier = Modifier.weight(1f),
                 color = TextMuted,
                 style = MaterialTheme.typography.bodySmall,
@@ -2052,7 +2052,7 @@ internal fun BugReportFormInputs(
                     color = MaterialTheme.colorScheme.onPrimary,
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("Uploading report…")
+                Text(stringResource(R.string.bug_report_uploading))
             } else {
                 Text(if (knownIssueBlock == null) "Send bug report" else "Send anyway")
             }
@@ -2175,7 +2175,7 @@ private fun StreamBugReporter(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
-                        Text("Bug report sent", fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.bug_report_sent), fontWeight = FontWeight.Bold)
                     }
                     Text(
                         submission.reference?.let { "PrintedWaste reference: $it" }
@@ -2198,7 +2198,7 @@ private fun StreamBugReporter(
                                 onReset()
                             },
                         ) {
-                            Text("Send another")
+                            Text(stringResource(R.string.bug_report_send_another))
                         }
                         TextButton(
                             onClick = {
@@ -2243,7 +2243,7 @@ private fun StreamBugReporter(
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
-                    Text("Checking this session…", color = TextMuted)
+                    Text(stringResource(R.string.bug_report_checking_session), color = TextMuted)
                 }
             } else {
                 BugReportPreflightDeckView(
@@ -2288,7 +2288,7 @@ private fun StreamBugReporter(
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(stringResource(R.string.bug_report_open_label), fontWeight = FontWeight.Bold)
                     Text(
-                        "Describe the problem without leaving your game.",
+                        stringResource(R.string.bug_report_inline_subtitle),
                         color = TextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -2302,7 +2302,7 @@ private fun StreamBugReporter(
                         preflightDeck = preflightProvider()
                     },
                 ) {
-                    Text("Checks")
+                    Text(stringResource(R.string.bug_report_checks_tab))
                 }
                 TextButton(
                     enabled = !submission.uploading,
@@ -2394,7 +2394,7 @@ private fun StreamBugReporter(
                 Modifier
             },
             properties = DialogProperties(usePlatformDefaultWidth = !landscapeLayout),
-            title = { Text("Upload bug report?") },
+            title = { Text(stringResource(R.string.bug_report_upload_confirm_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     knownIssueBlock?.let { block ->
@@ -2417,7 +2417,7 @@ private fun StreamBugReporter(
                         )
                     },
                 ) {
-                    Text("Upload report")
+                    Text(stringResource(R.string.bug_report_upload_action))
                 }
             },
             dismissButton = {
@@ -2427,7 +2427,7 @@ private fun StreamBugReporter(
                         confirmationOpen = false
                     },
                 ) {
-                    Text("Go back")
+                    Text(stringResource(R.string.action_go_back))
                 }
             },
         )

@@ -333,7 +333,6 @@ export class NativeStreamerManager {
           ));
         }, timeoutMs),
       };
-      waiter.timeout.unref?.();
       this.nvstReadinessWaiters.add(waiter);
     });
   }

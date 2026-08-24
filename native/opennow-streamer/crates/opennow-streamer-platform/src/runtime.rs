@@ -428,7 +428,12 @@ impl MainThreadHost {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             if let Some(output) = active.as_mut() {
-                match output.pump() {
+                let output_event = output.pump();
+                let captured_input = self.output.captured_input();
+                for input in output.take_captured_input() {
+                    captured_input.push(input);
+                }
+                match output_event {
                     Ok(OutputEvent::Presented(backend)) if !software_playback_started => {
                         software_playback_started = true;
                         if let Some(feedback) = feedback.as_ref() {

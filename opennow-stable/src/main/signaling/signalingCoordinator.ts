@@ -168,7 +168,13 @@ export class SignalingCoordinator {
           return;
         }
 
-        const surface = normalizeNativeRenderSurface(window, payload);
+        const surface = normalizeNativeRenderSurface(
+          window,
+          payload,
+          process.platform === "win32"
+            ? (point) => electron.screen.dipToScreenPoint(point)
+            : undefined,
+        );
         if (!surface) {
           return;
         }

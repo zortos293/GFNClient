@@ -56,18 +56,19 @@ fn physical_rect(rect: RenderSurfaceRect, _scale: f32) -> (i32, i32, u32, u32) {
 #[cfg(target_os = "windows")]
 mod platform {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, HWND_BOTTOM, SW_HIDE, SWP_NOACTIVATE,
-        SWP_SHOWWINDOW, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_CHILD,
-        WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_VISIBLE,
+        GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GetWindowLongPtrW, HWND_TOP, SW_HIDE,
+        SWP_NOACTIVATE, SWP_SHOWWINDOW, SetFocus, SetForegroundWindow, SetWindowLongPtrW,
+        SetWindowPos, ShowWindow, WS_CHILD, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT,
+        WS_POPUP, WS_VISIBLE,
     };
 
     use super::*;
 
     pub(crate) struct Surface {
         child: windows_sys::Win32::Foundation::HWND,
-        parent: windows_sys::Win32::Foundation::HWND,
+        owner: windows_sys::Win32::Foundation::HWND,
+        shown: bool,
     }
 
     impl Surface {
@@ -82,7 +83,8 @@ mod platform {
             };
             Ok(Self {
                 child,
-                parent: std::ptr::null_mut(),
+                owner: std::ptr::null_mut(),
+                shown: false,
             })
         }
 
@@ -93,31 +95,28 @@ mod platform {
             _screen_rect: Option<RenderSurfaceRect>,
             _scale: f32,
         ) -> Result<(), String> {
-            let parent = parse_handle(parent_handle)? as _;
-            let (x, y, width, height) = physical_rect(rect, _scale);
+            let owner = parse_handle(parent_handle)? as _;
+            let (x, y, width, height) = physical_rect(_screen_rect.unwrap_or(rect), _scale);
             unsafe {
-                if self.parent != parent {
-                    SetLastError(0);
-                    if SetParent(self.child, parent).is_null() && GetLastError() != 0 {
-                        return Err("failed to parent SDL video surface to Electron".to_owned());
-                    }
-                    self.parent = parent;
-                    let style = GetWindowLongPtrW(self.child, GWL_STYLE) as u32;
-                    SetWindowLongPtrW(
-                        self.child,
-                        GWL_STYLE,
-                        ((style & !WS_VISIBLE) | WS_CHILD | WS_DISABLED) as isize,
-                    );
-                    let extended = GetWindowLongPtrW(self.child, GWL_EXSTYLE) as u32;
-                    SetWindowLongPtrW(
-                        self.child,
-                        GWL_EXSTYLE,
-                        (extended | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT) as isize,
-                    );
+                if self.owner != owner {
+                    SetWindowLongPtrW(self.child, GWLP_HWNDPARENT, owner as isize);
+                    self.owner = owner;
                 }
+                let style = GetWindowLongPtrW(self.child, GWL_STYLE) as u32;
+                SetWindowLongPtrW(
+                    self.child,
+                    GWL_STYLE,
+                    ((style & !(WS_VISIBLE | WS_CHILD | WS_DISABLED)) | WS_POPUP) as isize,
+                );
+                let extended = GetWindowLongPtrW(self.child, GWL_EXSTYLE) as u32;
+                SetWindowLongPtrW(
+                    self.child,
+                    GWL_EXSTYLE,
+                    (extended & !(WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)) as isize,
+                );
                 if SetWindowPos(
                     self.child,
-                    HWND_BOTTOM,
+                    HWND_TOP,
                     x,
                     y,
                     width as i32,
@@ -125,7 +124,12 @@ mod platform {
                     SWP_NOACTIVATE | SWP_SHOWWINDOW,
                 ) == 0
                 {
-                    return Err("failed to position Electron child video surface".to_owned());
+                    return Err("failed to position external SDL video surface".to_owned());
+                }
+                if !self.shown {
+                    let _ = SetForegroundWindow(self.child);
+                    let _ = SetFocus(self.child);
+                    self.shown = true;
                 }
             }
             Ok(())
@@ -135,6 +139,7 @@ mod platform {
             unsafe {
                 ShowWindow(self.child, SW_HIDE);
             }
+            self.shown = false;
         }
 
         pub(crate) fn refresh_ordering(&mut self) -> Result<(), String> {

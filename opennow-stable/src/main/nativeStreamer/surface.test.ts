@@ -29,3 +29,32 @@ test("normalizes renderer bounds into absolute screen coordinates", () => {
     screenRect: { x: 106, y: 212, width: 320, height: 180 },
   });
 });
+
+test("uses Windows display-aware DIP conversion without scaling the global monitor origin", () => {
+  const handle = Buffer.alloc(8);
+  handle.writeBigUInt64LE(0x1234n);
+  const window = {
+    getNativeWindowHandle: () => handle,
+    getContentBounds: () => ({ x: 1920, y: 0, width: 1280, height: 720 }),
+  } as unknown as BrowserWindow;
+
+  const surface = normalizeNativeRenderSurface(
+    window,
+    {
+      rect: { x: 150, y: 30, width: 640, height: 360 },
+      visible: true,
+      deviceScaleFactor: 1.5,
+    },
+    (point) => ({
+      x: 1920 + Math.round((point.x - 1920) * 1.5),
+      y: Math.round(point.y * 1.5),
+    }),
+  );
+
+  assert.deepEqual(surface?.screenRect, {
+    x: 2070,
+    y: 30,
+    width: 640,
+    height: 360,
+  });
+});

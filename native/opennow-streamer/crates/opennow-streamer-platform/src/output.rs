@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,7 @@ use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::{Texture, WindowCanvas};
 
-use crate::media::MediaStreamConfig;
+use crate::media::{CapturedInput, CapturedInputQueue, MediaStreamConfig};
 use crate::native_surface::NativeSurface;
 
 #[cfg(target_os = "linux")]
@@ -39,6 +39,7 @@ pub(crate) struct OutputBuffers {
     linux_video: Mutex<Option<LinuxDecodedVideoFrame>>,
     audio: Mutex<VecDeque<f32>>,
     audio_capacity: usize,
+    captured_input: Arc<CapturedInputQueue>,
 }
 
 #[cfg(target_os = "windows")]
@@ -130,7 +131,12 @@ impl OutputBuffers {
                 * AUDIO_CHANNELS as usize
                 * MAX_AUDIO_LATENCY_MS
                 / 1_000,
+            captured_input: Arc::new(CapturedInputQueue::default()),
         }
+    }
+
+    pub(crate) fn captured_input(&self) -> Arc<CapturedInputQueue> {
+        Arc::clone(&self.captured_input)
     }
 
     pub(crate) fn replace_video(&self, frame: DecodedVideoFrame) -> bool {
@@ -440,6 +446,11 @@ pub(crate) struct SoftwareOutput {
     audio: AudioDevice<StreamAudioCallback>,
     output: Arc<OutputBuffers>,
     native_surface: Result<NativeSurface, String>,
+    captured_input: Vec<CapturedInput>,
+    pressed_keys: HashMap<sdl2::keyboard::Scancode, u16>,
+    pressed_buttons: HashSet<u8>,
+    capture_input: bool,
+    relative_mouse: bool,
     visible: bool,
     paused: bool,
 }
@@ -506,6 +517,11 @@ impl SoftwareOutput {
             audio,
             output,
             native_surface,
+            captured_input: Vec::new(),
+            pressed_keys: HashMap::new(),
+            pressed_buttons: HashSet::new(),
+            capture_input: cfg!(target_os = "windows"),
+            relative_mouse: false,
             visible: false,
             paused: false,
         })
@@ -524,6 +540,7 @@ impl SoftwareOutput {
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
         if paused {
+            self.release_captured_input();
             self.audio.pause();
             self.output.clear();
         } else {
@@ -532,6 +549,8 @@ impl SoftwareOutput {
     }
 
     fn stop(&mut self) {
+        self.release_captured_input();
+        self.flush_captured_input();
         self.audio.pause();
         self.output.clear();
         if let Ok(surface) = self.native_surface.as_mut() {
@@ -572,12 +591,16 @@ impl SoftwareOutput {
         if let Ok(surface) = self.native_surface.as_mut() {
             surface.refresh_ordering()?;
         }
-        for event in self.event_pump.poll_iter() {
+        let events = self.event_pump.poll_iter().collect::<Vec<_>>();
+        for event in events {
             if matches!(event, sdl2::event::Event::Quit { .. }) {
+                self.release_captured_input();
                 if let Ok(surface) = self.native_surface.as_mut() {
                     surface.hide();
                 }
                 self.visible = false;
+            } else if self.capture_input {
+                self.capture_input_event(event);
             }
         }
         if self.paused || !self.visible {
@@ -608,6 +631,307 @@ impl SoftwareOutput {
         self.canvas.present();
         Ok(true)
     }
+
+    fn take_captured_input(&mut self) -> Vec<CapturedInput> {
+        std::mem::take(&mut self.captured_input)
+    }
+
+    fn flush_captured_input(&mut self) {
+        let captured_input = self.output.captured_input();
+        for input in self.take_captured_input() {
+            captured_input.push(input);
+        }
+    }
+
+    fn capture_input_event(&mut self, event: sdl2::event::Event) {
+        use sdl2::event::{Event, WindowEvent};
+
+        match event {
+            Event::KeyDown {
+                scancode: Some(scancode),
+                keymod,
+                repeat: false,
+                ..
+            } => {
+                let Some(virtual_key) = sdl_virtual_key(scancode) else {
+                    return;
+                };
+                if self.pressed_keys.insert(scancode, virtual_key).is_none() {
+                    self.captured_input.push(CapturedInput::Key {
+                        virtual_key,
+                        modifiers: sdl_modifiers(scancode, keymod),
+                        pressed: true,
+                    });
+                }
+            }
+            Event::KeyUp {
+                scancode: Some(scancode),
+                keymod,
+                ..
+            } => {
+                if let Some(virtual_key) = self.pressed_keys.remove(&scancode) {
+                    self.captured_input.push(CapturedInput::Key {
+                        virtual_key,
+                        modifiers: sdl_modifiers(scancode, keymod),
+                        pressed: false,
+                    });
+                }
+            }
+            Event::MouseMotion { xrel, yrel, .. } if self.relative_mouse => {
+                push_mouse_motion(&mut self.captured_input, xrel, yrel);
+            }
+            Event::MouseButtonDown { mouse_btn, .. } => {
+                self.enable_relative_mouse();
+                if let Some(button) = sdl_mouse_button(mouse_btn)
+                    && self.pressed_buttons.insert(button)
+                {
+                    self.captured_input.push(CapturedInput::MouseButton {
+                        button,
+                        pressed: true,
+                    });
+                }
+            }
+            Event::MouseButtonUp { mouse_btn, .. } => {
+                if let Some(button) = sdl_mouse_button(mouse_btn)
+                    && self.pressed_buttons.remove(&button)
+                {
+                    self.captured_input.push(CapturedInput::MouseButton {
+                        button,
+                        pressed: false,
+                    });
+                }
+            }
+            Event::MouseWheel { y, direction, .. } if self.relative_mouse && y != 0 => {
+                let direction = if direction == sdl2::mouse::MouseWheelDirection::Flipped {
+                    -1
+                } else {
+                    1
+                };
+                self.captured_input.push(CapturedInput::MouseWheel {
+                    delta: clamp_i16(y.saturating_mul(120).saturating_mul(direction)),
+                });
+            }
+            Event::Window {
+                win_event: WindowEvent::FocusLost,
+                ..
+            } => self.release_captured_input(),
+            _ => {}
+        }
+    }
+
+    fn enable_relative_mouse(&mut self) {
+        if !self.relative_mouse {
+            self._sdl.mouse().set_relative_mouse_mode(true);
+            self.relative_mouse = true;
+        }
+    }
+
+    fn release_captured_input(&mut self) {
+        for (_, virtual_key) in self.pressed_keys.drain() {
+            self.captured_input.push(CapturedInput::Key {
+                virtual_key,
+                modifiers: 0,
+                pressed: false,
+            });
+        }
+        for button in self.pressed_buttons.drain() {
+            self.captured_input.push(CapturedInput::MouseButton {
+                button,
+                pressed: false,
+            });
+        }
+        if self.relative_mouse {
+            self._sdl.mouse().set_relative_mouse_mode(false);
+            self.relative_mouse = false;
+        }
+    }
+}
+
+fn sdl_virtual_key(scancode: sdl2::keyboard::Scancode) -> Option<u16> {
+    use sdl2::keyboard::Scancode;
+
+    Some(match scancode {
+        Scancode::A => 0x41,
+        Scancode::B => 0x42,
+        Scancode::C => 0x43,
+        Scancode::D => 0x44,
+        Scancode::E => 0x45,
+        Scancode::F => 0x46,
+        Scancode::G => 0x47,
+        Scancode::H => 0x48,
+        Scancode::I => 0x49,
+        Scancode::J => 0x4a,
+        Scancode::K => 0x4b,
+        Scancode::L => 0x4c,
+        Scancode::M => 0x4d,
+        Scancode::N => 0x4e,
+        Scancode::O => 0x4f,
+        Scancode::P => 0x50,
+        Scancode::Q => 0x51,
+        Scancode::R => 0x52,
+        Scancode::S => 0x53,
+        Scancode::T => 0x54,
+        Scancode::U => 0x55,
+        Scancode::V => 0x56,
+        Scancode::W => 0x57,
+        Scancode::X => 0x58,
+        Scancode::Y => 0x59,
+        Scancode::Z => 0x5a,
+        Scancode::Num0 => 0x30,
+        Scancode::Num1 => 0x31,
+        Scancode::Num2 => 0x32,
+        Scancode::Num3 => 0x33,
+        Scancode::Num4 => 0x34,
+        Scancode::Num5 => 0x35,
+        Scancode::Num6 => 0x36,
+        Scancode::Num7 => 0x37,
+        Scancode::Num8 => 0x38,
+        Scancode::Num9 => 0x39,
+        Scancode::Return | Scancode::KpEnter => 0x0d,
+        Scancode::Escape => 0x1b,
+        Scancode::Backspace => 0x08,
+        Scancode::Tab => 0x09,
+        Scancode::Space => 0x20,
+        Scancode::Minus => 0xbd,
+        Scancode::Equals | Scancode::KpEquals => 0xbb,
+        Scancode::LeftBracket => 0xdb,
+        Scancode::RightBracket => 0xdd,
+        Scancode::Backslash => 0xdc,
+        Scancode::NonUsBackslash => 0xe2,
+        Scancode::Semicolon => 0xba,
+        Scancode::Apostrophe => 0xde,
+        Scancode::Grave => 0xc0,
+        Scancode::Comma => 0xbc,
+        Scancode::Period => 0xbe,
+        Scancode::Slash => 0xbf,
+        Scancode::F1 => 0x70,
+        Scancode::F2 => 0x71,
+        Scancode::F3 => 0x72,
+        Scancode::F4 => 0x73,
+        Scancode::F5 => 0x74,
+        Scancode::F6 => 0x75,
+        Scancode::F7 => 0x76,
+        Scancode::F8 => 0x77,
+        Scancode::F9 => 0x78,
+        Scancode::F10 => 0x79,
+        Scancode::F11 => 0x7a,
+        Scancode::F12 => 0x7b,
+        Scancode::F13 => 0x7c,
+        Scancode::F14 => 0x7d,
+        Scancode::F15 => 0x7e,
+        Scancode::F16 => 0x7f,
+        Scancode::F17 => 0x80,
+        Scancode::F18 => 0x81,
+        Scancode::F19 => 0x82,
+        Scancode::F20 => 0x83,
+        Scancode::F21 => 0x84,
+        Scancode::F22 => 0x85,
+        Scancode::F23 => 0x86,
+        Scancode::F24 => 0x87,
+        Scancode::Right => 0x27,
+        Scancode::Left => 0x25,
+        Scancode::Down => 0x28,
+        Scancode::Up => 0x26,
+        Scancode::LCtrl => 0xa2,
+        Scancode::LShift => 0xa0,
+        Scancode::LAlt => 0xa4,
+        Scancode::LGui => 0x5b,
+        Scancode::RCtrl => 0xa3,
+        Scancode::RShift => 0xa1,
+        Scancode::RAlt => 0xa5,
+        Scancode::RGui => 0x5c,
+        Scancode::CapsLock => 0x14,
+        Scancode::NumLockClear => 0x90,
+        Scancode::Insert => 0x2d,
+        Scancode::Delete => 0x2e,
+        Scancode::Home => 0x24,
+        Scancode::End => 0x23,
+        Scancode::PageUp => 0x21,
+        Scancode::PageDown => 0x22,
+        Scancode::PrintScreen => 0x2a,
+        Scancode::ScrollLock => 0x91,
+        Scancode::Pause => 0x13,
+        Scancode::Application => 0x5d,
+        Scancode::Kp0 => 0x60,
+        Scancode::Kp1 => 0x61,
+        Scancode::Kp2 => 0x62,
+        Scancode::Kp3 => 0x63,
+        Scancode::Kp4 => 0x64,
+        Scancode::Kp5 => 0x65,
+        Scancode::Kp6 => 0x66,
+        Scancode::Kp7 => 0x67,
+        Scancode::Kp8 => 0x68,
+        Scancode::Kp9 => 0x69,
+        Scancode::KpPlus => 0x6b,
+        Scancode::KpMinus => 0x6d,
+        Scancode::KpMultiply => 0x6a,
+        Scancode::KpDivide => 0x6f,
+        Scancode::KpPeriod => 0x6e,
+        _ => return None,
+    })
+}
+
+fn sdl_modifiers(scancode: sdl2::keyboard::Scancode, modifiers: sdl2::keyboard::Mod) -> u16 {
+    use sdl2::keyboard::{Mod, Scancode};
+
+    let mut flags = 0;
+    if !matches!(scancode, Scancode::LShift | Scancode::RShift)
+        && modifiers.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD)
+    {
+        flags |= 0x01;
+    }
+    if !matches!(scancode, Scancode::LCtrl | Scancode::RCtrl)
+        && modifiers.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
+    {
+        flags |= 0x02;
+    }
+    if !matches!(scancode, Scancode::LAlt | Scancode::RAlt)
+        && modifiers.intersects(Mod::LALTMOD | Mod::RALTMOD)
+    {
+        flags |= 0x04;
+    }
+    if !matches!(scancode, Scancode::LGui | Scancode::RGui)
+        && modifiers.intersects(Mod::LGUIMOD | Mod::RGUIMOD)
+    {
+        flags |= 0x08;
+    }
+    flags
+}
+
+fn sdl_mouse_button(button: sdl2::mouse::MouseButton) -> Option<u8> {
+    use sdl2::mouse::MouseButton;
+
+    match button {
+        MouseButton::Left => Some(1),
+        MouseButton::Middle => Some(2),
+        MouseButton::Right => Some(3),
+        MouseButton::X1 => Some(4),
+        MouseButton::X2 => Some(5),
+        MouseButton::Unknown => None,
+    }
+}
+
+fn push_mouse_motion(input: &mut Vec<CapturedInput>, delta_x: i32, delta_y: i32) {
+    if delta_x == 0 && delta_y == 0 {
+        return;
+    }
+    if let Some(CapturedInput::MouseMove {
+        delta_x: pending_x,
+        delta_y: pending_y,
+    }) = input.last_mut()
+    {
+        *pending_x = clamp_i16(i32::from(*pending_x).saturating_add(delta_x));
+        *pending_y = clamp_i16(i32::from(*pending_y).saturating_add(delta_y));
+        return;
+    }
+    input.push(CapturedInput::MouseMove {
+        delta_x: clamp_i16(delta_x),
+        delta_y: clamp_i16(delta_y),
+    });
+}
+
+fn clamp_i16(value: i32) -> i16 {
+    value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 pub(crate) enum ActiveOutput {
@@ -734,6 +1058,18 @@ impl ActiveOutput {
             }),
             #[cfg(target_os = "macos")]
             Self::Mac(output) => output.pump().map(|_| OutputEvent::None),
+        }
+    }
+
+    pub(crate) fn take_captured_input(&mut self) -> Vec<CapturedInput> {
+        match self {
+            Self::Software(output) => output.take_captured_input(),
+            #[cfg(target_os = "windows")]
+            Self::Windows(_) => Vec::new(),
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardware(_) => Vec::new(),
+            #[cfg(target_os = "macos")]
+            Self::Mac(_) => Vec::new(),
         }
     }
 
@@ -960,6 +1296,7 @@ mod tests {
             linux_video: Mutex::new(None),
             audio: Mutex::new(VecDeque::new()),
             audio_capacity: 4,
+            captured_input: Arc::new(CapturedInputQueue::default()),
         };
         assert_eq!(output.push_audio(&[1.0, 2.0, 3.0]), 0);
         assert_eq!(output.push_audio(&[4.0, 5.0, 6.0]), 2);
@@ -989,6 +1326,35 @@ mod tests {
         assert_eq!(
             aspect_fit(1920, 1080, 1000, 1000),
             Rect::new(0, 218, 1000, 563)
+        );
+    }
+
+    #[test]
+    fn sdl_keys_map_to_windows_virtual_keys_and_gfn_modifiers() {
+        use sdl2::keyboard::{Mod, Scancode};
+
+        assert_eq!(sdl_virtual_key(Scancode::W), Some(0x57));
+        assert_eq!(sdl_virtual_key(Scancode::Escape), Some(0x1b));
+        assert_eq!(sdl_virtual_key(Scancode::LCtrl), Some(0xa2));
+        assert_eq!(
+            sdl_modifiers(Scancode::W, Mod::LSHIFTMOD | Mod::LCTRLMOD),
+            0x03
+        );
+        assert_eq!(sdl_modifiers(Scancode::LShift, Mod::LSHIFTMOD), 0);
+    }
+
+    #[test]
+    fn adjacent_sdl_mouse_motion_is_coalesced_and_clamped() {
+        let mut input = Vec::new();
+        push_mouse_motion(&mut input, 10, -20);
+        push_mouse_motion(&mut input, i32::MAX, -30);
+
+        assert_eq!(
+            input,
+            vec![CapturedInput::MouseMove {
+                delta_x: i16::MAX,
+                delta_y: -50,
+            }]
         );
     }
 }

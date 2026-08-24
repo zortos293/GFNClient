@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use opennow_streamer_platform::{
-    EncodedFrame, MediaCodec, MediaControl, MediaFeedback, MediaRuntime, MediaSession, MediaSink,
-    MediaStreamConfig, PushOutcome, supports_audio_decode, supports_audio_output, video_backends,
+    CapturedInput, CapturedInputQueue, EncodedFrame, MediaCodec, MediaControl, MediaFeedback,
+    MediaRuntime, MediaSession, MediaSink, MediaStreamConfig, PushOutcome, supports_audio_decode,
+    supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
@@ -38,6 +39,7 @@ const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
 trait NvstSessionResources {
     fn request_keyframe(&self);
     fn acknowledge_video_frame(&self, bytes: u32);
+    fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String>;
     fn recover(&self) -> Result<(), String>;
     fn stop(&self);
 }
@@ -56,6 +58,12 @@ impl NvstSessionResources for ActiveNvstResources {
 
     fn acknowledge_video_frame(&self, bytes: u32) {
         self.feedback.publish_accepted_frame(bytes, Instant::now());
+    }
+
+    fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String> {
+        self.bundle
+            .send_input(bytes, false)
+            .map_err(|error| error.to_string())
     }
 
     fn recover(&self) -> Result<(), String> {
@@ -584,6 +592,10 @@ impl Engine {
             let output = self.events.clone();
             let lifecycle = self.lifecycle.clone();
             let media_feedback = self.media_feedback.take();
+            let captured_input = self
+                .media_session
+                .as_ref()
+                .map(MediaSession::captured_input);
             let nvst_resources = nvst_resources.expect("NVST events require active resources");
             self.feedback_worker = thread::Builder::new()
                 .name("opennow-nvst-events".to_owned())
@@ -594,6 +606,7 @@ impl Engine {
                         generation,
                         nvst_events,
                         media_feedback,
+                        captured_input,
                         nvst_resources,
                     );
                 })
@@ -1176,12 +1189,15 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
     generation: u64,
     nvst_events: Receiver<NvstReceiveEvent>,
     media_feedback: Option<Receiver<MediaFeedback>>,
+    captured_input: Option<Arc<CapturedInputQueue>>,
     resources: R,
 ) {
     let mut feedback_state = NvstMediaFeedbackState {
         dropped: 0,
         last_drop_report: Instant::now(),
         recovery_attempts: 0,
+        input_origin: Instant::now(),
+        input_available: false,
     };
     loop {
         if let Some(feedback) = media_feedback.as_ref() {
@@ -1196,8 +1212,50 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 );
             }
         }
+        if let Some(captured_input) = captured_input.as_ref() {
+            if !feedback_state.input_available {
+                captured_input.clear();
+            } else if captured_input.take_overflowed() {
+                let _ = emit_nvst_terminal(
+                    output,
+                    lifecycle,
+                    generation,
+                    &resources,
+                    "native-input-capture-overflow",
+                    "Native input capture queue overflowed; stopping to prevent stuck input"
+                        .to_owned(),
+                );
+                return;
+            } else {
+                for _ in 0..8 {
+                    let Some(input) = captured_input.take() else {
+                        break;
+                    };
+                    if let Err(error) =
+                        forward_nvst_captured_input(&resources, input, &feedback_state)
+                    {
+                        let _ = emit_nvst_terminal(
+                            output,
+                            lifecycle,
+                            generation,
+                            &resources,
+                            "native-input-capture-failed",
+                            format!("Native window input capture failed: {error}"),
+                        );
+                        return;
+                    }
+                }
+            }
+        }
         match nvst_events.recv_timeout(Duration::from_millis(5)) {
             Ok(nvst_event) => {
+                match &nvst_event {
+                    NvstReceiveEvent::InputReady(_) => feedback_state.input_available = true,
+                    NvstReceiveEvent::InputUnavailable(_) => {
+                        feedback_state.input_available = false;
+                    }
+                    _ => {}
+                }
                 let terminal = forward_nvst_event(
                     output,
                     lifecycle,
@@ -1392,6 +1450,8 @@ struct NvstMediaFeedbackState {
     dropped: usize,
     last_drop_report: Instant,
     recovery_attempts: usize,
+    input_origin: Instant,
+    input_available: bool,
 }
 
 fn forward_nvst_media_feedback<R: NvstSessionResources>(
@@ -1486,6 +1546,59 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                 state.dropped = 0;
                 state.last_drop_report = Instant::now();
             }
+        }
+    }
+}
+
+fn forward_nvst_captured_input<R: NvstSessionResources>(
+    resources: &R,
+    input: CapturedInput,
+    state: &NvstMediaFeedbackState,
+) -> Result<(), String> {
+    let timestamp_us = u64::try_from(state.input_origin.elapsed().as_micros()).unwrap_or(u64::MAX);
+    resources.send_captured_input(captured_input_packet(input, timestamp_us))
+}
+
+fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
+    match input {
+        CapturedInput::Key {
+            virtual_key,
+            modifiers,
+            pressed,
+        } => {
+            let mut packet = Vec::with_capacity(18);
+            packet.extend_from_slice(&(if pressed { 3_u32 } else { 4_u32 }).to_le_bytes());
+            packet.extend_from_slice(&virtual_key.to_be_bytes());
+            packet.extend_from_slice(&modifiers.to_be_bytes());
+            packet.extend_from_slice(&0_u16.to_be_bytes());
+            packet.extend_from_slice(&timestamp_us.to_be_bytes());
+            packet
+        }
+        CapturedInput::MouseMove { delta_x, delta_y } => {
+            let mut packet = Vec::with_capacity(22);
+            packet.extend_from_slice(&7_u32.to_le_bytes());
+            packet.extend_from_slice(&delta_x.to_be_bytes());
+            packet.extend_from_slice(&delta_y.to_be_bytes());
+            packet.extend_from_slice(&[0; 6]);
+            packet.extend_from_slice(&timestamp_us.to_be_bytes());
+            packet
+        }
+        CapturedInput::MouseButton { button, pressed } => {
+            let mut packet = Vec::with_capacity(18);
+            packet.extend_from_slice(&(if pressed { 8_u32 } else { 9_u32 }).to_le_bytes());
+            packet.extend_from_slice(&[button, 0]);
+            packet.extend_from_slice(&[0; 4]);
+            packet.extend_from_slice(&timestamp_us.to_be_bytes());
+            packet
+        }
+        CapturedInput::MouseWheel { delta } => {
+            let mut packet = Vec::with_capacity(22);
+            packet.extend_from_slice(&10_u32.to_le_bytes());
+            packet.extend_from_slice(&0_i16.to_be_bytes());
+            packet.extend_from_slice(&delta.to_be_bytes());
+            packet.extend_from_slice(&[0; 6]);
+            packet.extend_from_slice(&timestamp_us.to_be_bytes());
+            packet
         }
     }
 }
@@ -1757,6 +1870,7 @@ mod tests {
         acknowledged_frames: AtomicUsize,
         recoveries: AtomicUsize,
         stops: AtomicUsize,
+        captured_inputs: Mutex<Vec<Vec<u8>>>,
     }
 
     impl NvstSessionResources for TestNvstResources {
@@ -1766,6 +1880,14 @@ mod tests {
 
         fn acknowledge_video_frame(&self, _bytes: u32) {
             self.acknowledged_frames.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String> {
+            self.captured_inputs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(bytes);
+            Ok(())
         }
 
         fn recover(&self) -> Result<(), String> {
@@ -1798,6 +1920,8 @@ mod tests {
             dropped: 0,
             last_drop_report: Instant::now(),
             recovery_attempts: 0,
+            input_origin: Instant::now(),
+            input_available: true,
         };
 
         forward_nvst_media_feedback(
@@ -1831,6 +1955,8 @@ mod tests {
             dropped: 0,
             last_drop_report: Instant::now(),
             recovery_attempts: 1,
+            input_origin: Instant::now(),
+            input_available: true,
         };
 
         forward_nvst_media_feedback(
@@ -1848,6 +1974,62 @@ mod tests {
 
         assert_eq!(resources.acknowledged_frames.load(Ordering::Relaxed), 1);
         assert_eq!(state.recovery_attempts, 0);
+    }
+
+    #[test]
+    fn captured_sdl_input_routes_through_the_nvst_input_codec_packet_shape() {
+        let resources = TestNvstResources::default();
+        let state = NvstMediaFeedbackState {
+            dropped: 0,
+            last_drop_report: Instant::now(),
+            recovery_attempts: 0,
+            input_origin: Instant::now(),
+            input_available: true,
+        };
+
+        assert!(
+            forward_nvst_captured_input(
+                &resources,
+                CapturedInput::Key {
+                    virtual_key: 0x57,
+                    modifiers: 0x01,
+                    pressed: true,
+                },
+                &state,
+            )
+            .is_ok()
+        );
+        assert!(
+            forward_nvst_captured_input(
+                &resources,
+                CapturedInput::MouseMove {
+                    delta_x: -12,
+                    delta_y: 34,
+                },
+                &state,
+            )
+            .is_ok()
+        );
+
+        let inputs = resources
+            .captured_inputs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(u32::from_le_bytes(inputs[0][0..4].try_into().unwrap()), 3);
+        assert_eq!(
+            u16::from_be_bytes(inputs[0][4..6].try_into().unwrap()),
+            0x57
+        );
+        assert_eq!(
+            u16::from_be_bytes(inputs[0][6..8].try_into().unwrap()),
+            0x01
+        );
+        assert_eq!(inputs[0].len(), 18);
+        assert_eq!(u32::from_le_bytes(inputs[1][0..4].try_into().unwrap()), 7);
+        assert_eq!(i16::from_be_bytes(inputs[1][4..6].try_into().unwrap()), -12);
+        assert_eq!(i16::from_be_bytes(inputs[1][6..8].try_into().unwrap()), 34);
+        assert_eq!(inputs[1].len(), 22);
     }
 
     #[test]

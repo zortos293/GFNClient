@@ -18,6 +18,7 @@ export function nativeWindowHandleToHex(window: BrowserWindow): string | null {
 export function normalizeNativeRenderSurface(
   window: BrowserWindow,
   input: NativeRenderSurfaceUpdate,
+  dipToScreenPoint?: (point: { x: number; y: number }) => { x: number; y: number },
 ): NativeRenderSurface | null {
   if (!input || typeof input !== "object") {
     return null;
@@ -43,6 +44,12 @@ export function normalizeNativeRenderSurface(
     rect.width >= 2 &&
     rect.height >= 2;
 
+  const screenOriginDip = {
+    x: contentBounds.x + Math.round((rect?.x ?? 0) / deviceScaleFactor),
+    y: contentBounds.y + Math.round((rect?.y ?? 0) / deviceScaleFactor),
+  };
+  const screenOrigin = dipToScreenPoint?.(screenOriginDip) ?? screenOriginDip;
+
   return {
     windowHandle,
     deviceScaleFactor,
@@ -58,12 +65,14 @@ export function normalizeNativeRenderSurface(
       : null,
     screenRect: visible
       ? {
-          // The renderer reports rect in device pixels; AppKit screen
-          // coordinates are points, so convert before adding content bounds.
-          x: contentBounds.x + Math.round(rect.x / deviceScaleFactor),
-          y: contentBounds.y + Math.round(rect.y / deviceScaleFactor),
-          width: Math.max(2, Math.round(rect.width / deviceScaleFactor)),
-          height: Math.max(2, Math.round(rect.height / deviceScaleFactor)),
+          x: screenOrigin.x,
+          y: screenOrigin.y,
+          width: dipToScreenPoint
+            ? Math.max(2, Math.round(rect.width))
+            : Math.max(2, Math.round(rect.width / deviceScaleFactor)),
+          height: dipToScreenPoint
+            ? Math.max(2, Math.round(rect.height))
+            : Math.max(2, Math.round(rect.height / deviceScaleFactor)),
         }
       : undefined,
   };

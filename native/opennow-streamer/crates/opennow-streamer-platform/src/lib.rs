@@ -9,8 +9,8 @@ mod queue;
 mod runtime;
 
 pub use media::{
-    EncodedFrame, MediaCodec, MediaControl, MediaFeedback, MediaSession, MediaSink,
-    MediaStreamConfig, PushOutcome,
+    CapturedInput, CapturedInputQueue, EncodedFrame, MediaCodec, MediaControl, MediaFeedback,
+    MediaSession, MediaSink, MediaStreamConfig, PushOutcome,
 };
 pub use runtime::{MainThreadHost, MediaRuntime, create_runtime};
 

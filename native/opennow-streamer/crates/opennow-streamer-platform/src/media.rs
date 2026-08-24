@@ -1,8 +1,7 @@
-use std::sync::Arc;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::sync::Mutex;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use openh264::OpenH264API;
@@ -59,6 +58,84 @@ pub struct EncodedFrame {
     pub clock_rate_hz: u32,
     pub keyframe: bool,
     pub contiguous: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapturedInput {
+    Key {
+        virtual_key: u16,
+        modifiers: u16,
+        pressed: bool,
+    },
+    MouseMove {
+        delta_x: i16,
+        delta_y: i16,
+    },
+    MouseButton {
+        button: u8,
+        pressed: bool,
+    },
+    MouseWheel {
+        delta: i16,
+    },
+}
+
+const CAPTURED_INPUT_CAPACITY: usize = 256;
+
+#[derive(Debug, Default)]
+pub struct CapturedInputQueue {
+    pending: Mutex<VecDeque<CapturedInput>>,
+    overflowed: AtomicBool,
+}
+
+impl CapturedInputQueue {
+    pub fn push(&self, input: CapturedInput) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let CapturedInput::MouseMove { delta_x, delta_y } = input
+            && let Some(CapturedInput::MouseMove {
+                delta_x: pending_x,
+                delta_y: pending_y,
+            }) = pending.back_mut()
+        {
+            *pending_x = pending_x.saturating_add(delta_x);
+            *pending_y = pending_y.saturating_add(delta_y);
+            return;
+        }
+        if pending.len() == CAPTURED_INPUT_CAPACITY {
+            if let Some(index) = pending
+                .iter()
+                .position(|event| matches!(event, CapturedInput::MouseMove { .. }))
+            {
+                pending.remove(index);
+            } else {
+                self.overflowed.store(true, Ordering::Release);
+                return;
+            }
+        }
+        pending.push_back(input);
+    }
+
+    pub fn take(&self) -> Option<CapturedInput> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+    }
+
+    pub fn take_overflowed(&self) -> bool {
+        self.overflowed.swap(false, Ordering::AcqRel)
+    }
+
+    pub fn clear(&self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.overflowed.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,6 +289,10 @@ pub struct MediaControl {
 }
 
 impl MediaSession {
+    pub fn captured_input(&self) -> Arc<CapturedInputQueue> {
+        self.sink.shared.output.captured_input()
+    }
+
     pub(crate) fn spawn(
         output: Arc<OutputBuffers>,
         feedback: Sender<MediaFeedback>,
@@ -1444,6 +1525,41 @@ mod tests {
             (width as u32, height as u32)
         );
         assert_eq!(decoded.rgb.len(), width * height * 3);
+    }
+
+    #[test]
+    fn captured_input_queue_coalesces_motion_and_fails_closed_on_control_overflow() {
+        let queue = CapturedInputQueue::default();
+        for _ in 0..300 {
+            queue.push(CapturedInput::MouseMove {
+                delta_x: 1,
+                delta_y: -1,
+            });
+        }
+        assert_eq!(
+            queue.take(),
+            Some(CapturedInput::MouseMove {
+                delta_x: 300,
+                delta_y: -300,
+            })
+        );
+
+        for virtual_key in 0..=u16::try_from(CAPTURED_INPUT_CAPACITY).unwrap() {
+            queue.push(CapturedInput::Key {
+                virtual_key,
+                modifiers: 0,
+                pressed: true,
+            });
+        }
+        assert!(queue.take_overflowed());
+        assert_eq!(
+            queue.take(),
+            Some(CapturedInput::Key {
+                virtual_key: 0,
+                modifiers: 0,
+                pressed: true,
+            })
+        );
     }
 
     #[test]

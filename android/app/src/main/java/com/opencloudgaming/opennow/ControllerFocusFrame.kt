@@ -48,6 +48,11 @@ internal fun shouldAnimateControllerFocusFrame(
     reduceMotion: Boolean,
 ): Boolean = absoluteCinemaEnabled && !reduceMotion
 
+internal fun shouldDrawStaticInteractionFocus(
+    visible: Boolean,
+    cinemaEffectEnabled: Boolean,
+): Boolean = visible && !cinemaEffectEnabled
+
 /**
  * Catalog cards are borderless unless Absolute Cinema is active. Its accent-coloured base stroke
  * sits under the animated sibling frame; every ordinary theme keeps the artwork edge clean.
@@ -206,6 +211,43 @@ internal fun BoxScope.ControllerFocusFrame(
             size = borderSize,
             cornerRadius = roundedCorner,
             style = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round, pathEffect = sparks),
+        )
+    }
+}
+
+/**
+ * One focus owner for controls that need a bold white fallback and may opt into Cinema motion.
+ * Callers must not draw another focused border underneath this frame: doing so produces the
+ * doubled rings that made Settings look heavier than the first account row.
+ */
+@Composable
+internal fun BoxScope.InteractionFocusFrame(
+    visible: Boolean,
+    cornerRadius: Dp,
+    cinemaEffectEnabled: Boolean,
+    verticalInset: Dp = 0.dp,
+) {
+    if (!visible) return
+    val cinemaEffectActive = cinemaEffectEnabled && LocalAbsoluteCinemaEffects.current
+    if (cinemaEffectActive) {
+        ControllerFocusFrame(
+            visible = true,
+            cornerRadius = cornerRadius,
+            tint = LocalActiveSelectionColor.current,
+            secondaryTint = LocalActiveSelectionSecondaryColor.current,
+            verticalInset = verticalInset,
+        )
+        return
+    }
+    if (!shouldDrawStaticInteractionFocus(visible, cinemaEffectActive)) return
+    Canvas(Modifier.matchParentSize()) {
+        val insetPx = verticalInset.toPx().coerceIn(0f, size.height / 2f)
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.96f),
+            topLeft = Offset(0f, insetPx),
+            size = Size(size.width, (size.height - insetPx * 2f).coerceAtLeast(0f)),
+            cornerRadius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx()),
+            style = Stroke(width = 3.dp.toPx()),
         )
     }
 }

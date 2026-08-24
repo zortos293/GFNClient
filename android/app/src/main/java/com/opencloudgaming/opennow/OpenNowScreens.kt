@@ -1054,7 +1054,7 @@ private fun MainShell(
                                     onOpenSettings = { navigateFromAppChrome(AppPage.Settings) },
                                     onOpenLocalApps = {
                                         visibleSearchTarget = null
-                                        viewModel.setPage(AppPage.Library)
+                                        viewModel.openInterfaceSettings()
                                     },
                                     onOpenStreamSettings = viewModel::openStreamSettings,
                                     musicControl = musicControl,
@@ -1309,6 +1309,7 @@ private fun AppNavigationRail(
     onSettingsBack: () -> Unit,
     streamReturnFocusRequester: FocusRequester,
 ) {
+    val bonanzaActive = LocalAbsoluteCinemaEverywhere.current
     Box(
         modifier = Modifier
             .width(APP_NAV_RAIL_WIDTH)
@@ -1318,7 +1319,8 @@ private fun AppNavigationRail(
         Surface(
             modifier = Modifier.fillMaxSize(),
             shape = RoundedCornerShape(26.dp),
-            color = navigationRailScrim(darkenForCatalogBackground),
+            color = if (bonanzaActive) Color.Transparent else navigationRailScrim(darkenForCatalogBackground),
+            border = if (bonanzaActive) BorderStroke(1.dp, Color.White.copy(alpha = 0.88f)) else null,
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
         ) {
@@ -1405,8 +1407,9 @@ internal fun shouldShowLocalTvConnectionDot(tvProfile: Boolean, pairedDeviceName
 
 internal fun shouldShowLocalAppsProfileAction(
     localAppLauncherSupported: Boolean,
+    @Suppress("UNUSED_PARAMETER")
     localAppsEnabled: Boolean,
-): Boolean = localAppLauncherSupported && localAppsEnabled
+): Boolean = localAppLauncherSupported
 
 internal fun shouldAnimateOpenNowAppIcon(
     codecReport: RuntimeCodecReport?,
@@ -1441,11 +1444,7 @@ private fun AppNavigationRailItem(
     val haptics = LocalOpenNowHaptics.current
     // Flat rail chrome is fixed; only the animated frame around it follows the accent.
     val navTint = NavigationSelectionColor
-    val frameTint = LocalActiveSelectionColor.current
-    val frameSecondaryTint = LocalActiveSelectionSecondaryColor.current
-    val showActiveFrame =
-        (selected && LocalActiveSelectionEnabled.current) ||
-            (focused && LocalAbsoluteCinemaEffects.current)
+    val showActiveFrame = selected || focused
     val contentColor = when {
         focused -> Color.White
         selected -> navTint
@@ -1506,11 +1505,10 @@ private fun AppNavigationRailItem(
                 )
             }
         }
-        ControllerFocusFrame(
+        InteractionFocusFrame(
             visible = showActiveFrame,
             cornerRadius = 18.dp,
-            tint = frameTint,
-            secondaryTint = frameSecondaryTint,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEffects.current,
         )
     }
 }
@@ -1660,6 +1658,7 @@ private fun TopBarProfileMenu(
     val profileDescription = stringResource(R.string.profile_menu_description)
     val haptics = LocalOpenNowHaptics.current
     val launcherControl = rememberDefaultLauncherControl()
+    val bonanzaActive = LocalAbsoluteCinemaEverywhere.current
 
     Box {
         Box(
@@ -1703,7 +1702,12 @@ private fun TopBarProfileMenu(
             onDismissRequest = { expanded = false },
             modifier = Modifier
                 .widthIn(min = 250.dp, max = 300.dp)
-                .background(Panel),
+                .border(
+                    1.dp,
+                    if (bonanzaActive) Color.White.copy(alpha = 0.88f) else Color.Transparent,
+                    RoundedCornerShape(4.dp),
+                ),
+            containerColor = if (bonanzaActive) Color.Transparent else Panel,
         ) {
             Column(
                 Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -1726,7 +1730,7 @@ private fun TopBarProfileMenu(
                 )
             }
             if (BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED) {
-                DropdownMenuItem(
+                ProfileDropdownMenuItem(
                     text = {
                         Text(
                             stringResource(
@@ -1742,13 +1746,8 @@ private fun TopBarProfileMenu(
                         launcherControl.request()
                     },
                 )
-                if (
-                    shouldShowLocalAppsProfileAction(
-                        localAppLauncherSupported = BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED,
-                        localAppsEnabled = state.settings.localAppsEnabled,
-                    )
-                ) {
-                    DropdownMenuItem(
+                if (shouldShowLocalAppsProfileAction(BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED, state.settings.localAppsEnabled)) {
+                    ProfileDropdownMenuItem(
                         text = {
                             Text(
                                 stringResource(R.string.settings_local_apps),
@@ -1764,7 +1763,7 @@ private fun TopBarProfileMenu(
                 }
             }
             HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
-            DropdownMenuItem(
+            ProfileDropdownMenuItem(
                 text = {
                     Text(
                         stringResource(R.string.nav_settings),
@@ -1779,6 +1778,26 @@ private fun TopBarProfileMenu(
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun ProfileDropdownMenuItem(
+    text: @Composable () -> Unit,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        DropdownMenuItem(
+            text = text,
+            onClick = onClick,
+            modifier = Modifier.onFocusChanged { focused = it.isFocused || it.hasFocus },
+        )
+        InteractionFocusFrame(
+            visible = focused,
+            cornerRadius = 4.dp,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
+        )
     }
 }
 

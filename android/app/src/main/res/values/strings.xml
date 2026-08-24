@@ -586,8 +586,8 @@
     <string name="settings_live_selected_outlines_desc">Animates selected games, menu items, server choices, and launcher options. Turn it off for quieter selection styling.</string>
     <string name="settings_absolute_cinema_effects">Absolute Cinema effects</string>
     <string name="settings_absolute_cinema_effects_desc">Use animated orange and blue focus rings while keeping your selected interface colour.</string>
-    <string name="settings_im_crazy">I\'m crazy</string>
-    <string name="settings_im_crazy_desc">Turn Absolute Cinema loose across the whole interface. Hovered and focused artwork, descriptions, controls, and more get the effect.</string>
+    <string name="settings_im_crazy">Effects Bonanza</string>
+    <string name="settings_im_crazy_desc">Send the bold spinning Absolute Cinema ring across the interface. Focused and hovered artwork, descriptions, controls, menus, and more get the effect.</string>
     <string name="settings_nerd_catalog_background">Catalog background</string>
     <string name="settings_nerd_catalog_background_desc">Shows a background image behind Store and Library on handheld screens.</string>
     <string name="settings_catalog_background_image">Background image</string>

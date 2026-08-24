@@ -60,8 +60,8 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 23
         targetSdk = 36
-        versionCode = 96
-        versionName = "1.4.0"
+        versionCode = 97
+        versionName = "1.4.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
@@ -71,9 +71,8 @@ android {
         buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", "true")
 
         ndk {
-            // Fire TV and most Android TV hardware use 32-bit or 64-bit ARM. Keep x86_64 for
-            // emulators and Intel Chromebooks without carrying the obsolete 32-bit Intel TV slice.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            // Keep legacy Intel TV devices eligible; App Bundles deliver only the matching ABI.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
 
     }

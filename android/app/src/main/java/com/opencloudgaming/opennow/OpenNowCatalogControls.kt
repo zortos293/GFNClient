@@ -123,19 +123,19 @@ internal fun SortPicker(
     }
     val selectedLabel = labels.firstOrNull { it.id == selected }?.label ?: labels.first().label
     var expanded by remember { mutableStateOf(false) }
+    var focused by remember { mutableStateOf(false) }
     BackHandler(enabled = expanded) { expanded = false }
     val controlShape = RoundedCornerShape(999.dp)
     val controlColor = Color.White.copy(alpha = 0.1f)
     Box(modifier) {
         OutlinedButton(
             onClick = { expanded = true },
-            modifier = Modifier.fillMaxWidth().height(if (compact) TopBarCompactControlHeight else 40.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(if (compact) TopBarCompactControlHeight else 40.dp)
+                .onFocusChanged { focused = it.isFocused || it.hasFocus },
             shape = controlShape,
-            border = if (LocalAbsoluteCinemaEffects.current) {
-                BorderStroke(1.dp, LocalActiveSelectionColor.current)
-            } else {
-                null
-            },
+            border = null,
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = controlColor,
                 contentColor = TextPrimary,
@@ -149,6 +149,11 @@ internal fun SortPicker(
                 style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
             )
         }
+        InteractionFocusFrame(
+            visible = focused,
+            cornerRadius = 999.dp,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
+        )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             labels.forEach { option ->
                 DropdownMenuItem(
@@ -175,7 +180,11 @@ internal fun SelectedFilterChips(options: List<CatalogFilterOption>, selectedIds
     if (selectedOptions.isEmpty()) return
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         selectedOptions.take(4).forEach { option ->
-            AssistChip(onClick = { onToggle(option.id) }, label = { Text(option.label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
+            AssistChip(
+                onClick = { onToggle(option.id) },
+                label = { Text(option.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                border = BorderStroke(2.dp, Color.White.copy(alpha = 0.92f)),
+            )
         }
         if (selectedOptions.size > 4) {
             AssistChip(onClick = {}, label = { Text("+${selectedOptions.size - 4}") })
@@ -237,18 +246,17 @@ internal fun FilterMenu(
     compact: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var focused by remember { mutableStateOf(false) }
     val filterControlShape = RoundedCornerShape(999.dp)
     val filterControlColor = Color.White.copy(alpha = 0.1f)
     Box {
         OutlinedButton(
             onClick = { expanded = true },
-            modifier = Modifier.height(if (compact) TopBarCompactControlHeight else 36.dp),
+            modifier = Modifier
+                .height(if (compact) TopBarCompactControlHeight else 36.dp)
+                .onFocusChanged { focused = it.isFocused || it.hasFocus },
             shape = filterControlShape,
-            border = if (LocalAbsoluteCinemaEffects.current) {
-                BorderStroke(1.dp, LocalActiveSelectionColor.current)
-            } else {
-                null
-            },
+            border = null,
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = filterControlColor,
                 contentColor = TextPrimary,
@@ -257,6 +265,11 @@ internal fun FilterMenu(
         ) {
             Text(if (selectedIds.isEmpty()) "Filters" else "Filters ${selectedIds.size}", maxLines = 1, style = MaterialTheme.typography.labelMedium)
         }
+        InteractionFocusFrame(
+            visible = focused,
+            cornerRadius = 999.dp,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
+        )
         if (expanded) {
             AlertDialog(
                 onDismissRequest = { expanded = false },
@@ -276,30 +289,25 @@ internal fun FilterMenu(
                         items(options) { option ->
                             val isSelected = option.id in selectedIds
                             var rowFocused by remember { mutableStateOf(false) }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .onFocusChanged { rowFocused = it.isFocused }
-                                    .background(if (rowFocused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
-                                    .border(
-                                        width = 1.dp,
-                                        color = if (rowFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                        shape = RoundedCornerShape(8.dp)
-                                    )
-                                    .clickable { onToggle(option.id) }
-                                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked = isSelected,
-                                    onCheckedChange = null
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Text(
-                                    option.label,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = TextPrimary
+                            Box(Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .onFocusChanged { rowFocused = it.isFocused || it.hasFocus }
+                                        .background(if (rowFocused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+                                        .clickable { onToggle(option.id) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Checkbox(checked = isSelected, onCheckedChange = null)
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(option.label, style = MaterialTheme.typography.bodyLarge, color = TextPrimary)
+                                }
+                                InteractionFocusFrame(
+                                    visible = rowFocused,
+                                    cornerRadius = 8.dp,
+                                    cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
                                 )
                             }
                         }
@@ -347,11 +355,7 @@ internal fun CatalogSortFilterMenu(
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = Color.White.copy(alpha = 0.1f),
-            border = if (LocalAbsoluteCinemaEffects.current) {
-                BorderStroke(1.dp, LocalActiveSelectionColor.current)
-            } else {
-                null
-            },
+            border = null,
         ) {
             IconButton(
                 onClick = { expanded = true },
@@ -376,11 +380,10 @@ internal fun CatalogSortFilterMenu(
                 )
             }
         }
-        ControllerFocusFrame(
-            visible = focused && LocalAbsoluteCinemaEffects.current,
+        InteractionFocusFrame(
+            visible = focused,
             cornerRadius = 14.dp,
-            tint = LocalActiveSelectionColor.current,
-            secondaryTint = LocalActiveSelectionSecondaryColor.current,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
         )
         if (expanded) {
             AlertDialog(
@@ -456,41 +459,40 @@ private fun CatalogMenuChoiceRow(
 ) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(9.dp)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .onFocusChanged { focused = it.isFocused }
-            .background(
-                when {
-                    focused -> Color.White.copy(alpha = 0.1f)
-                    selected -> LocalSelectionTintColor.current.copy(alpha = 0.12f)
-                    else -> Color.Transparent
-                },
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                .background(
+                    when {
+                        focused -> Color.White.copy(alpha = 0.1f)
+                        selected -> LocalSelectionTintColor.current.copy(alpha = 0.12f)
+                        else -> Color.Transparent
+                    },
+                )
+                .clickable(onClick = onClick)
+                .padding(horizontal = 8.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (checkbox) {
+                Checkbox(checked = selected, onCheckedChange = null)
+            } else {
+                Text(if (selected) "✓" else "", modifier = Modifier.width(36.dp), color = LocalSelectionTintColor.current)
+            }
+            Spacer(Modifier.width(if (checkbox) 10.dp else 0.dp))
+            Text(
+                label,
+                color = TextPrimary,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier.weight(1f),
             )
-            .border(
-                width = if (focused || selected) 1.dp else 0.dp,
-                color = cinemaBorderColor(
-                    LocalAbsoluteCinemaEffects.current,
-                    LocalActiveSelectionColor.current,
-                ),
-                shape = shape,
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (checkbox) {
-            Checkbox(checked = selected, onCheckedChange = null)
-        } else {
-            Text(if (selected) "✓" else "", modifier = Modifier.width(36.dp), color = LocalSelectionTintColor.current)
         }
-        Spacer(Modifier.width(if (checkbox) 10.dp else 0.dp))
-        Text(
-            label,
-            color = TextPrimary,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            modifier = Modifier.weight(1f),
+        InteractionFocusFrame(
+            visible = focused,
+            cornerRadius = 9.dp,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
         )
     }
 }

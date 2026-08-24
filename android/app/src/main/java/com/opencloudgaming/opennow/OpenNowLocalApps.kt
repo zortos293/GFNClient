@@ -18,7 +18,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
@@ -234,8 +233,9 @@ private fun LocalAppsSectionHeader(
         if (collapsed) R.string.library_local_apps_show else R.string.library_local_apps_hide,
         appCount,
     )
-    Row(
-        modifier
+    Box(modifier) {
+        Row(
+            Modifier
             .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
             .then(
                 topFocusRequester?.let { top -> Modifier.focusProperties { up = top } } ?: Modifier,
@@ -257,30 +257,35 @@ private fun LocalAppsSectionHeader(
                 }
             }
             .focusable()
-            .border(2.dp, if (focused) LocalSelectionTintColor.current else Color.Transparent, shape)
             .padding(horizontal = 6.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            painter = painterResource(R.drawable.ic_chevron_right),
-            contentDescription = null,
-            tint = if (focused) Color.White else TextMuted,
-            modifier = Modifier.size(18.dp).rotate(chevronRotation),
-        )
-        Text(
-            stringResource(R.string.library_local_apps),
-            color = TextPrimary,
-            fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.titleMedium,
-        )
-        if (appCount > 0) {
-            Text(
-                appCount.toString(),
-                color = TextMuted,
-                style = MaterialTheme.typography.labelMedium,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_chevron_right),
+                contentDescription = null,
+                tint = if (focused) Color.White else TextMuted,
+                modifier = Modifier.size(18.dp).rotate(chevronRotation),
             )
+            Text(
+                stringResource(R.string.library_local_apps),
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            if (appCount > 0) {
+                Text(
+                    appCount.toString(),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
         }
+        InteractionFocusFrame(
+            visible = focused,
+            cornerRadius = 10.dp,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
+        )
     }
 }
 
@@ -376,43 +381,45 @@ private fun LocalAppPickerRow(
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
     val bitmap = remember(app.packageName, app.icon) { app.icon.toBitmap().asImageBitmap() }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .onFocusChanged { focused = it.isFocused }
-            .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
-            .border(
-                2.dp,
-                cinemaBorderColor(LocalAbsoluteCinemaEffects.current, LocalActiveSelectionColor.current),
-                shape,
-            )
-            .clip(shape)
-            .clickable(onClick = onSelect)
-            .onPreviewKeyEvent { event ->
-                if (isTvActivateKey(event)) {
-                    onSelect()
-                    true
-                } else {
-                    false
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .onFocusChanged { focused = it.isFocused }
+                .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
+                .clip(shape)
+                .clickable(onClick = onSelect)
+                .onPreviewKeyEvent { event ->
+                    if (isTvActivateKey(event)) {
+                        onSelect()
+                        true
+                    } else {
+                        false
+                    }
                 }
-            }
-            .focusable()
-            .padding(10.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Image(
-            bitmap = bitmap,
-            contentDescription = null,
-            modifier = Modifier.size(42.dp).clip(RoundedCornerShape(10.dp)),
-            contentScale = ContentScale.Fit,
-        )
-        Text(
-            app.label,
-            color = TextPrimary,
-            fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
+                .focusable()
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = null,
+                modifier = Modifier.size(42.dp).clip(RoundedCornerShape(10.dp)),
+                contentScale = ContentScale.Fit,
+            )
+            Text(
+                app.label,
+                color = TextPrimary,
+                fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        InteractionFocusFrame(
+            visible = focused,
+            cornerRadius = 14.dp,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
         )
     }
 }
@@ -472,11 +479,6 @@ private fun AddLocalAppTile(
                     .focusMoveHaptics()
                     .clip(shape)
                     .background(PanelAlt.copy(alpha = 0.86f))
-                    .border(
-                        2.dp,
-                        cinemaBorderColor(LocalAbsoluteCinemaEffects.current, LocalActiveSelectionColor.current),
-                        shape,
-                    )
                     .semantics { role = Role.Button }
                     .clickable(onClick = activate)
                     .onPreviewKeyEvent { event ->
@@ -496,11 +498,10 @@ private fun AddLocalAppTile(
                     style = MaterialTheme.typography.headlineMedium,
                 )
             }
-            ControllerFocusFrame(
-                visible = focused && LocalActiveSelectionEnabled.current,
+            InteractionFocusFrame(
+                visible = focused,
                 cornerRadius = 18.dp,
-                tint = LocalActiveSelectionColor.current,
-                secondaryTint = LocalActiveSelectionSecondaryColor.current,
+                cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
             )
         }
     }
@@ -538,11 +539,6 @@ private fun LocalAppTile(
                     .focusMoveHaptics()
                     .clip(shape)
                     .background(PanelAlt.copy(alpha = 0.72f))
-                    .border(
-                        2.dp,
-                        cinemaBorderColor(LocalAbsoluteCinemaEffects.current, LocalActiveSelectionColor.current),
-                        shape,
-                    )
                     .semantics { role = Role.Button }
                     // Long-press removes, matching how a launcher un-pins an icon, and keeps the
                     // tile free of a delete affordance that would crowd an icon this size.
@@ -581,11 +577,10 @@ private fun LocalAppTile(
                     contentScale = ContentScale.Fit,
                 )
             }
-            ControllerFocusFrame(
-                visible = focused && LocalActiveSelectionEnabled.current,
+            InteractionFocusFrame(
+                visible = focused,
                 cornerRadius = 18.dp,
-                tint = LocalActiveSelectionColor.current,
-                secondaryTint = LocalActiveSelectionSecondaryColor.current,
+                cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
             )
         }
     }

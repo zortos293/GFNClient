@@ -48,6 +48,7 @@ enum class SettingsRouteTarget {
     Account,
     General,
     Stream,
+    Interface,
 }
 
 internal fun canMinimizeStreamLaunch(streamStatus: String, sessionReady: Boolean): Boolean =
@@ -1368,6 +1369,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 page = AppPage.Settings,
                 selectedGame = null,
                 settingsRouteTarget = SettingsRouteTarget.Stream,
+            )
+        }
+    }
+
+    fun openInterfaceSettings() {
+        _state.update {
+            it.copy(
+                page = AppPage.Settings,
+                selectedGame = null,
+                settingsRouteTarget = SettingsRouteTarget.Interface,
             )
         }
     }

@@ -33,7 +33,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opencloudgaming.opennow.R
-import com.opencloudgaming.opennow.AbsoluteCinemaEverywhereFrame
+import com.opencloudgaming.opennow.InteractionFocusFrame
+import com.opencloudgaming.opennow.LocalAbsoluteCinemaEverywhere
 import com.opencloudgaming.opennow.formatSliderValue
 import com.opencloudgaming.opennow.handleSliderDpadInput
 import com.opencloudgaming.opennow.ui.theme.numeric
@@ -181,6 +182,7 @@ internal fun ControlSliderRow(
     val hoverInteraction = remember { MutableInteractionSource() }
     val hovered by hoverInteraction.collectIsHoveredAsState()
     val showFocus = style.showFocusRing && focused
+    val bonanzaActive = LocalAbsoluteCinemaEverywhere.current
     val quantize = { raw: Float -> ((raw / step).roundToInt() * step).coerceIn(min, max) }
     Box(modifier.fillMaxWidth()) {
         Column(
@@ -258,9 +260,10 @@ internal fun ControlSliderRow(
                 )
             }
         }
-        AbsoluteCinemaEverywhereFrame(
-            visible = hovered || focused,
+        InteractionFocusFrame(
+            visible = focused || (hovered && bonanzaActive),
             cornerRadius = 14.dp,
+            cinemaEffectEnabled = bonanzaActive,
         )
     }
 }

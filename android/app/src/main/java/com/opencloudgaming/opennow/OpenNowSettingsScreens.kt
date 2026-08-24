@@ -185,6 +185,12 @@ internal data class LauncherBadge(
     val foreground: Color = SettingsText,
 )
 
+internal fun shouldEnableSettingsControllerNavigation(
+    tvProfile: Boolean,
+    controllerFamily: AndroidControllerFamily?,
+    gamingHandheld: Boolean,
+): Boolean = tvProfile || controllerFamily != null || gamingHandheld
+
 private val keyboardLayoutOptions = listOf(
     SettingsChoiceOption("en-US", "English (US)"),
     SettingsChoiceOption("en-GB", "English (UK)"),
@@ -260,7 +266,12 @@ internal fun SettingsScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val controllerFamily = rememberPhysicalControllerFamily(enabled = true)
-    val controllerNavigationEnabled = tvProfile || controllerFamily != null
+    val gamingHandheld = remember { isGamingHandheldDevice() }
+    val controllerNavigationEnabled = shouldEnableSettingsControllerNavigation(
+        tvProfile = tvProfile,
+        controllerFamily = controllerFamily,
+        gamingHandheld = gamingHandheld,
+    )
     val showSearch = searchRequested || searchQuery.isNotBlank()
     val categories = remember(state.settings.developerOptionsUnlocked) {
         settingsCategories(state.settings.developerOptionsUnlocked)
@@ -314,6 +325,7 @@ internal fun SettingsScreen(
             SettingsRouteTarget.Account -> SettingsCategory.Account
             SettingsRouteTarget.General -> SettingsCategory.General
             SettingsRouteTarget.Stream -> SettingsCategory.Stream
+            SettingsRouteTarget.Interface -> SettingsCategory.Interface
         }
         if (selectedCategory != routeCategory || searchQuery.isNotBlank()) {
             onSearchQueryChange("")
@@ -1605,64 +1617,67 @@ private fun SettingsAccountCard(state: OpenNowUiState, onClick: () -> Unit) {
         if (state.authSession == null && account == null) "Sign in to sync your GeForce NOW account" else "Manage account"
     }
     var focused by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(28.dp))
-            .onFocusChanged { focused = it.isFocused }
-            .border(
-                width = 2.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(28.dp)
-            )
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(28.dp),
-        color = if (focused) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+    val shape = RoundedCornerShape(28.dp)
+    Box(Modifier.fillMaxWidth()) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onClick),
+            shape = shape,
+            color = if (focused) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
         ) {
-            Surface(
-                modifier = Modifier.size(52.dp),
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary,
+            Row(
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Surface(
+                    modifier = Modifier.size(52.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Text(
+                            displayName.firstOrNull()?.uppercaseChar()?.toString() ?: "N",
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
-                        displayName.firstOrNull()?.uppercaseChar()?.toString() ?: "N",
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
+                        displayName,
+                        color = SettingsText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        detail,
+                        color = SettingsTextMuted,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    displayName,
-                    color = SettingsText,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    detail,
-                    color = SettingsTextMuted,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                Icon(
+                    painter = painterResource(R.drawable.ic_chevron_right),
+                    contentDescription = null,
+                    tint = SettingsTextMuted,
+                    modifier = Modifier.size(22.dp),
                 )
             }
-            Icon(
-                painter = painterResource(R.drawable.ic_chevron_right),
-                contentDescription = null,
-                tint = SettingsTextMuted,
-                modifier = Modifier.size(22.dp),
-            )
         }
+        InteractionFocusFrame(
+            visible = focused,
+            cornerRadius = 28.dp,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEffects.current,
+        )
     }
 }
 
@@ -1680,11 +1695,6 @@ private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit)
                 .clip(shape)
                 .onFocusChanged { focused = it.isFocused || it.hasFocus }
                 .background(if (focused) accent.copy(alpha = 0.22f) else Color.Transparent)
-                .border(
-                    width = if (focused) 3.dp else 1.dp,
-                    color = if (focused) accent else Color.Transparent,
-                    shape = shape,
-                )
                 .clickable(onClick = onClick)
                 .padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1728,11 +1738,10 @@ private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit)
                 modifier = Modifier.size(22.dp),
             )
         }
-        ControllerFocusFrame(
-            visible = focused && LocalAbsoluteCinemaEffects.current,
+        InteractionFocusFrame(
+            visible = focused,
             cornerRadius = 14.dp,
-            tint = LocalActiveSelectionColor.current,
-            secondaryTint = LocalActiveSelectionSecondaryColor.current,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEffects.current,
         )
     }
 }

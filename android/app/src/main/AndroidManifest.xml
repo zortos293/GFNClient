@@ -24,6 +24,10 @@
     <uses-feature
         android:name="android.hardware.faketouch"
         android:required="false" />
+    <!-- Google Code Scanner's portrait delegate must not exclude landscape-only Android TVs. -->
+    <uses-feature
+        android:name="android.hardware.screen.portrait"
+        android:required="false" />
     <!-- ACCESS_WIFI_STATE otherwise makes Google Play treat Wi-Fi hardware as required. -->
     <uses-feature
         android:name="android.hardware.wifi"

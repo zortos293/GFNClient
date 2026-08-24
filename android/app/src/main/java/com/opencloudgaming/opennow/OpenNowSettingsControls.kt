@@ -25,6 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.painterResource
@@ -242,6 +243,7 @@ internal fun ChoiceMenuRow(
             )
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 options.forEach { option ->
+                    var optionFocused by remember(option.value) { mutableStateOf(false) }
                     Box {
                         DropdownMenuItem(
                             text = {
@@ -269,13 +271,21 @@ internal fun ChoiceMenuRow(
                                 }
                             },
                             enabled = option.enabled,
+                            modifier = Modifier.onFocusChanged {
+                                optionFocused = option.enabled && (it.isFocused || it.hasFocus)
+                            },
                             onClick = {
                                 expanded = false
                                 onSelect(option.value)
                             },
                         )
+                        InteractionFocusFrame(
+                            visible = optionFocused,
+                            cornerRadius = 4.dp,
+                            cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
+                        )
                         ControllerFocusFrame(
-                            visible = option.label == selectedLabel && activeOutlineColor != null,
+                            visible = !optionFocused && option.label == selectedLabel && activeOutlineColor != null,
                             cornerRadius = 4.dp,
                             tint = activeOutlineColor,
                             secondaryTint = activeOutlineSecondaryColor,

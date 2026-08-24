@@ -50,4 +50,11 @@ class ControllerFocusFrameTest {
             assertTrue(controllerFocusFlickerAlpha(step / 100f) in 0.72f..1f)
         }
     }
+
+    @Test
+    fun interactionFocusFallsBackToOneStaticLineWithoutCinemaMotion() {
+        assertTrue(shouldDrawStaticInteractionFocus(visible = true, cinemaEffectEnabled = false))
+        assertFalse(shouldDrawStaticInteractionFocus(visible = true, cinemaEffectEnabled = true))
+        assertFalse(shouldDrawStaticInteractionFocus(visible = false, cinemaEffectEnabled = false))
+    }
 }

@@ -41,7 +41,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.opencloudgaming.opennow.LocalSettingsControllerNavigationEnabled
-import com.opencloudgaming.opennow.AbsoluteCinemaEverywhereFrame
+import com.opencloudgaming.opennow.InteractionFocusFrame
+import com.opencloudgaming.opennow.LocalAbsoluteCinemaEverywhere
 import com.opencloudgaming.opennow.handleVerticalDpadFocusMove
 import com.opencloudgaming.opennow.isTvActivateKey
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
@@ -163,6 +164,7 @@ internal fun ControlRow(
     val hoverInteraction = remember { MutableInteractionSource() }
     val hovered by hoverInteraction.collectIsHoveredAsState()
     val showFocus = style.showFocusRing && focused
+    val bonanzaActive = LocalAbsoluteCinemaEverywhere.current
     Box(
         modifier
             .fillMaxWidth()
@@ -176,7 +178,7 @@ internal fun ControlRow(
                 .focusMoveHaptics()
                 .border(
                     width = if (showFocus) style.borderFocusWidth else style.borderRestWidth,
-                    color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    color = Color.Transparent,
                     shape = style.shape,
                 )
                 .clip(style.shape)
@@ -200,9 +202,10 @@ internal fun ControlRow(
             verticalAlignment = verticalAlignment,
             content = content,
         )
-        AbsoluteCinemaEverywhereFrame(
-            visible = hovered || focused,
+        InteractionFocusFrame(
+            visible = focused || (hovered && bonanzaActive),
             cornerRadius = SETTINGS_ROW_RADIUS,
+            cinemaEffectEnabled = bonanzaActive,
         )
     }
 }
@@ -215,9 +218,9 @@ internal fun ControlRow(
 @Composable
 internal fun Modifier.controlRowContainer(style: ControlRowStyle, showFocus: Boolean): Modifier = this
     .border(
-        // colorScheme.primary, not a fixed accent — the user can pick their own.
+        // The sibling InteractionFocusFrame is the single visible focus owner.
         width = if (showFocus) style.borderFocusWidth else style.borderRestWidth,
-        color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
+        color = Color.Transparent,
         shape = style.shape,
     )
     .clip(style.shape)

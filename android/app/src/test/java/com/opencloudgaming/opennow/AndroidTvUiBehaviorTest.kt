@@ -185,8 +185,8 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun localAppsProfileActionRequiresSupportAndExplicitOptIn() {
-        assertFalse(
+    fun localAppsProfileActionStaysAvailableAsAnEnablementShortcut() {
+        assertTrue(
             shouldShowLocalAppsProfileAction(
                 localAppLauncherSupported = true,
                 localAppsEnabled = false,
@@ -204,6 +204,19 @@ class AndroidTvUiBehaviorTest {
                 localAppsEnabled = true,
             ),
         )
+    }
+
+    @Test
+    fun settingsControllerNavigationIncludesGamingHandheldControls() {
+        assertTrue(shouldEnableSettingsControllerNavigation(false, null, gamingHandheld = true))
+        assertTrue(
+            shouldEnableSettingsControllerNavigation(
+                tvProfile = false,
+                controllerFamily = AndroidControllerFamily.Generic,
+                gamingHandheld = false,
+            ),
+        )
+        assertFalse(shouldEnableSettingsControllerNavigation(false, null, gamingHandheld = false))
     }
 
     @Test

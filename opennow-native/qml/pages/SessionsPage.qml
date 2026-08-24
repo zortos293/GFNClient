@@ -13,36 +13,92 @@ FocusScope {
     property var activeReport: ({})
     property string exportMessage: ""
     readonly property var rangeNames: ["7 days", "14 days", "90 days"]
-    readonly property var summaries: [
-        [
-            { label: "Time played", value: "18.7 h", detail: "last 7 days" },
-            { label: "Sessions", value: "14", detail: "0 disconnects" },
-            { label: "Average FPS", value: "118", detail: "target 120" },
-            { label: "Average RTT", value: "11 ms", detail: appState.serverRegion }
-        ],
-        [
-            { label: "Time played", value: "42.5 h", detail: "last 14 days" },
-            { label: "Sessions", value: "31", detail: "0 disconnects" },
-            { label: "Average FPS", value: "116", detail: "target 120" },
-            { label: "Average RTT", value: "12 ms", detail: appState.serverRegion }
-        ],
-        [
-            { label: "Time played", value: "286.4 h", detail: "last 90 days" },
-            { label: "Sessions", value: "214", detail: "3 disconnects" },
-            { label: "Average FPS", value: "114", detail: "target 120" },
-            { label: "Average RTT", value: "14 ms", detail: appState.serverRegion }
+    readonly property var rangeDays: [7, 14, 90]
+    readonly property var reports: buildReports(filteredSessions())
+
+    function filteredSessions() {
+        var source = appState.sessions || []
+        var cutoff = Date.now() - rangeDays[rangeIndex] * 86400000
+        return source.filter(function(session) {
+            var started = Date.parse(String(session.startedAt || ""))
+            return !isNaN(started) && started >= cutoff
+        })
+    }
+
+    function summaryForRange() {
+        var sessions = filteredSessions()
+        var minutes = 0
+        var fps = 0
+        var latency = 0
+        var disconnects = 0
+        for (var i = 0; i < sessions.length; ++i) {
+            minutes += Number(sessions[i].durationMinutes || 0)
+            fps += Number(sessions[i].averageFps || 0)
+            latency += Number(sessions[i].latencyMs || 0)
+            disconnects += Number(sessions[i].disconnects || 0)
+        }
+        var count = sessions.length
+        return [
+            { label: "Time played", value: (minutes / 60).toFixed(1) + " h", detail: "last " + rangeDays[rangeIndex] + " days" },
+            { label: "Sessions", value: String(count), detail: disconnects + (disconnects === 1 ? " disconnect" : " disconnects") },
+            { label: "Average FPS", value: count > 0 ? String(Math.round(fps / count)) : "—", detail: "decoded stream FPS" },
+            { label: "Average RTT", value: count > 0 ? Math.round(latency / count) + " ms" : "—", detail: appState.serverRegion }
         ]
-    ]
-    readonly property var chartSets: [
-        [54, 82, 45, 96, 61, 110, 89],
-        [56, 38, 76, 24, 10, 101, 126, 48, 64, 31, 86, 42, 70, 94],
-        [31, 54, 42, 76, 24, 60, 83, 49, 95, 62, 37, 72, 55, 88, 45, 101, 63, 78]
-    ]
-    readonly property var reports: [
-        { title: "Cyber Drift 2088", when: "today · 2 h 10 m", performance: "117 FPS · 14 ms RTT", status: "Smooth", warning: false },
-        { title: "Starfall Frontier", when: "yesterday · 3 h 40 m", performance: "118 FPS · 12 ms RTT", status: "Smooth", warning: false },
-        { title: "Iron Harvest 2", when: "Aug 22 · 1 h 05 m", performance: "96 FPS · 31 ms RTT", status: "Wi-Fi jitter", warning: true }
-    ]
+    }
+
+    function chartValues() {
+        var days = rangeDays[rangeIndex]
+        var bucketCount = days <= 14 ? days : 18
+        var buckets = []
+        var i
+        for (i = 0; i < bucketCount; ++i)
+            buckets.push(0)
+        var sessions = filteredSessions()
+        var bucketSpan = days / bucketCount
+        var now = Date.now()
+        for (i = 0; i < sessions.length; ++i) {
+            var ageDays = Math.max(0, (now - Date.parse(String(sessions[i].startedAt))) / 86400000)
+            var reverseIndex = Math.min(bucketCount - 1, Math.floor(ageDays / bucketSpan))
+            buckets[bucketCount - 1 - reverseIndex] += Number(sessions[i].durationMinutes || 0)
+        }
+        var maximum = Math.max.apply(Math, buckets.concat([1]))
+        return buckets.map(function(minutes) { return Math.max(4, Math.round(minutes / maximum * 126)) })
+    }
+
+    function durationText(minutes) {
+        var hours = Math.floor(minutes / 60)
+        var remaining = Math.floor(minutes % 60)
+        return hours > 0 ? hours + " h " + String(remaining).padStart(2, "0") + " m" : Math.max(1, remaining) + " min"
+    }
+
+    function whenText(isoDate) {
+        var value = new Date(String(isoDate))
+        if (isNaN(value.getTime()))
+            return "unknown time"
+        var age = Math.floor((Date.now() - value.getTime()) / 86400000)
+        if (age === 0)
+            return "today"
+        if (age === 1)
+            return "yesterday"
+        return value.toLocaleDateString(Qt.locale(), "MMM d")
+    }
+
+    function buildReports(sessions) {
+        return sessions.slice(0, 20).map(function(session) {
+            var rating = String(session.rating || (Number(session.disconnects || 0) > 0 ? "Recovered" : "Smooth"))
+            return {
+                title: String(session.title || "Unknown game"),
+                when: whenText(session.startedAt) + " · " + durationText(Number(session.durationMinutes || 0)),
+                performance: Number(session.averageFps || 0) + " FPS · " + Number(session.latencyMs || 0) + " ms RTT",
+                status: rating,
+                warning: rating === "Unstable" || Number(session.packetLoss || 0) >= 1,
+                duration: durationText(Number(session.durationMinutes || 0)),
+                region: String(session.region || "—"),
+                packetLoss: Number(session.packetLoss || 0).toFixed(2) + "%",
+                disconnects: String(Number(session.disconnects || 0))
+            }
+        })
+    }
 
     function focusRange() {
         var item = rangeButtons.itemAt(page.rangeIndex)
@@ -147,7 +203,7 @@ FocusScope {
         width: parent.width - Theme.pageMargin * 2
         spacing: 18
         Repeater {
-            model: page.summaries[page.rangeIndex]
+            model: page.summaryForRange()
             Rectangle {
                 required property var modelData
                 Layout.fillWidth: true
@@ -192,11 +248,11 @@ FocusScope {
             height: 145
             spacing: page.rangeIndex === 2 ? 12 : 10
             Repeater {
-                model: page.chartSets[page.rangeIndex]
+                model: page.chartValues()
                 Item {
                     required property int modelData
                     required property int index
-                    width: (bars.width - (page.chartSets[page.rangeIndex].length - 1) * bars.spacing) / page.chartSets[page.rangeIndex].length
+                    width: (bars.width - (page.chartValues().length - 1) * bars.spacing) / page.chartValues().length
                     height: bars.height
                     Rectangle {
                         anchors.left: parent.left
@@ -204,10 +260,10 @@ FocusScope {
                         anchors.bottom: parent.bottom
                         height: Math.max(8, modelData)
                         radius: 3
-                        color: index === page.chartSets[page.rangeIndex].length - 1 ? Theme.accent : "#376c4a"
+                        color: index === page.chartValues().length - 1 ? Theme.accent : "#376c4a"
                     }
                     Text {
-                        visible: index === page.chartSets[page.rangeIndex].length - 1
+                        visible: index === page.chartValues().length - 1
                         anchors.bottom: parent.bottom
                         anchors.bottomMargin: modelData + 8
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -218,7 +274,7 @@ FocusScope {
                         font.weight: Font.Bold
                     }
                     Text {
-                        visible: page.rangeIndex === 1 && index === 6
+                        visible: false
                         anchors.bottom: parent.bottom
                         anchors.bottomMargin: modelData + 8
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -232,9 +288,8 @@ FocusScope {
             }
         }
 
-        Text { x: 24; anchors.bottom: parent.bottom; anchors.bottomMargin: 20; text: page.rangeIndex === 0 ? "AUG 18" : (page.rangeIndex === 1 ? "AUG 11" : "MAY 26"); color: "#455048"; font.family: Theme.monoFont.family; font.pixelSize: 9 }
-        Text { anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 20; text: page.rangeIndex === 1 ? "AUG 17" : ""; color: "#455048"; font.family: Theme.monoFont.family; font.pixelSize: 9 }
-        Text { anchors.right: parent.right; anchors.rightMargin: 24; anchors.bottom: parent.bottom; anchors.bottomMargin: 20; text: "AUG 24"; color: "#455048"; font.family: Theme.monoFont.family; font.pixelSize: 9 }
+        Text { x: 24; anchors.bottom: parent.bottom; anchors.bottomMargin: 20; text: new Date(Date.now() - page.rangeDays[page.rangeIndex] * 86400000).toLocaleDateString(Qt.locale(), "MMM d").toUpperCase(); color: "#455048"; font.family: Theme.monoFont.family; font.pixelSize: 9 }
+        Text { anchors.right: parent.right; anchors.rightMargin: 24; anchors.bottom: parent.bottom; anchors.bottomMargin: 20; text: new Date().toLocaleDateString(Qt.locale(), "MMM d").toUpperCase(); color: "#455048"; font.family: Theme.monoFont.family; font.pixelSize: 9 }
     }
 
     Text {
@@ -257,7 +312,10 @@ FocusScope {
         clip: true
         focus: false
         currentIndex: 0
-        Keys.onReturnPressed: page.openReport(page.reports[currentIndex])
+        Keys.onReturnPressed: {
+            if (currentIndex >= 0 && currentIndex < page.reports.length)
+                page.openReport(page.reports[currentIndex])
+        }
         Keys.onUpPressed: {
             if (currentIndex === 0)
                 page.focusRange()
@@ -306,7 +364,7 @@ FocusScope {
         Text {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "31 sessions recorded locally · export CSV with X"
+            text: appState.sessions.length + " sessions recorded locally · export CSV with X"
             color: "#455048"
             font.family: Theme.monoFont.family
             font.pixelSize: 11

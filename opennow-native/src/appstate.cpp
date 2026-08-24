@@ -4,12 +4,28 @@
 #include <QDateTime>
 #include <QDir>
 #include <QGuiApplication>
+#include <QJsonDocument>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <utility>
+
+namespace {
+QByteArray csvCell(const QVariant &value)
+{
+    auto text = value.toString();
+    text.replace('"', QStringLiteral("\"\""));
+    return QByteArrayLiteral("\"") + text.toUtf8() + QByteArrayLiteral("\"");
+}
+}
 
 AppState::AppState(QObject *parent)
     : QObject(parent)
 {
+    const auto parsed = QJsonDocument::fromJson(
+        m_settings.value(QStringLiteral("sessions/history")).toByteArray());
+    if (parsed.isArray()) {
+        m_sessions = parsed.toVariant().toList();
+    }
 }
 
 QString AppState::profileName() const
@@ -98,16 +114,72 @@ QString AppState::exportSessions()
         emit exportCompleted(m_lastExportPath);
         return m_lastExportPath;
     }
-    file.write("game,started_at,duration_minutes,region,latency_ms,average_fps\n");
-    file.write("Cyber Drift 2088,2026-08-24T19:12:00Z,86,EU-WEST,9,120\n");
-    file.write("Starfall Frontier,2026-08-23T21:04:00Z,54,EU-WEST,11,117\n");
-    file.write("Iron Harvest 2,2026-08-22T17:31:00Z,43,EU-WEST,12,111\n");
-    file.write("Nightfall Protocol,2026-08-21T22:45:00Z,72,EU-WEST,10,119\n");
+    file.write("game,started_at,duration_minutes,region,latency_ms,average_fps,packet_loss_percent,disconnects\n");
+    for (const auto &entry : std::as_const(m_sessions)) {
+        const auto session = entry.toMap();
+        const QList<QByteArray> cells = {
+            csvCell(session.value(QStringLiteral("title"))),
+            csvCell(session.value(QStringLiteral("startedAt"))),
+            QByteArray::number(session.value(QStringLiteral("durationMinutes")).toInt()),
+            csvCell(session.value(QStringLiteral("region"))),
+            QByteArray::number(session.value(QStringLiteral("latencyMs")).toInt()),
+            QByteArray::number(session.value(QStringLiteral("averageFps")).toInt()),
+            QByteArray::number(session.value(QStringLiteral("packetLoss")).toDouble(), 'f', 2),
+            QByteArray::number(session.value(QStringLiteral("disconnects")).toInt()),
+        };
+        file.write(cells.join(',') + '\n');
+    }
     if (!file.commit()) {
         m_lastExportPath.clear();
     }
     emit exportCompleted(m_lastExportPath);
     return m_lastExportPath;
+}
+
+void AppState::recordSession(const QVariantMap &session)
+{
+    const auto title = session.value(QStringLiteral("title")).toString().trimmed();
+    if (title.isEmpty()) {
+        return;
+    }
+
+    auto normalized = session;
+    normalized.insert(QStringLiteral("title"), title);
+    if (normalized.value(QStringLiteral("startedAt")).toString().isEmpty()) {
+        normalized.insert(QStringLiteral("startedAt"),
+                          QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    }
+    normalized.insert(QStringLiteral("durationMinutes"),
+                      qMax(0, normalized.value(QStringLiteral("durationMinutes")).toInt()));
+    normalized.insert(QStringLiteral("latencyMs"),
+                      qMax(0, normalized.value(QStringLiteral("latencyMs")).toInt()));
+    normalized.insert(QStringLiteral("averageFps"),
+                      qMax(0, normalized.value(QStringLiteral("averageFps")).toInt()));
+    normalized.insert(QStringLiteral("packetLoss"),
+                      qMax(0.0, normalized.value(QStringLiteral("packetLoss")).toDouble()));
+    normalized.insert(QStringLiteral("disconnects"),
+                      qMax(0, normalized.value(QStringLiteral("disconnects")).toInt()));
+
+    m_sessions.prepend(normalized);
+    constexpr auto maximumStoredSessions = 500;
+    while (m_sessions.size() > maximumStoredSessions) {
+        m_sessions.removeLast();
+    }
+    m_settings.setValue(QStringLiteral("sessions/history"),
+                        QJsonDocument::fromVariant(m_sessions).toJson(QJsonDocument::Compact));
+    m_settings.sync();
+    emit sessionsChanged();
+}
+
+void AppState::clearSessions()
+{
+    if (m_sessions.isEmpty()) {
+        return;
+    }
+    m_sessions.clear();
+    m_settings.remove(QStringLiteral("sessions/history"));
+    m_settings.sync();
+    emit sessionsChanged();
 }
 
 QString AppState::nextScreenshotPath() const

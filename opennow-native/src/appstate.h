@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QSettings>
 #include <QVariant>
+#include <QVariantList>
 
 class AppState final : public QObject
 {
@@ -13,6 +14,7 @@ class AppState final : public QObject
     Q_PROPERTY(QString serverRegion READ serverRegion NOTIFY serverChanged)
     Q_PROPERTY(int serverLatency READ serverLatency NOTIFY serverChanged)
     Q_PROPERTY(QString lastExportPath READ lastExportPath NOTIFY exportCompleted)
+    Q_PROPERTY(QVariantList sessions READ sessions NOTIFY sessionsChanged)
 
 public:
     explicit AppState(QObject *parent = nullptr);
@@ -23,6 +25,7 @@ public:
     QString serverRegion() const;
     int serverLatency() const;
     QString lastExportPath() const { return m_lastExportPath; }
+    QVariantList sessions() const { return m_sessions; }
 
     Q_INVOKABLE QVariant preference(const QString &key, const QVariant &fallback = {}) const;
     Q_INVOKABLE void setPreference(const QString &key, const QVariant &value);
@@ -30,6 +33,8 @@ public:
     Q_INVOKABLE void selectProfile(const QString &name);
     Q_INVOKABLE void selectServer(const QString &name, const QString &region, int latencyMs);
     Q_INVOKABLE QString exportSessions();
+    Q_INVOKABLE void recordSession(const QVariantMap &session);
+    Q_INVOKABLE void clearSessions();
     Q_INVOKABLE QString nextScreenshotPath() const;
     Q_INVOKABLE void copyText(const QString &text);
 
@@ -39,8 +44,10 @@ signals:
     void profileChanged();
     void serverChanged();
     void exportCompleted(const QString &path);
+    void sessionsChanged();
 
 private:
     QSettings m_settings;
     QString m_lastExportPath;
+    QVariantList m_sessions;
 };

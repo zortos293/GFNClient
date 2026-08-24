@@ -22,6 +22,7 @@ FocusScope {
     property bool hasStreamed: false
     property bool endingSession: false
     property bool qualityChangePending: false
+    property bool sessionRecorded: false
 
     property int preparingSeconds: 0
     property int sessionElapsedSeconds: 0
@@ -131,6 +132,7 @@ FocusScope {
         lifecycle = streamEngine.phase === "streaming" ? "live" : "preparing"
         hasStreamed = streamEngine.phase === "streaming"
         endingSession = false
+        sessionRecorded = false
         qualityChangePending = false
         menuVisible = false
         preparingSeconds = 0
@@ -224,6 +226,20 @@ FocusScope {
         endingSession = true
         menuVisible = false
         recording = false
+        if (hasStreamed && !sessionRecorded) {
+            sessionRecorded = true
+            appState.recordSession({
+                title: String(game.title || "Unknown game"),
+                startedAt: new Date(sessionStartedAt).toISOString(),
+                durationMinutes: Math.max(1, Math.ceil(sessionElapsedSeconds / 60)),
+                region: appState.serverRegion,
+                latencyMs: averageLatency,
+                averageFps: averageFps,
+                packetLoss: averagePacketLoss,
+                disconnects: recoveryCount,
+                rating: reportRating
+            })
+        }
         streamEngine.stop()
         lifecycle = "report"
         exportStatus = reason || ""

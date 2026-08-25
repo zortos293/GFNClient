@@ -277,7 +277,7 @@ impl WindowsBackend {
 
     pub fn submit_video(&self, frame: EncodedVideoFrame) -> Result<PushOutcome, BackendError> {
         frame.validate()?;
-        self.ensure_running()?;
+        self.ensure_video_accepting()?;
         if self.shared.paused.load(Ordering::Acquire) {
             return Ok(PushOutcome::Paused);
         }
@@ -420,6 +420,18 @@ impl WindowsBackend {
         }
     }
 
+    fn ensure_video_accepting(&self) -> Result<(), BackendError> {
+        let state = self.state();
+        if matches!(
+            state,
+            LifecycleState::Running | LifecycleState::Reconfiguring
+        ) {
+            Ok(())
+        } else {
+            Err(BackendError::NotRunning(state))
+        }
+    }
+
     fn ensure_controllable(&self) -> Result<(), BackendError> {
         let state = self.state();
         if matches!(
@@ -442,6 +454,46 @@ impl Drop for WindowsBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_backend(state: LifecycleState) -> (WindowsBackend, Arc<Shared>) {
+        let (control_sender, _control_receiver) = mpsc::channel();
+        let shared = Arc::new(Shared {
+            video: BoundedQueue::new(2),
+            audio: BoundedQueue::new(2),
+            video_format: Mutex::new(VideoFormat {
+                codec: VideoCodec::H264,
+                width: 1920,
+                height: 1080,
+                frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
+                frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
+                average_bitrate: 10_000_000,
+            }),
+            audio_format: Mutex::new(AudioFormat {
+                sample_rate: 48_000,
+                channels: 2,
+            }),
+            surface: Mutex::new(SurfaceTarget::Owned(OwnedWindow {
+                parent: None,
+                bounds: Bounds {
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                },
+                visible: false,
+            })),
+            state: AtomicU8::new(state as u8),
+            paused: std::sync::atomic::AtomicBool::new(false),
+            events: BoundedQueue::new(8),
+            presented_frames: AtomicU64::new(0),
+        });
+        let backend = WindowsBackend {
+            shared: Arc::clone(&shared),
+            control: control_sender,
+            worker: Mutex::new(None),
+        };
+        (backend, shared)
+    }
 
     #[test]
     fn non_windows_probe_never_advertises_capabilities() {
@@ -501,42 +553,7 @@ mod tests {
 
     #[test]
     fn stop_closes_media_queues_and_is_idempotent() {
-        let (control_sender, _control_receiver) = mpsc::channel();
-        let shared = Arc::new(Shared {
-            video: BoundedQueue::new(2),
-            audio: BoundedQueue::new(2),
-            video_format: Mutex::new(VideoFormat {
-                codec: VideoCodec::H264,
-                width: 1920,
-                height: 1080,
-                frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
-                frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
-                average_bitrate: 10_000_000,
-            }),
-            audio_format: Mutex::new(AudioFormat {
-                sample_rate: 48_000,
-                channels: 2,
-            }),
-            surface: Mutex::new(SurfaceTarget::Owned(OwnedWindow {
-                parent: None,
-                bounds: Bounds {
-                    x: 0,
-                    y: 0,
-                    width: 1280,
-                    height: 720,
-                },
-                visible: false,
-            })),
-            state: AtomicU8::new(LifecycleState::Running as u8),
-            paused: std::sync::atomic::AtomicBool::new(false),
-            events: BoundedQueue::new(8),
-            presented_frames: AtomicU64::new(0),
-        });
-        let backend = WindowsBackend {
-            shared: Arc::clone(&shared),
-            control: control_sender,
-            worker: Mutex::new(None),
-        };
+        let (backend, shared) = test_backend(LifecycleState::Running);
 
         backend.stop();
         backend.stop();
@@ -550,5 +567,20 @@ mod tests {
             .store(LifecycleState::Failed as u8, Ordering::Release);
         backend.stop();
         assert_eq!(backend.state(), LifecycleState::Failed);
+    }
+
+    #[test]
+    fn surface_reconfiguration_keeps_accepting_video_frames() {
+        let (backend, shared) = test_backend(LifecycleState::Reconfiguring);
+        let outcome = backend.submit_video(EncodedVideoFrame {
+            codec: VideoCodec::H264,
+            data: vec![0, 0, 0, 1, 0x67],
+            timestamp_100ns: 0,
+            duration_100ns: 166_667,
+            key_frame: true,
+        });
+
+        assert_eq!(outcome, Ok(PushOutcome::Queued));
+        assert!(shared.video.try_pop().is_some());
     }
 }

@@ -7,6 +7,7 @@ use opennow_streamer_protocol::{CodecCapability, VideoBackendCapability};
 
 const VIDEO_BACKEND_ENV: &str = "OPENNOW_NATIVE_VIDEO_BACKEND";
 const WINDOW_SYSTEM_ENV: &str = "OPENNOW_NATIVE_WINDOW_SYSTEM";
+const CODECS: [&str; 3] = ["h264", "h265", "av1"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinuxVideoPath {
@@ -17,49 +18,49 @@ pub(crate) enum LinuxVideoPath {
 #[derive(Debug, Clone)]
 pub(crate) struct LinuxVideoSelection {
     pub(crate) path: LinuxVideoPath,
+    pub(crate) use_vulkan_output: bool,
     pub(crate) fallback_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct LinuxCapabilitySnapshot {
-    vaapi: BackendCapability,
-    v4l2: BackendCapability,
+    decoders: Vec<BackendCapability>,
     presentation: PresentationCapability,
 }
 
 impl LinuxCapabilitySnapshot {
     fn probe() -> Self {
         let (decoders, presentation) = probe_video_capabilities();
-        let decoder = |name| {
-            decoders
-                .iter()
-                .find(|capability| capability.name == name)
-                .cloned()
-                .unwrap_or(BackendCapability {
-                    name,
-                    available: false,
-                    detail: "capability probe did not return this decoder".to_owned(),
-                })
-        };
         Self {
-            vaapi: decoder("vaapi-h264"),
-            v4l2: decoder("v4l2-h264"),
+            decoders,
             presentation,
         }
     }
 
-    fn hardware_available(&self, decoder: &BackendCapability, window_system: &str) -> bool {
-        decoder.available && presentation_available(&self.presentation, window_system)
+    fn decoder(&self, name: &str) -> BackendCapability {
+        self.decoders
+            .iter()
+            .find(|capability| capability.name == name)
+            .cloned()
+            .unwrap_or(BackendCapability {
+                name: "missing-decoder-probe",
+                available: false,
+                detail: format!("capability probe did not return {name}"),
+            })
     }
 
-    fn unavailable_reason(&self, decoder: &BackendCapability, window_system: &str) -> String {
-        if !decoder.available {
-            return decoder.detail.clone();
-        }
-        if !presentation_available(&self.presentation, window_system) {
-            return presentation_unavailable_reason(&self.presentation, window_system);
-        }
-        "Linux hardware video path is unavailable".to_owned()
+    fn codec_decoder(&self, prefix: &str, codec: &str) -> BackendCapability {
+        self.decoder(&format!("{prefix}-{codec}"))
+    }
+
+    fn backend_supports_all_codecs(&self, prefix: &str) -> bool {
+        CODECS
+            .iter()
+            .all(|codec| self.codec_decoder(prefix, codec).available)
+    }
+
+    fn presentation_available(&self, window_system: &str) -> bool {
+        presentation_available(&self.presentation, window_system)
     }
 }
 
@@ -77,14 +78,6 @@ fn presentation_unavailable_reason(
     format!(
         "Vulkan presentation lacks {window_system} WSI required by the active Linux window system"
     )
-}
-
-fn presentation_status(presentation: &PresentationCapability, window_system: &str) -> String {
-    if presentation_available(presentation, window_system) {
-        format!("available for {window_system}: {}", presentation.detail)
-    } else {
-        presentation_unavailable_reason(presentation, window_system)
-    }
 }
 
 fn selected_window_system() -> &'static str {
@@ -139,113 +132,169 @@ fn select_video_path_for(
         .filter(|value| !value.is_empty())
         .unwrap_or("auto")
         .to_ascii_lowercase();
-    let vaapi = capabilities.hardware_available(&capabilities.vaapi, window_system);
-    let v4l2 = capabilities.hardware_available(&capabilities.v4l2, window_system);
-    let (path, fallback_reason) = match requested.as_str() {
-        "software" => (LinuxVideoPath::Software, None),
-        "vaapi" if vaapi => (LinuxVideoPath::Hardware(DecoderPreference::VaApiOnly), None),
-        "v4l2" if v4l2 => (LinuxVideoPath::Hardware(DecoderPreference::V4l2Only), None),
-        "auto" | "vulkan" if vaapi || v4l2 => {
-            let preference = if vaapi {
-                DecoderPreference::VaApiThenV4l2
-            } else {
-                DecoderPreference::V4l2ThenVaApi
-            };
-            (LinuxVideoPath::Hardware(preference), None)
-        }
-        "vaapi" => (
-            LinuxVideoPath::Software,
-            Some(format!(
-                "VA-API was requested but is unavailable: {}",
-                capabilities.unavailable_reason(&capabilities.vaapi, window_system)
-            )),
+    let presentation = capabilities.presentation_available(window_system);
+    let vulkan = capabilities.backend_supports_all_codecs("vulkan-video");
+    let cuda = capabilities.backend_supports_all_codecs("cuda");
+    let ffmpeg = capabilities.backend_supports_all_codecs("ffmpeg-software");
+    let vaapi = capabilities.decoder("vaapi-h264").available;
+    let v4l2 = capabilities.decoder("v4l2-h264").available;
+
+    let preference = match requested.as_str() {
+        "vulkan" if vulkan => Some(DecoderPreference::VulkanOnly),
+        "cuda" | "nvdec" if cuda => Some(DecoderPreference::CudaOnly),
+        "vaapi" if vaapi => Some(DecoderPreference::VaApiOnly),
+        "v4l2" if v4l2 => Some(DecoderPreference::V4l2Only),
+        "software" | "ffmpeg" if ffmpeg => Some(DecoderPreference::SoftwareOnly),
+        "auto" if vulkan || cuda || vaapi || v4l2 || ffmpeg => Some(DecoderPreference::Automatic),
+        _ => None,
+    };
+    if let Some(preference) = preference {
+        return LinuxVideoSelection {
+            path: LinuxVideoPath::Hardware(preference),
+            use_vulkan_output: presentation,
+            fallback_reason: (!presentation).then(|| {
+                format!(
+                    "{}; using SDL NV12 presentation",
+                    presentation_unavailable_reason(&capabilities.presentation, window_system)
+                )
+            }),
+        };
+    }
+
+    let reason = match requested.as_str() {
+        "vulkan" => backend_unavailable_reason(capabilities, "vulkan-video"),
+        "cuda" | "nvdec" => backend_unavailable_reason(capabilities, "cuda"),
+        "vaapi" => capabilities.decoder("vaapi-h264").detail,
+        "v4l2" => capabilities.decoder("v4l2-h264").detail,
+        "software" | "ffmpeg" => backend_unavailable_reason(capabilities, "ffmpeg-software"),
+        "auto" => format!(
+            "no Linux decoder is available (Vulkan Video: {}; CUDA/NVDEC: {}; FFmpeg software: {})",
+            backend_unavailable_reason(capabilities, "vulkan-video"),
+            backend_unavailable_reason(capabilities, "cuda"),
+            backend_unavailable_reason(capabilities, "ffmpeg-software"),
         ),
-        "v4l2" => (
-            LinuxVideoPath::Software,
-            Some(format!(
-                "V4L2 was requested but is unavailable: {}",
-                capabilities.unavailable_reason(&capabilities.v4l2, window_system)
-            )),
-        ),
-        "auto" | "vulkan" => (
-            LinuxVideoPath::Software,
-            Some(format!(
-                "Linux hardware video is unavailable (VA-API: {}; V4L2: {}; Vulkan: {})",
-                capabilities.vaapi.detail,
-                capabilities.v4l2.detail,
-                presentation_status(&capabilities.presentation, window_system),
-            )),
-        ),
-        other => (
-            LinuxVideoPath::Software,
-            Some(format!(
-                "Video backend {other:?} is not supported on Linux; using software decode"
-            )),
-        ),
+        other => format!("video backend {other:?} is not supported on Linux"),
     };
     LinuxVideoSelection {
-        path,
-        fallback_reason,
+        path: LinuxVideoPath::Software,
+        use_vulkan_output: false,
+        fallback_reason: Some(format!("{reason}; using OpenH264/SDL fallback")),
     }
+}
+
+fn backend_unavailable_reason(capabilities: &LinuxCapabilitySnapshot, prefix: &str) -> String {
+    CODECS
+        .iter()
+        .filter_map(|codec| {
+            let capability = capabilities.codec_decoder(prefix, codec);
+            (!capability.available).then(|| format!("{codec}: {}", capability.detail))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub(crate) fn video_backends() -> Vec<VideoBackendCapability> {
     let capabilities = capabilities();
     let window_system = selected_window_system();
     vec![
-        hardware_capability(
-            "vaapi",
-            &capabilities.vaapi,
-            &capabilities.presentation,
+        multi_codec_capability("vulkan", "vulkan-video", capabilities, window_system, false),
+        multi_codec_capability("cuda", "cuda", capabilities, window_system, false),
+        h264_capability("vaapi", "vaapi-h264", capabilities, window_system),
+        h264_capability("v4l2", "v4l2-h264", capabilities, window_system),
+        multi_codec_capability(
+            "ffmpeg",
+            "ffmpeg-software",
+            capabilities,
             window_system,
-        ),
-        hardware_capability(
-            "v4l2",
-            &capabilities.v4l2,
-            &capabilities.presentation,
-            window_system,
+            false,
         ),
     ]
 }
 
-fn hardware_capability(
+fn multi_codec_capability(
     backend: &'static str,
-    decoder: &BackendCapability,
-    presentation: &PresentationCapability,
+    prefix: &str,
+    capabilities: &LinuxCapabilitySnapshot,
+    window_system: &str,
+    requires_presentation: bool,
+) -> VideoBackendCapability {
+    let presentation = !requires_presentation || capabilities.presentation_available(window_system);
+    let codecs = CODECS
+        .into_iter()
+        .map(|codec| {
+            let decoder = capabilities.codec_decoder(prefix, codec);
+            let available = decoder.available && presentation;
+            let reason = if !decoder.available {
+                Some(static_reason(decoder.detail))
+            } else if !presentation {
+                Some(static_reason(presentation_unavailable_reason(
+                    &capabilities.presentation,
+                    window_system,
+                )))
+            } else {
+                None
+            };
+            CodecCapability {
+                codec,
+                available,
+                reason,
+            }
+        })
+        .collect::<Vec<_>>();
+    let available = codecs.iter().any(|codec| codec.available);
+    let reason = (!available).then(|| {
+        codecs
+            .iter()
+            .find_map(|codec| codec.reason)
+            .unwrap_or("no supported codecs")
+    });
+    VideoBackendCapability {
+        backend,
+        platform: "linux",
+        codecs,
+        zero_copy_modes: Vec::new(),
+        available,
+        reason,
+    }
+}
+
+fn h264_capability(
+    backend: &'static str,
+    decoder_name: &str,
+    capabilities: &LinuxCapabilitySnapshot,
     window_system: &str,
 ) -> VideoBackendCapability {
-    let available = decoder.available && presentation_available(presentation, window_system);
-    let reason = if !decoder.available {
-        Some(decoder.detail.clone())
-    } else if !presentation_available(presentation, window_system) {
-        Some(presentation_unavailable_reason(presentation, window_system))
+    let decoder = capabilities.decoder(decoder_name);
+    let _ = window_system;
+    let h264_available = decoder.available;
+    let h264_reason = if !decoder.available {
+        Some(static_reason(decoder.detail))
     } else {
         None
     };
-    let reason = reason.map(static_reason);
     VideoBackendCapability {
         backend,
         platform: "linux",
         codecs: vec![
             CodecCapability {
                 codec: "h264",
-                available,
-                reason,
+                available: h264_available,
+                reason: h264_reason,
             },
             CodecCapability {
                 codec: "h265",
                 available: false,
-                reason: Some("H.265 hardware decode is not implemented"),
+                reason: Some("native backend currently supports H.264 only"),
             },
             CodecCapability {
                 codec: "av1",
                 available: false,
-                reason: Some("AV1 hardware decode is not implemented"),
+                reason: Some("native backend currently supports H.264 only"),
             },
         ],
         zero_copy_modes: Vec::new(),
-        available,
-        reason,
+        available: h264_available,
+        reason: h264_reason,
     }
 }
 
@@ -257,100 +306,116 @@ fn static_reason(reason: String) -> &'static str {
 mod tests {
     use super::*;
 
+    fn capability(name: &'static str, available: bool) -> BackendCapability {
+        BackendCapability {
+            name,
+            available,
+            detail: format!("{name} probe"),
+        }
+    }
+
     fn snapshot(
-        vaapi: bool,
-        v4l2: bool,
-        vulkan: bool,
+        vulkan_video: bool,
+        cuda: bool,
+        software: bool,
+        presentation: bool,
         window_systems: Vec<&'static str>,
     ) -> LinuxCapabilitySnapshot {
+        let mut decoders = Vec::new();
+        for codec in CODECS {
+            decoders.push(capability(
+                match codec {
+                    "h264" => "vulkan-video-h264",
+                    "h265" => "vulkan-video-h265",
+                    _ => "vulkan-video-av1",
+                },
+                vulkan_video,
+            ));
+            decoders.push(capability(
+                match codec {
+                    "h264" => "cuda-h264",
+                    "h265" => "cuda-h265",
+                    _ => "cuda-av1",
+                },
+                cuda,
+            ));
+            decoders.push(capability(
+                match codec {
+                    "h264" => "ffmpeg-software-h264",
+                    "h265" => "ffmpeg-software-h265",
+                    _ => "ffmpeg-software-av1",
+                },
+                software,
+            ));
+        }
+        decoders.push(capability("vaapi-h264", false));
+        decoders.push(capability("v4l2-h264", false));
         LinuxCapabilitySnapshot {
-            vaapi: BackendCapability {
-                name: "vaapi-h264",
-                available: vaapi,
-                detail: "vaapi probe".to_owned(),
-            },
-            v4l2: BackendCapability {
-                name: "v4l2-h264",
-                available: v4l2,
-                detail: "v4l2 probe".to_owned(),
-            },
+            decoders,
             presentation: PresentationCapability {
-                available: vulkan,
+                available: presentation,
                 api: "vulkan",
                 window_systems,
-                detail: "vulkan probe".to_owned(),
+                detail: "vulkan presentation probe".to_owned(),
             },
         }
     }
 
     #[test]
-    fn honors_explicit_linux_backend_preference() {
-        let available = snapshot(true, true, true, vec!["x11"]);
+    fn explicit_backends_select_distinct_decoders() {
+        let available = snapshot(true, true, true, true, vec!["x11"]);
         assert_eq!(
-            select_video_path_for(Some("vaapi"), &available, "x11").path,
-            LinuxVideoPath::Hardware(DecoderPreference::VaApiOnly)
+            select_video_path_for(Some("vulkan"), &available, "x11").path,
+            LinuxVideoPath::Hardware(DecoderPreference::VulkanOnly)
         );
         assert_eq!(
-            select_video_path_for(Some("v4l2"), &available, "x11").path,
-            LinuxVideoPath::Hardware(DecoderPreference::V4l2Only)
+            select_video_path_for(Some("nvdec"), &available, "x11").path,
+            LinuxVideoPath::Hardware(DecoderPreference::CudaOnly)
         );
         assert_eq!(
             select_video_path_for(Some("software"), &available, "x11").path,
-            LinuxVideoPath::Software
+            LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
         );
     }
 
     #[test]
-    fn auto_prefers_vaapi_then_v4l2_and_requires_presentation() {
+    fn automatic_selection_uses_the_complete_codec_pipeline() {
+        let available = snapshot(true, true, true, true, vec!["wayland"]);
         assert_eq!(
-            select_video_path_for(
-                Some("auto"),
-                &snapshot(true, true, true, vec!["x11"]),
-                "x11",
-            )
-            .path,
-            LinuxVideoPath::Hardware(DecoderPreference::VaApiThenV4l2)
-        );
-        assert_eq!(
-            select_video_path_for(None, &snapshot(false, true, true, vec!["x11"]), "x11").path,
-            LinuxVideoPath::Hardware(DecoderPreference::V4l2ThenVaApi)
-        );
-        assert_eq!(
-            select_video_path_for(None, &snapshot(true, true, false, Vec::new()), "x11").path,
-            LinuxVideoPath::Software
+            select_video_path_for(None, &available, "wayland").path,
+            LinuxVideoPath::Hardware(DecoderPreference::Automatic)
         );
     }
 
     #[test]
-    fn wayland_only_vulkan_snapshot_supports_wayland_and_rejects_x11() {
-        let capabilities = snapshot(true, true, true, vec!["wayland"]);
-        let selected = select_video_path_for(None, &capabilities, "wayland");
+    fn presentation_must_match_the_active_window_system() {
+        let available = snapshot(true, true, true, true, vec!["wayland"]);
+        let selected = select_video_path_for(None, &available, "x11");
         assert_eq!(
             selected.path,
-            LinuxVideoPath::Hardware(DecoderPreference::VaApiThenV4l2)
+            LinuxVideoPath::Hardware(DecoderPreference::Automatic)
         );
-        assert!(selected.fallback_reason.is_none());
-
-        let selected = select_video_path_for(None, &capabilities, "x11");
-        assert_eq!(selected.path, LinuxVideoPath::Software);
+        assert!(!selected.use_vulkan_output);
         assert!(
             selected
                 .fallback_reason
                 .as_deref()
                 .is_some_and(|reason| reason.contains("lacks x11 WSI"))
         );
+    }
 
-        let backend = hardware_capability(
-            "vaapi",
-            &capabilities.vaapi,
-            &capabilities.presentation,
-            "x11",
-        );
-        assert!(!backend.available);
-        assert_eq!(
-            backend.reason,
-            Some("Vulkan presentation lacks x11 WSI required by the active Linux window system")
-        );
+    #[test]
+    fn partial_codec_support_is_not_treated_as_a_complete_explicit_backend() {
+        let mut available = snapshot(true, true, true, true, vec!["x11"]);
+        available
+            .decoders
+            .iter_mut()
+            .find(|capability| capability.name == "vulkan-video-av1")
+            .unwrap()
+            .available = false;
+        let selected = select_video_path_for(Some("vulkan"), &available, "x11");
+        assert_eq!(selected.path, LinuxVideoPath::Software);
+        assert!(selected.fallback_reason.unwrap().contains("av1"));
     }
 
     #[test]
@@ -368,30 +433,5 @@ mod tests {
             "wayland"
         );
         assert_eq!(selected_window_system_for(None, None, true, true), "x11");
-    }
-
-    #[test]
-    fn unsupported_or_unavailable_explicit_backend_falls_back_honestly() {
-        for requested in ["vaapi", "v4l2", "nvdec", "d3d11"] {
-            let selected = select_video_path_for(
-                Some(requested),
-                &snapshot(false, false, true, vec!["x11"]),
-                "x11",
-            );
-            assert_eq!(selected.path, LinuxVideoPath::Software);
-            assert!(selected.fallback_reason.is_some());
-        }
-    }
-
-    #[test]
-    fn software_fallback_does_not_report_available_wayland_wsi_as_missing() {
-        let selected = select_video_path_for(
-            None,
-            &snapshot(false, false, true, vec!["wayland"]),
-            "wayland",
-        );
-        let reason = selected.fallback_reason.expect("fallback reason");
-        assert!(reason.contains("Vulkan: available for wayland"));
-        assert!(!reason.contains("lacks wayland WSI"));
     }
 }

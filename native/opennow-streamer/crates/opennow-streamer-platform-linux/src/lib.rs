@@ -33,7 +33,7 @@ pub use error::{Error, Result, Subsystem};
 #[cfg(target_os = "linux")]
 pub use format::{
     ChromaLocation, ColorMatrix, ColorRange, DecodedVideoFrame, EncodedVideoFrame, FramePlane,
-    PixelFormat, StreamFormat,
+    PixelFormat, StreamFormat, VideoCodec,
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use presentation::{NativeSurface, VulkanPresenter};

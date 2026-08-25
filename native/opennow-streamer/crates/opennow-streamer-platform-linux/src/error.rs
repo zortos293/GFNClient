@@ -5,6 +5,7 @@ pub enum Subsystem {
     VaApi,
     V4l2,
     Vulkan,
+    Ffmpeg,
     Opus,
     PipeWire,
     Alsa,

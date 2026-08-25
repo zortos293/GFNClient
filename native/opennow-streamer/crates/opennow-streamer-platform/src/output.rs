@@ -350,7 +350,7 @@ impl LinuxHardwareOutput {
             external_renderer,
             stream_size: (stream.width.max(1), stream.height.max(1)),
             surface_size: None,
-            debug_overlay: NativeStatsOverlay::new(stream, "VA-API / VULKAN"),
+            debug_overlay: NativeStatsOverlay::new(stream, "LINUX / VULKAN"),
             presented_frames: 0,
             visible: false,
             paused: false,
@@ -891,6 +891,7 @@ pub(crate) struct SoftwareOutput {
     input_capture: SdlInputCapture,
     canvas: WindowCanvas,
     texture_size: Option<(u32, u32)>,
+    texture_format: Option<PixelFormatEnum>,
     event_pump: sdl2::EventPump,
     audio: AudioDevice<StreamAudioCallback>,
     output: Arc<OutputBuffers>,
@@ -899,6 +900,8 @@ pub(crate) struct SoftwareOutput {
     debug_overlay: NativeStatsOverlay,
     #[cfg(target_os = "linux")]
     presented_frames: u64,
+    #[cfg(target_os = "linux")]
+    presented_linux_frame: bool,
     visible: bool,
     paused: bool,
     _sdl: sdl2::Sdl,
@@ -975,14 +978,17 @@ impl SoftwareOutput {
             ),
             canvas,
             texture_size: None,
+            texture_format: None,
             event_pump,
             audio,
             output,
             external_renderer,
             #[cfg(target_os = "linux")]
-            debug_overlay: NativeStatsOverlay::new(stream, "OPENH264 / SDL"),
+            debug_overlay: NativeStatsOverlay::new(stream, "LINUX / SDL"),
             #[cfg(target_os = "linux")]
             presented_frames: 0,
+            #[cfg(target_os = "linux")]
+            presented_linux_frame: false,
             visible: false,
             paused: false,
             _sdl: sdl,
@@ -994,6 +1000,7 @@ impl SoftwareOutput {
         #[cfg(target_os = "linux")]
         {
             self.presented_frames = 0;
+            self.presented_linux_frame = false;
         }
         self.output.clear();
         self.audio.resume();
@@ -1031,6 +1038,11 @@ impl SoftwareOutput {
         self.paused = false;
         self.texture = None;
         self.texture_size = None;
+        self.texture_format = None;
+        #[cfg(target_os = "linux")]
+        {
+            self.presented_linux_frame = false;
+        }
     }
 
     fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
@@ -1116,13 +1128,20 @@ impl SoftwareOutput {
         }
         if self.paused || !self.visible {
             self.output.take_video();
+            #[cfg(target_os = "linux")]
+            self.output.take_linux_video();
             return Ok(false);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(frame) = self.output.take_linux_video() {
+            return self.present_linux_frame(frame);
         }
         let Some(mut frame) = self.output.take_video() else {
             return Ok(false);
         };
         #[cfg(target_os = "linux")]
         {
+            self.presented_linux_frame = false;
             self.debug_overlay.update(
                 self.presented_frames,
                 self.output.software_video_drops(),
@@ -1135,7 +1154,9 @@ impl SoftwareOutput {
                 frame.width as usize * 3,
             );
         }
-        if self.texture_size != Some((frame.width, frame.height)) {
+        if self.texture_size != Some((frame.width, frame.height))
+            || self.texture_format != Some(PixelFormatEnum::RGB24)
+        {
             self.texture = Some(
                 self.canvas
                     .texture_creator()
@@ -1143,6 +1164,7 @@ impl SoftwareOutput {
                     .map_err(|error| format!("video texture creation failed: {error}"))?,
             );
             self.texture_size = Some((frame.width, frame.height));
+            self.texture_format = Some(PixelFormatEnum::RGB24);
         }
         let texture = self.texture.as_mut().expect("texture was just created");
         texture
@@ -1159,6 +1181,84 @@ impl SoftwareOutput {
             self.presented_frames = self.presented_frames.saturating_add(1);
         }
         Ok(true)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn present_linux_frame(&mut self, mut frame: LinuxDecodedVideoFrame) -> Result<bool, String> {
+        use opennow_streamer_platform_linux::PixelFormat;
+
+        if frame.format.pixel_format != PixelFormat::Nv12 || frame.planes.len() != 2 {
+            return Err(format!(
+                "SDL Linux presentation requires NV12 with two planes, received {:?}",
+                frame.format.pixel_format
+            ));
+        }
+        let width = frame.format.width;
+        let height = frame.format.height;
+        self.debug_overlay.update(
+            self.presented_frames,
+            self.output.hardware_video_drops(),
+            self.input_capture.relative_mouse,
+        );
+        self.debug_overlay.composite_linux_frame(&mut frame);
+        if self.texture_size != Some((width, height))
+            || self.texture_format != Some(PixelFormatEnum::NV12)
+        {
+            self.texture = Some(
+                self.canvas
+                    .texture_creator()
+                    .create_texture_streaming(PixelFormatEnum::NV12, width, height)
+                    .map_err(|error| format!("NV12 texture creation failed: {error}"))?,
+            );
+            self.texture_size = Some((width, height));
+            self.texture_format = Some(PixelFormatEnum::NV12);
+        }
+        let y_plane = &frame.planes[0];
+        let uv_plane = &frame.planes[1];
+        self.texture
+            .as_mut()
+            .expect("NV12 texture was just created")
+            .with_lock(None, |destination, pitch| {
+                for row in 0..height as usize {
+                    let source_start = row * y_plane.stride;
+                    let destination_start = row * pitch;
+                    destination[destination_start..destination_start + width as usize]
+                        .copy_from_slice(
+                            &y_plane.data[source_start..source_start + width as usize],
+                        );
+                }
+                let uv_base = pitch * height as usize;
+                for row in 0..height as usize / 2 {
+                    let source_start = row * uv_plane.stride;
+                    let destination_start = uv_base + row * pitch;
+                    destination[destination_start..destination_start + width as usize]
+                        .copy_from_slice(
+                            &uv_plane.data[source_start..source_start + width as usize],
+                        );
+                }
+            })
+            .map_err(|error| format!("NV12 texture upload failed: {error}"))?;
+        let (output_width, output_height) = self.canvas.output_size()?;
+        let target = aspect_fit(width, height, output_width, output_height);
+        self.canvas.set_draw_color(Color::BLACK);
+        self.canvas.clear();
+        self.canvas.copy(
+            self.texture.as_ref().expect("NV12 texture exists"),
+            None,
+            target,
+        )?;
+        self.canvas.present();
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        self.presented_linux_frame = true;
+        Ok(true)
+    }
+
+    fn backend_label(&self) -> &'static str {
+        #[cfg(target_os = "linux")]
+        if self.presented_linux_frame {
+            return "Linux decoder/SDL NV12";
+        }
+        "OpenH264/SDL"
     }
 
     fn take_captured_input(&mut self) -> Vec<CapturedInput> {
@@ -1717,19 +1817,20 @@ impl ActiveOutput {
 
     pub(crate) fn pump(&mut self) -> Result<OutputEvent, String> {
         match self {
-            Self::Software(output) => output.pump().map(|presented| {
-                if presented {
-                    OutputEvent::Presented("OpenH264/SDL")
+            Self::Software(output) => {
+                let presented = output.pump()?;
+                Ok(if presented {
+                    OutputEvent::Presented(output.backend_label())
                 } else {
                     OutputEvent::None
-                }
-            }),
+                })
+            }
             #[cfg(target_os = "windows")]
             Self::Windows(output) => output.pump(),
             #[cfg(target_os = "linux")]
             Self::LinuxHardware(output) => output.pump().map(|presented| {
                 if presented {
-                    OutputEvent::Presented("VA-API/V4L2/Vulkan")
+                    OutputEvent::Presented("Linux decoder/Vulkan")
                 } else {
                     OutputEvent::None
                 }

@@ -21,7 +21,11 @@ const appProtocolSourcePath = join(packageRoot, "src", "shared", "nativeStreamer
 const nativeTarget = process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
 const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim()
   || `${process.platform}-${process.arch}`;
-const enableLinuxVaapi = process.env.OPENNOW_NATIVE_LINUX_VAAPI !== "0";
+// Production Linux media libraries are statically bundled. VA-API remains an
+// opt-in developer backend because linking host libva would make the binary
+// distro-dependent; Vulkan Video and NVDEC cover the packaged GPU paths.
+const enableLinuxVaapi = process.env.OPENNOW_NATIVE_LINUX_VAAPI === "1";
+const enableLinuxFfmpeg = process.env.OPENNOW_NATIVE_LINUX_FFMPEG !== "0";
 const exeName = platformKey.startsWith("win32-") ? "opennow-streamer.exe" : "opennow-streamer";
 const releaseDir = nativeTarget
   ? join(workspaceRoot, "target", nativeTarget, "release")
@@ -58,12 +62,24 @@ const cargoArgs = nativeStreamerCargoArgs({
   nativeTarget,
   platformKey,
   enableLinuxVaapi,
+  enableLinuxFfmpeg,
 });
+
+const cargoEnvironment = {
+  ...process.env,
+  ...(platformKey.startsWith("linux-")
+      ? {
+        // cc-rs would otherwise add a dynamic libstdc++ for OpenH264. The
+        // executable build script links the same runtime statically.
+        CXXSTDLIB: "",
+      }
+    : {}),
+};
 
 const build = spawnSync("cargo", cargoArgs, {
   cwd: workspaceRoot,
   stdio: "inherit",
-  env: process.env,
+  env: cargoEnvironment,
 });
 if (build.status !== 0) process.exit(build.status ?? 1);
 if (!existsSync(builtBinary)) throw new Error(`Native streamer build missing: ${builtBinary}`);

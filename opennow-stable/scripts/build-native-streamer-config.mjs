@@ -2,7 +2,8 @@ export function nativeStreamerCargoArgs({
   manifestPath,
   nativeTarget,
   platformKey,
-  enableLinuxVaapi = true,
+  enableLinuxVaapi = false,
+  enableLinuxFfmpeg = true,
 }) {
   const args = [
     "build",
@@ -13,8 +14,11 @@ export function nativeStreamerCargoArgs({
     "--manifest-path",
     manifestPath,
   ];
-  if (platformKey.startsWith("linux-") && enableLinuxVaapi) {
-    args.push("--features", "linux-vaapi");
+  if (platformKey.startsWith("linux-")) {
+    const features = [];
+    if (enableLinuxVaapi) features.push("linux-vaapi");
+    if (enableLinuxFfmpeg) features.push("linux-ffmpeg-bundled");
+    if (features.length > 0) args.push("--features", features.join(","));
   }
   if (nativeTarget) {
     args.push("--target", nativeTarget);

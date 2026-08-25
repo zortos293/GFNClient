@@ -90,8 +90,12 @@ impl MediaRuntime {
         #[cfg(target_os = "linux")]
         if let Some(reason) = self.linux_selection.fallback_reason.clone() {
             let _ = feedback.send(MediaFeedback::BackendFallback {
-                from: "requested Linux hardware video",
-                to: "OpenH264/SDL",
+                from: "Linux Vulkan presentation",
+                to: if matches!(self.linux_selection.path, LinuxVideoPath::Hardware(_)) {
+                    "Linux decoder/SDL NV12"
+                } else {
+                    "OpenH264/SDL"
+                },
                 reason,
             });
         }
@@ -170,6 +174,7 @@ impl MainThreadHost {
         let mut paused = false;
         let mut feedback: Option<Sender<MediaFeedback>> = None;
         let mut software_playback_started = false;
+        let mut active_stream = MediaStreamConfig::default();
         loop {
             match self.commands.recv_timeout(HOST_POLL_INTERVAL) {
                 Ok(HostCommand::Start {
@@ -177,14 +182,15 @@ impl MainThreadHost {
                     feedback: session_feedback,
                     stream,
                 }) => {
+                    active_stream = stream;
                     if let Some(output) = active.as_mut() {
                         output.stop();
                     }
                     let requested_hardware = self.use_macos_hardware.load(Ordering::Acquire);
                     #[cfg(target_os = "linux")]
-                    let requested_linux_hardware =
-                        matches!(self.linux_selection.path, LinuxVideoPath::Hardware(_))
-                            && !self.linux_software_fallback.load(Ordering::Acquire);
+                    let requested_linux_hardware = self.linux_selection.use_vulkan_output
+                        && matches!(self.linux_selection.path, LinuxVideoPath::Hardware(_))
+                        && !self.linux_software_fallback.load(Ordering::Acquire);
                     #[cfg(not(target_os = "linux"))]
                     let requested_linux_hardware = false;
                     let mut startup_fallback = None;
@@ -203,8 +209,6 @@ impl MainThreadHost {
                             self.use_macos_hardware.store(false, Ordering::Release);
                             #[cfg(target_os = "windows")]
                             self.windows_bridge.fall_back_to_software();
-                            #[cfg(target_os = "linux")]
-                            self.linux_software_fallback.store(true, Ordering::Release);
                             startup_fallback = Some(hardware_error);
                             initialize_output(
                                 Arc::clone(&self.output),
@@ -229,7 +233,11 @@ impl MainThreadHost {
                             {
                                 let _ = feedback.send(MediaFeedback::BackendFallback {
                                     from: hardware_backend_label(),
-                                    to: "OpenH264/SDL",
+                                    to: if requested_linux_hardware {
+                                        "Linux decoder/SDL NV12"
+                                    } else {
+                                        "OpenH264/SDL"
+                                    },
                                     reason,
                                 });
                             }
@@ -284,13 +292,12 @@ impl MainThreadHost {
                     let mut result = result;
                     #[cfg(target_os = "linux")]
                     if linux_hardware && let Err(reason) = &result {
-                        self.linux_software_fallback.store(true, Ordering::Release);
                         match initialize_output(
                             Arc::clone(&self.output),
                             Some(&new_surface),
                             paused,
                             false,
-                            MediaStreamConfig::default(),
+                            active_stream,
                             false,
                         ) {
                             Ok(output) => {
@@ -301,8 +308,8 @@ impl MainThreadHost {
                                 software_playback_started = false;
                                 if let Some(feedback) = feedback.as_ref() {
                                     let _ = feedback.send(MediaFeedback::BackendFallback {
-                                        from: "VA-API/V4L2/Vulkan",
-                                        to: "OpenH264/SDL",
+                                        from: "Linux decoder/Vulkan",
+                                        to: "Linux decoder/SDL NV12",
                                         reason: format!(
                                             "Linux surface reconfiguration failed: {reason}"
                                         ),
@@ -389,7 +396,7 @@ impl MainThreadHost {
                         surface.as_ref(),
                         paused,
                         false,
-                        MediaStreamConfig::default(),
+                        active_stream,
                         false,
                     );
                     match replacement {
@@ -401,7 +408,7 @@ impl MainThreadHost {
                             software_playback_started = false;
                             if let Some(feedback) = feedback.as_ref() {
                                 let _ = feedback.send(MediaFeedback::BackendFallback {
-                                    from: "VA-API/V4L2/Vulkan",
+                                    from: "Linux decoder pipeline",
                                     to: "OpenH264/SDL",
                                     reason,
                                 });
@@ -579,14 +586,13 @@ impl MainThreadHost {
                         }
                         #[cfg(target_os = "linux")]
                         if output.is_linux_hardware() {
-                            self.linux_software_fallback.store(true, Ordering::Release);
                             output.stop();
                             let fallback = initialize_output(
                                 Arc::clone(&self.output),
                                 surface.as_ref(),
                                 paused,
                                 false,
-                                MediaStreamConfig::default(),
+                                active_stream,
                                 false,
                             );
                             if let Ok(replacement) = fallback {
@@ -594,8 +600,8 @@ impl MainThreadHost {
                                 software_playback_started = false;
                                 if let Some(feedback) = feedback.as_ref() {
                                     let _ = feedback.send(MediaFeedback::BackendFallback {
-                                        from: "VA-API/V4L2/Vulkan",
-                                        to: "OpenH264/SDL",
+                                        from: "Linux decoder/Vulkan",
+                                        to: "Linux decoder/SDL NV12",
                                         reason: format!(
                                             "Linux Vulkan presentation failed: {message}"
                                         ),
@@ -746,7 +752,7 @@ const fn hardware_backend_label() -> &'static str {
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const fn hardware_backend_label() -> &'static str {
-    "VA-API/V4L2/Vulkan"
+    "Linux decoder/Vulkan"
 }
 
 #[cfg(target_os = "macos")]

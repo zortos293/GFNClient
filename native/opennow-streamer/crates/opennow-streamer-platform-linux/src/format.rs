@@ -3,6 +3,23 @@ use std::sync::Arc;
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoCodec {
+    H264,
+    H265,
+    Av1,
+}
+
+impl VideoCodec {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::H264 => "h264",
+            Self::H265 => "h265",
+            Self::Av1 => "av1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
     Nv12,
     I420,
@@ -40,7 +57,7 @@ pub struct StreamFormat {
 }
 
 impl StreamFormat {
-    pub fn h264_default(width: u32, height: u32) -> Result<Self> {
+    pub fn video_default(width: u32, height: u32) -> Result<Self> {
         let format = Self {
             width,
             height,
@@ -55,6 +72,10 @@ impl StreamFormat {
         };
         format.validate()?;
         Ok(format)
+    }
+
+    pub fn h264_default(width: u32, height: u32) -> Result<Self> {
+        Self::video_default(width, height)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -101,17 +122,12 @@ impl EncodedVideoFrame {
     pub fn validate(&self) -> Result<()> {
         if self.data.is_empty() {
             return Err(Error::InvalidFormat(
-                "H.264 access unit is empty".to_owned(),
+                "video access unit is empty".to_owned(),
             ));
         }
         if self.data.len() > 16 * 1024 * 1024 {
             return Err(Error::InvalidFormat(
-                "H.264 access unit exceeds 16 MiB".to_owned(),
-            ));
-        }
-        if !self.data.starts_with(&[0, 0, 1]) && !self.data.starts_with(&[0, 0, 0, 1]) {
-            return Err(Error::InvalidFormat(
-                "H.264 access unit is not Annex-B".to_owned(),
+                "video access unit exceeds 16 MiB".to_owned(),
             ));
         }
         Ok(())

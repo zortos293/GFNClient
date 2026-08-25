@@ -229,6 +229,8 @@ struct SharedPipeline {
     linux_software_fallback: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
     linux_video_mid: Mutex<String>,
+    #[cfg(target_os = "linux")]
+    linux_codec: MediaVideoCodec,
 }
 
 #[derive(Clone)]
@@ -353,6 +355,12 @@ impl MediaSession {
             ) {
                 Ok(session) => return Ok(session),
                 Err(reason) => {
+                    if stream.codec != MediaVideoCodec::H264 {
+                        return Err(format!(
+                            "Linux {} decoder startup failed: {reason}",
+                            stream.codec.label().to_ascii_uppercase()
+                        ));
+                    }
                     linux_software_fallback.store(true, Ordering::Release);
                     let _ = host_commands.send(HostCommand::FallbackLinux {
                         reason: format!("Linux hardware media startup failed: {reason}"),
@@ -389,6 +397,8 @@ impl MediaSession {
             linux_software_fallback,
             #[cfg(target_os = "linux")]
             linux_video_mid: Mutex::new(String::new()),
+            #[cfg(target_os = "linux")]
+            linux_codec: stream.codec,
         });
         let video_shared = Arc::clone(&shared);
         let video_worker = thread::Builder::new()
@@ -482,12 +492,17 @@ impl MediaSession {
         decoder_preference: opennow_streamer_platform_linux::DecoderPreference,
         software_fallback: Arc<AtomicBool>,
     ) -> Result<Self, String> {
-        let format = opennow_streamer_platform_linux::StreamFormat::h264_default(
+        let format = opennow_streamer_platform_linux::StreamFormat::video_default(
             stream.width,
             stream.height,
         )
         .map_err(|error| error.to_string())?;
         let mut config = opennow_streamer_platform_linux::SessionConfig::new(format);
+        config.codec = match stream.codec {
+            MediaVideoCodec::H264 => opennow_streamer_platform_linux::VideoCodec::H264,
+            MediaVideoCodec::H265 => opennow_streamer_platform_linux::VideoCodec::H265,
+            MediaVideoCodec::Av1 => opennow_streamer_platform_linux::VideoCodec::Av1,
+        };
         config.decoder_preference = decoder_preference;
         config.audio = None;
         let session = opennow_streamer_platform_linux::LinuxSession::start(config)
@@ -504,6 +519,7 @@ impl MediaSession {
             linux_session: Mutex::new(Some(session)),
             linux_software_fallback: software_fallback,
             linux_video_mid: Mutex::new(String::new()),
+            linux_codec: stream.codec,
         });
         let video_shared = Arc::clone(&shared);
         let video_commands = host_commands.clone();
@@ -1060,7 +1076,7 @@ fn run_linux_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
                 trigger_linux_fallback(
                     &shared,
                     &host_commands,
-                    format!("Linux hardware decoder rejected H.264 framing: {error}"),
+                    format!("Linux decoder rejected encoded video framing: {error}"),
                 );
                 continue;
             }
@@ -1108,10 +1124,7 @@ fn run_linux_monitor(shared: Arc<SharedPipeline>, host_commands: Sender<HostComm
 
     while !shared.stopped.load(Ordering::Acquire) {
         if shared.linux_software_fallback.load(Ordering::Acquire) {
-            request_linux_keyframe(
-                &shared,
-                "Linux hardware fallback requires a fresh H.264 keyframe",
-            );
+            request_linux_keyframe(&shared, "Linux decoder fallback requires a fresh keyframe");
             stop_linux_session(&shared);
             return;
         }
@@ -1203,13 +1216,19 @@ fn trigger_linux_fallback(
     host_commands: &Sender<HostCommand>,
     reason: String,
 ) {
+    if shared.linux_codec != MediaVideoCodec::H264 {
+        shared.stopped.store(true, Ordering::Release);
+        shared.video.close();
+        let _ = shared.feedback.send(MediaFeedback::DecoderError {
+            codec: shared.linux_codec.label(),
+            message: reason,
+        });
+        return;
+    }
     if shared.linux_software_fallback.swap(true, Ordering::AcqRel) {
         return;
     }
-    request_linux_keyframe(
-        shared,
-        "Linux hardware fallback requires a fresh H.264 keyframe",
-    );
+    request_linux_keyframe(shared, "Linux decoder fallback requires a fresh keyframe");
     let _ = host_commands.send(HostCommand::FallbackLinux { reason });
 }
 
@@ -1249,8 +1268,11 @@ const fn linux_decoder_name(
     backend: opennow_streamer_platform_linux::DecoderBackend,
 ) -> &'static str {
     match backend {
+        opennow_streamer_platform_linux::DecoderBackend::Vulkan => "Vulkan Video/Vulkan",
+        opennow_streamer_platform_linux::DecoderBackend::Cuda => "CUDA/NVDEC/Vulkan",
         opennow_streamer_platform_linux::DecoderBackend::VaApi => "VA-API/Vulkan",
         opennow_streamer_platform_linux::DecoderBackend::V4l2 => "V4L2/Vulkan",
+        opennow_streamer_platform_linux::DecoderBackend::Ffmpeg => "FFmpeg software/Vulkan",
     }
 }
 
@@ -1262,6 +1284,7 @@ const fn linux_subsystem_name(
         opennow_streamer_platform_linux::Subsystem::VaApi => "VA-API",
         opennow_streamer_platform_linux::Subsystem::V4l2 => "V4L2",
         opennow_streamer_platform_linux::Subsystem::Vulkan => "Vulkan",
+        opennow_streamer_platform_linux::Subsystem::Ffmpeg => "FFmpeg",
         opennow_streamer_platform_linux::Subsystem::Opus => "Opus",
         opennow_streamer_platform_linux::Subsystem::PipeWire => "PipeWire",
         opennow_streamer_platform_linux::Subsystem::Alsa => "ALSA",
@@ -1681,6 +1704,7 @@ mod tests {
             linux_software_fallback: Arc::new(AtomicBool::new(true)),
             #[cfg(target_os = "linux")]
             linux_video_mid: Mutex::new(String::new()),
+            linux_codec: MediaVideoCodec::H264,
         });
         shared.video.close();
         run_video_decoder_from(
@@ -1758,6 +1782,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             LinuxVideoSelection {
                 path: LinuxVideoPath::Software,
+                use_vulkan_output: false,
                 fallback_reason: None,
             },
             #[cfg(target_os = "linux")]
@@ -1808,6 +1833,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             LinuxVideoSelection {
                 path: LinuxVideoPath::Software,
+                use_vulkan_output: false,
                 fallback_reason: None,
             },
             #[cfg(target_os = "linux")]

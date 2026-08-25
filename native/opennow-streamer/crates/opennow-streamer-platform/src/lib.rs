@@ -243,7 +243,7 @@ mod tests {
                 .filter(|codec| codec.codec != "h264")
                 .all(|codec| !codec.available)
         );
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         assert!(
             backends
                 .iter()

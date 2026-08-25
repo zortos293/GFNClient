@@ -348,6 +348,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            cmake \
             libasound2-dev \
             libdrm-dev \
             libpulse-dev \
@@ -359,7 +360,14 @@ jobs:
             libxi-dev \
             libxrandr-dev \
             libxrender-dev \
-            libxss-dev
+            libxss-dev \
+            make \
+            nasm \
+            pkg-config
+
+      - name: Install Linux ARM64 cross compiler
+        if: matrix.native_build == 'true' && matrix.label == 'linux-arm64'
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Install Windows ARM64 compiler
         if: matrix.native_target == 'aarch64-pc-windows-msvc'

@@ -46,3 +46,10 @@ thiserror = "2"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[patch.crates-io]
+# Always compile the vendored Opus sources for the distributable streamer.
+audiopus_sys = { path = "vendor/audiopus-sys" }
+# Upstream does not expose an NVDEC-only bundled build. This patch keeps CUDA
+# and nvcuvid as driver-loaded interfaces without requiring the CUDA toolkit.
+ffmpeg-sys-next = { path = "vendor/ffmpeg-sys-next" }

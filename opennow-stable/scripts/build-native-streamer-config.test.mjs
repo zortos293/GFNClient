@@ -13,7 +13,7 @@ const common = [
   "/workspace/Cargo.toml",
 ];
 
-test("production Linux build snapshot enables VA-API for both architectures", () => {
+test("production Linux build bundles FFmpeg for both architectures", () => {
   for (const [platformKey, nativeTarget] of [
     ["linux-x64", "x86_64-unknown-linux-gnu"],
     ["linux-arm64", "aarch64-unknown-linux-gnu"],
@@ -24,7 +24,7 @@ test("production Linux build snapshot enables VA-API for both architectures", ()
         nativeTarget,
         platformKey,
       }),
-      [...common, "--features", "linux-vaapi", "--target", nativeTarget],
+      [...common, "--features", "linux-ffmpeg-bundled", "--target", nativeTarget],
     );
   }
 });
@@ -40,24 +40,49 @@ test("non-Linux production build snapshot does not enable Linux VA-API", () => {
   );
 });
 
-test("host Linux production build snapshot enables VA-API without a target", () => {
+test("host Linux production build bundles FFmpeg without a target", () => {
   assert.deepEqual(
     nativeStreamerCargoArgs({
       manifestPath: "/workspace/Cargo.toml",
       nativeTarget: "",
       platformKey: "linux-x64",
     }),
-    [...common, "--features", "linux-vaapi"],
+    [...common, "--features", "linux-ffmpeg-bundled"],
   );
 });
 
-test("Linux production build can explicitly disable VA-API", () => {
+test("Linux production build can explicitly enable VA-API", () => {
+  assert.deepEqual(
+    nativeStreamerCargoArgs({
+      manifestPath: "/workspace/Cargo.toml",
+      nativeTarget: "",
+      platformKey: "linux-x64",
+      enableLinuxVaapi: true,
+    }),
+    [...common, "--features", "linux-vaapi,linux-ffmpeg-bundled"],
+  );
+});
+
+test("Linux production build can explicitly disable FFmpeg", () => {
+  assert.deepEqual(
+    nativeStreamerCargoArgs({
+      manifestPath: "/workspace/Cargo.toml",
+      nativeTarget: "",
+      platformKey: "linux-x64",
+      enableLinuxFfmpeg: false,
+    }),
+    common,
+  );
+});
+
+test("Linux production build can disable every optional decoder", () => {
   assert.deepEqual(
     nativeStreamerCargoArgs({
       manifestPath: "/workspace/Cargo.toml",
       nativeTarget: "",
       platformKey: "linux-x64",
       enableLinuxVaapi: false,
+      enableLinuxFfmpeg: false,
     }),
     common,
   );

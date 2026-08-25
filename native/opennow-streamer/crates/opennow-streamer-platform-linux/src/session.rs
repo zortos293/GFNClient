@@ -10,21 +10,28 @@ use crate::queue::{BoundedQueue, QueuePop, QueuePush};
 use crate::video::{VideoDecoder, open_v4l2};
 use crate::{
     AudioBackend, AudioConfig, AudioPacket, DecodedVideoFrame, EncodedVideoFrame, Error, Result,
-    StreamFormat, Subsystem,
+    StreamFormat, Subsystem, VideoCodec,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecoderBackend {
+    Vulkan,
+    Cuda,
     VaApi,
     V4l2,
+    Ffmpeg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecoderPreference {
+    Automatic,
+    VulkanOnly,
+    CudaOnly,
     VaApiThenV4l2,
     V4l2ThenVaApi,
     VaApiOnly,
     V4l2Only,
+    SoftwareOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +65,7 @@ impl LifecycleState {
 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
+    pub codec: VideoCodec,
     pub stream_format: StreamFormat,
     pub decoder_preference: DecoderPreference,
     pub v4l2_device: Option<PathBuf>,
@@ -69,8 +77,9 @@ pub struct SessionConfig {
 impl SessionConfig {
     pub fn new(stream_format: StreamFormat) -> Self {
         Self {
+            codec: VideoCodec::H264,
             stream_format,
-            decoder_preference: DecoderPreference::VaApiThenV4l2,
+            decoder_preference: DecoderPreference::Automatic,
             v4l2_device: None,
             encoded_queue_depth: 4,
             decoded_queue_depth: 3,
@@ -653,12 +662,7 @@ fn open_preferred_decoder(
     config: &SessionConfig,
     format: StreamFormat,
 ) -> Result<(DecoderBackend, Box<dyn VideoDecoder>)> {
-    let order: &[DecoderBackend] = match config.decoder_preference {
-        DecoderPreference::VaApiThenV4l2 => &[DecoderBackend::VaApi, DecoderBackend::V4l2],
-        DecoderPreference::V4l2ThenVaApi => &[DecoderBackend::V4l2, DecoderBackend::VaApi],
-        DecoderPreference::VaApiOnly => &[DecoderBackend::VaApi],
-        DecoderPreference::V4l2Only => &[DecoderBackend::V4l2],
-    };
+    let order = decoder_order(config.decoder_preference);
     let mut failures = Vec::new();
     for backend in order {
         match open_decoder(config, format, *backend) {
@@ -668,7 +672,11 @@ fn open_preferred_decoder(
     }
     Err(Error::unavailable(
         Subsystem::Session,
-        format!("no requested H.264 decoder opened: {}", failures.join("; ")),
+        format!(
+            "no requested {} decoder opened: {}",
+            config.codec.label(),
+            failures.join("; ")
+        ),
     ))
 }
 
@@ -677,22 +685,51 @@ fn open_fallback_decoder(
     format: StreamFormat,
     current: DecoderBackend,
 ) -> Result<(DecoderBackend, Box<dyn VideoDecoder>)> {
-    let fallback_allowed = !matches!(
-        (config.decoder_preference, current),
-        (DecoderPreference::VaApiOnly, DecoderBackend::VaApi)
-            | (DecoderPreference::V4l2Only, DecoderBackend::V4l2)
-    );
-    if !fallback_allowed {
+    let order = decoder_order(config.decoder_preference);
+    let Some(current_index) = order.iter().position(|backend| *backend == current) else {
         return Err(Error::unavailable(
             Subsystem::Session,
-            "decoder preference forbids fallback",
+            "active decoder is outside the configured fallback order",
         ));
-    }
-    let fallback = match current {
-        DecoderBackend::VaApi => DecoderBackend::V4l2,
-        DecoderBackend::V4l2 => DecoderBackend::VaApi,
     };
-    open_decoder(config, format, fallback).map(|decoder| (fallback, decoder))
+    let mut failures = Vec::new();
+    for backend in &order[current_index + 1..] {
+        match open_decoder(config, format, *backend) {
+            Ok(decoder) => return Ok((*backend, decoder)),
+            Err(error) => failures.push(error.to_string()),
+        }
+    }
+    Err(Error::unavailable(
+        Subsystem::Session,
+        format!("no fallback decoder opened: {}", failures.join("; ")),
+    ))
+}
+
+fn decoder_order(preference: DecoderPreference) -> &'static [DecoderBackend] {
+    match preference {
+        DecoderPreference::Automatic => &[
+            DecoderBackend::Cuda,
+            DecoderBackend::Vulkan,
+            DecoderBackend::VaApi,
+            DecoderBackend::V4l2,
+            DecoderBackend::Ffmpeg,
+        ],
+        DecoderPreference::VulkanOnly => &[DecoderBackend::Vulkan],
+        DecoderPreference::CudaOnly => &[DecoderBackend::Cuda],
+        DecoderPreference::VaApiThenV4l2 => &[
+            DecoderBackend::VaApi,
+            DecoderBackend::V4l2,
+            DecoderBackend::Ffmpeg,
+        ],
+        DecoderPreference::V4l2ThenVaApi => &[
+            DecoderBackend::V4l2,
+            DecoderBackend::VaApi,
+            DecoderBackend::Ffmpeg,
+        ],
+        DecoderPreference::VaApiOnly => &[DecoderBackend::VaApi],
+        DecoderPreference::V4l2Only => &[DecoderBackend::V4l2],
+        DecoderPreference::SoftwareOnly => &[DecoderBackend::Ffmpeg],
+    }
 }
 
 fn open_decoder(
@@ -701,8 +738,29 @@ fn open_decoder(
     backend: DecoderBackend,
 ) -> Result<Box<dyn VideoDecoder>> {
     match backend {
-        DecoderBackend::V4l2 => open_v4l2(format, config.v4l2_device.clone()),
+        DecoderBackend::Vulkan => open_ffmpeg_decoder(config.codec, format, backend),
+        DecoderBackend::Cuda => open_ffmpeg_decoder(config.codec, format, backend),
+        DecoderBackend::Ffmpeg => open_ffmpeg_decoder(config.codec, format, backend),
+        DecoderBackend::V4l2 if config.codec == VideoCodec::H264 => {
+            open_v4l2(format, config.v4l2_device.clone())
+        }
+        DecoderBackend::V4l2 => Err(Error::unavailable(
+            Subsystem::V4l2,
+            format!(
+                "{} decode is not implemented by the V4L2 backend",
+                config.codec.label()
+            ),
+        )),
         DecoderBackend::VaApi => {
+            if config.codec != VideoCodec::H264 {
+                return Err(Error::unavailable(
+                    Subsystem::VaApi,
+                    format!(
+                        "{} decode is not implemented by the native VA-API backend",
+                        config.codec.label()
+                    ),
+                ));
+            }
             #[cfg(feature = "vaapi")]
             {
                 crate::video::open_vaapi(format)
@@ -716,6 +774,34 @@ fn open_decoder(
                 ))
             }
         }
+    }
+}
+
+fn open_ffmpeg_decoder(
+    codec: VideoCodec,
+    format: StreamFormat,
+    backend: DecoderBackend,
+) -> Result<Box<dyn VideoDecoder>> {
+    #[cfg(feature = "ffmpeg")]
+    {
+        use crate::video::{FfmpegDecoder, FfmpegMode};
+
+        let mode = match backend {
+            DecoderBackend::Vulkan => FfmpegMode::Vulkan,
+            DecoderBackend::Cuda => FfmpegMode::Cuda,
+            DecoderBackend::Ffmpeg => FfmpegMode::Software,
+            _ => unreachable!("non-FFmpeg backend passed to open_ffmpeg_decoder"),
+        };
+        FfmpegDecoder::open(codec, format, mode)
+            .map(|decoder| Box::new(decoder) as Box<dyn VideoDecoder>)
+    }
+    #[cfg(not(feature = "ffmpeg"))]
+    {
+        let _ = (codec, format, backend);
+        Err(Error::unavailable(
+            Subsystem::Ffmpeg,
+            "crate was built without the ffmpeg feature",
+        ))
     }
 }
 

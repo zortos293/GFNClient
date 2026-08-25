@@ -5,6 +5,8 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use ash::{Entry, Instance, vk};
+#[cfg(feature = "ffmpeg")]
+use ffmpeg_next::ffi;
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
     XlibDisplayHandle, XlibWindowHandle,
@@ -106,6 +108,7 @@ pub struct VulkanPresenter {
     staging_buffer: vk::Buffer,
     staging_memory: vk::DeviceMemory,
     staging_capacity: vk::DeviceSize,
+    converter: FrameConverter,
     needs_reconfigure: bool,
     _thread_affinity: PhantomData<Rc<()>>,
 }
@@ -212,6 +215,7 @@ impl VulkanPresenter {
             staging_buffer: vk::Buffer::null(),
             staging_memory: vk::DeviceMemory::null(),
             staging_capacity: 0,
+            converter: FrameConverter::new(),
             needs_reconfigure: false,
             _thread_affinity: PhantomData,
         };
@@ -251,17 +255,20 @@ impl VulkanPresenter {
                 .wait_for_fences(&[self.in_flight], true, PRESENT_WAIT_NS)
         }
         .map_err(|error| vk_error("wait for presentation", error))?;
-        let rgba = convert_frame(frame, self.extent, self.surface_format.format)?;
-        self.ensure_staging(rgba.len() as vk::DeviceSize)?;
+        self.converter
+            .convert(frame, self.extent, self.surface_format.format)?;
+        let rgba_len = self.converter.output().len();
+        self.ensure_staging(rgba_len as vk::DeviceSize)?;
         let mapped = unsafe {
             self.device.map_memory(
                 self.staging_memory,
                 0,
-                rgba.len() as vk::DeviceSize,
+                rgba_len as vk::DeviceSize,
                 vk::MemoryMapFlags::empty(),
             )
         }
         .map_err(|error| vk_error("map staging memory", error))?;
+        let rgba = self.converter.output();
         unsafe {
             std::ptr::copy_nonoverlapping(rgba.as_ptr(), mapped.cast(), rgba.len());
             self.device.unmap_memory(self.staging_memory);
@@ -836,6 +843,202 @@ fn color_range() -> vk::ImageSubresourceRange {
         .layer_count(1)
 }
 
+struct FrameConverter {
+    #[cfg(feature = "ffmpeg")]
+    context: *mut ffi::SwsContext,
+    output: Vec<u8>,
+}
+
+impl FrameConverter {
+    fn new() -> Self {
+        Self {
+            #[cfg(feature = "ffmpeg")]
+            context: std::ptr::null_mut(),
+            output: Vec::new(),
+        }
+    }
+
+    fn output(&self) -> &[u8] {
+        &self.output
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    fn convert(
+        &mut self,
+        frame: &DecodedVideoFrame,
+        extent: vk::Extent2D,
+        surface_format: vk::Format,
+    ) -> Result<()> {
+        frame.validate()?;
+        let output_len = (extent.width as usize)
+            .checked_mul(extent.height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| Error::InvalidFormat("presentation buffer size overflow".to_owned()))?;
+        self.output
+            .try_reserve(output_len.saturating_sub(self.output.len()))
+            .map_err(|error| {
+                Error::backend(
+                    Subsystem::Vulkan,
+                    format!("allocate presentation buffer: {error}"),
+                )
+            })?;
+        self.output.resize(output_len, 0);
+
+        let (offset_x, offset_y, target_width, target_height) = aspect_fit_extent(
+            frame.format.width,
+            frame.format.height,
+            extent.width,
+            extent.height,
+        );
+        if offset_x != 0
+            || offset_y != 0
+            || target_width != extent.width
+            || target_height != extent.height
+        {
+            self.output.fill(0);
+            for alpha in self.output[3..].iter_mut().step_by(4) {
+                *alpha = 255;
+            }
+        }
+
+        let source_format = match frame.format.pixel_format {
+            PixelFormat::Nv12 => ffi::AVPixelFormat::AV_PIX_FMT_NV12,
+            PixelFormat::I420 => ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
+            PixelFormat::Bgra8 => ffi::AVPixelFormat::AV_PIX_FMT_BGRA,
+            PixelFormat::Rgba8 => ffi::AVPixelFormat::AV_PIX_FMT_RGBA,
+        };
+        let destination_format = if matches!(
+            surface_format,
+            vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB
+        ) {
+            ffi::AVPixelFormat::AV_PIX_FMT_BGRA
+        } else {
+            ffi::AVPixelFormat::AV_PIX_FMT_RGBA
+        };
+        let context = unsafe {
+            ffi::sws_getCachedContext(
+                self.context,
+                frame.format.width as i32,
+                frame.format.height as i32,
+                source_format,
+                target_width as i32,
+                target_height as i32,
+                destination_format,
+                ffi::SwsFlags::SWS_FAST_BILINEAR as i32,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        if context.is_null() {
+            // sws_getCachedContext may free the previous context while trying
+            // to replace it, so never retain the old pointer on failure.
+            self.context = std::ptr::null_mut();
+            return Err(Error::backend(
+                Subsystem::Vulkan,
+                "FFmpeg could not create the accelerated color converter",
+            ));
+        }
+        self.context = context;
+
+        if matches!(
+            frame.format.pixel_format,
+            PixelFormat::Nv12 | PixelFormat::I420
+        ) {
+            let colorspace = match frame.format.color_matrix {
+                ColorMatrix::Bt601 => ffi::SWS_CS_ITU601,
+                ColorMatrix::Bt709 => ffi::SWS_CS_ITU709,
+                ColorMatrix::Bt2020 => ffi::SWS_CS_BT2020,
+            };
+            let coefficients = unsafe { ffi::sws_getCoefficients(colorspace) };
+            let source_range = i32::from(frame.format.color_range == ColorRange::Full);
+            let color_result = unsafe {
+                ffi::sws_setColorspaceDetails(
+                    self.context,
+                    coefficients,
+                    source_range,
+                    coefficients,
+                    1,
+                    0,
+                    1 << 16,
+                    1 << 16,
+                )
+            };
+            if color_result < 0 {
+                return Err(Error::backend(
+                    Subsystem::Vulkan,
+                    format!("FFmpeg color conversion setup failed: {color_result}"),
+                ));
+            }
+        }
+
+        let mut source_data = [std::ptr::null(); 4];
+        let mut source_stride = [0_i32; 4];
+        for (index, plane) in frame.planes.iter().enumerate() {
+            source_data[index] = plane.data.as_ptr();
+            source_stride[index] = i32::try_from(plane.stride).map_err(|_| {
+                Error::InvalidFormat("video plane stride exceeds FFmpeg limits".to_owned())
+            })?;
+        }
+        let destination_offset = ((offset_y * extent.width + offset_x) * 4) as usize;
+        let destination_data = unsafe { self.output.as_mut_ptr().add(destination_offset) };
+        let destination = [
+            destination_data,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ];
+        let destination_stride = [
+            i32::try_from(extent.width as usize * 4).map_err(|_| {
+                Error::InvalidFormat("presentation stride exceeds FFmpeg limits".to_owned())
+            })?,
+            0,
+            0,
+            0,
+        ];
+        let rows = unsafe {
+            ffi::sws_scale(
+                self.context,
+                source_data.as_ptr(),
+                source_stride.as_ptr(),
+                0,
+                frame.format.height as i32,
+                destination.as_ptr(),
+                destination_stride.as_ptr(),
+            )
+        };
+        if rows != target_height as i32 {
+            return Err(Error::backend(
+                Subsystem::Vulkan,
+                format!("FFmpeg converted {rows} rows, expected {target_height}"),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "ffmpeg"))]
+    fn convert(
+        &mut self,
+        frame: &DecodedVideoFrame,
+        extent: vk::Extent2D,
+        surface_format: vk::Format,
+    ) -> Result<()> {
+        self.output = convert_frame(frame, extent, surface_format)?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+impl Drop for FrameConverter {
+    fn drop(&mut self) {
+        if !self.context.is_null() {
+            unsafe { ffi::sws_freeContext(self.context) };
+            self.context = std::ptr::null_mut();
+        }
+    }
+}
+
+#[cfg(not(feature = "ffmpeg"))]
 fn convert_frame(
     frame: &DecodedVideoFrame,
     extent: vk::Extent2D,
@@ -902,6 +1105,7 @@ fn aspect_fit_extent(
     )
 }
 
+#[cfg(not(feature = "ffmpeg"))]
 fn sample_rgb(frame: &DecodedVideoFrame, x: usize, y: usize) -> Result<(u8, u8, u8)> {
     if matches!(
         frame.format.pixel_format,
@@ -944,6 +1148,7 @@ fn sample_rgb(frame: &DecodedVideoFrame, x: usize, y: usize) -> Result<(u8, u8, 
     ))
 }
 
+#[cfg(any(not(feature = "ffmpeg"), test))]
 fn yuv_to_rgb(y: u8, u: u8, v: u8, matrix: ColorMatrix, range: ColorRange) -> (u8, u8, u8) {
     let (y, u, v) = match range {
         ColorRange::Limited => (
@@ -973,6 +1178,7 @@ fn yuv_to_rgb(y: u8, u: u8, v: u8, matrix: ColorMatrix, range: ColorRange) -> (u
     (clamp_u8(r), clamp_u8(g), clamp_u8(b))
 }
 
+#[cfg(any(not(feature = "ffmpeg"), test))]
 fn clamp_u8(value: f32) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
@@ -1003,6 +1209,11 @@ fn vk_error(operation: &str, error: vk::Result) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "ffmpeg")]
+    use std::sync::Arc;
+    #[cfg(feature = "ffmpeg")]
+    use std::time::Instant;
+
     use super::*;
 
     #[test]
@@ -1023,6 +1234,57 @@ mod tests {
         assert_eq!(
             aspect_fit_extent(1024, 768, 1920, 1080),
             (240, 0, 1440, 1080)
+        );
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn ffmpeg_converter_processes_1440p_frames() {
+        use crate::{ChromaLocation, FramePlane, StreamFormat};
+
+        let width = 2560;
+        let height = 1440;
+        let frame = DecodedVideoFrame {
+            format: StreamFormat {
+                width,
+                height,
+                pixel_format: PixelFormat::Nv12,
+                color_range: ColorRange::Limited,
+                color_matrix: ColorMatrix::Bt709,
+                chroma_location: ChromaLocation::Left,
+            },
+            planes: vec![
+                FramePlane {
+                    data: Arc::from(vec![16_u8; width as usize * height as usize]),
+                    stride: width as usize,
+                    rows: height as usize,
+                },
+                FramePlane {
+                    data: Arc::from(vec![128_u8; width as usize * height as usize / 2]),
+                    stride: width as usize,
+                    rows: height as usize / 2,
+                },
+            ],
+            timestamp_us: 0,
+        };
+        let mut converter = FrameConverter::new();
+        let started = Instant::now();
+        for _ in 0..30 {
+            converter
+                .convert(
+                    &frame,
+                    vk::Extent2D { width, height },
+                    vk::Format::B8G8R8A8_UNORM,
+                )
+                .expect("convert NV12");
+        }
+        eprintln!(
+            "1440p NV12 conversion average: {:.2} ms",
+            started.elapsed().as_secs_f64() * 1000.0 / 30.0
+        );
+        assert_eq!(
+            converter.output().len(),
+            width as usize * height as usize * 4
         );
     }
 }

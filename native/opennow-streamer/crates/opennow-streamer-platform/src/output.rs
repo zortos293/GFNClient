@@ -1791,7 +1791,7 @@ impl WindowsOutput {
     ) -> Result<Self, String> {
         bridge.reset();
         let external_renderer = external_renderer_enabled();
-        let graphics_api = selected_windows_graphics_api();
+        let graphics_api = selected_windows_graphics_api(stream.codec);
         let external_surface = if external_renderer {
             Some(WindowsExternalSdlSurface::initialize(
                 stream,
@@ -1954,12 +1954,30 @@ impl WindowsOutput {
 }
 
 #[cfg(target_os = "windows")]
-fn selected_windows_graphics_api() -> WindowsGraphicsApi {
+fn selected_windows_graphics_api(codec: crate::media::MediaVideoCodec) -> WindowsGraphicsApi {
     let d3d12_allowed = crate::runtime::backend_preference_allows("d3d12");
     let d3d11_allowed = crate::runtime::backend_preference_allows("d3d11");
+    select_windows_graphics_api(
+        codec,
+        d3d12_allowed,
+        d3d11_allowed,
+        WindowsBackend::probe_for(WindowsGraphicsApi::D3d12).bundled_backend_available(),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn select_windows_graphics_api(
+    codec: crate::media::MediaVideoCodec,
+    d3d12_allowed: bool,
+    d3d11_allowed: bool,
+    d3d12_available: bool,
+) -> WindowsGraphicsApi {
+    // Media Foundation exposes AV1 decode surfaces through D3D11. Under Auto,
+    // keep those surfaces on D3D11 instead of synchronizing and flushing them
+    // through D3D11-on-12 for every 120 Hz frame. An explicit D3D12 selection
+    // remains authoritative for diagnostics and user preference.
     if d3d12_allowed
-        && (!d3d11_allowed
-            || WindowsBackend::probe_for(WindowsGraphicsApi::D3d12).bundled_backend_available())
+        && (!d3d11_allowed || (codec != crate::media::MediaVideoCodec::Av1 && d3d12_available))
     {
         WindowsGraphicsApi::D3d12
     } else {
@@ -2066,6 +2084,25 @@ fn aspect_fit(source_width: u32, source_height: u32, width: u32, height: u32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn automatic_av1_uses_direct_d3d11_but_explicit_d3d12_is_preserved() {
+        use crate::media::MediaVideoCodec;
+
+        assert_eq!(
+            select_windows_graphics_api(MediaVideoCodec::Av1, true, true, true),
+            WindowsGraphicsApi::D3d11
+        );
+        assert_eq!(
+            select_windows_graphics_api(MediaVideoCodec::Av1, true, false, true),
+            WindowsGraphicsApi::D3d12
+        );
+        assert_eq!(
+            select_windows_graphics_api(MediaVideoCodec::H265, true, true, true),
+            WindowsGraphicsApi::D3d12
+        );
+    }
 
     #[test]
     fn audio_buffer_drops_oldest_samples() {

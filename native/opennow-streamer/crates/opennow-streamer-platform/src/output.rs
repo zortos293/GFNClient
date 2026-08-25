@@ -540,6 +540,8 @@ impl SdlInputCapture {
                     height: absolute.height,
                 });
             }
+            Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
+                if self.relative_mouse && self.external_relative_motion => {}
             Event::MouseButtonDown { mouse_btn, .. } => {
                 // A button event proves this window owns foreground input even
                 // if SDL delivered FocusGained later in the same pump batch.
@@ -566,6 +568,7 @@ impl SdlInputCapture {
                     });
                 }
             }
+            Event::MouseWheel { .. } if self.relative_mouse && self.external_relative_motion => {}
             Event::MouseWheel { y, direction, .. } if y != 0 => {
                 let direction = if direction == sdl2::mouse::MouseWheelDirection::Flipped {
                     -1

@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::mem::{MaybeUninit, size_of};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -17,8 +18,11 @@ use windows_sys::Win32::UI::Input::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
     GetForegroundWindow, GetMessageW, GetWindowLongPtrW, HWND_MESSAGE, MSG, PostMessageW,
-    PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage, WM_APP, WM_CLOSE,
-    WM_INPUT, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
+    PostQuitMessage, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_DOWN,
+    RI_MOUSE_BUTTON_5_UP, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
+    RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN,
+    RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_WHEEL, RegisterClassW, SetWindowLongPtrW, TranslateMessage,
+    WM_APP, WM_CLOSE, WM_INPUT, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
 };
 
 use crate::media::{CapturedInput, CapturedInputQueue};
@@ -46,6 +50,7 @@ const WM_RAW_INPUT_REREGISTER: u32 = WM_APP + 1;
 struct RawInputState {
     target: AtomicIsize,
     enabled: AtomicBool,
+    pressed_buttons: Mutex<HashSet<u8>>,
     captured_input: Arc<CapturedInputQueue>,
 }
 
@@ -63,6 +68,7 @@ impl WindowsRawInputController {
         let state = Arc::new(RawInputState {
             target: AtomicIsize::new(target),
             enabled: AtomicBool::new(false),
+            pressed_buttons: Mutex::new(HashSet::new()),
             captured_input,
         });
         let thread_state = Arc::clone(&state);
@@ -102,6 +108,8 @@ impl WindowsRawInputController {
             unsafe {
                 let _ = PostMessageW(self.message_window as HWND, WM_RAW_INPUT_REREGISTER, 0, 0);
             }
+        } else if changed {
+            release_pressed_buttons(&self.state);
         }
     }
 }
@@ -109,6 +117,7 @@ impl WindowsRawInputController {
 impl Drop for WindowsRawInputController {
     fn drop(&mut self) {
         self.state.enabled.store(false, Ordering::Release);
+        release_pressed_buttons(&self.state);
         unsafe {
             let _ = PostMessageW(self.message_window as HWND, WM_CLOSE, 0, 0);
         }
@@ -259,10 +268,69 @@ unsafe fn process_raw_input(state: &RawInputState, handle: HRAWINPUT) {
         return;
     }
     let mouse = unsafe { raw.data.mouse };
-    if mouse.usFlags & MOUSE_MOVE_ABSOLUTE != 0 {
+    if mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
+        push_mouse_delta(&state.captured_input, mouse.lLastX, mouse.lLastY);
+    }
+
+    let buttons = unsafe { mouse.Anonymous.Anonymous };
+    push_raw_mouse_buttons(state, buttons.usButtonFlags);
+    if u32::from(buttons.usButtonFlags) & RI_MOUSE_WHEEL != 0 {
+        state.captured_input.push(CapturedInput::MouseWheel {
+            delta: buttons.usButtonData as i16,
+        });
+    }
+}
+
+fn push_raw_mouse_buttons(state: &RawInputState, flags: u16) {
+    const BUTTON_FLAGS: &[(u32, u32, u8)] = &[
+        (RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, 1),
+        (RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, 2),
+        (RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP, 3),
+        (RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, 4),
+        (RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP, 5),
+    ];
+    let flags = u32::from(flags);
+    for &(down, up, button) in BUTTON_FLAGS {
+        if flags & down != 0 {
+            push_mouse_button(state, button, true);
+        }
+        if flags & up != 0 {
+            push_mouse_button(state, button, false);
+        }
+    }
+}
+
+fn push_mouse_button(state: &RawInputState, button: u8, pressed: bool) {
+    let mut pressed_buttons = state
+        .pressed_buttons
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !state.enabled.load(Ordering::Acquire) {
         return;
     }
-    push_mouse_delta(&state.captured_input, mouse.lLastX, mouse.lLastY);
+    let changed = if pressed {
+        pressed_buttons.insert(button)
+    } else {
+        pressed_buttons.remove(&button)
+    };
+    if changed {
+        state
+            .captured_input
+            .push(CapturedInput::MouseButton { button, pressed });
+    }
+}
+
+fn release_pressed_buttons(state: &RawInputState) {
+    let mut pressed_buttons = state
+        .pressed_buttons
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for button in pressed_buttons.drain() {
+        state.captured_input.push(CapturedInput::MouseButton {
+            button,
+            pressed: false,
+        });
+    }
 }
 
 fn push_mouse_delta(queue: &CapturedInputQueue, mut delta_x: i32, mut delta_y: i32) {
@@ -280,8 +348,23 @@ fn push_mouse_delta(queue: &CapturedInputQueue, mut delta_x: i32, mut delta_y: i
 
 #[cfg(test)]
 mod tests {
-    use super::push_mouse_delta;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    use super::{RawInputState, push_mouse_delta, push_raw_mouse_buttons, release_pressed_buttons};
     use crate::media::{CapturedInput, CapturedInputQueue};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN,
+    };
+
+    fn state() -> RawInputState {
+        RawInputState {
+            target: Default::default(),
+            enabled: true.into(),
+            pressed_buttons: Default::default(),
+            captured_input: Arc::new(CapturedInputQueue::default()),
+        }
+    }
 
     #[test]
     fn large_raw_mouse_deltas_are_split_without_loss() {
@@ -295,5 +378,48 @@ mod tests {
             total_y += i32::from(delta_y);
         }
         assert_eq!((total_x, total_y), (40_000, -40_000));
+    }
+
+    #[test]
+    fn raw_button_flags_are_forwarded_once_and_released() {
+        let state = state();
+        push_raw_mouse_buttons(
+            &state,
+            (RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_RIGHT_BUTTON_DOWN) as u16,
+        );
+        push_raw_mouse_buttons(&state, RI_MOUSE_LEFT_BUTTON_DOWN as u16);
+        push_raw_mouse_buttons(&state, RI_MOUSE_LEFT_BUTTON_UP as u16);
+
+        assert_eq!(
+            state.captured_input.take(),
+            Some(CapturedInput::MouseButton {
+                button: 1,
+                pressed: true,
+            })
+        );
+        assert_eq!(
+            state.captured_input.take(),
+            Some(CapturedInput::MouseButton {
+                button: 3,
+                pressed: true,
+            })
+        );
+        assert_eq!(
+            state.captured_input.take(),
+            Some(CapturedInput::MouseButton {
+                button: 1,
+                pressed: false,
+            })
+        );
+
+        state.enabled.store(false, Ordering::Release);
+        release_pressed_buttons(&state);
+        assert_eq!(
+            state.captured_input.take(),
+            Some(CapturedInput::MouseButton {
+                button: 3,
+                pressed: false,
+            })
+        );
     }
 }

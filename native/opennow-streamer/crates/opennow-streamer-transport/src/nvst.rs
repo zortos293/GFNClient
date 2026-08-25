@@ -10,7 +10,7 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -67,6 +67,15 @@ const SRTCP_RR_INTERVAL: Duration = Duration::from_secs(1);
 const RTCP_RECOVERY_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_PENDING_NACK_RANGES: usize = 16;
 const MAX_PENDING_FRAME_ACKS: usize = 512;
+
+fn verbose_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("OPENNOW_NVST_TRACE")
+            .ok()
+            .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+    })
+}
 const MAX_NACK_PACKET_COUNT: usize = 64;
 const MAX_NACK_FCI_ENTRIES: usize = MAX_NACK_PACKET_COUNT.div_ceil(17);
 const NV_VIDEO_PACKET_LEN: usize = 16;
@@ -3692,23 +3701,24 @@ fn run_nvst_webrtc_bundle(
                         && let Some(channels) = input_channels
                     {
                         let input_types = native_input_types(&bytes);
-                        let should_log = match input_types.as_ref() {
-                            Ok(types) => {
-                                let only_motion = !types.is_empty()
-                                    && types
-                                        .iter()
-                                        .all(|input_type| native_input_type_is_motion(*input_type));
-                                if only_motion {
-                                    mouse_motion_packets = mouse_motion_packets.wrapping_add(1);
+                        let should_log = verbose_diagnostics_enabled()
+                            && match input_types.as_ref() {
+                                Ok(types) => {
+                                    let only_motion = !types.is_empty()
+                                        && types.iter().all(|input_type| {
+                                            native_input_type_is_motion(*input_type)
+                                        });
+                                    if only_motion {
+                                        mouse_motion_packets = mouse_motion_packets.wrapping_add(1);
+                                    }
+                                    let changed = *types != last_input_types;
+                                    if changed {
+                                        last_input_types.clone_from(types);
+                                    }
+                                    changed || !only_motion || mouse_motion_packets % 120 == 1
                                 }
-                                let changed = *types != last_input_types;
-                                if changed {
-                                    last_input_types.clone_from(types);
-                                }
-                                changed || !only_motion || mouse_motion_packets % 120 == 1
-                            }
-                            Err(_) => true,
-                        };
+                                Err(_) => true,
+                            };
                         if should_log {
                             match input_types.as_ref() {
                                 Ok(types) => {
@@ -4028,7 +4038,9 @@ fn run_nvst_webrtc_bundle(
                     } else {
                         "other"
                     };
-                    if outbound_datagrams <= 8 || outbound_datagrams % 50 == 0 {
+                    if outbound_datagrams <= 8
+                        || (verbose_diagnostics_enabled() && outbound_datagrams % 50 == 0)
+                    {
                         eprintln!(
                             "NVST WebRTC outbound={outbound_datagrams} kind={kind} dest={} bytes={}",
                             bundle_peer,
@@ -4163,12 +4175,14 @@ fn run_nvst_webrtc_bundle(
                                 continue;
                             }
 
-                            eprintln!(
-                                "NVST data channel rx: channel={label} id={:?} bytes={} raw={}",
-                                data.id,
-                                data.data.len(),
-                                diagnostic_hex(&data.data, 128),
-                            );
+                            if verbose_diagnostics_enabled() {
+                                eprintln!(
+                                    "NVST data channel rx: channel={label} id={:?} bytes={} raw={}",
+                                    data.id,
+                                    data.data.len(),
+                                    diagnostic_hex(&data.data, 128),
+                                );
+                            }
                         }
                         if let Some(channels) = input_channels
                             && let Some(version) =
@@ -4326,7 +4340,9 @@ fn run_nvst_webrtc_bundle(
             match socket.recv_from(&mut datagram) {
                 Ok((length, source)) => {
                     inbound_datagrams += 1;
-                    if inbound_datagrams == 1 || inbound_datagrams % 50 == 0 {
+                    if inbound_datagrams == 1
+                        || (verbose_diagnostics_enabled() && inbound_datagrams % 50 == 0)
+                    {
                         eprintln!(
                             "NVST WebRTC inbound={inbound_datagrams} source={source} bytes={length} dtlsReady={dtls_ready}"
                         );

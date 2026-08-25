@@ -25,6 +25,11 @@ use self::graphics::Graphics;
 
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const PRESENTATION_SPIN_THRESHOLD: Duration = Duration::from_millis(1);
+const ARRIVAL_HISTORY_LENGTH: usize = 120;
+const QUEUE_HISTORY_LENGTH: usize = 3;
+const RENDER_HISTORY_LENGTH: usize = 60;
+const PACING_OUTLIER: Duration = Duration::from_millis(75);
+const PACING_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Spaces decoded frames at the negotiated stream cadence without depending on
 /// GFN's RTP timestamps. H.265/AV1 can assign one timestamp to a small group of
@@ -33,39 +38,92 @@ const PRESENTATION_SPIN_THRESHOLD: Duration = Duration::from_millis(1);
 /// when a frame arrives after its deadline it is presented immediately and the
 /// clock is rebased instead of trying to catch up.
 struct PresentationClock {
-    interval: Duration,
+    nominal_interval: Duration,
+    arrival_history: VecDeque<Duration>,
+    queue_history: VecDeque<usize>,
+    render_history: VecDeque<Duration>,
+    last_arrival: Option<Instant>,
+    last_presented: Option<Instant>,
     next_deadline: Option<Instant>,
+    queue_integral: f64,
+    last_diagnostics: Instant,
 }
 
 impl PresentationClock {
     fn new(frame_duration_100ns: i64) -> Self {
+        let nominal_interval = frame_interval(frame_duration_100ns);
         Self {
-            interval: Duration::from_nanos(
-                u64::try_from(frame_duration_100ns.max(1)).unwrap_or(1) * 100,
-            ),
+            nominal_interval,
+            arrival_history: VecDeque::with_capacity(ARRIVAL_HISTORY_LENGTH),
+            queue_history: VecDeque::with_capacity(QUEUE_HISTORY_LENGTH),
+            render_history: VecDeque::with_capacity(RENDER_HISTORY_LENGTH),
+            last_arrival: None,
+            last_presented: None,
             next_deadline: None,
+            queue_integral: 0.0,
+            last_diagnostics: Instant::now(),
         }
     }
 
     fn reset(&mut self, frame_duration_100ns: i64) {
-        self.interval =
-            Duration::from_nanos(u64::try_from(frame_duration_100ns.max(1)).unwrap_or(1) * 100);
+        self.nominal_interval = frame_interval(frame_duration_100ns);
+        self.arrival_history.clear();
+        self.queue_history.clear();
+        self.render_history.clear();
+        self.last_arrival = None;
+        self.last_presented = None;
         self.next_deadline = None;
+        self.queue_integral = 0.0;
+        self.last_diagnostics = Instant::now();
+    }
+
+    fn observe_decoded_frame(&mut self, now: Instant) {
+        if let Some(previous) = self.last_arrival.replace(now) {
+            let interval = now.saturating_duration_since(previous);
+            if interval <= PACING_OUTLIER {
+                push_bounded(&mut self.arrival_history, interval, ARRIVAL_HISTORY_LENGTH);
+            } else {
+                // A loading screen or recovery gap must not pull the active
+                // stream cadence down for the next 120 frames.
+                self.arrival_history.clear();
+                self.next_deadline = None;
+            }
+        }
     }
 
     fn is_due(&self, now: Instant) -> bool {
         self.next_deadline.is_none_or(|deadline| now >= deadline)
     }
 
-    fn mark_presented(&mut self, now: Instant) {
+    fn mark_presented(&mut self, now: Instant, queued_frames: usize) {
+        if let Some(previous) = self.last_presented.replace(now) {
+            push_bounded(
+                &mut self.render_history,
+                now.saturating_duration_since(previous),
+                RENDER_HISTORY_LENGTH,
+            );
+        }
+        push_bounded(&mut self.queue_history, queued_frames, QUEUE_HISTORY_LENGTH);
+        let queue_average = average_usize(&self.queue_history);
+        self.queue_integral = (self.queue_integral * 0.9 + queue_average).clamp(0.0, 12.0);
+        let interval = self.controlled_interval(queue_average);
         let next = self
             .next_deadline
-            .map_or(now + self.interval, |deadline| deadline + self.interval);
-        self.next_deadline = Some(if next <= now {
-            now + self.interval
-        } else {
-            next
-        });
+            .map_or(now + interval, |deadline| deadline + interval);
+        self.next_deadline = Some(if next <= now { now + interval } else { next });
+
+        if now.duration_since(self.last_diagnostics) >= PACING_DIAGNOSTIC_INTERVAL {
+            let observed = average_duration(&self.render_history).unwrap_or(Duration::ZERO);
+            let jitter = percentile_absolute_deviation(&self.render_history, observed, 0.99);
+            eprintln!(
+                "Adaptive presentation pacing: target={:.3}ms observed={:.3}ms p99Jitter={:.3}ms queue={queue_average:.2} arrivalSamples={}",
+                interval.as_secs_f64() * 1_000.0,
+                observed.as_secs_f64() * 1_000.0,
+                jitter.as_secs_f64() * 1_000.0,
+                self.arrival_history.len(),
+            );
+            self.last_diagnostics = now;
+        }
     }
 
     fn time_until_due(&self, now: Instant) -> Duration {
@@ -73,6 +131,69 @@ impl PresentationClock {
             deadline.saturating_duration_since(now)
         })
     }
+
+    fn controlled_interval(&self, queue_average: f64) -> Duration {
+        let estimated = average_duration(&self.arrival_history)
+            .unwrap_or(self.nominal_interval)
+            .clamp(
+                self.nominal_interval,
+                self.nominal_interval.saturating_mul(2),
+            );
+        // Queue feedback is intentionally conservative. P drains a burst now;
+        // I prevents a small persistent backlog, while the negotiated cadence
+        // remains the hard upper-FPS limit.
+        let correction = (queue_average * 0.10 + self.queue_integral * 0.004).clamp(0.0, 0.30);
+        Duration::from_secs_f64(
+            (estimated.as_secs_f64() / (1.0 + correction)).max(self.nominal_interval.as_secs_f64()),
+        )
+    }
+}
+
+fn frame_interval(frame_duration_100ns: i64) -> Duration {
+    Duration::from_nanos(u64::try_from(frame_duration_100ns.max(1)).unwrap_or(1) * 100)
+}
+
+fn push_bounded<T>(values: &mut VecDeque<T>, value: T, capacity: usize) {
+    if values.len() == capacity {
+        values.pop_front();
+    }
+    values.push_back(value);
+}
+
+fn average_duration(values: &VecDeque<Duration>) -> Option<Duration> {
+    if values.is_empty() {
+        return None;
+    }
+    let total_ns = values.iter().map(Duration::as_nanos).sum::<u128>();
+    Some(Duration::from_nanos(
+        u64::try_from(total_ns / values.len() as u128).unwrap_or(u64::MAX),
+    ))
+}
+
+fn average_usize(values: &VecDeque<usize>) -> f64 {
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().sum::<usize>() as f64 / values.len() as f64
+    }
+}
+
+fn percentile_absolute_deviation(
+    values: &VecDeque<Duration>,
+    center: Duration,
+    percentile: f64,
+) -> Duration {
+    if values.is_empty() {
+        return Duration::ZERO;
+    }
+    let center_ns = center.as_nanos();
+    let mut deviations = values
+        .iter()
+        .map(|value| value.as_nanos().abs_diff(center_ns))
+        .collect::<Vec<_>>();
+    deviations.sort_unstable();
+    let index = ((deviations.len() - 1) as f64 * percentile).round() as usize;
+    Duration::from_nanos(u64::try_from(deviations[index]).unwrap_or(u64::MAX))
 }
 
 /// Keeps the native media loop out of Windows' coarse default timer cadence.
@@ -404,6 +525,10 @@ impl Worker {
                 }
             };
             did_work |= produced > 0;
+            if produced > 0 {
+                self.presentation_clock
+                    .observe_decoded_frame(Instant::now());
+            }
             let decoded_format = self.decoder.format();
             if decoded_format != self.config.video {
                 if let Err(error) = self.graphics.reconfigure_video(decoded_format) {
@@ -471,7 +596,8 @@ impl Worker {
                             self.shared
                                 .presented_frames
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            self.presentation_clock.mark_presented(Instant::now());
+                            self.presentation_clock
+                                .mark_presented(Instant::now(), self.decoded_video.len());
                             if !self.first_frame_presented && self.graphics.is_visible() {
                                 self.first_frame_presented = true;
                                 let _ = self.shared.events.push(BackendEvent::FirstFramePresented);
@@ -678,7 +804,7 @@ mod tests {
         let mut clock = PresentationClock::new(83_333);
 
         assert!(clock.is_due(start));
-        clock.mark_presented(start);
+        clock.mark_presented(start, 3);
         assert!(!clock.is_due(start + Duration::from_millis(4)));
         assert!(clock.is_due(start + Duration::from_micros(8_334)));
     }
@@ -687,12 +813,41 @@ mod tests {
     fn presentation_clock_rebases_after_a_slow_frame() {
         let start = Instant::now();
         let mut clock = PresentationClock::new(83_333);
-        clock.mark_presented(start);
+        clock.mark_presented(start, 0);
 
         let slow_arrival = start + Duration::from_millis(17);
         assert!(clock.is_due(slow_arrival));
-        clock.mark_presented(slow_arrival);
+        clock.mark_presented(slow_arrival, 0);
         assert!(!clock.is_due(slow_arrival + Duration::from_millis(4)));
         assert!(clock.is_due(slow_arrival + Duration::from_micros(8_334)));
+    }
+
+    #[test]
+    fn presentation_clock_learns_a_dynamic_sixty_fps_source() {
+        let start = Instant::now();
+        let mut clock = PresentationClock::new(83_333);
+        for frame in 0..120 {
+            clock.observe_decoded_frame(start + Duration::from_micros(frame * 16_667));
+        }
+
+        let interval = clock.controlled_interval(0.0);
+        assert!(interval >= Duration::from_micros(16_660));
+        assert!(interval <= Duration::from_micros(16_670));
+    }
+
+    #[test]
+    fn presentation_clock_averages_grouped_frame_arrivals() {
+        let start = Instant::now();
+        let mut clock = PresentationClock::new(83_333);
+        for group in 0..30 {
+            let group_start = start + Duration::from_millis(group * 33);
+            for frame in 0..4 {
+                clock.observe_decoded_frame(group_start + Duration::from_micros(frame * 20));
+            }
+        }
+
+        let interval = clock.controlled_interval(0.0);
+        assert!(interval >= Duration::from_micros(8_200));
+        assert!(interval <= Duration::from_micros(8_500));
     }
 }

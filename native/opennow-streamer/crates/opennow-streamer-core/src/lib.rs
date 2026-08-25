@@ -35,7 +35,7 @@ enum State {
 
 const ENCODED_MEDIA_QUEUE_CAPACITY: usize = 8;
 const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
-const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
 
 trait NvstSessionResources {
     fn request_keyframe(&self);
@@ -1235,7 +1235,9 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 );
                 return;
             } else {
-                for _ in 0..8 {
+                // Preserve high-polling-rate RawInput/SDL samples rather than
+                // turning several reports into one uneven movement burst.
+                for _ in 0..32 {
                     let Some(input) = captured_input.take() else {
                         break;
                     };

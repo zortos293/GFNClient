@@ -1141,15 +1141,6 @@ fn push_mouse_motion(input: &mut Vec<CapturedInput>, delta_x: i32, delta_y: i32)
     if delta_x == 0 && delta_y == 0 {
         return;
     }
-    if let Some(CapturedInput::MouseMove {
-        delta_x: pending_x,
-        delta_y: pending_y,
-    }) = input.last_mut()
-    {
-        *pending_x = clamp_i16(i32::from(*pending_x).saturating_add(delta_x));
-        *pending_y = clamp_i16(i32::from(*pending_y).saturating_add(delta_y));
-        return;
-    }
     input.push(CapturedInput::MouseMove {
         delta_x: clamp_i16(delta_x),
         delta_y: clamp_i16(delta_y),
@@ -2116,17 +2107,23 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_sdl_mouse_motion_is_coalesced_and_clamped() {
+    fn adjacent_sdl_mouse_motion_is_preserved_and_clamped() {
         let mut input = Vec::new();
         push_mouse_motion(&mut input, 10, -20);
         push_mouse_motion(&mut input, i32::MAX, -30);
 
         assert_eq!(
             input,
-            vec![CapturedInput::MouseMove {
-                delta_x: i16::MAX,
-                delta_y: -50,
-            }]
+            vec![
+                CapturedInput::MouseMove {
+                    delta_x: 10,
+                    delta_y: -20,
+                },
+                CapturedInput::MouseMove {
+                    delta_x: i16::MAX,
+                    delta_y: -30,
+                },
+            ]
         );
     }
 

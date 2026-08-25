@@ -18,7 +18,7 @@ use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 // Keep native input sampling below one rendered frame even at 120 Hz. SDL can
 // coalesce the individual raw-input events, so this improves delivery cadence
 // without allowing the queue to grow with redundant motion packets.
-const HOST_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const HOST_POLL_INTERVAL: Duration = Duration::from_micros(250);
 const HOST_START_TIMEOUT: Duration = Duration::from_secs(10);
 const HOST_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 

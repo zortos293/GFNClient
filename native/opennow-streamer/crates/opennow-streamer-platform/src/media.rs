@@ -121,16 +121,6 @@ impl CapturedInputQueue {
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let CapturedInput::MouseMove { delta_x, delta_y } = input
-            && let Some(CapturedInput::MouseMove {
-                delta_x: pending_x,
-                delta_y: pending_y,
-            }) = pending.back_mut()
-        {
-            *pending_x = pending_x.saturating_add(delta_x);
-            *pending_y = pending_y.saturating_add(delta_y);
-            return;
-        }
         if matches!(input, CapturedInput::MouseAbsolute { .. })
             && matches!(pending.back(), Some(CapturedInput::MouseAbsolute { .. }))
         {
@@ -1624,21 +1614,23 @@ mod tests {
     }
 
     #[test]
-    fn captured_input_queue_coalesces_motion_and_fails_closed_on_control_overflow() {
+    fn captured_input_queue_preserves_raw_motion_and_fails_closed_on_control_overflow() {
         let queue = CapturedInputQueue::default();
-        for _ in 0..300 {
+        for _ in 0..3 {
             queue.push(CapturedInput::MouseMove {
                 delta_x: 1,
                 delta_y: -1,
             });
         }
-        assert_eq!(
-            queue.take(),
-            Some(CapturedInput::MouseMove {
-                delta_x: 300,
-                delta_y: -300,
-            })
-        );
+        for _ in 0..3 {
+            assert_eq!(
+                queue.take(),
+                Some(CapturedInput::MouseMove {
+                    delta_x: 1,
+                    delta_y: -1,
+                })
+            );
+        }
 
         for virtual_key in 0..=u16::try_from(CAPTURED_INPUT_CAPACITY).unwrap() {
             queue.push(CapturedInput::Key {

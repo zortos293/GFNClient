@@ -112,7 +112,19 @@ impl PresentationClock {
         let next = self
             .next_deadline
             .map_or(now + interval, |deadline| deadline + interval);
-        self.next_deadline = Some(if next <= now { now + interval } else { next });
+        // Preserve the presentation phase while decoded frames are queued. A
+        // D3D11 hardware decoder commonly releases AV1/H.265 frames in small
+        // bursts; rebasing every slightly-late deadline to `now + interval`
+        // makes that harmless lateness permanent and eventually forces the
+        // low-latency queue to discard frames. Keeping the old phase lets the
+        // worker use the next DXGI-ready slot to catch up. When the queue is
+        // empty, rebase so a genuinely dynamic/slow game stream is never
+        // chased with synthetic catch-up frames.
+        self.next_deadline = Some(if queued_frames == 0 && next <= now {
+            now + interval
+        } else {
+            next
+        });
 
         if now.duration_since(self.last_diagnostics) >= PACING_DIAGNOSTIC_INTERVAL {
             let observed = average_duration(&self.render_history).unwrap_or(Duration::ZERO);
@@ -856,6 +868,22 @@ mod tests {
         clock.mark_presented(slow_arrival, 0);
         assert!(!clock.is_due(slow_arrival + Duration::from_millis(4)));
         assert!(clock.is_due(slow_arrival + Duration::from_micros(8_334)));
+    }
+
+    #[test]
+    fn presentation_clock_preserves_phase_to_drain_a_decoder_burst() {
+        let start = Instant::now();
+        let mut clock = PresentationClock::new(83_333);
+        clock.mark_presented(start, 3);
+
+        let late = start + Duration::from_millis(18);
+        assert!(clock.is_due(late));
+        clock.mark_presented(late, 2);
+
+        // The next buffered frame is already due because the clock retained
+        // the original cadence instead of adding another full frame period to
+        // the late presentation time.
+        assert!(clock.is_due(late));
     }
 
     #[test]

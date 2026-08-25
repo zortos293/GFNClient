@@ -270,7 +270,7 @@ impl NativeDebugOverlay {
             &mut self.canvas,
             20,
             226,
-            "FRAME TIME",
+            "FRAME PERIOD",
             460,
             &frame_ms,
             GREEN,
@@ -279,9 +279,9 @@ impl NativeDebugOverlay {
             &mut self.canvas,
             20,
             250,
-            "QUEUE / DROPPED",
+            "PRESENT DROPS",
             460,
-            &format!("2 FRAMES / {}", self.dropped_frames),
+            &format!("{} TOTAL", self.dropped_frames),
             if self.dropped_frames == 0 {
                 TEXT
             } else {

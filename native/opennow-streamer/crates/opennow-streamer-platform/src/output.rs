@@ -1600,7 +1600,7 @@ impl WindowsExternalSdlSurface {
             stream,
             match graphics_api {
                 WindowsGraphicsApi::D3d12 => "D3D11VA / D3D12",
-                WindowsGraphicsApi::D3d11 => "D3D11VA HW",
+                WindowsGraphicsApi::D3d11 => "D3D11VA ZERO-COPY",
             },
         )?;
         let event_pump = sdl

@@ -129,6 +129,10 @@ const STREAM_PACKET_INDEX_MASK: u32 = 0x00ff_ffff;
 /// 16-byte RTP extension block with profile `0x4753` ("GS"), not in the payload.
 const GS_VIDEO_EXTENSION_PROFILE: u16 = 0x4753;
 const MAX_GS_FRAME_HEADER_BYTES: usize = 64;
+const GS_SHORT_FRAME_HEADER_BYTES: usize = 8;
+// GFN's current cloud NVST protocol uses a compact extended frame header. It
+// is not the 44-byte extended header used by current consumer GameStream.
+const GFN_EXTENDED_FRAME_HEADER_BYTES: usize = 20;
 const GFN_RED_PAYLOAD_TYPE: u8 = 63;
 const GFN_OPUS_PAYLOAD_TYPE: u8 = 111;
 const MAX_REDUNDANT_AUDIO_BLOCKS: usize = 8;
@@ -2179,14 +2183,12 @@ fn video_picture_payload(codec: NvstVideoCodec, payload: &[u8]) -> Option<&[u8]>
             Some(&payload[offset..])
         }
         NvstVideoCodec::Av1 => match payload.first()? {
-            // GFN 14.x follows the current GameStream frame layout: the short
-            // frame header is 8 bytes and the extended 0x81 header is 44 bytes.
-            // Do not inspect the first AV1 byte to choose an offset; AV1 Annex-B
-            // streams may begin with a temporal-unit size rather than an OBU
-            // header, so that heuristic can misidentify the legacy 41-byte
-            // layout and leave three header bytes in the decoder input.
-            0x01 => payload.get(8..),
-            0x81 => payload.get(44..),
+            // Unlike AVC/HEVC, AV1 has no Annex-B start code that can be used
+            // to discover this boundary. Use the GFN cloud header sizes seen
+            // on the same NVST video track instead of the similarly named but
+            // different consumer GameStream extended-header layout.
+            0x01 => payload.get(GS_SHORT_FRAME_HEADER_BYTES..),
+            0x81 => payload.get(GFN_EXTENDED_FRAME_HEADER_BYTES..),
             _ => None,
         },
     }
@@ -5584,7 +5586,7 @@ mod tests {
     }
 
     #[test]
-    fn strips_the_current_44_byte_extended_av1_frame_header() {
+    fn strips_the_gfn_cloud_extended_av1_frame_header() {
         let header = NvVideoPacket {
             stream_packet_index: 1,
             frame_index: 12,
@@ -5593,10 +5595,14 @@ mod tests {
             fec_last_block: 0,
             is_fec: false,
         };
-        let mut payload = vec![0_u8; 44];
+        let mut payload = vec![0_u8; GFN_EXTENDED_FRAME_HEADER_BYTES];
         payload[0] = 0x81;
         payload[3] = 2;
-        payload[4..6].copy_from_slice(&47_u16.to_le_bytes());
+        payload[4..6].copy_from_slice(
+            &u16::try_from(GFN_EXTENDED_FRAME_HEADER_BYTES + 3)
+                .expect("test payload length fits u16")
+                .to_le_bytes(),
+        );
         // A temporal-unit length byte is not necessarily a valid OBU header.
         payload.extend_from_slice(&[0x81, 0x01, 0x12]);
         let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::Av1, 4096);

@@ -63,20 +63,30 @@ export class SignalingCoordinator {
         };
       },
       onAnnounceReady: async (videoSession) => {
-        const current = this.nativeStreamerContext;
-        if (!current) {
-          throw new Error("Native streamer context missing after NVST ANNOUNCE");
-        }
-        const armed = {
-          ...current,
-          nvstVideo: videoSession,
-        };
-        this.nativeStreamerContext = armed;
-        const manager = this.getNativeStreamerManager();
-        await manager.prepareForSession(armed);
-        await manager.waitForNvstTransportReady(armed.session.sessionId);
+        await this.armNativeAfterNvstAnnounce(videoSession);
       },
     });
+  }
+
+  private async armNativeAfterNvstAnnounce(videoSession: NonNullable<NativeStreamerSessionContext["nvstVideo"]>): Promise<void> {
+    const current = this.nativeStreamerContext;
+    if (!current) {
+      throw new Error("Native streamer context missing after NVST ANNOUNCE");
+    }
+    const armed = {
+      ...current,
+      nvstVideo: videoSession,
+    };
+    this.nativeStreamerContext = armed;
+
+    // `prepareForSession` returns only after both native UDP receivers have
+    // inherited their sockets and started. Send PLAY at that point. Waiting
+    // for the subsequent DTLS/SCTP readiness event here makes resume fragile:
+    // resumed GFN seats close their short-lived RTSPS control connection while
+    // that handshake is still completing, and PLAY on a replacement socket is
+    // acknowledged without activating the Mjolnir video route. NVIDIA likewise
+    // issues PLAY immediately after starting its transport workers.
+    await this.getNativeStreamerManager().prepareForSession(armed);
   }
 
   private retainSessionState(values: Record<string, unknown>): void {

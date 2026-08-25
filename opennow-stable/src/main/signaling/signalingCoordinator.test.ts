@@ -34,9 +34,45 @@ function createContext(): NativeStreamerSessionContext {
 interface CoordinatorInternals {
   nativeStreamerContext: NativeStreamerSessionContext | null;
   nativeStreamerManager: NativeStreamerManager | null;
+  armNativeAfterNvstAnnounce(videoSession: NonNullable<NativeStreamerSessionContext["nvstVideo"]>): Promise<void>;
   prepareNativeStreamerBeforeSignaling(): Promise<void>;
   routeSignalingEvent(event: { type: "offer"; sdp: string } | { type: "remote-ice"; candidate: string }): void;
 }
+
+test("coordinator sends PLAY-ready acknowledgement after native sockets start without waiting for SCTP", async () => {
+  const events: string[] = [];
+  const owner: GfnNvstRtspOwner = {
+    prepare: async (context) => context,
+    videoUdpFd: () => undefined,
+    handoffVideoUdp: async () => undefined,
+    release: async () => undefined,
+  };
+  const { internals } = createCoordinator(owner);
+  internals.nativeStreamerContext = createContext();
+  const videoSession: NonNullable<NativeStreamerSessionContext["nvstVideo"]> = {
+    clientUdpPort: 49_006,
+    mjolnirUdpPort: 49_005,
+    videoPeerIp: "192.0.2.20",
+    videoPeerPort: 5_004,
+    srtpAesKeyHex: "AA".repeat(32),
+    srtpKeyId: 42,
+    srtpSaltHex: `${"00".repeat(11)}2A`,
+  };
+  internals.nativeStreamerManager = {
+    prepareForSession: async () => {
+      events.push("native-sockets-started");
+    },
+    waitForNvstTransportReady: async () => {
+      events.push("waited-for-sctp");
+      throw new Error("must not block PLAY");
+    },
+  } as unknown as NativeStreamerManager;
+
+  await internals.armNativeAfterNvstAnnounce(videoSession);
+
+  assert.deepEqual(events, ["native-sockets-started"]);
+  assert.equal(internals.nativeStreamerContext?.nvstVideo, videoSession);
+});
 
 function createCoordinator(
   owner: GfnNvstRtspOwner,

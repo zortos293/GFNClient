@@ -24,6 +24,56 @@ use self::decoder::{DecodedVideoFrame, Decoder, take_frame_for_presentation};
 use self::graphics::Graphics;
 
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const PRESENTATION_SPIN_THRESHOLD: Duration = Duration::from_millis(1);
+
+/// Spaces decoded frames at the negotiated stream cadence without depending on
+/// GFN's RTP timestamps. H.265/AV1 can assign one timestamp to a small group of
+/// frames, so presenting immediately on decode makes a 120 fps stream arrive at
+/// the display as visible bursts. Slower, game-driven streams remain dynamic:
+/// when a frame arrives after its deadline it is presented immediately and the
+/// clock is rebased instead of trying to catch up.
+struct PresentationClock {
+    interval: Duration,
+    next_deadline: Option<Instant>,
+}
+
+impl PresentationClock {
+    fn new(frame_duration_100ns: i64) -> Self {
+        Self {
+            interval: Duration::from_nanos(
+                u64::try_from(frame_duration_100ns.max(1)).unwrap_or(1) * 100,
+            ),
+            next_deadline: None,
+        }
+    }
+
+    fn reset(&mut self, frame_duration_100ns: i64) {
+        self.interval =
+            Duration::from_nanos(u64::try_from(frame_duration_100ns.max(1)).unwrap_or(1) * 100);
+        self.next_deadline = None;
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        self.next_deadline.is_none_or(|deadline| now >= deadline)
+    }
+
+    fn mark_presented(&mut self, now: Instant) {
+        let next = self
+            .next_deadline
+            .map_or(now + self.interval, |deadline| deadline + self.interval);
+        self.next_deadline = Some(if next <= now {
+            now + self.interval
+        } else {
+            next
+        });
+    }
+
+    fn time_until_due(&self, now: Instant) -> Duration {
+        self.next_deadline.map_or(Duration::ZERO, |deadline| {
+            deadline.saturating_duration_since(now)
+        })
+    }
+}
 
 /// Keeps the native media loop out of Windows' coarse default timer cadence.
 /// The official GFN renderer uses an accurate-sleep pacing path and elevated
@@ -196,6 +246,7 @@ struct Worker {
     graphics: Graphics,
     decoder: Decoder,
     decoded_video: VecDeque<DecodedVideoFrame>,
+    presentation_clock: PresentationClock,
     first_frame_presented: bool,
     audio: AudioRenderer,
     _runtime: MediaRuntime,
@@ -215,6 +266,7 @@ impl Worker {
             .map_err(|error| BackendError::Startup(format!("Media Foundation H.264: {error}")))?;
         let audio = AudioRenderer::new(config.audio)
             .map_err(|error| BackendError::Startup(format!("WASAPI: {error}")))?;
+        let presentation_clock = PresentationClock::new(config.video.frame_duration_100ns());
         shared.set_state(LifecycleState::Running);
         Ok(Self {
             api,
@@ -224,6 +276,7 @@ impl Worker {
             graphics,
             decoder,
             decoded_video: VecDeque::with_capacity(ADAPTIVE_VIDEO_QUEUE_CAPACITY),
+            presentation_clock,
             first_frame_presented: false,
             audio,
             _runtime: runtime,
@@ -266,6 +319,8 @@ impl Worker {
                     Control::SetSurface(surface) => {
                         self.config.surface = surface;
                         self.decoded_video.clear();
+                        self.presentation_clock
+                            .reset(self.config.video.frame_duration_100ns());
                         self.first_frame_presented = false;
                         if let Err(error) = self.graphics.set_surface(surface, self.config.video) {
                             if let Err(error) = self.recover_video(
@@ -281,6 +336,8 @@ impl Worker {
                     }
                     Control::SetPaused(paused) => {
                         self.decoded_video.clear();
+                        self.presentation_clock
+                            .reset(self.config.video.frame_duration_100ns());
                         self.first_frame_presented = false;
                         if let Err(error) = self.audio.set_paused(paused) {
                             if let Err(error) = self.rebuild_audio(format!(
@@ -357,6 +414,8 @@ impl Worker {
                     continue;
                 }
                 self.config.video = decoded_format;
+                self.presentation_clock
+                    .reset(decoded_format.frame_duration_100ns());
                 *self
                     .shared
                     .video_format
@@ -381,7 +440,8 @@ impl Worker {
             // Checking it without a frame ready would consume the signal and
             // leave the swap chain waiting forever for a Present that cannot
             // happen. Only consume readiness when presentation can follow.
-            if !self.decoded_video.is_empty() {
+            let presentation_now = Instant::now();
+            if !self.decoded_video.is_empty() && self.presentation_clock.is_due(presentation_now) {
                 match self.graphics.is_present_ready() {
                     Ok(true) => {
                         let (frame, stale_frames) =
@@ -411,6 +471,7 @@ impl Worker {
                             self.shared
                                 .presented_frames
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            self.presentation_clock.mark_presented(Instant::now());
                             if !self.first_frame_presented && self.graphics.is_visible() {
                                 self.first_frame_presented = true;
                                 let _ = self.shared.events.push(BackendEvent::FirstFramePresented);
@@ -444,7 +505,17 @@ impl Worker {
                     }
                 }
             }
-            if !did_work {
+            let presentation_wait = if self.decoded_video.is_empty() {
+                Duration::ZERO
+            } else {
+                self.presentation_clock.time_until_due(Instant::now())
+            };
+            if !presentation_wait.is_zero() && presentation_wait <= PRESENTATION_SPIN_THRESHOLD {
+                // Avoid adding Windows' ~1 ms sleep jitter at the end of an
+                // 8.33 ms 120 Hz frame interval.
+                std::hint::spin_loop();
+                thread::yield_now();
+            } else if !did_work {
                 thread::sleep(Duration::from_millis(1));
             } else {
                 thread::yield_now();
@@ -463,6 +534,8 @@ impl Worker {
         self.shared.set_state(LifecycleState::Recovering);
         self.shared.video.clear();
         self.decoded_video.clear();
+        self.presentation_clock
+            .reset(self.config.video.frame_duration_100ns());
         self.first_frame_presented = false;
         let start = Instant::now();
         loop {
@@ -512,6 +585,8 @@ impl Worker {
     fn rebuild_video(&mut self, subsystem: Subsystem, message: String) -> Result<(), BackendError> {
         self.decoder.stop();
         self.decoded_video.clear();
+        self.presentation_clock
+            .reset(self.config.video.frame_duration_100ns());
         self.first_frame_presented = false;
         match Decoder::new(&self.graphics, self.config.video) {
             Ok(decoder) => {
@@ -590,4 +665,34 @@ impl Worker {
 
 fn error_label(value: &str) -> String {
     value.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PresentationClock;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn presentation_clock_spaces_a_decoded_burst() {
+        let start = Instant::now();
+        let mut clock = PresentationClock::new(83_333);
+
+        assert!(clock.is_due(start));
+        clock.mark_presented(start);
+        assert!(!clock.is_due(start + Duration::from_millis(4)));
+        assert!(clock.is_due(start + Duration::from_micros(8_334)));
+    }
+
+    #[test]
+    fn presentation_clock_rebases_after_a_slow_frame() {
+        let start = Instant::now();
+        let mut clock = PresentationClock::new(83_333);
+        clock.mark_presented(start);
+
+        let slow_arrival = start + Duration::from_millis(17);
+        assert!(clock.is_due(slow_arrival));
+        clock.mark_presented(slow_arrival);
+        assert!(!clock.is_due(slow_arrival + Duration::from_millis(4)));
+        assert!(clock.is_due(slow_arrival + Duration::from_micros(8_334)));
+    }
 }

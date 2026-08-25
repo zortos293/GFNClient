@@ -24,8 +24,6 @@ use self::decoder::{DecodedVideoFrame, Decoder, take_frame_for_presentation};
 use self::graphics::Graphics;
 
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_PACING_LEAD: Duration = Duration::from_millis(40);
-const FRAME_DROP_THRESHOLD_X1000: u32 = 1_333;
 
 /// Keeps the native media loop out of Windows' coarse default timer cadence.
 /// The official GFN renderer uses an accurate-sleep pacing path and elevated
@@ -55,69 +53,6 @@ impl Drop for LowLatencyThreadGuard {
             }
         }
     }
-}
-
-/// Maps decoded media timestamps onto a stable local presentation timeline.
-/// Frames still present immediately when late, but early/bursty decoder output
-/// waits for its media timestamp instead of exposing network arrival jitter as
-/// camera-motion judder.
-struct PresentationClock {
-    anchor: Option<(i64, Instant)>,
-    nominal_duration: Duration,
-}
-
-impl PresentationClock {
-    fn new(frame_duration_100ns: i64) -> Self {
-        Self {
-            anchor: None,
-            nominal_duration: duration_from_100ns(frame_duration_100ns),
-        }
-    }
-
-    fn reset(&mut self, frame_duration_100ns: i64) {
-        self.anchor = None;
-        self.nominal_duration = duration_from_100ns(frame_duration_100ns);
-    }
-
-    fn is_due(&mut self, timestamp_100ns: i64, duration_100ns: i64, now: Instant) -> bool {
-        let Some((anchor_timestamp, anchor_time)) = self.anchor else {
-            self.anchor = Some((timestamp_100ns, now));
-            return true;
-        };
-        let Some(timestamp_delta) = timestamp_100ns.checked_sub(anchor_timestamp) else {
-            self.anchor = Some((timestamp_100ns, now));
-            return true;
-        };
-        if timestamp_delta < 0 {
-            self.anchor = Some((timestamp_100ns, now));
-            return true;
-        }
-        let offset = duration_from_100ns(timestamp_delta);
-        let Some(target) = anchor_time.checked_add(offset) else {
-            self.anchor = Some((timestamp_100ns, now));
-            return true;
-        };
-        let late_threshold = duration_from_100ns(duration_100ns)
-            .max(self.nominal_duration)
-            .mul_f64(f64::from(FRAME_DROP_THRESHOLD_X1000) / 1_000.0);
-        if now.saturating_duration_since(target) > late_threshold
-            || target.saturating_duration_since(now) > MAX_PACING_LEAD
-        {
-            // A discontinuity, long stall, or excessive queue delay must not
-            // turn into a catch-up burst or add permanent latency.
-            self.anchor = Some((timestamp_100ns, now));
-            return true;
-        }
-        now >= target
-    }
-}
-
-fn duration_from_100ns(value: i64) -> Duration {
-    Duration::from_nanos(
-        u64::try_from(value.max(0))
-            .unwrap_or(u64::MAX)
-            .saturating_mul(100),
-    )
 }
 
 struct MediaRuntime;
@@ -261,7 +196,6 @@ struct Worker {
     graphics: Graphics,
     decoder: Decoder,
     decoded_video: VecDeque<DecodedVideoFrame>,
-    presentation_clock: PresentationClock,
     first_frame_presented: bool,
     audio: AudioRenderer,
     _runtime: MediaRuntime,
@@ -282,7 +216,6 @@ impl Worker {
         let audio = AudioRenderer::new(config.audio)
             .map_err(|error| BackendError::Startup(format!("WASAPI: {error}")))?;
         shared.set_state(LifecycleState::Running);
-        let presentation_clock = PresentationClock::new(config.video.frame_duration_100ns());
         Ok(Self {
             api,
             config,
@@ -291,7 +224,6 @@ impl Worker {
             graphics,
             decoder,
             decoded_video: VecDeque::with_capacity(ADAPTIVE_VIDEO_QUEUE_CAPACITY),
-            presentation_clock,
             first_frame_presented: false,
             audio,
             _runtime: runtime,
@@ -334,8 +266,6 @@ impl Worker {
                     Control::SetSurface(surface) => {
                         self.config.surface = surface;
                         self.decoded_video.clear();
-                        self.presentation_clock
-                            .reset(self.config.video.frame_duration_100ns());
                         self.first_frame_presented = false;
                         if let Err(error) = self.graphics.set_surface(surface, self.config.video) {
                             if let Err(error) = self.recover_video(
@@ -351,8 +281,6 @@ impl Worker {
                     }
                     Control::SetPaused(paused) => {
                         self.decoded_video.clear();
-                        self.presentation_clock
-                            .reset(self.config.video.frame_duration_100ns());
                         self.first_frame_presented = false;
                         if let Err(error) = self.audio.set_paused(paused) {
                             if let Err(error) = self.rebuild_audio(format!(
@@ -429,8 +357,6 @@ impl Worker {
                     continue;
                 }
                 self.config.video = decoded_format;
-                self.presentation_clock
-                    .reset(self.config.video.frame_duration_100ns());
                 *self
                     .shared
                     .video_format
@@ -455,13 +381,7 @@ impl Worker {
             // Checking it without a frame ready would consume the signal and
             // leave the swap chain waiting forever for a Present that cannot
             // happen. Only consume readiness when presentation can follow.
-            if self.decoded_video.front().is_some_and(|frame| {
-                self.presentation_clock.is_due(
-                    frame.timestamp_100ns,
-                    frame.duration_100ns,
-                    Instant::now(),
-                )
-            }) {
+            if !self.decoded_video.is_empty() {
                 match self.graphics.is_present_ready() {
                     Ok(true) => {
                         let (frame, stale_frames) =
@@ -543,8 +463,6 @@ impl Worker {
         self.shared.set_state(LifecycleState::Recovering);
         self.shared.video.clear();
         self.decoded_video.clear();
-        self.presentation_clock
-            .reset(self.config.video.frame_duration_100ns());
         self.first_frame_presented = false;
         let start = Instant::now();
         loop {
@@ -569,8 +487,6 @@ impl Worker {
                 Ok((graphics, decoder)) => {
                     self.graphics = graphics;
                     self.decoder = decoder;
-                    self.presentation_clock
-                        .reset(self.config.video.frame_duration_100ns());
                     let _ = self
                         .shared
                         .events
@@ -596,8 +512,6 @@ impl Worker {
     fn rebuild_video(&mut self, subsystem: Subsystem, message: String) -> Result<(), BackendError> {
         self.decoder.stop();
         self.decoded_video.clear();
-        self.presentation_clock
-            .reset(self.config.video.frame_duration_100ns());
         self.first_frame_presented = false;
         match Decoder::new(&self.graphics, self.config.video) {
             Ok(decoder) => {
@@ -676,27 +590,4 @@ impl Worker {
 
 fn error_label(value: &str) -> String {
     value.to_owned()
-}
-
-#[cfg(test)]
-mod pacing_tests {
-    use super::*;
-
-    #[test]
-    fn presentation_clock_holds_early_burst_until_media_time() {
-        let start = Instant::now();
-        let mut clock = PresentationClock::new(83_333);
-        assert!(clock.is_due(0, 83_333, start));
-        assert!(!clock.is_due(83_333, 83_333, start + Duration::from_millis(2)));
-        assert!(clock.is_due(83_333, 83_333, start + Duration::from_millis(9)));
-    }
-
-    #[test]
-    fn presentation_clock_rebases_instead_of_catching_up_after_a_stall() {
-        let start = Instant::now();
-        let mut clock = PresentationClock::new(83_333);
-        assert!(clock.is_due(0, 83_333, start));
-        assert!(clock.is_due(83_333, 83_333, start + Duration::from_millis(30)));
-        assert!(!clock.is_due(166_666, 83_333, start + Duration::from_millis(32)));
-    }
 }

@@ -64,6 +64,7 @@ class FakeRtspClient implements NvstRtspClient {
   ) {}
 
   async connect(sessionId?: string): Promise<void> {
+    this.closed = false;
     this.events.push(`connect:${sessionId}`);
   }
 
@@ -484,6 +485,57 @@ test("negotiation starts native WebRtcTransport after ANNOUNCE and before PLAY",
   assert.ok(playIndex > armedIndex);
   assert.equal(negotiated.steps.includes("native-announce-armed"), true);
   await negotiated.release("test complete");
+});
+
+test("negotiation reconnects retained RTSPS control when it closes before PLAY", async () => {
+  const events: string[] = [];
+  const { client, dependencies } = createNegotiationHarness(events, (method) => {
+    if (method === "DESCRIBE") {
+      return response(
+        { session: "rtsp-session;timeout=60" },
+        `${DESCRIBE_SDP.replace("m=video", "a=x-nv-general.disablePlay:0\r\nm=video")}`,
+      );
+    }
+    return undefined;
+  });
+
+  const negotiated = await negotiateNvstRtspSession({
+    sessionId: "gfn-session",
+    rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+    onAnnounceReady: async () => {
+      client.closed = true;
+      events.push("control-closed-after-announce");
+    },
+  }, dependencies);
+
+  assert.equal(events.filter((event) => event === "connect:gfn-session").length, 2);
+  assert.equal(negotiated.steps.includes("play-control-reconnected"), true);
+  assert.equal(negotiated.steps.includes("play"), true);
+  await negotiated.release("test complete");
+});
+
+test("negotiation fails instead of starting a black stream when PLAY is rejected", async () => {
+  const events: string[] = [];
+  const { dependencies } = createNegotiationHarness(events, (method) => {
+    if (method === "DESCRIBE") {
+      return response(
+        { session: "rtsp-session;timeout=60" },
+        `${DESCRIBE_SDP.replace("m=video", "a=x-nv-general.disablePlay:0\r\nm=video")}`,
+      );
+    }
+    if (method === "PLAY") {
+      return response({}, "", 500);
+    }
+    return undefined;
+  });
+
+  await assert.rejects(
+    negotiateNvstRtspSession({
+      sessionId: "gfn-session",
+      rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+    }, dependencies),
+    /PLAY failed/,
+  );
 });
 
 test("negotiation announces reserved WebRtcTransport ICE and DTLS fingerprint", async () => {

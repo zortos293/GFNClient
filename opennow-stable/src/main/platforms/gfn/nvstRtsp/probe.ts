@@ -1070,6 +1070,11 @@ export async function negotiateNvstRtspSession(
       );
     }
     if (disablePlay === "0") {
+      if (!client.isHealthy()) {
+        log(input.onLog, "RTSPS control closed before PLAY; reconnecting the retained session");
+        await client.connect(input.sessionId);
+        steps.push("play-control-reconnected");
+      }
       try {
         const play = await client.request("PLAY", officialCloudPath ? rtspTarget : "/", {
           ...commonHeaders,
@@ -1086,16 +1091,15 @@ export async function negotiateNvstRtspSession(
           );
         } else {
           steps.push("play-failed");
-          log(
-            input.onLog,
-            `PLAY / returned ${play.statusCode} ${play.statusText}; continuing after ANNOUNCE`,
-          );
+          throw new Error(`PLAY failed: ${play.statusCode} ${play.statusText}`);
         }
       } catch (error) {
-        steps.push("play-timeout");
-        log(
-          input.onLog,
-          `PLAY / failed (${error instanceof Error ? error.message : String(error)}); continuing after ANNOUNCE`,
+        if (!steps.includes("play-failed")) {
+          steps.push("play-failed");
+        }
+        throw new Error(
+          `PLAY failed after ANNOUNCE: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
         );
       }
     } else {

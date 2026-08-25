@@ -34,7 +34,10 @@ use crate::{
 
 use super::graphics::Graphics;
 
-const FRAME_DROP_THRESHOLD_X1000: i64 = 1_333;
+// Media Foundation commonly releases H.265/AV1 output in three-frame groups.
+// Preserve that small decoder burst for the presentation clock to space at the
+// negotiated cadence. Larger backlogs are still trimmed to bound latency.
+const FRAME_DROP_THRESHOLD_X1000: i64 = 2_000;
 
 pub(super) struct DecodedVideoFrame {
     pub(super) texture: ID3D11Texture2D,
@@ -341,9 +344,9 @@ mod pacing_tests {
     }
 
     #[test]
-    fn drops_frames_more_than_one_and_a_third_intervals_behind() {
-        assert!(!frame_is_stale(0, 111_080, 83_333));
-        assert!(frame_is_stale(0, 111_084, 83_333));
+    fn preserves_three_frame_decoder_bursts_and_drops_larger_backlogs() {
+        assert!(!frame_is_stale(0, 166_666, 83_333));
+        assert!(frame_is_stale(0, 166_667, 83_333));
     }
 }
 

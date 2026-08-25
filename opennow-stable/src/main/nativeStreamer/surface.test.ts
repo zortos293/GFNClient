@@ -58,3 +58,21 @@ test("uses Windows display-aware DIP conversion without scaling the global monit
     height: 360,
   });
 });
+
+test("keeps publishing bounds when Wayland has no embeddable native handle", () => {
+  const window = {
+    getNativeWindowHandle: () => {
+      throw new Error("not supported on Wayland");
+    },
+    getContentBounds: () => ({ x: 0, y: 0, width: 1280, height: 720 }),
+  } as unknown as BrowserWindow;
+
+  const surface = normalizeNativeRenderSurface(window, {
+    rect: { x: 0, y: 0, width: 1280, height: 720 },
+    visible: true,
+    deviceScaleFactor: 2,
+  });
+
+  assert.equal(surface?.windowHandle, undefined);
+  assert.deepEqual(surface?.screenRect, { x: 0, y: 0, width: 640, height: 360 });
+});

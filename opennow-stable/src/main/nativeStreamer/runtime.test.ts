@@ -30,6 +30,7 @@ test("v2 runtime is self-contained and removes inherited GStreamer variables", (
   assert.equal(result.env.OPENNOW_NATIVE_INPUT_OWNER, "electron");
   assert.equal(result.env.OPENNOW_NATIVE_VIDEO_BACKEND, "auto");
   assert.equal(result.env.SDL_VIDEODRIVER, "x11");
+  assert.equal(result.env.OPENNOW_NATIVE_WINDOW_SYSTEM, "x11");
   assert.equal(result.runtimeStatus.selfContained, true);
   assert.match(result.runtimeStatus.message, /self-contained/);
 });
@@ -69,24 +70,26 @@ test("explicit Linux video backend preference is passed to the child", () => {
   assert.equal(result.env.OPENNOW_NATIVE_VIDEO_BACKEND, "v4l2");
 });
 
-test("pure Wayland is rejected before starting an unembeddable child", () => {
-  assert.throws(
-    () =>
-      createNativeStreamerRuntimeEnvironment({
-        executablePath: "/tmp/opennow-streamer",
-        baseEnv: { WAYLAND_DISPLAY: "wayland-0" },
-        platform: "linux",
-        arch: "arm64",
-        userDataPath: "/tmp/opennow-test",
-        protocolVersion: 4,
-        videoBackendPreference: "auto",
-        externalRendererEnabled: false,
-        linuxOzonePlatform: "wayland",
-        cloudGsyncMode: "auto",
-        d3dFullscreenMode: "auto",
-      }),
-    /X11\/XWayland/,
-  );
+test("Wayland uses a native top-level renderer and owns its input", () => {
+  const result = createNativeStreamerRuntimeEnvironment({
+    executablePath: "/tmp/opennow-streamer",
+    baseEnv: { WAYLAND_DISPLAY: "wayland-0", XDG_SESSION_TYPE: "wayland" },
+    platform: "linux",
+    arch: "arm64",
+    userDataPath: "/tmp/opennow-test",
+    protocolVersion: 4,
+    videoBackendPreference: "auto",
+    externalRendererEnabled: false,
+    linuxOzonePlatform: "wayland",
+    cloudGsyncMode: "auto",
+    d3dFullscreenMode: "auto",
+  });
+
+  assert.equal(result.env.SDL_VIDEODRIVER, "wayland");
+  assert.equal(result.env.OPENNOW_NATIVE_WINDOW_SYSTEM, "wayland");
+  assert.equal(result.env.OPENNOW_NATIVE_EXTERNAL_RENDERER, "1");
+  assert.equal(result.env.OPENNOW_NATIVE_INPUT_OWNER, "native");
+  assert.match(result.runtimeStatus.message, /Wayland output window/);
 });
 
 test("runtime executable names and platform keys accept explicit platforms", () => {

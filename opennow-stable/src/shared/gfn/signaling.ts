@@ -174,7 +174,11 @@ export type MainToRendererSignalingEvent =
   | { type: "remote-ice"; candidate: IceCandidatePayload }
   | { type: "native-stream-started"; message?: string }
   | { type: "native-stream-stopped"; reason?: string }
-  | { type: "native-input-ready"; protocolVersion: number }
+  | {
+      type: "native-input-ready";
+      protocolVersion: number;
+      inputOwner?: "electron" | "native";
+    }
   | { type: "native-input-unavailable"; reason: string }
   | { type: "error"; message: string }
   | { type: "log"; message: string };

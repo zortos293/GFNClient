@@ -162,7 +162,10 @@ export function useSignalingEvents({
       return clientRef.current;
     };
 
-    const activateNativeInputForCurrentSession = (protocolVersion?: number): void => {
+    const activateNativeInputForCurrentSession = (
+      protocolVersion?: number,
+      inputOwner?: "electron" | "native",
+    ): void => {
       const activeSession = sessionRef.current;
       if (!activeSession) {
         console.warn("[App] Received native stream event but no active session in sessionRef!");
@@ -190,7 +193,9 @@ export function useSignalingEvents({
           maxBitrateKbps: settings.maxBitrateMbps * 1000,
         },
         {
-          electronInputBridge: !settings.nativeExternalRenderer,
+          electronInputBridge: inputOwner
+            ? inputOwner === "electron"
+            : !settings.nativeExternalRenderer,
         },
       );
       window.openNow.notifyNativeInputModeChange(true, false);
@@ -311,7 +316,10 @@ export function useSignalingEvents({
           setNativeInputBridgeReady(true);
           clientRef.current?.setNativeInputProtocolVersion(event.protocolVersion);
           if (inputAction.activate && (nativeStreamingRef.current || sessionRef.current)) {
-            activateNativeInputForCurrentSession(inputAction.protocolVersion);
+            activateNativeInputForCurrentSession(
+              inputAction.protocolVersion,
+              event.inputOwner,
+            );
           }
         } else if (event.type === "native-input-unavailable") {
           const inputAction = nativeInputLifecycleAction(event);

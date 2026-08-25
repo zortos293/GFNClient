@@ -2305,6 +2305,7 @@ mod tests {
                 frame_index: 1,
                 first_stream_packet_index: 1,
                 keyframe: true,
+                contiguous: true,
                 bytes: vec![0, 0, 0, 1, 0x65],
             }),
         ));

@@ -85,6 +85,7 @@ import {
   DiagnosticHistoryController,
   DiagnosticHistoryStore,
 } from "./services/diagnosticHistory";
+import { resolveLinuxWindowSystem } from "./linuxWindowSystem";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -95,7 +96,10 @@ if (
   process.platform === "linux"
   && (!linuxOzonePlatform || linuxOzonePlatform === "auto")
 ) {
-  app.commandLine.appendSwitch("ozone-platform", "x11");
+  app.commandLine.appendSwitch(
+    "ozone-platform",
+    resolveLinuxWindowSystem(linuxOzonePlatform, process.env),
+  );
 }
 
 const appInstanceProfile = resolveAppInstanceProfile(

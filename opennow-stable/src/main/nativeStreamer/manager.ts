@@ -114,6 +114,7 @@ export class NativeStreamerManager {
   private nvstTransportReady = false;
   private nvstReadinessError: Error | null = null;
   private inputReady = false;
+  private nativeInputOwner: "electron" | "native" = "electron";
   private inputBackpressureWarned = false;
   private answerInFlight = false;
   private queuedLocalIce: IceCandidatePayload[] = [];
@@ -746,6 +747,9 @@ export class NativeStreamerManager {
     });
 
     this.child = child;
+    this.nativeInputOwner = childEnv.OPENNOW_NATIVE_INPUT_OWNER === "native"
+      ? "native"
+      : "electron";
     this.stdoutBuffer = "";
     this.stderrTail = [];
     this.inputBackpressureWarned = false;
@@ -946,7 +950,11 @@ export class NativeStreamerManager {
         this.nvstReadinessError = null;
         this.resolveNvstReadiness(readySessionId);
       }
-      this.options.emit({ type: "native-input-ready", protocolVersion: message.protocolVersion });
+      this.options.emit({
+        type: "native-input-ready",
+        protocolVersion: message.protocolVersion,
+        inputOwner: this.nativeInputOwner,
+      });
       return;
     }
 
@@ -1026,6 +1034,7 @@ export class NativeStreamerManager {
     this.pendingNvstSessionId = null;
     this.nvstReservation = null;
     this.inputReady = false;
+    this.nativeInputOwner = "electron";
     this.nvstTransportReady = false;
     this.nvstReadinessError = null;
     this.surfaceUpdates.markNotReady();

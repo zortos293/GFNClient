@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor as IoCursor;
 #[cfg(target_os = "windows")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicU64;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
@@ -14,6 +18,8 @@ use sdl2::rect::Rect;
 use sdl2::render::{Texture, WindowCanvas};
 
 use crate::media::{CapturedInput, CapturedInputQueue, MediaStreamConfig};
+#[cfg(target_os = "linux")]
+use crate::native_stats_overlay::NativeStatsOverlay;
 use crate::native_surface::NativeSurface;
 #[cfg(target_os = "windows")]
 use crate::windows_debug_overlay::NativeDebugOverlay;
@@ -45,6 +51,10 @@ pub(crate) struct OutputBuffers {
     video: Mutex<Option<DecodedVideoFrame>>,
     #[cfg(target_os = "linux")]
     linux_video: Mutex<Option<LinuxDecodedVideoFrame>>,
+    #[cfg(target_os = "linux")]
+    software_video_drops: AtomicU64,
+    #[cfg(target_os = "linux")]
+    hardware_video_drops: AtomicU64,
     audio: Mutex<VecDeque<f32>>,
     audio_capacity: usize,
     captured_input: Arc<CapturedInputQueue>,
@@ -132,6 +142,10 @@ impl OutputBuffers {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
             linux_video: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            software_video_drops: AtomicU64::new(0),
+            #[cfg(target_os = "linux")]
+            hardware_video_drops: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::with_capacity(
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
             )),
@@ -148,11 +162,17 @@ impl OutputBuffers {
     }
 
     pub(crate) fn replace_video(&self, frame: DecodedVideoFrame) -> bool {
-        self.video
+        let dropped = self
+            .video
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .replace(frame)
-            .is_some()
+            .is_some();
+        #[cfg(target_os = "linux")]
+        if dropped {
+            self.software_video_drops.fetch_add(1, Ordering::Relaxed);
+        }
+        dropped
     }
 
     pub(crate) fn take_video(&self) -> Option<DecodedVideoFrame> {
@@ -164,11 +184,16 @@ impl OutputBuffers {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn replace_linux_video(&self, frame: LinuxDecodedVideoFrame) -> bool {
-        self.linux_video
+        let dropped = self
+            .linux_video
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .replace(frame)
-            .is_some()
+            .is_some();
+        if dropped {
+            self.hardware_video_drops.fetch_add(1, Ordering::Relaxed);
+        }
+        dropped
     }
 
     #[cfg(target_os = "linux")]
@@ -177,6 +202,16 @@ impl OutputBuffers {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn software_video_drops(&self) -> u64 {
+        self.software_video_drops.load(Ordering::Relaxed)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn hardware_video_drops(&self) -> u64 {
+        self.hardware_video_drops.load(Ordering::Relaxed)
     }
 
     pub(crate) fn push_audio(&self, samples: &[f32]) -> usize {
@@ -205,7 +240,11 @@ impl OutputBuffers {
     pub(crate) fn clear(&self) {
         self.take_video();
         #[cfg(target_os = "linux")]
-        self.take_linux_video();
+        {
+            self.take_linux_video();
+            self.software_video_drops.store(0, Ordering::Relaxed);
+            self.hardware_video_drops.store(0, Ordering::Relaxed);
+        }
         self.audio
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -222,21 +261,30 @@ impl OutputBuffers {
 
 #[cfg(target_os = "linux")]
 pub(crate) struct LinuxHardwareOutput {
-    _sdl: sdl2::Sdl,
+    // These fields own resources derived from the SDL Wayland/X11 display.
+    // Rust drops fields in declaration order, so keep the presenter and
+    // window ahead of the SDL root to preserve their native lifetimes even
+    // when normal stop handling is bypassed during unwinding.
+    presenter: Option<opennow_streamer_platform_linux::VulkanPresenter>,
+    native_surface: Result<NativeSurface, String>,
+    input_capture: SdlInputCapture,
     window: sdl2::video::Window,
     event_pump: sdl2::EventPump,
     audio: AudioDevice<StreamAudioCallback>,
     output: Arc<OutputBuffers>,
-    native_surface: Result<NativeSurface, String>,
-    presenter: Option<opennow_streamer_platform_linux::VulkanPresenter>,
+    external_renderer: bool,
+    stream_size: (u32, u32),
     surface_size: Option<(u32, u32)>,
+    debug_overlay: NativeStatsOverlay,
+    presented_frames: u64,
     visible: bool,
     paused: bool,
+    _sdl: sdl2::Sdl,
 }
 
 #[cfg(target_os = "linux")]
 impl LinuxHardwareOutput {
-    fn initialize(output: Arc<OutputBuffers>) -> Result<Self, String> {
+    fn initialize(output: Arc<OutputBuffers>, stream: MediaStreamConfig) -> Result<Self, String> {
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
         let video = sdl
             .video()
@@ -244,22 +292,36 @@ impl LinuxHardwareOutput {
         let audio_subsystem = sdl
             .audio()
             .map_err(|error| format!("SDL audio initialization failed: {error}"))?;
-        if video.current_video_driver() != "x11" {
+        let video_driver = video.current_video_driver();
+        if !matches!(video_driver, "x11" | "wayland") {
             return Err(format!(
-                "Linux Vulkan child presentation requires X11/XWayland, but SDL selected {}",
-                video.current_video_driver()
+                "Linux Vulkan presentation requires X11 or Wayland, but SDL selected {video_driver}",
             ));
         }
-        let window = video
-            .window("OpenNOW Stream", 1280, 720)
+        let external_renderer = external_renderer_enabled();
+        if video_driver == "wayland" && !external_renderer {
+            return Err(
+                "Wayland presentation must use a compositor-managed top-level window".to_owned(),
+            );
+        }
+        let mut window_builder = video.window("OpenNOW Stream", 1280, 720);
+        window_builder
             .position_centered()
             .resizable()
-            .borderless()
+            .allow_highdpi()
             .hidden()
-            .vulkan()
+            .vulkan();
+        if !external_renderer {
+            window_builder.borderless();
+        }
+        let window = window_builder
             .build()
             .map_err(|error| format!("native Vulkan window creation failed: {error}"))?;
-        let native_surface = NativeSurface::new(&window);
+        let native_surface = if external_renderer {
+            Err("external Linux output does not use child-window embedding".to_owned())
+        } else {
+            NativeSurface::new(&window)
+        };
         let desired = AudioSpecDesired {
             freq: Some(AUDIO_SAMPLE_RATE),
             channels: Some(AUDIO_CHANNELS),
@@ -275,21 +337,30 @@ impl LinuxHardwareOutput {
             .event_pump()
             .map_err(|error| format!("native window event pump creation failed: {error}"))?;
         Ok(Self {
-            _sdl: sdl,
+            presenter: None,
+            native_surface,
+            input_capture: SdlInputCapture::new(
+                external_renderer && native_input_capture_enabled(),
+                false,
+            ),
             window,
             event_pump,
             audio,
             output,
-            native_surface,
-            presenter: None,
+            external_renderer,
+            stream_size: (stream.width.max(1), stream.height.max(1)),
             surface_size: None,
+            debug_overlay: NativeStatsOverlay::new(stream, "VA-API / VULKAN"),
+            presented_frames: 0,
             visible: false,
             paused: false,
+            _sdl: sdl,
         })
     }
 
     fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
         self.paused = false;
+        self.presented_frames = 0;
         self.output.clear();
         self.audio.resume();
         if let Some(surface) = surface {
@@ -301,6 +372,7 @@ impl LinuxHardwareOutput {
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
         if paused {
+            self.input_capture.release(&self._sdl, &mut self.window);
             self.audio.pause();
             self.output.clear();
         } else {
@@ -309,6 +381,7 @@ impl LinuxHardwareOutput {
     }
 
     fn stop(&mut self) {
+        self.input_capture.release(&self._sdl, &mut self.window);
         self.output.clear();
         self.audio.pause();
         self.presenter = None;
@@ -316,37 +389,62 @@ impl LinuxHardwareOutput {
         if let Ok(surface) = self.native_surface.as_mut() {
             surface.hide();
         }
+        if self.external_renderer {
+            self.window.hide();
+        }
         self.visible = false;
         self.paused = false;
     }
 
     fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
         let Some(rect) = surface.rect.filter(|_| surface.visible) else {
+            self.input_capture.release(&self._sdl, &mut self.window);
             if let Ok(native_surface) = self.native_surface.as_mut() {
                 native_surface.hide();
+            }
+            if self.external_renderer {
+                self.window.hide();
             }
             self.presenter = None;
             self.surface_size = None;
             self.visible = false;
             return Ok(());
         };
-        let parent_handle = surface
-            .window_handle
-            .as_deref()
-            .ok_or_else(|| "visible native surface is missing Electron windowHandle".to_owned())?;
-        self.native_surface
-            .as_mut()
-            .map_err(|error| error.clone())?
-            .attach_and_show(
-                parent_handle,
-                rect,
-                surface.screen_rect,
-                surface.device_scale_factor,
-            )?;
-        let size = (rect.width.max(2), rect.height.max(2));
+        if self.external_renderer {
+            let bounds = surface.screen_rect.unwrap_or(rect);
+            self.window.set_position(
+                sdl2::video::WindowPos::Positioned(bounds.x),
+                sdl2::video::WindowPos::Positioned(bounds.y),
+            );
+            self.window
+                .set_size(bounds.width.max(2), bounds.height.max(2))
+                .map_err(|error| format!("failed to resize external Vulkan surface: {error}"))?;
+            self.window.show();
+            if !self.visible {
+                self.window.raise();
+            }
+        } else {
+            let parent_handle = surface.window_handle.as_deref().ok_or_else(|| {
+                "visible native surface is missing Electron windowHandle".to_owned()
+            })?;
+            self.native_surface
+                .as_mut()
+                .map_err(|error| error.clone())?
+                .attach_and_show(
+                    parent_handle,
+                    rect,
+                    surface.screen_rect,
+                    surface.device_scale_factor,
+                )?;
+        }
+        let size = if self.external_renderer {
+            let (width, height) = self.window.vulkan_drawable_size();
+            (width.max(2), height.max(2))
+        } else {
+            (rect.width.max(2), rect.height.max(2))
+        };
         if self.presenter.is_none() {
             self.presenter = Some(create_linux_presenter(&self.window, size.0, size.1)?);
-            self.surface_size = Some(size);
         } else if self.surface_size != Some(size) {
             if let Some(presenter) = self.presenter.as_mut() {
                 presenter
@@ -354,31 +452,71 @@ impl LinuxHardwareOutput {
                     .map_err(|error| error.to_string())?;
             }
         }
-        self.surface_size = Some(size);
+        self.surface_size = self.presenter.as_ref().map(|presenter| presenter.extent());
         self.visible = true;
         Ok(())
     }
 
     fn pump(&mut self) -> Result<bool, String> {
-        if let Ok(surface) = self.native_surface.as_mut() {
+        if !self.external_renderer
+            && let Ok(surface) = self.native_surface.as_mut()
+        {
             surface.refresh_ordering()?;
         }
-        for event in self.event_pump.poll_iter() {
+        for event in self.event_pump.poll_iter().collect::<Vec<_>>() {
             if matches!(event, sdl2::event::Event::Quit { .. }) {
+                self.input_capture.release(&self._sdl, &mut self.window);
                 if let Ok(surface) = self.native_surface.as_mut() {
                     surface.hide();
                 }
+                if self.external_renderer {
+                    self.window.hide();
+                }
                 self.presenter = None;
                 self.visible = false;
+            } else if handle_linux_stats_shortcut(&mut self.debug_overlay, &event) {
+                continue;
+            } else if self.external_renderer
+                && handle_native_window_shortcut(&mut self.window, &event)
+            {
+                continue;
+            } else {
+                self.input_capture.handle_event(
+                    &self._sdl,
+                    &mut self.window,
+                    self.stream_size,
+                    event,
+                );
             }
         }
         if self.paused || !self.visible {
             self.output.take_linux_video();
             return Ok(false);
         }
-        let Some(frame) = self.output.take_linux_video() else {
+        if self.external_renderer {
+            let (width, height) = self.window.vulkan_drawable_size();
+            let drawable_size = (width.max(2), height.max(2));
+            if self.surface_size != Some(drawable_size) {
+                self.presenter
+                    .as_mut()
+                    .ok_or_else(|| {
+                        "Linux Vulkan presenter is not attached to a visible surface".to_owned()
+                    })?
+                    .reconfigure(drawable_size.0, drawable_size.1)
+                    .map_err(|error| error.to_string())?;
+                self.surface_size = self.presenter.as_ref().map(|presenter| presenter.extent());
+            }
+        }
+        self.debug_overlay.update(
+            self.presented_frames,
+            self.output.hardware_video_drops(),
+            self.input_capture.relative_mouse,
+        );
+        let Some(mut frame) = self.output.take_linux_video() else {
             return Ok(false);
         };
+        self.stream_size = (frame.format.width.max(1), frame.format.height.max(1));
+        self.debug_overlay.composite_linux_frame(&mut frame);
         self.presenter
             .as_mut()
             .ok_or_else(|| {
@@ -386,7 +524,26 @@ impl LinuxHardwareOutput {
             })?
             .present(&frame)
             .map_err(|error| error.to_string())?;
+        self.presented_frames = self.presented_frames.saturating_add(1);
         Ok(true)
+    }
+
+    fn take_captured_input(&mut self) -> Vec<CapturedInput> {
+        self.input_capture.take()
+    }
+
+    fn update_cursor(&mut self, bytes: &[u8]) {
+        if self.external_renderer {
+            self.input_capture
+                .apply_cursor(&self._sdl, &mut self.window, self.stream_size, bytes);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LinuxHardwareOutput {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -402,32 +559,38 @@ fn create_linux_presenter(
 
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 
-    let (display, screen) = match window
+    let display_handle = window
         .display_handle()
-        .map_err(|error| format!("SDL X11 display handle unavailable: {error}"))?
-        .as_raw()
-    {
-        RawDisplayHandle::Xlib(handle) => (
-            handle
-                .display
-                .ok_or_else(|| "SDL X11 display pointer is null".to_owned())?,
-            handle.screen,
-        ),
-        _ => return Err("SDL did not create an X11 display for Vulkan presentation".to_owned()),
-    };
-    let window_id = match window
+        .map_err(|error| format!("SDL display handle unavailable: {error}"))?;
+    let window_handle = window
         .window_handle()
-        .map_err(|error| format!("SDL X11 window handle unavailable: {error}"))?
-        .as_raw()
-    {
-        RawWindowHandle::Xlib(handle) => NonZeroU64::new(handle.window)
-            .ok_or_else(|| "SDL returned an empty X11 window handle".to_owned())?,
-        _ => return Err("SDL did not create an X11 window for Vulkan presentation".to_owned()),
-    };
-    let display = NonNull::<c_void>::new(display.as_ptr().cast())
-        .ok_or_else(|| "SDL X11 display pointer is null".to_owned())?;
-    let surface = unsafe {
-        opennow_streamer_platform_linux::NativeSurface::borrow_x11(display, window_id, screen)
+        .map_err(|error| format!("SDL window handle unavailable: {error}"))?;
+    let surface = match (display_handle.as_raw(), window_handle.as_raw()) {
+        (RawDisplayHandle::Xlib(display), RawWindowHandle::Xlib(window)) => {
+            let screen = display.screen;
+            let display = display
+                .display
+                .ok_or_else(|| "SDL X11 display pointer is null".to_owned())?;
+            let window = NonZeroU64::new(window.window)
+                .ok_or_else(|| "SDL returned an empty X11 window handle".to_owned())?;
+            let display = NonNull::<c_void>::new(display.as_ptr().cast())
+                .ok_or_else(|| "SDL X11 display pointer is null".to_owned())?;
+            unsafe {
+                opennow_streamer_platform_linux::NativeSurface::borrow_x11(display, window, screen)
+            }
+        }
+        (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(window)) => unsafe {
+            opennow_streamer_platform_linux::NativeSurface::borrow_wayland(
+                display.display,
+                window.surface,
+            )
+        },
+        _ => {
+            return Err(
+                "SDL returned mismatched or unsupported Linux handles for Vulkan presentation"
+                    .to_owned(),
+            );
+        }
     };
     opennow_streamer_platform_linux::VulkanPresenter::new(&surface, width, height)
         .map_err(|error| error.to_string())
@@ -721,22 +884,28 @@ impl SdlInputCapture {
 }
 
 pub(crate) struct SoftwareOutput {
-    _sdl: sdl2::Sdl,
-    canvas: WindowCanvas,
+    // Texture and window-owned resources must be released before the SDL
+    // renderer/window, and SDL itself must outlive every derived resource.
     texture: Option<Texture>,
+    native_surface: Result<NativeSurface, String>,
+    input_capture: SdlInputCapture,
+    canvas: WindowCanvas,
     texture_size: Option<(u32, u32)>,
     event_pump: sdl2::EventPump,
     audio: AudioDevice<StreamAudioCallback>,
     output: Arc<OutputBuffers>,
-    native_surface: Result<NativeSurface, String>,
-    input_capture: SdlInputCapture,
     external_renderer: bool,
+    #[cfg(target_os = "linux")]
+    debug_overlay: NativeStatsOverlay,
+    #[cfg(target_os = "linux")]
+    presented_frames: u64,
     visible: bool,
     paused: bool,
+    _sdl: sdl2::Sdl,
 }
 
 impl SoftwareOutput {
-    fn initialize(output: Arc<OutputBuffers>) -> Result<Self, String> {
+    fn initialize(output: Arc<OutputBuffers>, stream: MediaStreamConfig) -> Result<Self, String> {
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
         let video = sdl
             .video()
@@ -751,6 +920,9 @@ impl SoftwareOutput {
             .resizable()
             .hidden()
             .metal_view();
+        if external_renderer && cfg!(target_os = "linux") {
+            window_builder.allow_highdpi();
+        }
         if !external_renderer {
             window_builder.borderless();
         }
@@ -793,26 +965,36 @@ impl SoftwareOutput {
         };
 
         Ok(Self {
-            _sdl: sdl,
-            canvas,
             texture: None,
+            native_surface,
+            input_capture: SdlInputCapture::new(
+                cfg!(any(target_os = "windows", target_os = "linux"))
+                    && external_renderer
+                    && native_input_capture_enabled(),
+                false,
+            ),
+            canvas,
             texture_size: None,
             event_pump,
             audio,
             output,
-            native_surface,
-            input_capture: SdlInputCapture::new(
-                cfg!(target_os = "windows") && native_input_capture_enabled(),
-                false,
-            ),
             external_renderer,
+            #[cfg(target_os = "linux")]
+            debug_overlay: NativeStatsOverlay::new(stream, "OPENH264 / SDL"),
+            #[cfg(target_os = "linux")]
+            presented_frames: 0,
             visible: false,
             paused: false,
+            _sdl: sdl,
         })
     }
 
     fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
         self.paused = false;
+        #[cfg(target_os = "linux")]
+        {
+            self.presented_frames = 0;
+        }
         self.output.clear();
         self.audio.resume();
         if let Some(surface) = surface {
@@ -912,28 +1094,47 @@ impl SoftwareOutput {
                     self.canvas.window_mut().hide();
                 }
                 self.visible = false;
-            } else if self.external_renderer
+                continue;
+            }
+            #[cfg(target_os = "linux")]
+            if handle_linux_stats_shortcut(&mut self.debug_overlay, &event) {
+                continue;
+            }
+            if self.external_renderer
                 && handle_native_window_shortcut(self.canvas.window_mut(), &event)
             {
                 continue;
-            } else {
-                let window_size = self.canvas.window().size();
-                let stream_size = self.texture_size.unwrap_or(window_size);
-                self.input_capture.handle_event(
-                    &self._sdl,
-                    self.canvas.window_mut(),
-                    stream_size,
-                    event,
-                );
             }
+            let window_size = self.canvas.window().size();
+            let stream_size = self.texture_size.unwrap_or(window_size);
+            self.input_capture.handle_event(
+                &self._sdl,
+                self.canvas.window_mut(),
+                stream_size,
+                event,
+            );
         }
         if self.paused || !self.visible {
             self.output.take_video();
             return Ok(false);
         }
-        let Some(frame) = self.output.take_video() else {
+        let Some(mut frame) = self.output.take_video() else {
             return Ok(false);
         };
+        #[cfg(target_os = "linux")]
+        {
+            self.debug_overlay.update(
+                self.presented_frames,
+                self.output.software_video_drops(),
+                self.input_capture.relative_mouse,
+            );
+            self.debug_overlay.composite_rgb24(
+                &mut frame.rgb,
+                frame.width,
+                frame.height,
+                frame.width as usize * 3,
+            );
+        }
         if self.texture_size != Some((frame.width, frame.height)) {
             self.texture = Some(
                 self.canvas
@@ -953,6 +1154,10 @@ impl SoftwareOutput {
         self.canvas.clear();
         self.canvas.copy(texture, None, target)?;
         self.canvas.present();
+        #[cfg(target_os = "linux")]
+        {
+            self.presented_frames = self.presented_frames.saturating_add(1);
+        }
         Ok(true)
     }
 
@@ -979,6 +1184,12 @@ impl SoftwareOutput {
         for input in self.take_captured_input() {
             captured_input.push(input);
         }
+    }
+}
+
+impl Drop for SoftwareOutput {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -1328,6 +1539,31 @@ fn normalized_cursor_coordinate(value: u16, viewport_extent: u32) -> i32 {
     coordinate.min(extent.saturating_sub(1)) as i32
 }
 
+#[cfg(target_os = "linux")]
+fn handle_linux_stats_shortcut(
+    overlay: &mut NativeStatsOverlay,
+    event: &sdl2::event::Event,
+) -> bool {
+    use sdl2::event::Event;
+    use sdl2::keyboard::Scancode;
+
+    match event {
+        Event::KeyDown {
+            scancode: Some(Scancode::F3),
+            repeat: false,
+            ..
+        } => {
+            overlay.toggle();
+            true
+        }
+        Event::KeyUp {
+            scancode: Some(Scancode::F3),
+            ..
+        } => true,
+        _ => false,
+    }
+}
+
 fn handle_native_window_shortcut(
     window: &mut sdl2::video::Window,
     event: &sdl2::event::Event,
@@ -1414,13 +1650,13 @@ impl ActiveOutput {
         }
         #[cfg(target_os = "linux")]
         if use_linux_hardware {
-            return LinuxHardwareOutput::initialize(output)
+            return LinuxHardwareOutput::initialize(output, stream)
                 .map(Box::new)
                 .map(Self::LinuxHardware);
         }
-        let _ = (use_hardware, stream);
+        let _ = use_hardware;
         let _ = use_linux_hardware;
-        SoftwareOutput::initialize(output)
+        SoftwareOutput::initialize(output, stream)
             .map(Box::new)
             .map(Self::Software)
     }
@@ -1509,7 +1745,7 @@ impl ActiveOutput {
             #[cfg(target_os = "windows")]
             Self::Windows(output) => output.take_captured_input(),
             #[cfg(target_os = "linux")]
-            Self::LinuxHardware(_) => Vec::new(),
+            Self::LinuxHardware(output) => output.take_captured_input(),
             #[cfg(target_os = "macos")]
             Self::Mac(_) => Vec::new(),
         }
@@ -1521,7 +1757,7 @@ impl ActiveOutput {
             #[cfg(target_os = "windows")]
             Self::Windows(output) => output.update_cursor(bytes),
             #[cfg(target_os = "linux")]
-            Self::LinuxHardware(_) => {}
+            Self::LinuxHardware(output) => output.update_cursor(bytes),
             #[cfg(target_os = "macos")]
             Self::Mac(_) => {}
         }
@@ -2110,6 +2346,10 @@ mod tests {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
             linux_video: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            software_video_drops: AtomicU64::new(0),
+            #[cfg(target_os = "linux")]
+            hardware_video_drops: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::new()),
             audio_capacity: 4,
             captured_input: Arc::new(CapturedInputQueue::default()),

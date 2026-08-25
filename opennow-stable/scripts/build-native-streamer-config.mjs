@@ -1,4 +1,9 @@
-export function nativeStreamerCargoArgs({ manifestPath, nativeTarget, platformKey }) {
+export function nativeStreamerCargoArgs({
+  manifestPath,
+  nativeTarget,
+  platformKey,
+  enableLinuxVaapi = true,
+}) {
   const args = [
     "build",
     "--locked",
@@ -8,7 +13,7 @@ export function nativeStreamerCargoArgs({ manifestPath, nativeTarget, platformKe
     "--manifest-path",
     manifestPath,
   ];
-  if (platformKey.startsWith("linux-")) {
+  if (platformKey.startsWith("linux-") && enableLinuxVaapi) {
     args.push("--features", "linux-vaapi");
   }
   if (nativeTarget) {

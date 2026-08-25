@@ -48,6 +48,7 @@ interface ManagerInternals {
   capabilities: NativeStreamerCapabilities | null;
   activeTransportCapabilities: NativeStreamerActiveTransportCapabilities | null;
   inputReady: boolean;
+  nativeInputOwner: "electron" | "native";
   nvstTransportReady: boolean;
   nvstReadinessError: Error | null;
   pending: Map<string, unknown>;
@@ -285,6 +286,22 @@ test("input is suppressed until the active transport reports its channels ready"
   internals.handleEvent({ type: "input-ready", protocolVersion: 3 });
   manager.sendInput({ payloadBase64: "AQ==" });
   assert.equal(writes, 1);
+});
+
+test("input readiness reports the native window owner to the renderer", () => {
+  const emitted: MainToRendererSignalingEvent[] = [];
+  const { internals } = createManager(emitted);
+  internals.activeSessionId = "wayland-session";
+  internals.activeTransportCapabilities = activeInputCapabilities();
+  internals.nativeInputOwner = "native";
+
+  internals.handleEvent({ type: "input-ready", protocolVersion: 3 });
+
+  assert.deepEqual(emitted, [{
+    type: "native-input-ready",
+    protocolVersion: 3,
+    inputOwner: "native",
+  }]);
 });
 
 test("input unavailable clears readiness and forwards the native reason", () => {

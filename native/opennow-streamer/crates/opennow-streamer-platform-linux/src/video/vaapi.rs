@@ -1,6 +1,5 @@
 use std::cell::{RefCell, UnsafeCell};
 use std::fmt;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use cros_codecs::backend::vaapi::decoder::VaapiBackend;
@@ -191,7 +190,7 @@ impl VideoFrame for VaFrame {
 
     fn to_native_handle(
         &self,
-        display: &Rc<Display>,
+        display: &Arc<Display>,
     ) -> std::result::Result<Self::NativeHandle, String> {
         display
             .create_surfaces(
@@ -214,7 +213,7 @@ impl VideoFrame for VaFrame {
 }
 
 pub(crate) struct VaApiDecoder {
-    decoder: StatelessDecoder<H264, VaapiBackend<VaFrame>>,
+    decoder: H264VaapiDecoder,
     requested_format: StreamFormat,
     allocation_visible: Resolution,
     allocation_coded: Resolution,
@@ -233,9 +232,11 @@ impl VaApiDecoder {
                 .to_native_handle(&display)
                 .map_err(|error| format!("VA-API cannot allocate an NV12 user surface: {error}"))?,
         );
-        Ok(display
+        let vendor = display
             .query_vendor_string()
-            .unwrap_or_else(|_| "VA-API H.264 device".to_owned()))
+            .unwrap_or_else(|_| "VA-API H.264 device".to_owned());
+        drop(open_h264_decoder(Arc::clone(&display))?);
+        Ok(vendor)
     }
 
     pub fn open(format: StreamFormat) -> Result<Self> {
@@ -248,14 +249,8 @@ impl VaApiDecoder {
         })?;
         validate_h264_display(&display)
             .map_err(|error| Error::unavailable(Subsystem::VaApi, error))?;
-        let decoder = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            StatelessDecoder::<H264, VaapiBackend<VaFrame>>::new_vaapi(
-                display,
-                cros_codecs::decoder::BlockingMode::NonBlocking,
-            )
-        }))
-        .map_err(|_| Error::backend(Subsystem::VaApi, "VA-API decoder initialization panicked"))?
-        .map_err(|error| Error::backend(Subsystem::VaApi, error.to_string()))?;
+        let decoder = open_h264_decoder(display)
+            .map_err(|error| Error::unavailable(Subsystem::VaApi, error))?;
         let resolution = Resolution::from((format.width, format.height));
         Ok(Self {
             decoder,
@@ -318,6 +313,43 @@ impl VaApiDecoder {
         }
         Ok(frames)
     }
+}
+
+type H264VaapiDecoder = StatelessDecoder<H264, VaapiBackend<VaFrame>>;
+
+fn open_h264_decoder(display: Arc<Display>) -> std::result::Result<H264VaapiDecoder, String> {
+    // cros-codecs creates a 16x16 context without render targets in its
+    // constructor. Some drivers advertise H.264 and allocate surfaces but
+    // reject that context shape (notably nvidia-vaapi-driver). Exercise the
+    // exact operation first so an incompatible driver becomes a normal
+    // capability failure instead of reaching the dependency's `expect`.
+    validate_initial_context(&display)?;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        H264VaapiDecoder::new_vaapi(display, cros_codecs::decoder::BlockingMode::NonBlocking)
+    }))
+    .map_err(|_| "VA-API decoder initialization panicked".to_owned())?
+    .map_err(|error| error.to_string())
+}
+
+fn validate_initial_context(display: &Arc<Display>) -> std::result::Result<(), String> {
+    let config = display
+        .create_config(
+            vec![libva::VAConfigAttrib {
+                type_: libva::VAConfigAttribType::VAConfigAttribRTFormat,
+                value: libva::VA_RT_FORMAT_YUV420,
+            }],
+            libva::VAProfile::VAProfileH264Main,
+            libva::VAEntrypoint::VAEntrypointVLD,
+        )
+        .map_err(|error| format!("VA-API cannot create the H.264 decoder config: {error}"))?;
+    drop(
+        display
+            .create_context::<VaUserPtrDescriptor>(&config, 16, 16, None, true)
+            .map_err(|error| {
+                format!("VA-API cannot create the initial H.264 decoder context: {error}")
+            })?,
+    );
+    Ok(())
 }
 
 impl VideoDecoder for VaApiDecoder {

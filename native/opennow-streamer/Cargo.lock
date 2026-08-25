@@ -262,6 +262,20 @@ name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc0e56a716f1e132ff6bf4bdac1c944a3fcdc1cae65f70a4a2a1ac3b401d2d1f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
 
 [[package]]
 name = "byteorder"
@@ -511,15 +525,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "cros-codecs-generic-vaapi"
-version = "0.0.6-generic.2"
+name = "cros-codecs-extended"
+version = "0.0.5-extended.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd2e184a6c20ba10f6aab7444ce97ec6b50daca891d2c4e6a450416f34476a53"
+checksum = "a5130a93260541c9418be3a57af40916c662e16d02f25727d8f7ad0738ebde1f"
 dependencies = [
  "anyhow",
  "byteorder",
  "crc32fast",
- "cros-libva",
+ "cros-libva-extended",
+ "drm",
+ "drm-fourcc",
  "log",
  "nix",
  "thiserror 1.0.69",
@@ -527,10 +543,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "cros-libva"
-version = "0.0.12"
+name = "cros-libva-extended"
+version = "0.0.13-extended.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "902c9726e953b678595456bd38f95f31aaf1947c56dd9f4a2290f3f1eca4d228"
+checksum = "a734fee2508191b121a756bd5eb35caf0aa096e7f20b7b6020e689a75edd92e5"
 dependencies = [
  "bindgen",
  "bitflags 2.13.1",
@@ -719,6 +735,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "drm"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98888c4bbd601524c11a7ed63f814b8825f420514f78e96f752c437ae9cbb5d1"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "drm-ffi",
+ "drm-fourcc",
+ "rustix",
+]
+
+[[package]]
+name = "drm-ffi"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97c98727e48b7ccb4f4aea8cfe881e5b07f702d17b7875991881b41af7278d53"
+dependencies = [
+ "drm-sys",
+ "rustix",
+]
+
+[[package]]
+name = "drm-fourcc"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0aafbcdb8afc29c1a7ee5fbe53b5d62f4565b35a042a662ca9fecd0b54dae6f4"
+
+[[package]]
+name = "drm-sys"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd39dde40b6e196c2e8763f23d119ddb1a8714534bf7d77fa97a65b0feda3986"
+dependencies = [
+ "libc",
+ "linux-raw-sys 0.6.5",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -763,6 +818,16 @@ dependencies = [
  "sec1",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "errno"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1022,6 +1087,18 @@ dependencies = [
  "cfg-if",
  "windows-link",
 ]
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a385b1be4e5c3e362ad2ffa73c392e53f031eaa5b7d648e64cd87f27f6063d7"
 
 [[package]]
 name = "log"
@@ -1513,7 +1590,7 @@ version = "0.2.0"
 dependencies = [
  "ash",
  "ash-window",
- "cros-codecs-generic-vaapi",
+ "cros-codecs-extended",
  "libc",
  "libloading",
  "raw-window-handle",
@@ -1884,6 +1961,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustix"
+version = "0.38.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
+dependencies = [
+ "bitflags 2.13.1",
+ "errno",
+ "libc",
+ "linux-raw-sys 0.4.15",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "rustls-pki-types"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1928,10 +2018,9 @@ dependencies = [
 [[package]]
 name = "sdl2"
 version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d42407afc6a8ab67e36f92e80b8ba34cbdc55aaeed05249efe9a2e8d0e9feef"
+source = "git+https://github.com/Rust-SDL2/rust-sdl2.git?rev=adeb978d921a1440da07fddd6651da9f567ed21b#adeb978d921a1440da07fddd6651da9f567ed21b"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.13.1",
  "lazy_static",
  "libc",
  "raw-window-handle",
@@ -1941,8 +2030,7 @@ dependencies = [
 [[package]]
 name = "sdl2-sys"
 version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ff61407fc75d4b0bbc93dc7e4d6c196439965fbef8e4a4f003a36095823eac0"
+source = "git+https://github.com/Rust-SDL2/rust-sdl2.git?rev=adeb978d921a1440da07fddd6651da9f567ed21b#adeb978d921a1440da07fddd6651da9f567ed21b"
 dependencies = [
  "cfg-if",
  "cmake",
@@ -2596,6 +2684,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets",
 ]

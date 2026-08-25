@@ -1358,10 +1358,7 @@ export class GfnWebRtcClient {
     this.nativeInputActive = true;
     // Internal (one-window) mode: Electron owns capture and IPC-forwards packets.
     // External floating window: OS-level capture stays in the native streamer.
-    // Linux is Internal-only: always use the Electron IPC bridge regardless of stale options.
-    const isLinuxHost = typeof navigator !== "undefined"
-      && /linux/i.test(`${navigator.platform} ${navigator.userAgent}`);
-    this.nativeElectronInputBridge = isLinuxHost || options?.electronInputBridge !== false;
+    this.nativeElectronInputBridge = options?.electronInputBridge !== false;
     this.inputReady = true;
     const nativeProtocolVersion = GfnWebRtcClient.normalizeInputProtocolVersion(
       protocolVersion
@@ -1425,9 +1422,12 @@ export class GfnWebRtcClient {
       );
     } else {
       this.detachInputCapture();
-      this.gamepadController.stop();
+      // SDL owns keyboard/mouse in an external native window. Keep Chromium's
+      // Gamepad API polling alive because the native capture protocol currently
+      // carries keyboard and mouse events only.
+      this.gamepadController.start();
       this.log(
-        `Native external-window input active (protocol v${nativeProtocolVersion}); Electron input capture is disabled and SDL owns the stream window.`,
+        `Native external-window input active (protocol v${nativeProtocolVersion}); SDL owns keyboard/mouse and Electron retains gamepad forwarding.`,
       );
     }
   }

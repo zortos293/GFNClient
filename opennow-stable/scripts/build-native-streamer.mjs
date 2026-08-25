@@ -21,6 +21,7 @@ const appProtocolSourcePath = join(packageRoot, "src", "shared", "nativeStreamer
 const nativeTarget = process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
 const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim()
   || `${process.platform}-${process.arch}`;
+const enableLinuxVaapi = process.env.OPENNOW_NATIVE_LINUX_VAAPI !== "0";
 const exeName = platformKey.startsWith("win32-") ? "opennow-streamer.exe" : "opennow-streamer";
 const releaseDir = nativeTarget
   ? join(workspaceRoot, "target", nativeTarget, "release")
@@ -52,7 +53,12 @@ if (appProtocolVersion !== nativeProtocolVersion) {
   );
 }
 
-const cargoArgs = nativeStreamerCargoArgs({ manifestPath, nativeTarget, platformKey });
+const cargoArgs = nativeStreamerCargoArgs({
+  manifestPath,
+  nativeTarget,
+  platformKey,
+  enableLinuxVaapi,
+});
 
 const build = spawnSync("cargo", cargoArgs, {
   cwd: workspaceRoot,

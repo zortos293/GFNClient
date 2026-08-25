@@ -50,3 +50,15 @@ test("host Linux production build snapshot enables VA-API without a target", () 
     [...common, "--features", "linux-vaapi"],
   );
 });
+
+test("Linux production build can explicitly disable VA-API", () => {
+  assert.deepEqual(
+    nativeStreamerCargoArgs({
+      manifestPath: "/workspace/Cargo.toml",
+      nativeTarget: "",
+      platformKey: "linux-x64",
+      enableLinuxVaapi: false,
+    }),
+    common,
+  );
+});

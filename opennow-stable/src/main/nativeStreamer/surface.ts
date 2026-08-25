@@ -5,12 +5,17 @@ import type {
 } from "@shared/gfn";
 
 export function nativeWindowHandleToHex(window: BrowserWindow): string | null {
-  const handle = window.getNativeWindowHandle();
-  if (handle.byteLength >= 8) {
-    return `0x${handle.readBigUInt64LE(0).toString(16)}`;
-  }
-  if (handle.byteLength >= 4) {
-    return `0x${handle.readUInt32LE(0).toString(16)}`;
+  try {
+    const handle = window.getNativeWindowHandle();
+    if (handle.byteLength >= 8) {
+      return `0x${handle.readBigUInt64LE(0).toString(16)}`;
+    }
+    if (handle.byteLength >= 4) {
+      return `0x${handle.readUInt32LE(0).toString(16)}`;
+    }
+  } catch {
+    // Native Wayland output is a separate top-level surface and does not need
+    // an Electron platform handle.
   }
   return null;
 }
@@ -25,9 +30,6 @@ export function normalizeNativeRenderSurface(
   }
 
   const windowHandle = nativeWindowHandleToHex(window);
-  if (!windowHandle) {
-    return null;
-  }
 
   const deviceScaleFactor = Number.isFinite(input.deviceScaleFactor)
     ? Math.min(8, Math.max(0.25, input.deviceScaleFactor))
@@ -51,7 +53,7 @@ export function normalizeNativeRenderSurface(
   const screenOrigin = dipToScreenPoint?.(screenOriginDip) ?? screenOriginDip;
 
   return {
-    windowHandle,
+    ...(windowHandle ? { windowHandle } : {}),
     deviceScaleFactor,
     visible,
     showStats: input.showStats === true,

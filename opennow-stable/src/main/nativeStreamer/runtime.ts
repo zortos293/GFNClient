@@ -7,6 +7,7 @@ import {
   type NativeStreamerRuntimeStatus,
   type NativeVideoBackendPreference,
 } from "@shared/gfn";
+import { resolveLinuxWindowSystem } from "../linuxWindowSystem";
 
 export interface NativeStreamerRuntimeEnvironmentOptions {
   executablePath: string;
@@ -77,14 +78,13 @@ export function isPathInside(
 export function createNativeStreamerRuntimeEnvironment(
   options: NativeStreamerRuntimeEnvironmentOptions,
 ): NativeStreamerRuntimeEnvironment {
-  if (
-    options.platform === "linux" &&
-    options.linuxOzonePlatform?.trim().toLowerCase() === "wayland"
-  ) {
-    throw new Error(
-      "Native Linux presentation requires Electron X11/XWayland child surfaces. Relaunch without --ozone-platform=wayland or use --ozone-platform=x11.",
-    );
-  }
+  const linuxWindowSystem = options.platform === "linux"
+    ? resolveLinuxWindowSystem(options.linuxOzonePlatform, options.baseEnv)
+    : null;
+  // Wayland deliberately gives the streamer its own compositor-managed window:
+  // the protocol has no portable equivalent of X11 child-window reparenting.
+  const externalRendererEnabled = options.externalRendererEnabled
+    || linuxWindowSystem === "wayland";
   const env: NodeJS.ProcessEnv = {
     ...options.baseEnv,
     OPENNOW_NATIVE_STREAMER_PROTOCOL: String(options.protocolVersion),
@@ -94,18 +94,19 @@ export function createNativeStreamerRuntimeEnvironment(
     OPENNOW_NATIVE_D3D_FULLSCREEN: nativeStreamerFeatureModeToEnvValue(
       options.d3dFullscreenMode,
     ),
-    OPENNOW_NATIVE_EXTERNAL_RENDERER: options.externalRendererEnabled
+    OPENNOW_NATIVE_EXTERNAL_RENDERER: externalRendererEnabled
       ? "1"
       : "0",
     // A separate renderer window owns its SDL event loop and forwards input
     // directly over NVST. Embedded mode keeps Electron as the sole owner.
-    OPENNOW_NATIVE_INPUT_OWNER: options.externalRendererEnabled
+    OPENNOW_NATIVE_INPUT_OWNER: externalRendererEnabled
       ? "native"
       : "electron",
     OPENNOW_NATIVE_VIDEO_BACKEND: options.videoBackendPreference,
   };
-  if (options.platform === "linux") {
-    env.SDL_VIDEODRIVER = "x11";
+  if (linuxWindowSystem) {
+    env.OPENNOW_NATIVE_WINDOW_SYSTEM = linuxWindowSystem;
+    env.SDL_VIDEODRIVER = linuxWindowSystem;
   }
   delete env.GST_PLUGIN_PATH;
   delete env.GST_PLUGIN_PATH_1_0;
@@ -122,7 +123,9 @@ export function createNativeStreamerRuntimeEnvironment(
       selfContained: true,
       path: options.executablePath,
       message:
-        "Native streamer v2 is self-contained; no external media runtime is required.",
+        linuxWindowSystem === "wayland"
+          ? "Native streamer v2 is using a compositor-managed Wayland output window; no external media runtime is required."
+          : "Native streamer v2 is self-contained; no external media runtime is required.",
     },
   };
 }

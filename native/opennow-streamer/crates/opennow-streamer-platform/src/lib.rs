@@ -3,6 +3,7 @@ mod linux_backend;
 #[cfg(target_os = "macos")]
 mod macos_backend;
 mod media;
+mod native_stats_overlay;
 mod native_surface;
 mod output;
 mod queue;

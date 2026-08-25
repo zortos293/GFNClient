@@ -31,7 +31,9 @@ hmac = "0.12"
 image = { version = "0.25", default-features = false, features = ["bmp", "ico", "png"] }
 openh264 = { version = "0.9.8", default-features = false, features = ["source"] }
 opus = "0.3.1"
-sdl2 = { version = "0.38.0", default-features = false, features = ["bundled", "raw-window-handle", "static-link", "unsafe_textures"] }
+# Pin rust-sdl2 after its bundled SDL2 update. SDL 2.26.4 from the crates.io
+# release does not compile against current PipeWire headers with modern GCC.
+sdl2 = { git = "https://github.com/Rust-SDL2/rust-sdl2.git", rev = "adeb978d921a1440da07fddd6651da9f567ed21b", default-features = false, features = ["bundled", "raw-window-handle", "static-link", "unsafe_textures"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"

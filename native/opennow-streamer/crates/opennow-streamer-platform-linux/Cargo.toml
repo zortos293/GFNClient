@@ -14,7 +14,9 @@ vulkan = ["dep:ash", "dep:ash-window", "dep:raw-window-handle"]
 [dependencies]
 ash = { version = "0.38", optional = true }
 ash-window = { version = "0.13", optional = true }
-cros-codecs = { package = "cros-codecs-generic-vaapi", version = "0.0.6-generic.2", features = ["vaapi"], optional = true }
+# This maintained fork zero-initializes libva extension fields, so it remains
+# buildable when newer libva headers grow the VP9 parameter structures.
+cros-codecs = { package = "cros-codecs-extended", version = "0.0.5-extended.2", features = ["vaapi"], optional = true }
 libc = "0.2"
 libloading = "0.8"
 raw-window-handle = { version = "0.6", optional = true }

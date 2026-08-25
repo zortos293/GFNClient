@@ -2408,13 +2408,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }.onFailure { error ->
                     recordDebugEvent("launch", "Game access refresh failed; using cached metadata error=${error.debugMessage()}")
                 }
-                if (shouldAutoMarkFreeToPlayOwnership(launchGame, selectedVariant)) {
-                    val freeVariant = checkNotNull(selectedVariant)
-                    _state.update { it.copy(launchPhase = "Adding free game to library") }
-                    catalogRepository.addOwnedVariant(token, freeVariant.id)
-                    launchGame = launchGame.withManuallyOwnedVariant(freeVariant.id)
-                    selectedVariant = launchGame.variants.firstOrNull { it.id == freeVariant.id }
-                    recordDebugEvent("launch", "Added free-to-play variant to GFN library variant=${freeVariant.id}")
+                if (shouldMarkVariantOwnedBeforeLaunch(launchGame, selectedVariant)) {
+                    val unownedVariant = checkNotNull(selectedVariant)
+                    _state.update { it.copy(launchPhase = "Marking game as owned") }
+                    catalogRepository.addOwnedVariant(token, unownedVariant.id)
+                    launchGame = launchGame.withManuallyOwnedVariant(unownedVariant.id)
+                    selectedVariant = launchGame.variants.firstOrNull { it.id == unownedVariant.id }
+                    recordDebugEvent("launch", "Marked variant as owned in GFN library variant=${unownedVariant.id}")
                 }
                 val accountLinked = shouldSendAccountLinked(launchGame, selectedVariant)
                 _state.update { it.copy(launchPhase = "Resolving game", streamGame = launchGame) }

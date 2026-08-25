@@ -43,7 +43,7 @@ class TouchOverlayLayoutTest {
     }
 
     @Test
-    fun touchStickMappingStillCoversTheFullRangeForActualJoysticks() {
+    fun touchAimZoneMapsFingerTravelToRightStickRange() {
         val halfTravel = touchStickValue(deltaX = 36f, deltaY = -36f, maxTravel = 72f, deadZone = 0f)
         val beyondZone = touchStickValue(deltaX = 144f, deltaY = 0f, maxTravel = 72f, deadZone = 0f)
 
@@ -62,5 +62,29 @@ class TouchOverlayLayoutTest {
         assertEquals(0f, insideDeadZone.y, 0.0001f)
         assertEquals(0f, invalid.x, 0.0001f)
         assertEquals(0f, invalid.y, 0.0001f)
+    }
+
+    @Test
+    fun builtInControlVisibilityIsIndependent() {
+        val customized = AndroidTouchSettings()
+            .withControlVisible(TouchControlGroup.Dpad, false)
+            .withControlVisible(TouchControlGroup.RightStick, false)
+
+        assertTrue(customized.isControlVisible(TouchControlGroup.FaceButtons))
+        assertEquals(false, customized.isControlVisible(TouchControlGroup.Dpad))
+        assertEquals(false, customized.isControlVisible(TouchControlGroup.RightStick))
+    }
+
+    @Test
+    fun programmableSlotsAreFixedWidthAndCycleThroughOff() {
+        val customized = AndroidTouchSettings()
+            .withExtraButtonAction(3, TouchExtraButtonAction.RightTrigger)
+
+        assertEquals(TouchExtraButtonAction.RightTrigger, customized.extraButtonAction(3))
+        assertEquals(TouchExtraButtonAction.None, nextTouchExtraButtonAction(TouchExtraButtonAction.Select))
+        assertEquals(
+            TouchExtraButtonAction.RightTrigger,
+            customized.withExtraButtonAction(9, TouchExtraButtonAction.A).extraButtonAction(3),
+        )
     }
 }

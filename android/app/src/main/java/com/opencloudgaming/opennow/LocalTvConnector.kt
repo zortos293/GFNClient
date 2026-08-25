@@ -266,8 +266,7 @@ internal class LocalTvConnector {
         _state.value = _state.value.copy(error = message, busy = false)
     }
 
-    fun isPairUri(uri: Uri?): Boolean =
-        uri?.scheme.equals("opennow", ignoreCase = true) && uri?.host.equals("pair", ignoreCase = true)
+    fun isPairUri(uri: Uri?): Boolean = isLocalTvPairUri(uri)
 
     fun pairPhone(uri: Uri) {
         if (!isPairUri(uri)) return
@@ -782,6 +781,9 @@ internal class LocalTvConnector {
         const val MAX_DISCOVERY_PACKET_BYTES = 2_048
     }
 }
+
+internal fun isLocalTvPairUri(uri: Uri?): Boolean =
+    uri?.scheme.equals("opennow", ignoreCase = true) && uri?.host.equals("pair", ignoreCase = true)
 
 internal fun normalizeLocalTvPairingCode(value: String): String? =
     value.trim().takeIf { it.matches(Regex("[0-9]{4}")) }

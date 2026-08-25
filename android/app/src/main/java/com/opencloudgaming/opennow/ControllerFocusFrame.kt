@@ -54,13 +54,20 @@ internal fun shouldDrawStaticInteractionFocus(
 ): Boolean = visible && !cinemaEffectEnabled
 
 /**
- * Catalog cards are borderless unless Absolute Cinema is active. Its accent-coloured base stroke
- * sits under the animated sibling frame; every ordinary theme keeps the artwork edge clean.
+ * Static game-card strokes are independent from the optional animated sibling frame. Controller
+ * focus always keeps a bold white navigation cue when those effects are disabled, even if the user
+ * also turned off resting game borders.
  */
 internal fun catalogCardBorderColor(
     selectionColor: Color,
-    absoluteCinemaEnabled: Boolean,
-): Color = if (absoluteCinemaEnabled) selectionColor else Color.Transparent
+    gameBorderEnabled: Boolean,
+    controllerFocused: Boolean = false,
+    borderEffectsEnabled: Boolean = false,
+): Color = when {
+    controllerFocused && !borderEffectsEnabled -> Color.White
+    gameBorderEnabled -> selectionColor
+    else -> Color.Transparent
+}
 
 internal fun cinemaBorderColor(
     absoluteCinemaEnabled: Boolean,

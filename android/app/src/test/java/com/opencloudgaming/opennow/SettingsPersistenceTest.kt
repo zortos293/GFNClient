@@ -36,6 +36,14 @@ class SettingsPersistenceTest {
                 faceButtonScale = 1.25f,
                 rightStickScale = 0.85f,
                 stickKnobScale = 0.58f,
+                visibleControlGroups = TouchControlGroup.entries.toSet() - TouchControlGroup.Dpad,
+                extraButtonActions = listOf(
+                    TouchExtraButtonAction.Guide,
+                    TouchExtraButtonAction.RightTrigger,
+                    TouchExtraButtonAction.A,
+                    TouchExtraButtonAction.None,
+                ),
+                extraButtonScale = 1.3f,
                 gyroscopeEnabled = true,
                 gyroscopeSensitivity = 1.4f,
                 gyroscopeInvertVertical = true,
@@ -51,5 +59,20 @@ class SettingsPersistenceTest {
         // forever under a conflated collector.
         val once = AppSettings().normalizedForAndroid()
         assertEquals(once, once.normalizedForAndroid())
+    }
+
+    @Test
+    fun programmableButtonsNormalizeToFourSafeSlots() {
+        val normalized = AppSettings(
+            androidTouch = AndroidTouchSettings(
+                extraButtonActions = listOf(TouchExtraButtonAction.A),
+                extraButtonScale = Float.POSITIVE_INFINITY,
+            ),
+        ).normalizedForAndroid().androidTouch
+
+        assertEquals(TOUCH_EXTRA_BUTTON_COUNT, normalized.extraButtonActions.size)
+        assertEquals(TouchExtraButtonAction.A, normalized.extraButtonAction(0))
+        assertEquals(TouchExtraButtonAction.None, normalized.extraButtonAction(3))
+        assertEquals(AndroidTouchSettings().extraButtonScale, normalized.extraButtonScale, 0.0001f)
     }
 }

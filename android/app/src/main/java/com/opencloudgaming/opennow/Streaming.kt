@@ -301,8 +301,11 @@ class NativeStreamClient(
     private var audioMuted = false
     private var microphoneMuted = false
     private var virtualButtons = 0
+    private val virtualButtonPressSources = mutableMapOf<Int, MutableSet<String>>()
     private var virtualLeftTrigger = 0
     private var virtualRightTrigger = 0
+    private val virtualLeftTriggerPressSources = mutableSetOf<String>()
+    private val virtualRightTriggerPressSources = mutableSetOf<String>()
     private var virtualLeftStickActive = false
     private var virtualLeftStickX = 0
     private var virtualLeftStickY = 0
@@ -351,7 +354,6 @@ class NativeStreamClient(
     private val gamepadStateBurstLimiter = GamepadStateBurstLimiter(GAMEPAD_STATE_MIN_SEND_INTERVAL_MS)
     private var gamepadStateBurstFlushJob: Job? = null
     private val externalMouseMotionAccumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
-    private val touchAimMouseMotionAccumulator = MouseMotionAccumulator()
     private val gyroscopeMouseMotionAccumulator = MouseMotionAccumulator()
     private var externalMouseMotionDeviceId = Int.MIN_VALUE
     private var externalMouseMotionSource = 0
@@ -896,8 +898,11 @@ class NativeStreamClient(
 
     private fun resetInputState() {
         virtualButtons = 0
+        virtualButtonPressSources.clear()
         virtualLeftTrigger = 0
         virtualRightTrigger = 0
+        virtualLeftTriggerPressSources.clear()
+        virtualRightTriggerPressSources.clear()
         virtualLeftStickActive = false
         virtualLeftStickX = 0
         virtualLeftStickY = 0
@@ -947,7 +952,6 @@ class NativeStreamClient(
         mousePositionValid = false
         mouseSuppressNextAbsoluteDelta = false
         externalMouseMotionAccumulator.reset()
-        touchAimMouseMotionAccumulator.reset()
         gyroscopeMouseMotionAccumulator.reset()
         externalMouseMotionDeviceId = Int.MIN_VALUE
         externalMouseMotionSource = 0
@@ -1584,26 +1588,38 @@ class NativeStreamClient(
     }
 
     fun setVirtualButton(buttonMask: Int, pressed: Boolean) {
+        setVirtualButtonFromSource(buttonMask, "primary-$buttonMask", pressed)
+    }
+
+    /** Keeps duplicate movable buttons from releasing an action another finger still holds. */
+    fun setVirtualButtonFromSource(buttonMask: Int, sourceId: String, pressed: Boolean) {
+        val sources = virtualButtonPressSources.getOrPut(buttonMask) { mutableSetOf() }
+        val wasEffectivelyPressed = sources.isNotEmpty()
+        val changed = if (pressed) sources.add(sourceId) else sources.remove(sourceId)
+        if (!pressed && sources.isEmpty()) virtualButtonPressSources.remove(buttonMask)
+        if (!changed) return
+        val effectivelyPressed = sources.isNotEmpty()
+        if (wasEffectivelyPressed == effectivelyPressed) return
         // When left-stick mouse emulation is active, intercept A (left click) and B (right click).
         if (controllerMouseEmulationActive) {
             val mouseButton = AndroidControllerMouseAssist.mouseButtonForGamepad(buttonMask)
             if (mouseButton != null) {
-                val sent = setControllerMouseButton(mouseButton, pressed)
+                val sent = setControllerMouseButton(mouseButton, effectivelyPressed)
                 recordVirtualButtonDiagnostic(
                     buttonMask = buttonMask,
-                    pressed = pressed,
+                    pressed = effectivelyPressed,
                     route = "mouse-$mouseButton",
                     sent = sent,
                 )
                 return
             }
         }
-        virtualButtons = if (pressed) virtualButtons or buttonMask else virtualButtons and buttonMask.inv()
+        virtualButtons = if (effectivelyPressed) virtualButtons or buttonMask else virtualButtons and buttonMask.inv()
         val steamOverlayChordActivated = virtualSteamOverlayChord.update(virtualButtons)
         val sent = sendCurrentGamepadState()
         recordVirtualButtonDiagnostic(
             buttonMask = buttonMask,
-            pressed = pressed,
+            pressed = effectivelyPressed,
             route = "gamepad",
             sent = sent,
         )
@@ -1647,14 +1663,25 @@ class NativeStreamClient(
     }
 
     fun setVirtualTrigger(left: Boolean, pressed: Boolean) {
+        setVirtualTriggerFromSource(left, if (left) "primary-left" else "primary-right", pressed)
+    }
+
+    /** Trigger equivalent of [setVirtualButtonFromSource]. */
+    fun setVirtualTriggerFromSource(left: Boolean, sourceId: String, pressed: Boolean) {
+        val sources = if (left) virtualLeftTriggerPressSources else virtualRightTriggerPressSources
+        val wasEffectivelyPressed = sources.isNotEmpty()
+        val changed = if (pressed) sources.add(sourceId) else sources.remove(sourceId)
+        if (!changed) return
+        val effectivelyPressed = sources.isNotEmpty()
+        if (wasEffectivelyPressed == effectivelyPressed) return
         if (left) {
-            virtualLeftTrigger = if (pressed) 255 else 0
+            virtualLeftTrigger = if (effectivelyPressed) 255 else 0
         } else {
-            virtualRightTrigger = if (pressed) 255 else 0
+            virtualRightTrigger = if (effectivelyPressed) 255 else 0
         }
         val sent = sendCurrentGamepadState()
         val side = if (left) "LT" else "RT"
-        val action = if (pressed) "down" else "up"
+        val action = if (effectivelyPressed) "down" else "up"
         NativeInputDiagnostics.retain(
             key = "controller.virtual-trigger.$side.$action",
             message = "virtual gamepad trigger=$side action=$action sent=$sent " +
@@ -1701,22 +1728,6 @@ class NativeStreamClient(
         virtualRightStickX = normalizeToInt16(normalizedX)
         virtualRightStickY = normalizeToInt16(-normalizedY)
         sendBurstLimitedGamepadState()
-    }
-
-    fun beginTouchAimMouseGesture() = touchAimMouseMotionAccumulator.reset()
-
-    fun sendTouchAimMouseMove(dx: Float, dy: Float, eventTimeMs: Long): Boolean =
-        sendAccumulatedMouseMove(
-            accumulator = touchAimMouseMotionAccumulator,
-            dx = dx,
-            dy = dy,
-            eventTimeMs = eventTimeMs,
-            sensitivity = settings.mouseSensitivity,
-            acceleration = settings.mouseAcceleration,
-        )
-
-    fun endTouchAimMouseGesture(eventTimeMs: Long) {
-        flushAccumulatedMouseMove(touchAimMouseMotionAccumulator, eventTimeMs)
     }
 
     fun beginGyroscopeMouseAim() = gyroscopeMouseMotionAccumulator.reset()

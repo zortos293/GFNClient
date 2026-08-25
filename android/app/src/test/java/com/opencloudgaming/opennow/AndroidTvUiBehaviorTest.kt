@@ -11,6 +11,12 @@ import org.junit.Test
 
 class AndroidTvUiBehaviorTest {
     @Test
+    fun profileMenuRemainsOpaqueOverCustomWallpaperAndBonanzaEffects() {
+        assertEquals(1f, ProfileMenuContainerColor.alpha, 0f)
+        assertEquals(Panel, ProfileMenuContainerColor)
+    }
+
+    @Test
     fun chosenWallpaperAlsoBacksSettingsButNeverTheStream() {
         val wallpaper = AppSettings(nerdCatalogBackground = true)
 
@@ -68,7 +74,7 @@ class AndroidTvUiBehaviorTest {
         val hotPinkStyle = hotPink.activeSelectionEffectStyle()
         val cinemaStyle = cinema.activeSelectionEffectStyle()
         val switchStyle = switch.activeSelectionEffectStyle()
-        val orangeStyle = AppSettings(uiAccent = UiAccent.AbsoluteCinema)
+        val orangeStyle = AppSettings(uiAccent = UiAccent.Orange)
             .activeSelectionEffectStyle()
 
         assertEquals(OpenNowPalette.AccentHotPink, hotPink.uiAccent.color)
@@ -79,8 +85,30 @@ class AndroidTvUiBehaviorTest {
         assertEquals(OpenNowPalette.AccentHotPink, cinema.uiAccent.color)
         assertEquals(OpenNowPalette.AccentSwitchRed, switchStyle.color)
         assertEquals(OpenNowPalette.AccentSwitchBlue, switchStyle.secondaryColor)
-        assertEquals(OpenNowPalette.AccentCinemaOrange, orangeStyle.color)
-        assertEquals(OpenNowPalette.AccentCinemaBlue, orangeStyle.secondaryColor)
+        assertEquals(OpenNowPalette.AccentOrange, orangeStyle.color)
+        assertEquals(OpenNowPalette.AccentOrange, orangeStyle.secondaryColor)
+        assertEquals(OpenNowPalette.AccentOrange, UiAccent.Orange.themeColor)
+        assertEquals(OpenNowPalette.AccentOrange, UiAccent.Orange.themeSecondaryColor)
+        // Orange is a normal accent, so its flat selection tint must not fall back to white.
+        assertEquals(OpenNowPalette.AccentOrange, orangeStyle.tintColor)
+
+        val absoluteCinemaStyle = AppSettings(uiAccent = UiAccent.AbsoluteCinema)
+            .activeSelectionEffectStyle()
+        assertEquals(OpenNowPalette.AccentCinemaOrange, absoluteCinemaStyle.color)
+        assertEquals(OpenNowPalette.AccentCinemaBlue, absoluteCinemaStyle.secondaryColor)
+        assertEquals(Color.White, absoluteCinemaStyle.tintColor)
+        assertEquals(OpenNowPalette.AccentDefault, UiAccent.AbsoluteCinema.themeColor)
+        assertEquals(OpenNowPalette.AccentDefaultSecondary, UiAccent.AbsoluteCinema.themeSecondaryColor)
+    }
+
+    @Test
+    fun accentPickerRestoresAbsoluteCinemaWithoutEnablingEffects() {
+        val accents = selectableUiAccents()
+
+        assertTrue(UiAccent.Orange in accents)
+        assertTrue(UiAccent.AbsoluteCinema in accents)
+        assertEquals(accents.size, accents.distinct().size)
+        assertFalse(AppSettings(uiAccent = UiAccent.AbsoluteCinema).absoluteCinemaEffects)
     }
 
     @Test
@@ -97,12 +125,29 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun catalogBordersAreTransparentOutsideAbsoluteCinema() {
+    fun staticGameBordersAndAnimatedEffectsAreIndependent() {
+        val borderOnly = AppSettings(
+            liveSelectedOutlines = true,
+            absoluteCinemaEffects = false,
+        ).activeSelectionEffectStyle()
+        val effectsOnly = AppSettings(
+            liveSelectedOutlines = false,
+            absoluteCinemaEffects = true,
+        ).activeSelectionEffectStyle()
+
+        assertTrue(borderOnly.gameCardBordersEnabled)
+        assertFalse(borderOnly.absoluteCinemaActive)
+        assertFalse(effectsOnly.gameCardBordersEnabled)
+        assertTrue(effectsOnly.absoluteCinemaActive)
+    }
+
+    @Test
+    fun catalogBordersFollowTheIndependentGameBorderToggle() {
         val accent = OpenNowPalette.AccentHotPink
 
         assertEquals(
             Color.Transparent,
-            catalogCardBorderColor(selectionColor = accent, absoluteCinemaEnabled = false),
+            catalogCardBorderColor(selectionColor = accent, gameBorderEnabled = false),
         )
         assertEquals(
             Color.Transparent,
@@ -110,7 +155,41 @@ class AndroidTvUiBehaviorTest {
         )
         assertEquals(
             accent,
-            catalogCardBorderColor(selectionColor = accent, absoluteCinemaEnabled = true),
+            catalogCardBorderColor(selectionColor = accent, gameBorderEnabled = true),
+        )
+        assertEquals(Color.White, storeHeroBorderColor(gameBorderEnabled = true))
+        assertEquals(Color.Transparent, storeHeroBorderColor(gameBorderEnabled = false))
+    }
+
+    @Test
+    fun controllerFocusKeepsAStaticWhiteGameBorderWhenEffectsAreOff() {
+        val accent = OpenNowPalette.AccentHotPink
+
+        assertEquals(
+            Color.White,
+            catalogCardBorderColor(
+                selectionColor = accent,
+                gameBorderEnabled = false,
+                controllerFocused = true,
+                borderEffectsEnabled = false,
+            ),
+        )
+        assertEquals(
+            Color.Transparent,
+            catalogCardBorderColor(
+                selectionColor = accent,
+                gameBorderEnabled = false,
+                controllerFocused = true,
+                borderEffectsEnabled = true,
+            ),
+        )
+        assertEquals(
+            Color.White,
+            storeHeroBorderColor(
+                gameBorderEnabled = false,
+                controllerFocused = true,
+                borderEffectsEnabled = false,
+            ),
         )
     }
 

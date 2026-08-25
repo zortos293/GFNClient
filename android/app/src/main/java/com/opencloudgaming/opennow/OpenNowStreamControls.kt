@@ -888,6 +888,65 @@ internal fun StreamControlsPanel(
                         }
                     }
                     item {
+                        ControlSection(stringResource(R.string.settings_touch_visible_controls)) {
+                            Text(
+                                text = stringResource(R.string.settings_touch_visible_controls_desc),
+                                color = TextMuted,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            TouchControlGroup.entries.forEach { group ->
+                                val visible = settings.androidTouch.isControlVisible(group)
+                                ControlSwitchRow(
+                                    label = stringResource(touchControlGroupLabelRes(group)),
+                                    checked = visible,
+                                    onCheckedChange = { enabled ->
+                                        onButtonTone()
+                                        onTouchSettingsChange(
+                                            settings.androidTouch.withControlVisible(group, enabled),
+                                        )
+                                    },
+                                    value = onOffLabel(visible),
+                                )
+                            }
+                        }
+                    }
+                    item {
+                        ControlSection(stringResource(R.string.settings_touch_extra_buttons)) {
+                            Text(
+                                text = stringResource(R.string.settings_touch_extra_buttons_desc),
+                                color = TextMuted,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            repeat(TOUCH_EXTRA_BUTTON_COUNT) { index ->
+                                val action = settings.androidTouch.extraButtonAction(index)
+                                ControlActionRow(
+                                    label = stringResource(R.string.settings_touch_extra_button, index + 1),
+                                    actionLabel = stringResource(R.string.common_next),
+                                    value = touchExtraButtonActionLabel(action),
+                                    onClick = {
+                                        onButtonTone()
+                                        onTouchSettingsChange(
+                                            settings.androidTouch.withExtraButtonAction(
+                                                index,
+                                                nextTouchExtraButtonAction(action),
+                                            ),
+                                        )
+                                    },
+                                )
+                            }
+                            TouchLayoutSlider(
+                                R.string.settings_touch_extra_button_size,
+                                settings.androidTouch.extraButtonScale,
+                                0.6f,
+                                1.6f,
+                                TOUCH_SCALE_SLIDER_STEP,
+                                onChange = { value ->
+                                    onTouchSettingsChange(settings.androidTouch.copy(extraButtonScale = value))
+                                },
+                            )
+                        }
+                    }
+                    item {
                         ControlSection(stringResource(R.string.stream_panel_section_touch_layout)) {
                             ControlSwitchRow(
                                 label = stringResource(R.string.stream_panel_drag_edit),
@@ -2530,7 +2589,6 @@ private fun LazyListScope.statusBarPageItems(
     onKeyboardButtonToggle: () -> Unit,
     onButtonTone: () -> Unit,
 ) {
-    val metrics = settings.streamStatsMetrics
     item {
         ControlSwitchRow(
             label = stringResource(R.string.common_visible),
@@ -2593,116 +2651,22 @@ private fun LazyListScope.statusBarPageItems(
                 horizontalArrangement = Arrangement.spacedBy(gap),
                 verticalArrangement = Arrangement.spacedBy(gap),
             ) {
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_keyboard),
-                    checked = !settings.hideStreamButtons,
-                    onCheckedChange = {
-                        onButtonTone()
-                        onKeyboardButtonToggle()
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_fps),
-                    checked = metrics.fps,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(fps = !metrics.fps))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_ping),
-                    checked = metrics.ping,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(ping = !metrics.ping))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_bitrate),
-                    checked = metrics.bitrate,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(bitrate = !metrics.bitrate))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_battery),
-                    checked = metrics.battery,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(battery = !metrics.battery))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_connection),
-                    checked = metrics.connection,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(connection = !metrics.connection))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_resolution),
-                    checked = metrics.resolution,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(resolution = !metrics.resolution))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_codec),
-                    checked = metrics.codec,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(codec = !metrics.codec))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_server),
-                    checked = metrics.location,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(location = !metrics.location))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_latency),
-                    checked = metrics.latency,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(latency = !metrics.latency))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
-                ControlSwitchRow(
-                    label = stringResource(R.string.stream_statusbar_metric_loss),
-                    checked = metrics.packetLoss,
-                    onCheckedChange = {
-                    onButtonTone()
-                    onStatsMetricsChange(metrics.copy(packetLoss = !metrics.packetLoss))
-                    },
-                    modifier = Modifier.width(itemWidth),
-                    style = statusBarMetricStyle,
-                )
+                StreamStatusItem.entries.forEach { item ->
+                    ControlSwitchRow(
+                        label = stringResource(item.labelRes),
+                        checked = item.enabledIn(settings),
+                        onCheckedChange = { enabled ->
+                            onButtonTone()
+                            if (item == StreamStatusItem.Keyboard) {
+                                onKeyboardButtonToggle()
+                            } else {
+                                onStatsMetricsChange(item.setEnabled(settings, enabled).streamStatsMetrics)
+                            }
+                        },
+                        modifier = Modifier.width(itemWidth),
+                        style = statusBarMetricStyle,
+                    )
+                }
             }
         }
     }

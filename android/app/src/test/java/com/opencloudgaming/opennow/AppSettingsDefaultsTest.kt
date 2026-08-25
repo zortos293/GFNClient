@@ -35,6 +35,9 @@ class AppSettingsDefaultsTest {
         assertEquals(1f, settings.androidTouch.faceButtonScale, 0.0001f)
         assertEquals(1f, settings.androidTouch.leftStickScale, 0.0001f)
         assertEquals(1f, settings.androidTouch.rightStickScale, 0.0001f)
+        assertEquals(TouchControlGroup.entries.toSet(), settings.androidTouch.visibleControlGroups)
+        assertEquals(TouchExtraButtonAction.Guide, settings.androidTouch.extraButtonAction(0))
+        assertEquals(TouchExtraButtonAction.None, settings.androidTouch.extraButtonAction(3))
         // Developer options are a hidden gesture, never a shipped or migrated-in default.
         assertFalse(settings.developerOptionsUnlocked)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
@@ -76,6 +79,8 @@ class AppSettingsDefaultsTest {
         assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
         assertEquals(TouchAimMode.LockJoystick, settings.androidTouch.aimMode)
         assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
+        assertEquals(TouchControlGroup.entries.toSet(), settings.androidTouch.visibleControlGroups)
+        assertEquals(TouchExtraButtonAction.Guide, settings.androidTouch.extraButtonAction(0))
     }
 
     @Test

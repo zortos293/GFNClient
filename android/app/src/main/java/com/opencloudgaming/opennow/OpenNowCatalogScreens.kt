@@ -819,9 +819,11 @@ private fun LibraryHeroCarousel(
                 .focusMoveHaptics()
                 .border(
                     width = if (focused) 3.dp else 1.dp,
-                    color = cinemaBorderColor(
-                        LocalAbsoluteCinemaEffects.current,
-                        LocalActiveSelectionColor.current,
+                    color = catalogCardBorderColor(
+                        selectionColor = LocalActiveSelectionColor.current,
+                        gameBorderEnabled = LocalGameCardBordersEnabled.current,
+                        controllerFocused = focused,
+                        borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
                     ),
                     shape = shape,
                 )
@@ -1412,7 +1414,10 @@ private fun StoreRailGameCardSkeleton(
             .aspectRatio(if (portraitCard) GAME_BOX_ART_ASPECT_RATIO else 1f)
             .border(
                 1.dp,
-                cinemaBorderColor(LocalAbsoluteCinemaEffects.current, LocalActiveSelectionColor.current),
+                catalogCardBorderColor(
+                    LocalActiveSelectionColor.current,
+                    LocalGameCardBordersEnabled.current,
+                ),
                 shape,
             ),
         shape = shape,
@@ -2067,9 +2072,10 @@ private fun StoreComingNextCarousel(
                         .focusMoveHaptics()
                         .border(
                             width = if (focused) 3.dp else 2.dp,
-                            color = catalogCardBorderColor(
-                                selectionColor = LocalSelectionTintColor.current,
-                                absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current,
+                            color = storeHeroBorderColor(
+                                gameBorderEnabled = LocalGameCardBordersEnabled.current,
+                                controllerFocused = enhancedControllerFocus,
+                                borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
                             ),
                             shape = shape,
                         )
@@ -2379,7 +2385,9 @@ private fun StoreRailGameCard(
                     width = if (focused) 3.dp else 2.dp,
                     color = catalogCardBorderColor(
                         selectionColor = LocalSelectionTintColor.current,
-                        absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current,
+                        gameBorderEnabled = LocalGameCardBordersEnabled.current,
+                        controllerFocused = enhancedControllerFocus,
+                        borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
                     ),
                     shape = shape,
                 )
@@ -2541,6 +2549,20 @@ private fun heroAspectRatio(tvProfile: Boolean, landscape: Boolean): Float = whe
     landscape -> 16f / 5f
     else -> 16f / 8f
 }
+
+/** The New games added hero keeps a white structural edge when game borders are enabled. */
+internal fun storeHeroBorderColor(
+    gameBorderEnabled: Boolean,
+    controllerFocused: Boolean = false,
+    borderEffectsEnabled: Boolean = false,
+): Color =
+    catalogCardBorderColor(
+        selectionColor = Color.White,
+        gameBorderEnabled = gameBorderEnabled,
+        controllerFocused = controllerFocused,
+        borderEffectsEnabled = borderEffectsEnabled,
+    )
+
 internal const val GAME_BOX_ART_ASPECT_RATIO = 628f / 888f
 
 /** Shorter than the Store hero on purpose — see LibraryHeroCarousel. */
@@ -2870,7 +2892,9 @@ private fun GameCard(
                         width = if (focused) 3.dp else 2.dp,
                         color = catalogCardBorderColor(
                             selectionColor = LocalSelectionTintColor.current,
-                            absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current,
+                            gameBorderEnabled = LocalGameCardBordersEnabled.current,
+                            controllerFocused = enhancedControllerFocus,
+                            borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
                         ),
                         shape = cardShape,
                     )
@@ -3430,9 +3454,9 @@ private fun GameDetailsLandscapeContent(
                     .fillMaxSize()
                     .border(
                         width = if (gameFocused) 3.dp else 1.dp,
-                        color = cinemaBorderColor(
-                            LocalAbsoluteCinemaEffects.current,
+                        color = catalogCardBorderColor(
                             LocalActiveSelectionColor.current,
+                            LocalGameCardBordersEnabled.current,
                         ),
                         shape = imageShape,
                     )
@@ -3647,9 +3671,9 @@ private fun GameDetailsScrollableContent(
                             .fillMaxSize()
                             .border(
                                 width = if (gameFocused) 3.dp else 1.dp,
-                                color = cinemaBorderColor(
-                                    LocalAbsoluteCinemaEffects.current,
+                                color = catalogCardBorderColor(
                                     LocalActiveSelectionColor.current,
+                                    LocalGameCardBordersEnabled.current,
                                 ),
                                 shape = imageShape,
                             )

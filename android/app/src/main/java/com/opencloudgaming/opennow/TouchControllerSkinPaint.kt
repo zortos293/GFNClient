@@ -757,7 +757,13 @@ internal fun TouchControllerSkinPreview(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     TouchShoulderFace(label = "LB", pressed = false, width = 42.dp, height = 18.dp)
-                    TouchDpadFace(arm = 20.dp, up = false, down = false, left = false, right = true)
+                    Box(contentAlignment = Alignment.Center) {
+                        // A directional press in a still preview reads as a stuck Up/Right input.
+                        // Keep all four directions neutral and sample the active palette on the
+                        // non-interactive hub instead; live play still lights the direction held.
+                        TouchDpadFace(arm = 20.dp, up = false, down = false, left = false, right = false)
+                        TouchDpadPreviewHub()
+                    }
                 }
                 TouchStickFace(diameter = 62.dp, base = { Offset.Zero }, knob = { Offset.Zero })
                 Column(
@@ -785,6 +791,19 @@ internal fun TouchControllerSkinPreview(
                 }
             }
         }
+    }
+}
+
+/** Decorative pressed-palette sample for the picker; the real d-pad hub remains non-interactive. */
+@Composable
+private fun TouchDpadPreviewHub() {
+    val colors = LocalTouchSkin.current
+    Canvas(Modifier.size(11.dp)) {
+        drawCircle(color = colors.pressedFill)
+        drawCircle(
+            color = colors.pressedBorder,
+            style = Stroke(width = colors.pressedBorderWidth.toPx()),
+        )
     }
 }
 

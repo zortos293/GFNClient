@@ -59,9 +59,11 @@ android {
     defaultConfig {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 23
-        targetSdk = 36
-        versionCode = 97
-        versionName = "1.4.1"
+        // Android 17 target changes are audited; LAN access is permission-gated at its feature boundary.
+        //noinspection EditedTargetSdkVersion
+        targetSdk = 37
+        versionCode = 102
+        versionName = "1.4.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
@@ -149,13 +151,13 @@ kotlin {
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2026.06.00"))
-    androidTestImplementation(platform("androidx.compose:compose-bom:2026.06.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.08.00"))
+    androidTestImplementation(platform("androidx.compose:compose-bom:2026.08.00"))
 
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.browser:browser:1.10.0")
     // Play App Update still requests Fragment 1.0.0 transitively through Play Services.
-    implementation("androidx.fragment:fragment:1.8.9")
+    implementation("androidx.fragment:fragment:1.9.0")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.material3:material3")
@@ -164,25 +166,25 @@ dependencies {
     implementation("androidx.core:core:1.19.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
-    implementation("androidx.media3:media3-common:1.10.1")
-    implementation("androidx.media3:media3-exoplayer:1.10.1")
-    implementation("androidx.media3:media3-ui:1.10.1")
+    implementation("androidx.media3:media3-common:1.11.0")
+    implementation("androidx.media3:media3-exoplayer:1.11.0")
+    implementation("androidx.media3:media3-ui:1.11.0")
     implementation("androidx.work:work-runtime:2.11.2")
 
-    implementation("io.coil-kt.coil3:coil-compose:3.4.0")
-    implementation("io.coil-kt.coil3:coil-network-okhttp:3.4.0")
+    implementation("io.coil-kt.coil3:coil-compose:3.5.0")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.5.0")
 
-    implementation("com.squareup.okhttp3:logging-interceptor:5.4.0")
-    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.4.0")
-    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:5.5.0")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.5.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
     implementation("com.google.android.play:app-update:2.1.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.mlkit:language-id:17.0.6")
     // Includes upstream Android AudioRecord restart and stopped-transceiver stats crash fixes.
-    implementation("io.github.webrtc-sdk:android:144.7559.12")
+    implementation("io.github.webrtc-sdk:android:144.7559.14")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
-    implementation("com.posthog:posthog-android:3.51.2")
+    implementation("com.posthog:posthog-android:3.60.7")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

@@ -167,6 +167,20 @@ class AndroidSetupFlowTest {
     }
 
     @Test
+    fun `custom setup codec choices share settings availability and selection`() {
+        val presentation = androidCodecChoicePresentation(
+            stream = StreamSettings(codec = VideoCodec.H265),
+            codecReport = null,
+            comingSoonLabel = "Coming soon",
+            unavailableLabel = "Unavailable",
+        )
+
+        assertEquals(VideoCodec.entries.map { it.name }, presentation.options.map { it.value })
+        assertTrue(presentation.options.all { it.enabled })
+        assertEquals(VideoCodec.H265.name, presentation.selectedLabel)
+    }
+
+    @Test
     fun `touch mouse choices write one authoritative mode`() {
         SetupTouchMouseChoice.entries.forEach { choice ->
             val settings = AppSettings().withSetupTouchMouseChoice(choice)
@@ -186,6 +200,46 @@ class AndroidSetupFlowTest {
         assertFalse(settings.androidTouch.mousePad)
         assertFalse(settings.androidTouch.mouseDirectClick)
         assertEquals(SetupTouchMouseChoice.Off, setupTouchMouseChoiceFor(settings))
+    }
+
+    @Test
+    fun `setup and stream controls share every status line item`() {
+        assertEquals(
+            listOf(
+                StreamStatusItem.Keyboard,
+                StreamStatusItem.Fps,
+                StreamStatusItem.Ping,
+                StreamStatusItem.Bitrate,
+                StreamStatusItem.Battery,
+                StreamStatusItem.Connection,
+                StreamStatusItem.Resolution,
+                StreamStatusItem.Codec,
+                StreamStatusItem.Server,
+                StreamStatusItem.Latency,
+                StreamStatusItem.PacketLoss,
+            ),
+            StreamStatusItem.entries,
+        )
+    }
+
+    @Test
+    fun `every setup status item toggles only its own persisted value`() {
+        val defaults = AppSettings()
+
+        StreamStatusItem.entries.forEach { item ->
+            val before = item.enabledIn(defaults)
+            val changed = item.setEnabled(defaults, !before)
+
+            assertEquals(item.name, !before, item.enabledIn(changed))
+            StreamStatusItem.entries.filterNot { it == item }.forEach { untouched ->
+                assertEquals(
+                    "changing ${item.name} also changed ${untouched.name}",
+                    untouched.enabledIn(defaults),
+                    untouched.enabledIn(changed),
+                )
+            }
+            assertEquals(item.name, defaults, item.setEnabled(changed, before))
+        }
     }
 
     @Test

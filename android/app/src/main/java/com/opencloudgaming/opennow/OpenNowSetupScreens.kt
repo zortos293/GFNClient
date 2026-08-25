@@ -7,17 +7,22 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -25,6 +30,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -57,7 +63,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -67,6 +75,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
 import com.opencloudgaming.opennow.ui.controls.ControlRow
 import com.opencloudgaming.opennow.ui.controls.ControlRowStyle
@@ -76,6 +86,7 @@ import com.opencloudgaming.opennow.ui.controls.LocalControlRowStyle
 import com.opencloudgaming.opennow.ui.controls.controlRowStyle
 import com.opencloudgaming.opennow.ui.theme.OpenNowRadius
 import com.opencloudgaming.opennow.ui.theme.OpenNowSpacing
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
@@ -464,7 +475,7 @@ private fun SetupAppearanceStep(state: OpenNowUiState, onSettingsChange: (AppSet
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
             ) {
-                UiAccent.entries.forEach { accent ->
+                selectableUiAccents().forEach { accent ->
                     SetupAccentSwatch(
                         accent = accent,
                         selected = settings.uiAccent == accent,
@@ -510,9 +521,16 @@ private fun SetupAppearanceStep(state: OpenNowUiState, onSettingsChange: (AppSet
                 onSettingsChange(settings.copy(expressiveUi = it))
             }
             SettingSwitch(
-                label = stringResource(R.string.setup_appearance_cinema),
+                label = stringResource(R.string.settings_live_selected_outlines),
+                checked = settings.liveSelectedOutlines,
+                description = stringResource(R.string.settings_live_selected_outlines_desc),
+            ) {
+                onSettingsChange(settings.copy(liveSelectedOutlines = it))
+            }
+            SettingSwitch(
+                label = stringResource(R.string.settings_absolute_cinema_effects),
                 checked = settings.absoluteCinemaEffects,
-                description = stringResource(R.string.setup_appearance_cinema_desc),
+                description = stringResource(R.string.settings_absolute_cinema_effects_desc),
             ) { enabled ->
                 onSettingsChange(
                     settings.copy(
@@ -925,20 +943,46 @@ private fun SetupPlayStep(
     onSettingsChange: (AppSettings) -> Unit,
 ) {
     val touchChoice = setupTouchMouseChoiceFor(settings)
+    var fullScreenPreview by rememberSaveable { mutableStateOf(false) }
     Column(
         Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
     ) {
-        SetupSectionLabel(
-            title = stringResource(R.string.setup_play_preview),
-            value = if (tvProfile) {
-                if (settings.showStatsOnLaunch) settings.streamStatsPosition.label
-                else stringResource(R.string.setup_summary_off)
-            } else {
-                setupTouchMouseChoiceLabel(touchChoice)
-            },
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.setup_play_preview),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.setup_play_preview_hint),
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Button(onClick = { fullScreenPreview = true }) {
+                Text(stringResource(R.string.setup_play_fullscreen), maxLines = 1)
+            }
+        }
+        SetupStreamExperiencePreview(
+            settings = settings,
+            showTouchHint = !tvProfile,
+            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
         )
-        SetupStreamExperiencePreview(settings = settings, showTouchHint = !tvProfile)
+
+        if (fullScreenPreview) {
+            SetupFullScreenStreamPreview(
+                settings = settings,
+                showTouchHint = !tvProfile,
+                onDismiss = { fullScreenPreview = false },
+            )
+        }
 
         if (!tvProfile) {
             SetupSectionLabel(
@@ -976,56 +1020,184 @@ private fun SetupPlayStep(
             onSettingsChange(settings.copy(showStatsOnLaunch = enabled))
         }
         AnimatedVisibility(visible = settings.showStatsOnLaunch) {
-            ChoiceMenuRow(
-                label = stringResource(R.string.setup_play_status_position),
-                options = StreamStatsPosition.entries.map { position ->
-                    ChoiceMenuOption(value = position.name, label = position.label)
-                },
-                selectedLabel = settings.streamStatsPosition.label,
-            ) { value ->
-                StreamStatsPosition.entries.firstOrNull { it.name == value }?.let { position ->
-                    onSettingsChange(settings.copy(streamStatsPosition = position))
+            Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+                ChoiceMenuRow(
+                    label = stringResource(R.string.stream_statusbar_appearance),
+                    options = StreamStatsStyle.entries.map { style ->
+                        ChoiceMenuOption(value = style.name, label = style.label)
+                    },
+                    selectedLabel = settings.streamStatsStyle.label,
+                ) { value ->
+                    StreamStatsStyle.entries.firstOrNull { it.name == value }?.let { style ->
+                        onSettingsChange(settings.copy(streamStatsStyle = style))
+                    }
                 }
+                ChoiceMenuRow(
+                    label = stringResource(R.string.setup_play_status_position),
+                    options = StreamStatsPosition.entries.map { position ->
+                        ChoiceMenuOption(value = position.name, label = position.label)
+                    },
+                    selectedLabel = settings.streamStatsPosition.label,
+                ) { value ->
+                    StreamStatsPosition.entries.firstOrNull { it.name == value }?.let { position ->
+                        onSettingsChange(settings.copy(streamStatsPosition = position))
+                    }
+                }
+                SetupSectionLabel(
+                    title = stringResource(R.string.stream_statusbar_items),
+                    value = stringResource(
+                        R.string.setup_play_status_items_selected,
+                        StreamStatusItem.entries.count { it.enabledIn(settings) },
+                    ),
+                )
+                SetupStreamStatusItems(
+                    settings = settings,
+                    onSettingsChange = onSettingsChange,
+                )
             }
         }
     }
 }
 
-/** A deliberately quiet mock stream: every setup choice changes the chrome in this frame live. */
 @Composable
-private fun SetupStreamExperiencePreview(settings: AppSettings, showTouchHint: Boolean) {
+private fun SetupFullScreenStreamPreview(
+    settings: AppSettings,
+    showTouchHint: Boolean,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .systemBarsPadding()
+                .padding(8.dp),
+        ) {
+            SetupStreamExperiencePreview(
+                settings = settings,
+                showTouchHint = showTouchHint,
+                expanded = true,
+                modifier = Modifier.fillMaxSize(),
+                onDismiss = onDismiss,
+            )
+        }
+    }
+}
+
+/** A fake stream that lets setup choices be rehearsed without sending any input to a session. */
+@Composable
+private fun SetupStreamExperiencePreview(
+    settings: AppSettings,
+    showTouchHint: Boolean,
+    modifier: Modifier,
+    expanded: Boolean = false,
+    onDismiss: (() -> Unit)? = null,
+) {
     val touchChoice = setupTouchMouseChoiceFor(settings)
     val statusAlignment = when (settings.streamStatsPosition) {
         StreamStatsPosition.Left -> Alignment.TopStart
         StreamStatsPosition.Center -> Alignment.TopCenter
         StreamStatsPosition.Right -> Alignment.TopEnd
     }
+    var cursorX by remember(expanded) { mutableStateOf(0.34f) }
+    var cursorY by remember(expanded) { mutableStateOf(0.56f) }
+    var targetHits by remember(expanded) { mutableStateOf(0) }
+    var practiceMessage by remember(expanded) { mutableStateOf<String?>(null) }
+    var fakeMenuOpen by remember(expanded) { mutableStateOf(false) }
+    var fakeKeyboardOpen by remember(expanded) { mutableStateOf(false) }
+    val moveToTargetMessage = stringResource(R.string.setup_play_move_to_target)
+
+    fun cursorOnTarget(): Boolean = abs(cursorX - 0.5f) <= 0.13f && abs(cursorY - 0.48f) <= 0.16f
+    fun clickCursor() {
+        if (cursorOnTarget()) {
+            targetHits += 1
+            practiceMessage = null
+        } else {
+            practiceMessage = moveToTargetMessage
+        }
+    }
+
     Surface(
-        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
-        shape = RoundedCornerShape(OpenNowRadius.lg),
+        modifier = modifier,
+        shape = RoundedCornerShape(if (expanded) OpenNowRadius.md else OpenNowRadius.lg),
         color = Color(0xFF08141C),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)),
     ) {
-        Box(
+        BoxWithConstraints(
             Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        listOf(Color(0xFF17364A), Color(0xFF0D2630), Color(0xFF091117)),
+                        listOf(Color(0xFF16384A), Color(0xFF0B2731), Color(0xFF071116)),
                     ),
                 ),
         ) {
-            // A small fake game objective gives the cursor treatment a meaningful destination.
+            SetupPracticeBackdrop(expanded = expanded)
+            // This sibling is behind every fake button. It owns only the empty play field, so a
+            // drag detector can never consume Menu/Keys/A/B or the fullscreen exit action.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .pointerInput(touchChoice) {
+                    detectTapGestures { position ->
+                        if (touchChoice == SetupTouchMouseChoice.Direct) {
+                            cursorX = (position.x / size.width.toFloat()).coerceIn(0.02f, 0.98f)
+                            cursorY = (position.y / size.height.toFloat()).coerceIn(0.04f, 0.96f)
+                        }
+                        clickCursor()
+                    }
+                    }
+                    .pointerInput(touchChoice) {
+                        detectDragGestures(
+                            onDragStart = { position ->
+                                if (touchChoice == SetupTouchMouseChoice.Direct) {
+                                    cursorX = (position.x / size.width.toFloat()).coerceIn(0.02f, 0.98f)
+                                    cursorY = (position.y / size.height.toFloat()).coerceIn(0.04f, 0.96f)
+                                }
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                if (touchChoice == SetupTouchMouseChoice.Direct) {
+                                    cursorX = (change.position.x / size.width.toFloat()).coerceIn(0.02f, 0.98f)
+                                    cursorY = (change.position.y / size.height.toFloat()).coerceIn(0.04f, 0.96f)
+                                } else {
+                                    cursorX = (cursorX + dragAmount.x / size.width.toFloat()).coerceIn(0.02f, 0.98f)
+                                    cursorY = (cursorY + dragAmount.y / size.height.toFloat()).coerceIn(0.04f, 0.96f)
+                                }
+                                practiceMessage = null
+                            },
+                        )
+                    },
+            )
+
             Surface(
-                modifier = Modifier.align(Alignment.Center),
+                modifier = Modifier.align(Alignment.Center).offset(y = (-4).dp),
                 shape = RoundedCornerShape(OpenNowRadius.full),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
+                color = if (cursorOnTarget()) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)
+                },
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
             ) {
                 Text(
-                    text = stringResource(R.string.setup_play_preview_target),
-                    modifier = Modifier.padding(horizontal = OpenNowSpacing.lg, vertical = 8.dp),
+                    text = if (targetHits == 0) {
+                        stringResource(R.string.setup_play_preview_target)
+                    } else {
+                        stringResource(R.string.setup_play_preview_hits, targetHits)
+                    },
+                    modifier = Modifier.padding(
+                        horizontal = if (expanded) OpenNowSpacing.xl else OpenNowSpacing.lg,
+                        vertical = if (expanded) 12.dp else 8.dp,
+                    ),
                     color = MaterialTheme.colorScheme.onPrimary,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = if (expanded) MaterialTheme.typography.titleSmall else MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                 )
             }
@@ -1036,25 +1208,12 @@ private fun SetupStreamExperiencePreview(settings: AppSettings, showTouchHint: B
                 enter = fadeIn(tween(120)),
                 exit = fadeOut(tween(90)),
             ) {
-                Surface(
-                    modifier = Modifier.padding(10.dp),
-                    shape = RoundedCornerShape(OpenNowRadius.full),
-                    color = Color.Black.copy(alpha = 0.58f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
-                ) {
-                    Text(
-                        text = stringResource(R.string.setup_play_status_preview),
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                    )
-                }
+                SetupFakeStatusLine(settings = settings, expanded = expanded)
             }
 
-            if (showTouchHint) {
+            if (showTouchHint && !expanded) {
                 Surface(
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(10.dp),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(10.dp),
                     shape = RoundedCornerShape(OpenNowRadius.full),
                     color = Color.Black.copy(alpha = 0.48f),
                 ) {
@@ -1070,6 +1229,338 @@ private fun SetupStreamExperiencePreview(settings: AppSettings, showTouchHint: B
                         color = Color.White.copy(alpha = 0.9f),
                         style = MaterialTheme.typography.labelSmall,
                     )
+                }
+            }
+
+            SetupPracticeCursor(
+                modifier = Modifier.offset(
+                    x = (maxWidth - 18.dp) * cursorX,
+                    y = (maxHeight - 24.dp) * cursorY,
+                ),
+            )
+
+            if (fakeMenuOpen) {
+                SetupPracticeMenu(
+                    expanded = expanded,
+                    onClose = { fakeMenuOpen = false },
+                    modifier = Modifier.align(Alignment.CenterStart).padding(12.dp),
+                )
+            }
+
+            if (fakeKeyboardOpen) {
+                SetupPracticeKeyboard(
+                    expanded = expanded,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (expanded) 66.dp else 46.dp),
+                )
+            }
+
+            Column(
+                modifier = Modifier.align(Alignment.BottomEnd).padding(if (expanded) 16.dp else 8.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                practiceMessage?.let { message ->
+                    Text(
+                        message,
+                        color = Color.White.copy(alpha = 0.86f),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SetupPracticeButton(
+                        label = stringResource(R.string.setup_play_fake_menu),
+                        compact = !expanded,
+                    ) {
+                        fakeMenuOpen = !fakeMenuOpen
+                        fakeKeyboardOpen = false
+                    }
+                    SetupPracticeButton(
+                        label = stringResource(R.string.setup_play_fake_keyboard),
+                        compact = !expanded,
+                    ) {
+                        fakeKeyboardOpen = !fakeKeyboardOpen
+                        fakeMenuOpen = false
+                    }
+                    SetupPracticeButton(label = "A", compact = !expanded, emphasized = true) {
+                        clickCursor()
+                    }
+                    SetupPracticeButton(label = "B", compact = !expanded) {
+                        cursorX = 0.34f
+                        cursorY = 0.56f
+                        targetHits = 0
+                        practiceMessage = null
+                    }
+                }
+            }
+
+            if (expanded) {
+                Surface(
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 54.dp),
+                    shape = RoundedCornerShape(OpenNowRadius.full),
+                    color = Color.Black.copy(alpha = 0.45f),
+                ) {
+                    Text(
+                        stringResource(R.string.setup_play_practice_tip),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                        color = Color.White.copy(alpha = 0.86f),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Button(
+                    onClick = { onDismiss?.invoke() },
+                    // Keep every status-line position unobstructed while the player evaluates it.
+                    modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+                ) {
+                    Text(stringResource(R.string.setup_play_leave_fullscreen))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupPracticeBackdrop(expanded: Boolean) {
+    Canvas(Modifier.fillMaxSize()) {
+        val horizon = size.height * 0.58f
+        drawCircle(
+            color = Color(0xFF3E91A2).copy(alpha = 0.16f),
+            radius = size.minDimension * 0.34f,
+            center = center.copy(y = horizon * 0.82f),
+        )
+        drawRect(
+            color = Color.Black.copy(alpha = 0.18f),
+            topLeft = center.copy(x = 0f, y = horizon),
+            size = size.copy(height = size.height - horizon),
+        )
+        val lanes = if (expanded) 8 else 5
+        repeat(lanes) { index ->
+            val fraction = index / (lanes - 1f)
+            drawLine(
+                color = Color.White.copy(alpha = 0.055f),
+                start = center.copy(x = size.width * fraction, y = horizon),
+                end = center.copy(x = size.width * (fraction * 1.25f - 0.12f), y = size.height),
+                strokeWidth = 1f,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SetupPracticeCursor(modifier: Modifier = Modifier) {
+    Canvas(modifier.size(18.dp, 24.dp)) {
+        val cursor = Path().apply {
+            moveTo(1f, 1f)
+            lineTo(size.width * 0.78f, size.height * 0.62f)
+            lineTo(size.width * 0.48f, size.height * 0.66f)
+            lineTo(size.width * 0.68f, size.height - 1f)
+            lineTo(size.width * 0.48f, size.height - 1f)
+            lineTo(size.width * 0.3f, size.height * 0.7f)
+            lineTo(1f, size.height * 0.9f)
+            close()
+        }
+        drawPath(cursor, Color.Black.copy(alpha = 0.75f))
+        drawPath(cursor, Color.White)
+    }
+}
+
+@Composable
+private fun SetupFakeStatusLine(settings: AppSettings, expanded: Boolean) {
+    val enabledItems = StreamStatusItem.entries.filter { it.enabledIn(settings) }
+    val values = enabledItems.mapNotNull { item -> item.previewValueRes?.let { stringResource(it) } }
+    val keyboardEnabled = StreamStatusItem.Keyboard.enabledIn(settings)
+    val detailed = settings.streamStatsStyle == StreamStatsStyle.Detailed
+    Surface(
+        modifier = Modifier
+            .padding(if (expanded) 14.dp else 8.dp)
+            .widthIn(max = if (detailed) 300.dp else if (expanded) 720.dp else 360.dp),
+        shape = RoundedCornerShape(if (detailed) OpenNowRadius.lg else OpenNowRadius.full),
+        color = Color.Black.copy(alpha = 0.58f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = if (detailed) 8.dp else 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = values.takeIf { it.isNotEmpty() }?.joinToString(if (detailed) "\n" else "  •  ")
+                    ?: stringResource(R.string.setup_play_status_empty),
+                modifier = Modifier.weight(1f, fill = false),
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = if (detailed) 5 else 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (keyboardEnabled) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_keyboard),
+                    contentDescription = stringResource(R.string.stream_panel_cd_keyboard),
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupPracticeMenu(expanded: Boolean, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.widthIn(min = if (expanded) 260.dp else 170.dp, max = 320.dp),
+        shape = RoundedCornerShape(OpenNowRadius.lg),
+        color = Color(0xFF101B21).copy(alpha = 0.96f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+    ) {
+        Column(
+            Modifier.padding(if (expanded) 16.dp else 10.dp),
+            verticalArrangement = Arrangement.spacedBy(if (expanded) 10.dp else 5.dp),
+        ) {
+            Text(
+                stringResource(R.string.stream_panel_title),
+                color = Color.White,
+                style = if (expanded) MaterialTheme.typography.titleMedium else MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            listOf(
+                stringResource(R.string.setup_play_fake_status_line),
+                stringResource(R.string.setup_play_fake_input),
+                stringResource(R.string.setup_play_fake_quality),
+            ).forEach { label ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onClose),
+                    shape = RoundedCornerShape(OpenNowRadius.md),
+                    color = Color.White.copy(alpha = 0.07f),
+                ) {
+                    Text(
+                        label,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = if (expanded) 9.dp else 5.dp),
+                        color = Color.White.copy(alpha = 0.86f),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupPracticeKeyboard(expanded: Boolean, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(OpenNowRadius.md),
+        color = Color.Black.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+    ) {
+        Row(
+            Modifier.padding(horizontal = if (expanded) 12.dp else 8.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            (if (expanded) listOf("W", "A", "S", "D", "SPACE", "ENTER") else listOf("W", "A", "S", "D")).forEach { key ->
+                Text(
+                    key,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(Color.White.copy(alpha = 0.12f))
+                        .padding(horizontal = if (key.length > 1) 8.dp else 6.dp, vertical = 4.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupPracticeButton(
+    label: String,
+    compact: Boolean,
+    emphasized: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .clip(RoundedCornerShape(OpenNowRadius.full))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(OpenNowRadius.full),
+        color = if (emphasized) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.62f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(
+                horizontal = if (compact) 8.dp else 13.dp,
+                vertical = if (compact) 5.dp else 8.dp,
+            ),
+            color = if (emphasized) MaterialTheme.colorScheme.onPrimary else Color.White,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SetupStreamStatusItems(
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val columns = when {
+            maxWidth >= 720.dp -> 4
+            maxWidth >= 480.dp -> 3
+            else -> 2
+        }
+        val gap = 8.dp
+        val itemWidth = (maxWidth - gap * (columns - 1)) / columns.toFloat()
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            maxItemsInEachRow = columns,
+            horizontalArrangement = Arrangement.spacedBy(gap),
+            verticalArrangement = Arrangement.spacedBy(gap),
+        ) {
+            StreamStatusItem.entries.forEach { item ->
+                val enabled = item.enabledIn(settings)
+                Surface(
+                    modifier = Modifier
+                        .width(itemWidth)
+                        .clip(RoundedCornerShape(OpenNowRadius.md))
+                        .clickable { onSettingsChange(item.setEnabled(settings, !enabled)) },
+                    shape = RoundedCornerShape(OpenNowRadius.md),
+                    color = if (enabled) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (enabled) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f),
+                    ),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (enabled) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.34f),
+                                ),
+                        )
+                        Text(
+                            stringResource(item.labelRes),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
@@ -1152,6 +1643,12 @@ private fun SetupCustomStreamControls(
         state.subscriptionInfo,
         fallbackMembershipTier,
     )
+    val codecChoices = androidCodecChoicePresentation(
+        stream = stream,
+        codecReport = state.codecReport,
+        comingSoonLabel = stringResource(R.string.option_coming_soon),
+        unavailableLabel = stringResource(R.string.common_unavailable),
+    )
     Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
         ChoiceMenuRow(
             label = stringResource(R.string.settings_resolution),
@@ -1168,6 +1665,16 @@ private fun SetupCustomStreamControls(
                 ?: selectedResolution,
         ) { value ->
             viewModel.updateStreamSettings { it.copy(resolution = value) }
+        }
+        ChoiceMenuRow(
+            label = stringResource(R.string.settings_codec),
+            options = codecChoices.options,
+            selectedLabel = codecChoices.selectedLabel,
+            description = stringResource(R.string.settings_codec_desc),
+        ) { value ->
+            viewModel.updateStreamSettings {
+                it.copy(codec = VideoCodec.valueOf(value)).withCodecColorCompatibility()
+            }
         }
         NumberSlider(
             label = stringResource(R.string.settings_fps),

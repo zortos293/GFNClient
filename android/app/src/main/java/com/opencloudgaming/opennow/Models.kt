@@ -75,6 +75,8 @@ enum class UiAccent {
     Lime,
     Coral,
     Violet,
+    Orange,
+    /** Orange/blue Absolute Cinema accent, selectable independently from its optional effects. */
     AbsoluteCinema,
     Switch,
 }
@@ -277,6 +279,47 @@ enum class TouchAimMode {
     LockZone,
 }
 
+/** Independently hideable pieces of the on-screen controller. */
+@Serializable
+enum class TouchControlGroup {
+    FaceButtons,
+    Dpad,
+    LeftStick,
+    RightStick,
+    ShoulderButtons,
+    ThumbButtons,
+    MenuButtons,
+}
+
+/**
+ * Actions available to the four movable accessibility buttons.
+ *
+ * These are deliberately single, momentary gamepad actions rather than macros. A duplicate action
+ * is useful when a player cannot comfortably reach the original control, while avoiding recorded
+ * sequences keeps releases predictable when a stream reconnects or the overlay is removed.
+ */
+@Serializable
+enum class TouchExtraButtonAction {
+    None,
+    Guide,
+    A,
+    B,
+    X,
+    Y,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
+    LeftBumper,
+    RightBumper,
+    LeftTrigger,
+    RightTrigger,
+    LeftStickClick,
+    RightStickClick,
+    Start,
+    Select,
+}
+
 @Serializable
 data class TouchOffset(val x: Float = 0f, val y: Float = 0f)
 
@@ -310,6 +353,16 @@ data class AndroidTouchSettings(
     val rightStickScale: Float = 1f,
     /** Diameter of the movable stick cap as a fraction of its track. */
     val stickKnobScale: Float = 0.44f,
+    /** Built-in clusters can be removed without giving up the rest of the overlay. */
+    val visibleControlGroups: Set<TouchControlGroup> = TouchControlGroup.entries.toSet(),
+    /** Up to four independently mapped and positioned accessibility buttons. */
+    val extraButtonActions: List<TouchExtraButtonAction> = listOf(
+        TouchExtraButtonAction.Guide,
+        TouchExtraButtonAction.None,
+        TouchExtraButtonAction.None,
+        TouchExtraButtonAction.None,
+    ),
+    val extraButtonScale: Float = 1f,
     val joystickMode: TouchJoystickMode = TouchJoystickMode.Fixed,
     val aimMode: TouchAimMode = TouchAimMode.LockJoystick,
     val joystickDeadZone: Float = 0f,
@@ -349,7 +402,15 @@ data class AndroidTouchSettings(
         "face_landscape" to TouchOffset(-20.225464f, -132.01855f),
         "rstick_landscape" to TouchOffset(96.44574f, -7.9870353f),
         "r3_landscape" to TouchOffset(191.65938f, 125.07891f),
-        "rt_landscape" to TouchOffset(-30.344517f, -57.420998f)
+        "rt_landscape" to TouchOffset(-30.344517f, -57.420998f),
+        "extra1_landscape" to TouchOffset(-84f, 0f),
+        "extra2_landscape" to TouchOffset(-28f, 0f),
+        "extra3_landscape" to TouchOffset(28f, 0f),
+        "extra4_landscape" to TouchOffset(84f, 0f),
+        "extra1_portrait" to TouchOffset(-84f, 0f),
+        "extra2_portrait" to TouchOffset(-28f, 0f),
+        "extra3_portrait" to TouchOffset(28f, 0f),
+        "extra4_portrait" to TouchOffset(84f, 0f),
     ),
     val touchControllerStyle: TouchControllerStyle = TouchControllerStyle.V1,
     /** Overrides the skin's own accent. Null keeps whatever the chosen skin ships with. */
@@ -363,6 +424,22 @@ data class AndroidTouchSettings(
         val newOffsets = offsets.toMutableMap()
         newOffsets[key] = TouchOffset(x, y)
         return this.copy(offsets = newOffsets)
+    }
+
+    fun isControlVisible(group: TouchControlGroup): Boolean = group in visibleControlGroups
+
+    fun withControlVisible(group: TouchControlGroup, visible: Boolean): AndroidTouchSettings = copy(
+        visibleControlGroups = if (visible) visibleControlGroups + group else visibleControlGroups - group,
+    )
+
+    fun extraButtonAction(index: Int): TouchExtraButtonAction =
+        extraButtonActions.getOrNull(index) ?: TouchExtraButtonAction.None
+
+    fun withExtraButtonAction(index: Int, action: TouchExtraButtonAction): AndroidTouchSettings {
+        if (index !in 0 until TOUCH_EXTRA_BUTTON_COUNT) return this
+        val actions = List(TOUCH_EXTRA_BUTTON_COUNT) { extraButtonAction(it) }.toMutableList()
+        actions[index] = action
+        return copy(extraButtonActions = actions)
     }
 
     fun withResetOffsets(): AndroidTouchSettings {
@@ -379,6 +456,7 @@ data class AndroidTouchSettings(
             leftStickScale = defaultSettings.leftStickScale,
             rightStickScale = defaultSettings.rightStickScale,
             stickKnobScale = defaultSettings.stickKnobScale,
+            extraButtonScale = defaultSettings.extraButtonScale,
             edgePaddingDp = defaultSettings.edgePaddingDp,
             bottomPaddingDp = defaultSettings.bottomPaddingDp,
             leftOffsetXDp = defaultSettings.leftOffsetXDp,
@@ -389,6 +467,8 @@ data class AndroidTouchSettings(
         )
     }
 }
+
+internal const val TOUCH_EXTRA_BUTTON_COUNT = 4
 
 internal const val DEFAULT_CATALOG_SORT_ID = "most_popular"
 internal const val NEWLY_ADDED_CATALOG_SORT_ID = "last_added"
@@ -415,9 +495,9 @@ data class AppSettings(
     /** Optional favorite affordance over catalogue artwork on mobile, handheld, and TV layouts. */
     val showFavoriteIconOnGameCards: Boolean = false,
     val expressiveUi: Boolean = true,
-    /** Legacy persisted preference retained for settings compatibility; borders now require Absolute Cinema. */
+    /** Static outlines around game artwork, independent from optional animated border effects. */
     val liveSelectedOutlines: Boolean = true,
-    /** Orange/blue live focus rings, independent of the selected interface accent. */
+    /** Animated focus energy using the selected interface accent; never changes the accent itself. */
     val absoluteCinemaEffects: Boolean = false,
     /** Extends Absolute Cinema to pointer hover and non-controller focus surfaces throughout the UI. */
     val absoluteCinemaEverywhere: Boolean = false,
@@ -1428,10 +1508,12 @@ internal fun shouldLaunchWithAccountLinked(game: GameInfo, selectedVariant: Game
     return isGameInLibrary(game)
 }
 
-internal fun shouldAutoMarkFreeToPlayOwnership(game: GameInfo, selectedVariant: GameVariant?): Boolean =
-    game.playType != "INSTALL_TO_PLAY" &&
-        selectedVariant?.isFreeToPlay == true &&
-        !isOwnedGameVariant(selectedVariant)
+internal fun shouldMarkVariantOwnedBeforeLaunch(game: GameInfo, selectedVariant: GameVariant?): Boolean {
+    if (selectedVariant == null || selectedVariant.id.isBlank() || isOwnedGameVariant(selectedVariant)) return false
+    // Older library responses sometimes only carried the selected bit plus the game-level flag.
+    // Do not turn that incomplete metadata into a redundant ownership mutation.
+    return !(game.isInLibrary && selectedVariant.librarySelected == true && selectedVariant.libraryStatus == null)
+}
 
 internal fun GameInfo.withManuallyOwnedVariant(variantId: String): GameInfo {
     val selectedIndex = variants.indexOfFirst { it.id == variantId }

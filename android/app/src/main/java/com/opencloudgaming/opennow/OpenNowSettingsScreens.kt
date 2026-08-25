@@ -142,6 +142,48 @@ internal data class ChoiceMenuOption(
     val badge: String? = null,
 )
 
+internal data class AndroidCodecChoicePresentation(
+    val options: List<ChoiceMenuOption>,
+    val selectedLabel: String,
+)
+
+/** One codec availability presentation shared by Settings and first-run custom setup. */
+internal fun androidCodecChoicePresentation(
+    stream: StreamSettings,
+    codecReport: RuntimeCodecReport?,
+    comingSoonLabel: String,
+    unavailableLabel: String,
+): AndroidCodecChoicePresentation {
+    val settingsAvailableStream = stream.withAndroidSettingsAvailability()
+    val effectiveCodec = settingsAvailableStream.adjustedForDevice(codecReport).codec
+    return AndroidCodecChoicePresentation(
+        options = VideoCodec.entries.map { codec ->
+            val launchUsable = codecReport
+                ?.capabilities
+                ?.firstOrNull { it.codec == codec }
+                ?.streamingDecoderUsableForLaunch()
+                ?: true
+            val settingsAvailable = codec.availableForAndroidSettings()
+            val available = settingsAvailable && launchUsable
+            ChoiceMenuOption(
+                value = codec.name,
+                label = codec.name,
+                enabled = available,
+                badge = when {
+                    available -> null
+                    !settingsAvailable -> comingSoonLabel
+                    else -> unavailableLabel
+                },
+            )
+        },
+        selectedLabel = if (effectiveCodec == stream.codec) {
+            stream.codec.name
+        } else {
+            "${stream.codec.name} -> ${effectiveCodec.name}"
+        },
+    )
+}
+
 internal enum class SearchTarget {
     Store,
     Library,
@@ -810,36 +852,19 @@ private fun SettingsContent(
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_video), "stream", "video", "codec", "color", "hdr", "sharpening", "native streamer", "low latency", "native decoder", "decoder") {
                 val comingSoonLabel = stringResource(R.string.option_coming_soon)
-                val unavailableLabel = "Unavailable"
+                val unavailableLabel = stringResource(R.string.common_unavailable)
                 val h264H265OnlyLabel = stringResource(R.string.settings_av1_ten_bit_badge)
                 val settingsAvailableStream = settings.stream.withAndroidSettingsAvailability()
-                val effectiveCodec = settingsAvailableStream.adjustedForDevice(state.codecReport).codec
+                val codecChoices = androidCodecChoicePresentation(
+                    stream = settings.stream,
+                    codecReport = state.codecReport,
+                    comingSoonLabel = comingSoonLabel,
+                    unavailableLabel = unavailableLabel,
+                )
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_codec),
-                    options = VideoCodec.entries.map { codec ->
-                        val launchUsable = state.codecReport
-                            ?.capabilities
-                            ?.firstOrNull { it.codec == codec }
-                            ?.streamingDecoderUsableForLaunch()
-                            ?: true
-                        val settingsAvailable = codec.availableForAndroidSettings()
-                        val available = settingsAvailable && launchUsable
-                        ChoiceMenuOption(
-                            value = codec.name,
-                            label = codec.name,
-                            enabled = available,
-                            badge = when {
-                                available -> null
-                                !settingsAvailable -> comingSoonLabel
-                                else -> unavailableLabel
-                            },
-                        )
-                    },
-                    selectedLabel = if (effectiveCodec == settings.stream.codec) {
-                        settings.stream.codec.name
-                    } else {
-                        "${settings.stream.codec.name} -> ${effectiveCodec.name}"
-                    },
+                    options = codecChoices.options,
+                    selectedLabel = codecChoices.selectedLabel,
                     description = stringResource(R.string.settings_codec_desc),
                 ) { value ->
                     val selectedCodec = VideoCodec.valueOf(value)
@@ -1107,7 +1132,7 @@ private fun SettingsContent(
                     }
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_controller_touch), "input", "rumble", "touch", "controller", "style", "skin", "theme", "colour", "color", "labels", "layout", "scale", "size", "opacity", "edge", "padding", "offset", "horizontal", "vertical", "controls", "stick", "joystick", "analog", "dynamic", "dead zone", "button") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_controller_touch), "input", "rumble", "touch", "controller", "style", "skin", "theme", "colour", "color", "labels", "layout", "scale", "size", "opacity", "edge", "padding", "offset", "horizontal", "vertical", "controls", "visible", "hide", "programmable", "extra", "accessibility", "guide", "home", "stick", "joystick", "analog", "dynamic", "dead zone", "button") {
                 SettingSwitch(
                     label = stringResource(R.string.stream_panel_vibration),
                     checked = settings.vibrationEnabled,
@@ -1182,6 +1207,62 @@ private fun SettingsContent(
                         settings.copy(androidTouch = settings.androidTouch.copy(touchButtonLabels = enabled)),
                     )
                 }
+                Text(
+                    text = stringResource(R.string.settings_touch_visible_controls),
+                    color = SettingsText,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = stringResource(R.string.settings_touch_visible_controls_desc),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                TouchControlGroup.entries.forEach { group ->
+                    SettingSwitch(
+                        label = stringResource(touchControlGroupLabelRes(group)),
+                        checked = settings.androidTouch.isControlVisible(group),
+                    ) { visible ->
+                        viewModel.updateSettings(
+                            settings.copy(androidTouch = settings.androidTouch.withControlVisible(group, visible)),
+                        )
+                    }
+                }
+                Text(
+                    text = stringResource(R.string.settings_touch_extra_buttons),
+                    color = SettingsText,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = stringResource(R.string.settings_touch_extra_buttons_desc),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                val extraButtonOptions = TouchExtraButtonAction.entries.map { action ->
+                    SettingsChoiceOption(action.name, touchExtraButtonActionLabel(action))
+                }
+                repeat(TOUCH_EXTRA_BUTTON_COUNT) { index ->
+                    ChoiceOptionRow(
+                        label = stringResource(R.string.settings_touch_extra_button, index + 1),
+                        options = extraButtonOptions,
+                        selectedValue = settings.androidTouch.extraButtonAction(index).name,
+                    ) { actionName ->
+                        val action = TouchExtraButtonAction.valueOf(actionName)
+                        viewModel.updateSettings(
+                            settings.copy(androidTouch = settings.androidTouch.withExtraButtonAction(index, action)),
+                        )
+                    }
+                }
+                NumberSlider(
+                    stringResource(R.string.settings_touch_extra_button_size),
+                    settings.androidTouch.extraButtonScale,
+                    0.6f,
+                    1.6f,
+                    0.05f,
+                ) { value ->
+                    viewModel.updateSettings(
+                        settings.copy(androidTouch = settings.androidTouch.copy(extraButtonScale = value)),
+                    )
+                }
                 val touchAimOptions = listOf(
                     SettingsChoiceOption(TouchAimMode.LockJoystick.name, stringResource(R.string.stream_joysticks_lock_joystick)),
                     SettingsChoiceOption(TouchAimMode.LockZone.name, stringResource(R.string.stream_joysticks_lock_zone)),
@@ -1253,8 +1334,8 @@ private fun SettingsContent(
                 NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "catalog", "background", "wallpaper", "image", "custom", "tv", "safe area", "screen padding", "overscan") {
-                val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "border", "effects", "bonanza", "cinema", "catalog", "background", "wallpaper", "image", "custom", "tv", "safe area", "screen padding", "overscan") {
+                val accentOptions = selectableUiAccents().map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 ChoiceRow(
                     label = stringResource(R.string.settings_accent),
@@ -1266,6 +1347,13 @@ private fun SettingsContent(
                     accentOptions.firstOrNull { it.second == label }?.first?.let { accent ->
                         viewModel.updateSettings(settings.copy(uiAccent = accent))
                     }
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_live_selected_outlines),
+                    checked = settings.liveSelectedOutlines,
+                    description = stringResource(R.string.settings_live_selected_outlines_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(liveSelectedOutlines = enabled))
                 }
                 SettingSwitch(
                     label = stringResource(R.string.settings_absolute_cinema_effects),

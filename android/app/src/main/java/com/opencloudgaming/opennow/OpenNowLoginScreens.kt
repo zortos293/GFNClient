@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.Manifest
 import android.content.Context
 import android.content.res.Configuration
 import android.content.Intent
@@ -324,9 +325,21 @@ internal fun TvPhonePairingPanel(
     modifier: Modifier = Modifier,
 ) {
     val connector = state.localTvConnector
+    val context = LocalContext.current
+    val localNetworkPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) viewModel.startLocalTvConnector()
+    }
     if (!connector.hosting) {
         OutlinedButton(
-            onClick = viewModel::startLocalTvConnector,
+            onClick = {
+                if (context.hasAndroidLocalNetworkAccess()) {
+                    viewModel.startLocalTvConnector()
+                } else {
+                    localNetworkPermissionLauncher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+                }
+            },
             enabled = !connector.busy,
             modifier = modifier,
         ) {

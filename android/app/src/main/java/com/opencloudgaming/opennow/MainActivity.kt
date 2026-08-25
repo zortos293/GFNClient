@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
@@ -66,6 +67,16 @@ class MainActivity : ComponentActivity() {
     private var streamPictureInPictureAspectRatio = Rational(16, 9)
     private var startupDataReady = false
     private var pendingExternalLaunchIntent: Intent? = null
+    private var pendingLocalNetworkIntent: Intent? = null
+    private val localNetworkPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val pendingIntent = pendingLocalNetworkIntent
+        pendingLocalNetworkIntent = null
+        if (granted && startupDataReady && pendingIntent != null) {
+            viewModel.handleExternalLaunchIntent(pendingIntent)
+        }
+    }
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(localizedAndroidContext(newBase))
@@ -102,7 +113,7 @@ class MainActivity : ComponentActivity() {
             openNowApplication.awaitStartupData()
             startupDataReady = true
             viewModel.setAndroidPictureInPictureActive(isAndroidPictureInPictureActive())
-            pendingExternalLaunchIntent?.let(viewModel::handleExternalLaunchIntent)
+            pendingExternalLaunchIntent?.let(::handleExternalLaunchIntent)
             pendingExternalLaunchIntent = null
             viewModel.state.collect { state ->
                 requestQueueNotificationPermissionIfNeeded(state)
@@ -128,10 +139,19 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (startupDataReady) {
-            viewModel.handleExternalLaunchIntent(intent)
+            handleExternalLaunchIntent(intent)
         } else {
             pendingExternalLaunchIntent = intent
         }
+    }
+
+    private fun handleExternalLaunchIntent(intent: Intent) {
+        if (isLocalTvPairUri(intent.data) && !hasAndroidLocalNetworkAccess()) {
+            pendingLocalNetworkIntent = intent
+            localNetworkPermissionLauncher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+            return
+        }
+        viewModel.handleExternalLaunchIntent(intent)
     }
 
     override fun onResume() {

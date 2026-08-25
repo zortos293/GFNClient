@@ -69,6 +69,7 @@ internal fun TouchOverlay(
     val layoutScale = touch.scale
     val buttonScale = touch.buttonScale
     val stickScale = touch.stickScale
+    val defaultOffsets = remember { AndroidTouchSettings().offsets }
 
     val localOffsets = remember(touch.offsets) {
         androidx.compose.runtime.mutableStateMapOf<String, TouchOffset>().apply {
@@ -79,6 +80,7 @@ internal fun TouchOverlay(
     fun getLocalOffset(key: String): TouchOffset {
         val saved = localOffsets[key]
         if (saved != null) return saved
+        defaultOffsets[key]?.let { return it }
         val baseKey = key.substringBeforeLast("_")
         return when (baseKey) {
             "lt", "lb", "lstick", "dpad", "l3" -> TouchOffset(touch.leftOffsetXDp, touch.leftOffsetYDp)
@@ -149,6 +151,9 @@ internal fun TouchOverlay(
                         centerButtonScale = touch.centerButtonScale,
                         leftStickScale = touch.leftStickScale,
                         rightStickScale = touch.rightStickScale,
+                        visibleControlGroups = touch.visibleControlGroups,
+                        extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonAction),
+                        extraButtonScale = touch.extraButtonScale,
                         joystickMode = touch.joystickMode,
                         aimMode = touch.aimMode,
                         joystickDeadZone = touch.joystickDeadZone,
@@ -171,6 +176,9 @@ internal fun TouchOverlay(
                         centerButtonScale = touch.centerButtonScale,
                         leftStickScale = touch.leftStickScale,
                         rightStickScale = touch.rightStickScale,
+                        visibleControlGroups = touch.visibleControlGroups,
+                        extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonAction),
+                        extraButtonScale = touch.extraButtonScale,
                         joystickMode = touch.joystickMode,
                         aimMode = touch.aimMode,
                         joystickDeadZone = touch.joystickDeadZone,
@@ -198,6 +206,9 @@ private fun PortraitTouchControls(
     centerButtonScale: Float,
     leftStickScale: Float,
     rightStickScale: Float,
+    visibleControlGroups: Set<TouchControlGroup>,
+    extraButtonActions: List<TouchExtraButtonAction>,
+    extraButtonScale: Float,
     joystickMode: TouchJoystickMode,
     aimMode: TouchAimMode,
     joystickDeadZone: Float,
@@ -216,11 +227,12 @@ private fun PortraitTouchControls(
     Box(
         Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp)
     ) {
-        if (aimMode == TouchAimMode.LockZone) {
+        if (aimMode == TouchAimMode.LockZone && TouchControlGroup.RightStick in visibleControlGroups) {
             LockZoneAimSurface(
                 id = "portrait-aim-zone",
                 client = client,
                 opacity = opacity,
+                deadZone = joystickDeadZone,
                 enabled = !layoutEditing,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -233,7 +245,19 @@ private fun PortraitTouchControls(
         val bumperHeight = 32.dp * shoulderScale
         val triggerTouchHeight = if (bumperHeight < 48.dp) 48.dp else bumperHeight
 
-        TouchControlGroup(
+        ExtraTouchButtons(
+            orientation = "portrait",
+            actions = extraButtonActions,
+            scale = buttonScale * extraButtonScale * layoutScale,
+            client = client,
+            layoutEditing = layoutEditing,
+            getLocalOffset = getLocalOffset,
+            onLocalOffsetChange = onLocalOffsetChange,
+            onButtonTone = onButtonTone,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 4.dp),
+        )
+
+        if (TouchControlGroup.ShoulderButtons in visibleControlGroups) TouchControlGroup(
             id = "portrait-lt",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("lt").x.dp,
@@ -251,7 +275,7 @@ private fun PortraitTouchControls(
             )
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.ShoulderButtons in visibleControlGroups) TouchControlGroup(
             id = "portrait-lb",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("lb").x.dp,
@@ -269,7 +293,7 @@ private fun PortraitTouchControls(
             )
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.LeftStick in visibleControlGroups) TouchControlGroup(
             id = "portrait-lstick",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("lstick").x.dp,
@@ -287,7 +311,7 @@ private fun PortraitTouchControls(
             )
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.ThumbButtons in visibleControlGroups) TouchControlGroup(
             id = "portrait-l3",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("l3").x.dp,
@@ -301,7 +325,7 @@ private fun PortraitTouchControls(
             GamepadButton("LS", GamepadButtonMapping.LEFT_THUMB, client, buttonSize48, onButtonTone)
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.Dpad in visibleControlGroups) TouchControlGroup(
             id = "portrait-dpad",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("dpad").x.dp,
@@ -312,7 +336,7 @@ private fun PortraitTouchControls(
             DpadCluster(client, buttonScale * dpadScale * layoutScale, onButtonTone)
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.ShoulderButtons in visibleControlGroups) TouchControlGroup(
             id = "portrait-rt",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("rt").x.dp,
@@ -330,7 +354,7 @@ private fun PortraitTouchControls(
             )
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.ShoulderButtons in visibleControlGroups) TouchControlGroup(
             id = "portrait-rb",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("rb").x.dp,
@@ -348,7 +372,7 @@ private fun PortraitTouchControls(
             )
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.MenuButtons in visibleControlGroups) TouchControlGroup(
             id = "portrait-select",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("select").x.dp,
@@ -359,7 +383,7 @@ private fun PortraitTouchControls(
             GamepadButton("◀", 0x0020, client, buttonSize44, onButtonTone)
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.MenuButtons in visibleControlGroups) TouchControlGroup(
             id = "portrait-start",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("start").x.dp,
@@ -370,7 +394,7 @@ private fun PortraitTouchControls(
             GamepadButton("▶", 0x0010, client, buttonSize44, onButtonTone)
         }
 
-        if (aimMode == TouchAimMode.LockJoystick) {
+        if (aimMode == TouchAimMode.LockJoystick && TouchControlGroup.RightStick in visibleControlGroups) {
             TouchControlGroup(
                 id = "portrait-rstick",
                 layoutEditing = layoutEditing,
@@ -390,7 +414,7 @@ private fun PortraitTouchControls(
             }
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.ThumbButtons in visibleControlGroups) TouchControlGroup(
             id = "portrait-r3",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("r3").x.dp,
@@ -404,7 +428,7 @@ private fun PortraitTouchControls(
             GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, buttonSize48, onButtonTone)
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.FaceButtons in visibleControlGroups) TouchControlGroup(
             id = "portrait-face",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("face").x.dp,
@@ -430,6 +454,9 @@ private fun BoxScope.LandscapeTouchControls(
     centerButtonScale: Float,
     leftStickScale: Float,
     rightStickScale: Float,
+    visibleControlGroups: Set<TouchControlGroup>,
+    extraButtonActions: List<TouchExtraButtonAction>,
+    extraButtonScale: Float,
     joystickMode: TouchJoystickMode,
     aimMode: TouchAimMode,
     joystickDeadZone: Float,
@@ -444,11 +471,12 @@ private fun BoxScope.LandscapeTouchControls(
     val centerScale = controlScale * centerButtonScale
     val topControlClearance = landscapeTouchTopControlClearanceDp(viewportHeight.value, shoulderScale).dp
     Box(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
-        if (aimMode == TouchAimMode.LockZone) {
+        if (aimMode == TouchAimMode.LockZone && TouchControlGroup.RightStick in visibleControlGroups) {
             LockZoneAimSurface(
                 id = "landscape-aim-zone",
                 client = client,
                 opacity = opacity,
+                deadZone = joystickDeadZone,
                 enabled = !layoutEditing,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -460,7 +488,19 @@ private fun BoxScope.LandscapeTouchControls(
         val bumperHeight = 36.dp * shoulderScale
         val triggerTouchHeight = if (bumperHeight < 48.dp) 48.dp else bumperHeight
 
-        TouchControlGroup(
+        ExtraTouchButtons(
+            orientation = "landscape",
+            actions = extraButtonActions,
+            scale = controlScale * extraButtonScale,
+            client = client,
+            layoutEditing = layoutEditing,
+            getLocalOffset = getLocalOffset,
+            onLocalOffsetChange = onLocalOffsetChange,
+            onButtonTone = onButtonTone,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = topControlClearance),
+        )
+
+        if (TouchControlGroup.ShoulderButtons in visibleControlGroups) TouchControlGroup(
             id = "landscape-lt",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("lt").x.dp,
@@ -478,7 +518,7 @@ private fun BoxScope.LandscapeTouchControls(
             )
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.ShoulderButtons in visibleControlGroups) TouchControlGroup(
             id = "landscape-lb",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("lb").x.dp,
@@ -497,7 +537,7 @@ private fun BoxScope.LandscapeTouchControls(
         }
 
         val selectSize = 42.dp * centerScale
-        TouchControlGroup(
+        if (TouchControlGroup.MenuButtons in visibleControlGroups) TouchControlGroup(
             id = "landscape-select",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("select").x.dp,
@@ -508,7 +548,7 @@ private fun BoxScope.LandscapeTouchControls(
             GamepadButton("◀", 0x0020, client, selectSize, onButtonTone)
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.MenuButtons in visibleControlGroups) TouchControlGroup(
             id = "landscape-start",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("start").x.dp,
@@ -519,7 +559,7 @@ private fun BoxScope.LandscapeTouchControls(
             GamepadButton("▶", 0x0010, client, selectSize, onButtonTone)
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.ShoulderButtons in visibleControlGroups) TouchControlGroup(
             id = "landscape-rb",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("rb").x.dp,
@@ -537,7 +577,7 @@ private fun BoxScope.LandscapeTouchControls(
             )
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.ShoulderButtons in visibleControlGroups) TouchControlGroup(
             id = "landscape-rt",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("rt").x.dp,
@@ -557,8 +597,10 @@ private fun BoxScope.LandscapeTouchControls(
 
         val effectiveDpadScale = controlScale * dpadScale * 0.88f
         val dpadButtonSize = 54.dp * effectiveDpadScale
-        val dpadWidth = dpadButtonSize * 2.44f
-        TouchControlGroup(
+        // Keep the next control outside the full skin-aware d-pad canvas. The d-pad painter grew
+        // beyond the old four-button cluster width when the shaped skins were introduced.
+        val dpadWidth = if (TouchControlGroup.Dpad in visibleControlGroups) touchDpadBoxSize(dpadButtonSize) else 0.dp
+        if (TouchControlGroup.Dpad in visibleControlGroups) TouchControlGroup(
             id = "landscape-dpad",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("dpad").x.dp,
@@ -570,7 +612,7 @@ private fun BoxScope.LandscapeTouchControls(
         }
 
         val leftStickDiameter = 112.dp * stickScale * leftStickScale * layoutScale
-        TouchControlGroup(
+        if (TouchControlGroup.LeftStick in visibleControlGroups) TouchControlGroup(
             id = "landscape-lstick",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("lstick").x.dp,
@@ -589,7 +631,7 @@ private fun BoxScope.LandscapeTouchControls(
         }
 
         val l3Size = 54.dp * centerScale
-        TouchControlGroup(
+        if (TouchControlGroup.ThumbButtons in visibleControlGroups) TouchControlGroup(
             id = "landscape-l3",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("l3").x.dp,
@@ -607,7 +649,7 @@ private fun BoxScope.LandscapeTouchControls(
         val faceButtonSize = 54.dp * faceScale
         val faceWidth = faceButtonSize * 2.44f
         val rightStickDiameter = 112.dp * stickScale * rightStickScale * layoutScale
-        if (aimMode == TouchAimMode.LockJoystick) {
+        if (aimMode == TouchAimMode.LockJoystick && TouchControlGroup.RightStick in visibleControlGroups) {
             TouchControlGroup(
                 id = "landscape-rstick",
                 layoutEditing = layoutEditing,
@@ -628,7 +670,7 @@ private fun BoxScope.LandscapeTouchControls(
         }
 
         val r3Size = 54.dp * centerScale
-        TouchControlGroup(
+        if (TouchControlGroup.ThumbButtons in visibleControlGroups) TouchControlGroup(
             id = "landscape-r3",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("r3").x.dp,
@@ -642,7 +684,7 @@ private fun BoxScope.LandscapeTouchControls(
             GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, r3Size, onButtonTone)
         }
 
-        TouchControlGroup(
+        if (TouchControlGroup.FaceButtons in visibleControlGroups) TouchControlGroup(
             id = "landscape-face",
             layoutEditing = layoutEditing,
             offsetX = getLocalOffset("face").x.dp,
@@ -659,6 +701,118 @@ internal fun landscapeTouchTopControlClearanceDp(viewportHeightDp: Float, contro
     val viewportBand = (viewportHeightDp * 0.11f).coerceIn(34f, 58f)
     val scaledBand = viewportBand * controlScale.coerceIn(0.75f, 1.35f)
     return scaledBand.coerceIn(30f, 76f)
+}
+
+internal fun touchExtraButtonActionLabel(action: TouchExtraButtonAction): String = when (action) {
+    TouchExtraButtonAction.None -> "Off"
+    TouchExtraButtonAction.Guide -> "Guide / Home"
+    TouchExtraButtonAction.A -> "A"
+    TouchExtraButtonAction.B -> "B"
+    TouchExtraButtonAction.X -> "X"
+    TouchExtraButtonAction.Y -> "Y"
+    TouchExtraButtonAction.DpadUp -> "D-pad Up"
+    TouchExtraButtonAction.DpadDown -> "D-pad Down"
+    TouchExtraButtonAction.DpadLeft -> "D-pad Left"
+    TouchExtraButtonAction.DpadRight -> "D-pad Right"
+    TouchExtraButtonAction.LeftBumper -> "LB"
+    TouchExtraButtonAction.RightBumper -> "RB"
+    TouchExtraButtonAction.LeftTrigger -> "LT"
+    TouchExtraButtonAction.RightTrigger -> "RT"
+    TouchExtraButtonAction.LeftStickClick -> "L3 / LS"
+    TouchExtraButtonAction.RightStickClick -> "R3 / RS"
+    TouchExtraButtonAction.Start -> "Start"
+    TouchExtraButtonAction.Select -> "Select"
+}
+
+internal fun touchControlGroupLabelRes(group: TouchControlGroup): Int = when (group) {
+    TouchControlGroup.FaceButtons -> R.string.settings_touch_control_face
+    TouchControlGroup.Dpad -> R.string.settings_touch_control_dpad
+    TouchControlGroup.LeftStick -> R.string.settings_touch_control_left_stick
+    TouchControlGroup.RightStick -> R.string.settings_touch_control_right_stick
+    TouchControlGroup.ShoulderButtons -> R.string.settings_touch_control_shoulders
+    TouchControlGroup.ThumbButtons -> R.string.settings_touch_control_thumb
+    TouchControlGroup.MenuButtons -> R.string.settings_touch_control_menu
+}
+
+internal fun nextTouchExtraButtonAction(action: TouchExtraButtonAction): TouchExtraButtonAction {
+    val actions = TouchExtraButtonAction.entries
+    return actions[(actions.indexOf(action) + 1) % actions.size]
+}
+
+private fun touchExtraButtonCapLabel(action: TouchExtraButtonAction): String = when (action) {
+    TouchExtraButtonAction.None -> ""
+    TouchExtraButtonAction.Guide -> "G"
+    TouchExtraButtonAction.DpadUp -> "↑"
+    TouchExtraButtonAction.DpadDown -> "↓"
+    TouchExtraButtonAction.DpadLeft -> "←"
+    TouchExtraButtonAction.DpadRight -> "→"
+    TouchExtraButtonAction.LeftBumper -> "LB"
+    TouchExtraButtonAction.RightBumper -> "RB"
+    TouchExtraButtonAction.LeftTrigger -> "LT"
+    TouchExtraButtonAction.RightTrigger -> "RT"
+    TouchExtraButtonAction.LeftStickClick -> "LS"
+    TouchExtraButtonAction.RightStickClick -> "RS"
+    TouchExtraButtonAction.Start -> "▶"
+    TouchExtraButtonAction.Select -> "◀"
+    else -> action.name
+}
+
+private fun touchExtraButtonMask(action: TouchExtraButtonAction): Int? = when (action) {
+    TouchExtraButtonAction.Guide -> GamepadButtonMapping.GUIDE
+    TouchExtraButtonAction.A -> GamepadButtonMapping.A
+    TouchExtraButtonAction.B -> GamepadButtonMapping.B
+    TouchExtraButtonAction.X -> GamepadButtonMapping.X
+    TouchExtraButtonAction.Y -> GamepadButtonMapping.Y
+    TouchExtraButtonAction.DpadUp -> GamepadButtonMapping.DPAD_UP
+    TouchExtraButtonAction.DpadDown -> GamepadButtonMapping.DPAD_DOWN
+    TouchExtraButtonAction.DpadLeft -> GamepadButtonMapping.DPAD_LEFT
+    TouchExtraButtonAction.DpadRight -> GamepadButtonMapping.DPAD_RIGHT
+    TouchExtraButtonAction.LeftBumper -> GamepadButtonMapping.LEFT_SHOULDER
+    TouchExtraButtonAction.RightBumper -> GamepadButtonMapping.RIGHT_SHOULDER
+    TouchExtraButtonAction.LeftStickClick -> GamepadButtonMapping.LEFT_THUMB
+    TouchExtraButtonAction.RightStickClick -> GamepadButtonMapping.RIGHT_THUMB
+    TouchExtraButtonAction.Start -> GamepadButtonMapping.START
+    TouchExtraButtonAction.Select -> GamepadButtonMapping.BACK
+    TouchExtraButtonAction.None,
+    TouchExtraButtonAction.LeftTrigger,
+    TouchExtraButtonAction.RightTrigger,
+    -> null
+}
+
+@Composable
+private fun BoxScope.ExtraTouchButtons(
+    orientation: String,
+    actions: List<TouchExtraButtonAction>,
+    scale: Float,
+    client: NativeStreamClient,
+    layoutEditing: Boolean,
+    getLocalOffset: (String) -> TouchOffset,
+    onLocalOffsetChange: (String, Float, Float) -> Unit,
+    onButtonTone: () -> Unit,
+    modifier: Modifier,
+) {
+    actions.take(TOUCH_EXTRA_BUTTON_COUNT).forEachIndexed { index, action ->
+        if (action == TouchExtraButtonAction.None) return@forEachIndexed
+        val controlKey = "extra${index + 1}"
+        key("$orientation-$controlKey", action) {
+            TouchControlGroup(
+                id = "$orientation-$controlKey",
+                layoutEditing = layoutEditing,
+                offsetX = getLocalOffset(controlKey).x.dp,
+                offsetY = getLocalOffset(controlKey).y.dp,
+                onOffsetChange = { x, y -> onLocalOffsetChange(controlKey, x, y) },
+                modifier = modifier,
+            ) {
+                GamepadActionButton(
+                    action = action,
+                    sourceId = "touch-$orientation-$controlKey",
+                    client = client,
+                    size = 44.dp * scale,
+                    onPressTone = onButtonTone,
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -772,17 +926,19 @@ private fun LockZoneAimSurface(
     id: String,
     client: NativeStreamClient,
     opacity: Float,
+    deadZone: Float,
     enabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
+    val currentOnChange by rememberUpdatedState(client::setVirtualRightStick)
     var aimAnchor by remember { mutableStateOf<Offset?>(null) }
     var aimOffset by remember { mutableStateOf(Offset.Zero) }
     val maxTravelPx = with(density) { LOCK_ZONE_MAX_TRAVEL_DP.dp.toPx() }
 
     DisposableEffect(client, id) {
         onDispose {
-            client.endTouchAimMouseGesture(android.os.SystemClock.uptimeMillis())
+            client.setVirtualRightStick(0f, 0f)
             NativeStreamInputRouter.clearTouchControllerPassthroughBound(id)
         }
     }
@@ -799,40 +955,36 @@ private fun LockZoneAimSurface(
                     bounds.bottom.roundToInt(),
                 )
             }
-            .pointerInput(client, enabled, maxTravelPx) {
+            .pointerInput(client, deadZone, enabled, maxTravelPx) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     val anchor = down.position
-                    var previousPosition = anchor
-                    var lastEventTimeMs = down.uptimeMillis
                     aimAnchor = anchor
                     aimOffset = Offset.Zero
-                    client.beginTouchAimMouseGesture()
+
+                    fun updateAim(position: Offset) {
+                        val delta = position - anchor
+                        val value = touchStickValue(delta.x, delta.y, maxTravelPx, deadZone)
+                        currentOnChange(value.x, value.y)
+                        aimOffset = clampStickOffset(delta, maxTravelPx)
+                    }
 
                     try {
+                        updateAim(down.position)
                         down.consume()
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             if (!change.pressed) {
-                                lastEventTimeMs = change.uptimeMillis
                                 change.consume()
                                 break
                             }
-                            val relativeDelta = change.position - previousPosition
-                            client.sendTouchAimMouseMove(
-                                dx = relativeDelta.x,
-                                dy = relativeDelta.y,
-                                eventTimeMs = change.uptimeMillis,
-                            )
-                            previousPosition = change.position
-                            lastEventTimeMs = change.uptimeMillis
-                            aimOffset = clampStickOffset(change.position - anchor, maxTravelPx)
+                            updateAim(change.position)
                             change.consume()
                         }
                     } finally {
-                        client.endTouchAimMouseGesture(lastEventTimeMs)
+                        currentOnChange(0f, 0f)
                         aimAnchor = null
                         aimOffset = Offset.Zero
                     }
@@ -1168,6 +1320,47 @@ private fun GamepadBumperButton(
         onDispose {
             client.setVirtualButton(mask, false)
         }
+    }
+}
+
+@Composable
+private fun GamepadActionButton(
+    action: TouchExtraButtonAction,
+    sourceId: String,
+    client: NativeStreamClient,
+    size: Dp,
+    onPressTone: () -> Unit,
+) {
+    val currentOnPressTone by rememberUpdatedState(onPressTone)
+    var pressed by remember(action, sourceId) { mutableStateOf(false) }
+
+    fun dispatch(down: Boolean) {
+        when (action) {
+            TouchExtraButtonAction.LeftTrigger -> client.setVirtualTriggerFromSource(true, sourceId, down)
+            TouchExtraButtonAction.RightTrigger -> client.setVirtualTriggerFromSource(false, sourceId, down)
+            else -> touchExtraButtonMask(action)?.let { mask ->
+                client.setVirtualButtonFromSource(mask, sourceId, down)
+            }
+        }
+    }
+
+    val currentOnPressedChange = rememberUpdatedState<(Boolean) -> Unit> { down ->
+        if (down != pressed) {
+            dispatch(down)
+            pressed = down
+            if (down) currentOnPressTone()
+        }
+    }
+    Box(
+        Modifier
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .virtualPressInput(client, "$sourceId-${action.name}", currentOnPressedChange),
+        contentAlignment = Alignment.Center,
+    ) {
+        TouchCapFace(label = touchExtraButtonCapLabel(action), pressed = pressed, diameter = size)
+    }
+    DisposableEffect(client, action, sourceId) {
+        onDispose { dispatch(false) }
     }
 }
 

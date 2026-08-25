@@ -306,6 +306,7 @@ import kotlin.math.sqrt
 internal val Green = OpenNowPalette.AccentDefault
 internal val Background = OpenNowPalette.Background
 internal val Panel = OpenNowPalette.Panel
+internal val ProfileMenuContainerColor = Panel
 internal val PanelAlt = OpenNowPalette.PanelAlt
 internal val TextPrimary = OpenNowPalette.TextPrimary
 internal val TextMuted = OpenNowPalette.TextMuted
@@ -324,6 +325,7 @@ internal val UiAccent.color: Color
         UiAccent.Lime -> OpenNowPalette.AccentLime
         UiAccent.Coral -> OpenNowPalette.AccentCoral
         UiAccent.Violet -> OpenNowPalette.AccentViolet
+        UiAccent.Orange -> OpenNowPalette.AccentOrange
         UiAccent.AbsoluteCinema -> OpenNowPalette.AccentCinemaOrange
         UiAccent.Switch -> OpenNowPalette.AccentSwitchRed
     }
@@ -336,9 +338,13 @@ internal fun uiAccentLabel(accent: UiAccent): String = when (accent) {
     UiAccent.Lime -> stringResource(R.string.accent_lime)
     UiAccent.Coral -> stringResource(R.string.accent_coral)
     UiAccent.Violet -> stringResource(R.string.accent_violet)
+    UiAccent.Orange -> stringResource(R.string.accent_orange)
     UiAccent.AbsoluteCinema -> stringResource(R.string.accent_absolute_cinema)
     UiAccent.Switch -> stringResource(R.string.accent_switch)
 }
+
+/** Accent selection is independent from the switches that opt into Cinema border effects. */
+internal fun selectableUiAccents(): List<UiAccent> = UiAccent.entries
 
 internal val UiAccent.secondaryColor: Color
     get() = when (this) {
@@ -353,6 +359,8 @@ internal data class ActiveSelectionEffectStyle(
     val secondaryColor: Color,
     /** Flat selected fills, icon tints, and menu highlights — everything that is not an effect. */
     val tintColor: Color,
+    /** Static borders around game artwork; independent from the animated Cinema treatment. */
+    val gameCardBordersEnabled: Boolean,
     val enabled: Boolean,
     val absoluteCinemaActive: Boolean,
     val absoluteCinemaEverywhere: Boolean,
@@ -372,10 +380,8 @@ internal val NavigationSelectionColor = Color.White
  * broadens the same treatment to additional hovered and focused surfaces. The user's selected
  * accent remains the color owner.
  *
- * [ActiveSelectionEffectStyle.tintColor] splits the flat parts of selection away from the animated
- * ones. Absolute Cinema keeps its orange and blue in the energy frames — that is the whole point of
- * it — but takes the default white for selected menu rows and icons, where a saturated orange on
- * every highlighted row is loud rather than cinematic.
+ * [ActiveSelectionEffectStyle.tintColor] splits flat selection from animated energy. Both use the
+ * selected color; enabling Cinema never chooses orange or changes the Material palette.
  */
 internal fun AppSettings.activeSelectionEffectStyle(): ActiveSelectionEffectStyle {
     val cinemaEverywhere = absoluteCinemaEffects && absoluteCinemaEverywhere
@@ -386,6 +392,7 @@ internal fun AppSettings.activeSelectionEffectStyle(): ActiveSelectionEffectStyl
         color = baseColor,
         secondaryColor = baseSecondaryColor,
         tintColor = if (uiAccent.usesDefaultSelectionTint()) Color.White else uiAccent.color,
+        gameCardBordersEnabled = liveSelectedOutlines,
         // Selection borders are an Absolute Cinema effect. Other accents still own fills, icon
         // tints, and text emphasis, but no longer draw outlines around ordinary controls.
         enabled = cinemaActive,
@@ -401,10 +408,8 @@ internal fun UiAccent.usesDefaultSelectionTint(): Boolean =
 /**
  * The Material palette colour for an accent.
  *
- * Absolute Cinema is an *effects* theme, not a colour theme: its orange and blue belong to the
- * energy frames. Painting the whole Material surface — every menu highlight, settings icon, and
- * control — in the same orange was overwhelming, so it takes the default palette here and shows
- * its colour only where something is actually animating.
+ * Absolute Cinema keeps the regular Material palette and reserves orange/blue for artwork borders
+ * and optional energy frames. Selecting it never enables those effects by itself.
  */
 internal val UiAccent.themeColor: Color
     get() = if (this == UiAccent.AbsoluteCinema) OpenNowPalette.AccentDefault else color
@@ -416,6 +421,7 @@ internal val LocalActiveSelectionColor = staticCompositionLocalOf { Color.White 
 internal val LocalActiveSelectionSecondaryColor = staticCompositionLocalOf { Color.White }
 /** Flat selected fills and icon tints. See [ActiveSelectionEffectStyle.tintColor]. */
 internal val LocalSelectionTintColor = staticCompositionLocalOf { Color.White }
+internal val LocalGameCardBordersEnabled = staticCompositionLocalOf { true }
 internal val LocalActiveSelectionEnabled = staticCompositionLocalOf { true }
 internal val LocalAbsoluteCinemaEffects = staticCompositionLocalOf { false }
 internal val LocalAbsoluteCinemaEverywhere = staticCompositionLocalOf { false }
@@ -491,6 +497,7 @@ fun OpenNowTheme(
         LocalActiveSelectionColor provides selectionEffectStyle.color,
         LocalActiveSelectionSecondaryColor provides selectionEffectStyle.secondaryColor,
         LocalSelectionTintColor provides selectionEffectStyle.tintColor,
+        LocalGameCardBordersEnabled provides selectionEffectStyle.gameCardBordersEnabled,
         LocalActiveSelectionEnabled provides selectionEffectStyle.enabled,
         LocalAbsoluteCinemaEffects provides selectionEffectStyle.absoluteCinemaActive,
         LocalAbsoluteCinemaEverywhere provides selectionEffectStyle.absoluteCinemaEverywhere,
@@ -1658,7 +1665,6 @@ private fun TopBarProfileMenu(
     val profileDescription = stringResource(R.string.profile_menu_description)
     val haptics = LocalOpenNowHaptics.current
     val launcherControl = rememberDefaultLauncherControl()
-    val bonanzaActive = LocalAbsoluteCinemaEverywhere.current
 
     Box {
         Box(
@@ -1701,13 +1707,10 @@ private fun TopBarProfileMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
             modifier = Modifier
-                .widthIn(min = 250.dp, max = 300.dp)
-                .border(
-                    1.dp,
-                    if (bonanzaActive) Color.White.copy(alpha = 0.88f) else Color.Transparent,
-                    RoundedCornerShape(4.dp),
-                ),
-            containerColor = if (bonanzaActive) Color.Transparent else Panel,
+                .widthIn(min = 250.dp, max = 300.dp),
+            // Popups must stay readable over custom wallpaper. Effects Bonanza belongs on each
+            // focused item; only the landscape navigation rail is allowed to become transparent.
+            containerColor = ProfileMenuContainerColor,
         ) {
             Column(
                 Modifier.padding(horizontal = 16.dp, vertical = 10.dp),

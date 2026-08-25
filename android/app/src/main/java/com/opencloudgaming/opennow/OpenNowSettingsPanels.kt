@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.Manifest
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -501,8 +502,60 @@ internal fun LocalTvSettingsPanel(
             .enableAutoZoom()
             .build()
     }
+    val scanTvQr = {
+        runCatching {
+            GmsBarcodeScanning
+                .getClient(context.applicationContext, scannerOptions)
+                .startScan()
+        }.onSuccess { scanTask ->
+            scanTask
+                .addOnSuccessListener { barcode ->
+                    viewModel.pairLocalTvQrValue(barcode.rawValue)
+                }
+                .addOnFailureListener { error ->
+                    Toast.makeText(
+                        context,
+                        error.message ?: context.getString(R.string.tv_pair_scan_failed),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+        }.onFailure { error ->
+            Toast.makeText(
+                context,
+                error.message ?: context.getString(R.string.tv_pair_scan_failed),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+    val performLocalNetworkAction: (LocalTvNetworkAction) -> Unit = { action ->
+        when (action) {
+            LocalTvNetworkAction.Discover -> viewModel.discoverLocalTvs()
+            LocalTvNetworkAction.ScanQr -> scanTvQr()
+            LocalTvNetworkAction.SignIn -> viewModel.signInLocalTv()
+        }
+    }
+    var pendingLocalNetworkAction by remember { mutableStateOf<LocalTvNetworkAction?>(null) }
+    val localNetworkPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val pendingAction = pendingLocalNetworkAction
+        pendingLocalNetworkAction = null
+        if (granted && pendingAction != null) performLocalNetworkAction(pendingAction)
+    }
+    val requestLocalNetworkAction: (LocalTvNetworkAction) -> Unit = { action ->
+        if (context.hasAndroidLocalNetworkAccess()) {
+            performLocalNetworkAction(action)
+        } else {
+            pendingLocalNetworkAction = action
+            localNetworkPermissionLauncher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        }
+    }
     LaunchedEffect(state.androidTvProfile) {
-        if (!state.androidTvProfile && connector.connectedTvName == null) {
+        if (
+            !state.androidTvProfile &&
+            connector.connectedTvName == null &&
+            context.hasAndroidLocalNetworkAccess()
+        ) {
             viewModel.discoverLocalTvs()
         }
     }
@@ -546,38 +599,14 @@ internal fun LocalTvSettingsPanel(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Button(
-                                onClick = {
-                                    runCatching {
-                                        GmsBarcodeScanning
-                                            .getClient(context.applicationContext, scannerOptions)
-                                            .startScan()
-                                    }.onSuccess { scanTask ->
-                                        scanTask
-                                            .addOnSuccessListener { barcode ->
-                                                viewModel.pairLocalTvQrValue(barcode.rawValue)
-                                            }
-                                            .addOnFailureListener { error ->
-                                                Toast.makeText(
-                                                    context,
-                                                    error.message ?: context.getString(R.string.tv_pair_scan_failed),
-                                                    Toast.LENGTH_LONG,
-                                                ).show()
-                                            }
-                                    }.onFailure { error ->
-                                        Toast.makeText(
-                                            context,
-                                            error.message ?: context.getString(R.string.tv_pair_scan_failed),
-                                            Toast.LENGTH_LONG,
-                                        ).show()
-                                    }
-                                },
+                                onClick = { requestLocalNetworkAction(LocalTvNetworkAction.ScanQr) },
                                 enabled = !connector.busy,
                                 modifier = Modifier.weight(1f),
                             ) {
                                 Text(stringResource(R.string.tv_pair_scan_qr), maxLines = 1)
                             }
                             OutlinedButton(
-                                onClick = viewModel::discoverLocalTvs,
+                                onClick = { requestLocalNetworkAction(LocalTvNetworkAction.Discover) },
                                 enabled = !connector.discovering && !connector.busy,
                                 modifier = Modifier.weight(1f),
                             ) {
@@ -617,7 +646,7 @@ internal fun LocalTvSettingsPanel(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Button(
-                                onClick = viewModel::signInLocalTv,
+                                onClick = { requestLocalNetworkAction(LocalTvNetworkAction.SignIn) },
                                 enabled = !connector.busy,
                                 modifier = Modifier.weight(1f),
                             ) {
@@ -636,6 +665,12 @@ internal fun LocalTvSettingsPanel(
             }
         }
     }
+}
+
+private enum class LocalTvNetworkAction {
+    Discover,
+    ScanQr,
+    SignIn,
 }
 
 @Composable

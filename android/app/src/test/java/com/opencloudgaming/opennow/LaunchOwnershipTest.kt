@@ -40,19 +40,21 @@ class LaunchOwnershipTest {
     }
 
     @Test
-    fun freeToPlayVariantIsMarkedBeforeLaunchOnlyWhenUnowned() {
+    fun anyUnownedVariantIsMarkedBeforeLaunch() {
         val free = variant(libraryStatus = "NOT_OWNED", isFreeToPlay = true)
         val ownedFree = variant(libraryStatus = "MANUAL", isFreeToPlay = true)
         val paid = variant(libraryStatus = "NOT_OWNED")
+        val legacyOwned = variant(librarySelected = true)
 
-        assertTrue(shouldAutoMarkFreeToPlayOwnership(game(listOf(free)), free))
-        assertFalse(shouldAutoMarkFreeToPlayOwnership(game(listOf(ownedFree)), ownedFree))
-        assertFalse(shouldAutoMarkFreeToPlayOwnership(game(listOf(paid)), paid))
-        assertFalse(shouldAutoMarkFreeToPlayOwnership(game(listOf(free), playType = "INSTALL_TO_PLAY"), free))
+        assertTrue(shouldMarkVariantOwnedBeforeLaunch(game(listOf(free)), free))
+        assertTrue(shouldMarkVariantOwnedBeforeLaunch(game(listOf(paid), playType = "INSTALL_TO_PLAY"), paid))
+        assertFalse(shouldMarkVariantOwnedBeforeLaunch(game(listOf(ownedFree)), ownedFree))
+        assertFalse(shouldMarkVariantOwnedBeforeLaunch(game(listOf(legacyOwned), isInLibrary = true), legacyOwned))
+        assertFalse(shouldMarkVariantOwnedBeforeLaunch(game(listOf(paid)), null))
     }
 
     @Test
-    fun markingFreeVariantUpdatesSelectedOwnershipLocally() {
+    fun markingVariantUpdatesSelectedOwnershipLocally() {
         val game = game(
             variants = listOf(
                 variant(id = "ubisoft", store = "Ubisoft", librarySelected = true),

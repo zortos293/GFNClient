@@ -2153,9 +2153,9 @@ class GfnCatalogRepository(
                 put("locale", requestLocale())
             },
             token = token,
-        ).checkGraphQlErrors("Add free game to library")
+        ).checkGraphQlErrors("Mark game as owned")
         return payload.obj("data")?.obj("addOwnedVariant")?.obj("app")?.string("id")
-            ?: error("GFN did not confirm that the free game was added to the library")
+            ?: error("GFN did not confirm that the game was marked as owned")
     }
 
     suspend fun resolveLaunchAppId(token: String, appIdOrUuid: String, providerStreamingBaseUrl: String): String? {

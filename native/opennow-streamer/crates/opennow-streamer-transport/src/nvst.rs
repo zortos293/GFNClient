@@ -3319,9 +3319,25 @@ pub fn reserve_nvst_mjolnir_udp_socket() -> std::io::Result<UdpSocket> {
 }
 
 fn reserve_nvst_socket_pair() -> std::io::Result<(UdpSocket, UdpSocket)> {
+    // Bifrost's Windows client reserves this exact pair first
+    // (`general.clientPorts.useReserved=1`) and only falls back to dynamic
+    // ports when it is unavailable. Some cloud seats do not route the
+    // dedicated Mjolnir video flow back to an arbitrary source port even
+    // though the version-6 NATT request is otherwise valid. Match the
+    // official preference while preserving a non-fatal fallback for users
+    // that already have either port occupied.
+    const OFFICIAL_MJOLNIR_PORT: u16 = 49_005;
+    const OFFICIAL_BUNDLE_PORT: u16 = 49_006;
     const MAX_PAIR_ATTEMPTS: usize = 32;
     let bind_ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-    let mut last_error = None;
+    let mut last_error = match bind_nvst_udp_socket(bind_ip, OFFICIAL_MJOLNIR_PORT) {
+        Ok(mjolnir) => match bind_nvst_udp_socket(bind_ip, OFFICIAL_BUNDLE_PORT) {
+            Ok(bundle) => return Ok((bundle, mjolnir)),
+            Err(error) => error,
+        },
+        Err(error) => error,
+    };
+
     for _ in 0..MAX_PAIR_ATTEMPTS {
         let mjolnir = reserve_nvst_mjolnir_udp_socket()?;
         let video_port = mjolnir.local_addr()?.port();
@@ -3330,15 +3346,10 @@ fn reserve_nvst_socket_pair() -> std::io::Result<(UdpSocket, UdpSocket)> {
         };
         match bind_nvst_udp_socket(bind_ip, bundle_port) {
             Ok(bundle) => return Ok((bundle, mjolnir)),
-            Err(error) => last_error = Some(error),
+            Err(error) => last_error = error,
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::AddrNotAvailable,
-            "could not reserve consecutive NVST video and bundle UDP ports",
-        )
-    }))
+    Err(last_error)
 }
 
 pub fn spawn_nvst_udp_receiver(

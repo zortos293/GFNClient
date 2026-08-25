@@ -2268,25 +2268,33 @@ impl RtpReorderBuffer {
             };
         }
 
+        let buffered_before = self.packets.len();
         let mut recovery = None;
-        let mut nack = (index > next_index).then_some((next_index, index - 1));
-        if index.saturating_sub(next_index) >= self.max_packets as u64 {
+        if buffered_before == 0 && index.saturating_sub(next_index) >= self.max_packets as u64 {
             recovery = Some(NvstRecovery::PacketGap {
                 first_missing_index: next_index,
                 last_missing_index: index - 1,
             });
-            nack = None;
-            self.packets.clear();
             self.next_index = Some(index);
         }
         self.packets.insert(index, packet);
+        let first_available = *self
+            .packets
+            .first_key_value()
+            .expect("non-empty after insertion")
+            .0;
+        // Only NACK sequence numbers that are genuinely absent. Using the
+        // newest packet index as the range end also requested every packet
+        // already held in the reorder map, causing duplicate retransmission
+        // bursts that competed with live video traffic.
+        let expected = self.next_index.expect("next index remains initialized");
+        let mut nack = if recovery.is_none() && first_available > expected {
+            Some((expected, first_available.saturating_sub(1)))
+        } else {
+            None
+        };
 
         if self.packets.len() >= self.max_packets {
-            let first_available = *self
-                .packets
-                .first_key_value()
-                .expect("non-empty after insertion")
-                .0;
             let expected = self.next_index.expect("next index set above");
             if first_available > expected {
                 recovery = Some(NvstRecovery::PacketGap {
@@ -2294,6 +2302,7 @@ impl RtpReorderBuffer {
                     last_missing_index: first_available - 1,
                 });
                 self.next_index = Some(first_available);
+                nack = None;
             }
         }
 
@@ -5956,6 +5965,31 @@ mod tests {
                 .as_slice(),
             [NvstReceiveEvent::Dropped(NvstDropReason::ReplayRejected)]
         ));
+    }
+
+    #[test]
+    fn reorder_nack_excludes_packets_already_buffered_after_the_gap() {
+        let config = config();
+        let feedback = Arc::clone(&config.feedback);
+        let crypto = test_srtp(&config);
+        let packets = [1_u16, 3, 4].map(|sequence| {
+            protect_for_test(
+                &crypto,
+                build_plaintext_rtp(
+                    sequence,
+                    FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                    u32::from(sequence),
+                    &[0, 0, 1, 0x65],
+                ),
+                0,
+            )
+        });
+        let mut receiver = NvstVideoReceiver::new(config);
+        for packet in &packets {
+            let _ = receiver.process_datagram(peer(), packet, Instant::now());
+        }
+        assert_eq!(feedback.take_nack(), Some((2, 2)));
+        assert_eq!(feedback.take_nack(), None);
     }
 
     #[test]

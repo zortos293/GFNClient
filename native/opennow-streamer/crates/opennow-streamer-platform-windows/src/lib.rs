@@ -277,7 +277,7 @@ impl WindowsBackend {
 
     pub fn submit_video(&self, frame: EncodedVideoFrame) -> Result<PushOutcome, BackendError> {
         frame.validate()?;
-        self.ensure_video_accepting()?;
+        self.ensure_media_accepting()?;
         if self.shared.paused.load(Ordering::Acquire) {
             return Ok(PushOutcome::Paused);
         }
@@ -297,7 +297,7 @@ impl WindowsBackend {
 
     pub fn submit_audio(&self, frame: PcmFrame) -> Result<PushOutcome, BackendError> {
         frame.validate()?;
-        self.ensure_running()?;
+        self.ensure_media_accepting()?;
         if self.shared.paused.load(Ordering::Acquire) {
             return Ok(PushOutcome::Paused);
         }
@@ -411,16 +411,7 @@ impl WindowsBackend {
         }
     }
 
-    fn ensure_running(&self) -> Result<(), BackendError> {
-        let state = self.state();
-        if state == LifecycleState::Running {
-            Ok(())
-        } else {
-            Err(BackendError::NotRunning(state))
-        }
-    }
-
-    fn ensure_video_accepting(&self) -> Result<(), BackendError> {
+    fn ensure_media_accepting(&self) -> Result<(), BackendError> {
         let state = self.state();
         if matches!(
             state,
@@ -570,17 +561,26 @@ mod tests {
     }
 
     #[test]
-    fn surface_reconfiguration_keeps_accepting_video_frames() {
+    fn surface_reconfiguration_keeps_accepting_media_frames() {
         let (backend, shared) = test_backend(LifecycleState::Reconfiguring);
-        let outcome = backend.submit_video(EncodedVideoFrame {
+        let video_outcome = backend.submit_video(EncodedVideoFrame {
             codec: VideoCodec::H264,
             data: vec![0, 0, 0, 1, 0x67],
             timestamp_100ns: 0,
             duration_100ns: 166_667,
             key_frame: true,
         });
+        let audio_outcome = backend.submit_audio(PcmFrame {
+            samples: vec![0.0, 0.0],
+            format: AudioFormat {
+                sample_rate: 48_000,
+                channels: 2,
+            },
+        });
 
-        assert_eq!(outcome, Ok(PushOutcome::Queued));
+        assert_eq!(video_outcome, Ok(PushOutcome::Queued));
+        assert_eq!(audio_outcome, Ok(PushOutcome::Queued));
         assert!(shared.video.try_pop().is_some());
+        assert!(shared.audio.try_pop().is_some());
     }
 }

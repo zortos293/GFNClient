@@ -64,7 +64,10 @@ const GFN_SRTCP_SALT_LABEL: u8 = 0x05;
 const SRTCP_ENCRYPTED_FLAG: u32 = 0x8000_0000;
 const RTCP_SENDER_SSRC: u32 = 0x4f4e_4f57; // "ONOW"
 const SRTCP_RR_INTERVAL: Duration = Duration::from_secs(1);
-const RTCP_RECOVERY_INTERVAL: Duration = Duration::from_millis(20);
+// GFN's Windows client starts RTP loss recovery after 1 ms. Waiting for the
+// old 20 ms cadence allowed a 120 fps / high-bitrate stream to exhaust the
+// reorder queue before the first NACK was even transmitted.
+const RTCP_RECOVERY_INTERVAL: Duration = Duration::from_millis(1);
 const MAX_PENDING_NACK_RANGES: usize = 16;
 const MAX_PENDING_FRAME_ACKS: usize = 512;
 
@@ -79,8 +82,13 @@ fn verbose_diagnostics_enabled() -> bool {
 const MAX_NACK_PACKET_COUNT: usize = 64;
 const MAX_NACK_FCI_ENTRIES: usize = MAX_NACK_PACKET_COUNT.div_ceil(17);
 const NV_VIDEO_PACKET_LEN: usize = 16;
-const DEFAULT_REORDER_WINDOW: usize = 32;
-const MAX_REORDER_WINDOW: usize = 128;
+// Match the official client's bounded NACK/dejitter envelope: it keeps up to
+// 1,024 RTP packets available for late or retransmitted packets and permits a
+// 2,048-entry NACK queue. A 32-packet window is only a few milliseconds at
+// 150 Mbps and turns recoverable reordering into visible keyframe hitches.
+const DEFAULT_REORDER_WINDOW: usize = 1_024;
+const MAX_REORDER_WINDOW: usize = 2_048;
+const NVST_UDP_RECEIVE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_MAX_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ACCESS_UNIT_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -3281,6 +3289,11 @@ fn bind_nvst_udp_socket(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket
     };
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
+    if let Err(error) = socket.set_recv_buffer_size(NVST_UDP_RECEIVE_BUFFER_BYTES) {
+        eprintln!(
+            "NVST could not enlarge UDP receive buffer to {NVST_UDP_RECEIVE_BUFFER_BYTES} bytes: {error}"
+        );
+    }
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
     socket.bind(&SocketAddr::new(bind_ip, port).into())?;

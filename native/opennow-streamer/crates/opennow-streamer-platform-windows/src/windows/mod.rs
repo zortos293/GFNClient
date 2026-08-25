@@ -2,6 +2,7 @@ mod audio;
 mod decoder;
 mod graphics;
 
+use std::collections::VecDeque;
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -10,12 +11,12 @@ use ::windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_LITE, MFShu
 use ::windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
 use crate::{
-    BackendConfig, BackendError, BackendEvent, CapabilityProbe, Control, LifecycleState, Shared,
-    Subsystem, VideoCodec, WindowsGraphicsApi,
+    ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendConfig, BackendError, BackendEvent, CapabilityProbe,
+    Control, LifecycleState, Shared, Subsystem, VideoCodec, WindowsGraphicsApi,
 };
 
 use self::audio::AudioRenderer;
-use self::decoder::Decoder;
+use self::decoder::{DecodedVideoFrame, Decoder, take_frame_for_presentation};
 use self::graphics::Graphics;
 
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -160,6 +161,8 @@ struct Worker {
     controls: mpsc::Receiver<Control>,
     graphics: Graphics,
     decoder: Decoder,
+    decoded_video: VecDeque<DecodedVideoFrame>,
+    first_frame_presented: bool,
     audio: AudioRenderer,
     _runtime: MediaRuntime,
 }
@@ -186,6 +189,8 @@ impl Worker {
             controls,
             graphics,
             decoder,
+            decoded_video: VecDeque::with_capacity(ADAPTIVE_VIDEO_QUEUE_CAPACITY),
+            first_frame_presented: false,
             audio,
             _runtime: runtime,
         })
@@ -194,8 +199,10 @@ impl Worker {
     fn run(mut self) {
         let mut stopping = false;
         while !stopping {
+            let mut did_work = false;
             self.graphics.pump_window_messages();
             while let Ok(control) = self.controls.try_recv() {
+                did_work = true;
                 match control {
                     Control::Stop => {
                         stopping = true;
@@ -223,6 +230,8 @@ impl Worker {
                     }
                     Control::SetSurface(surface) => {
                         self.config.surface = surface;
+                        self.decoded_video.clear();
+                        self.first_frame_presented = false;
                         if let Err(error) = self.graphics.set_surface(surface, self.config.video) {
                             if let Err(error) = self.recover_video(
                                 Subsystem::VideoPresentation,
@@ -236,6 +245,8 @@ impl Worker {
                         }
                     }
                     Control::SetPaused(paused) => {
+                        self.decoded_video.clear();
+                        self.first_frame_presented = false;
                         if let Err(error) = self.audio.set_paused(paused) {
                             if let Err(error) = self.rebuild_audio(format!(
                                 "audio {} failed: {error}",
@@ -287,19 +298,29 @@ impl Worker {
                 continue;
             }
 
-            if let Err(error) = self.decoder.poll_output(
-                &mut self.graphics,
-                &self.shared.events,
-                &self.shared.presented_frames,
-            ) {
-                if let Err(error) = self.recover_video(Subsystem::VideoDecode, error) {
-                    self.fail(error);
-                    return;
+            let produced = match self
+                .decoder
+                .poll_output(&mut self.decoded_video, &self.shared.events)
+            {
+                Ok(produced) => produced,
+                Err(error) => {
+                    if let Err(error) = self.recover_video(Subsystem::VideoDecode, error) {
+                        self.fail(error);
+                        return;
+                    }
+                    continue;
                 }
-                continue;
-            }
+            };
+            did_work |= produced > 0;
             let decoded_format = self.decoder.format();
             if decoded_format != self.config.video {
+                if let Err(error) = self.graphics.reconfigure_video(decoded_format) {
+                    if let Err(error) = self.recover_video(Subsystem::VideoPresentation, error) {
+                        self.fail(error);
+                        return;
+                    }
+                    continue;
+                }
                 self.config.video = decoded_format;
                 *self
                     .shared
@@ -307,10 +328,64 @@ impl Worker {
                     .lock()
                     .unwrap_or_else(|error| error.into_inner()) = decoded_format;
             }
-            if self.decoder.wants_input() {
+            while self.decoder.wants_input() {
                 if let Some(frame) = self.shared.video.try_pop() {
+                    did_work = true;
                     if let Err(error) = self.decoder.submit(frame) {
                         if let Err(error) = self.recover_video(Subsystem::VideoDecode, error) {
+                            self.fail(error);
+                            return;
+                        }
+                        continue;
+                    }
+                } else {
+                    break;
+                }
+            }
+            // DXGI's frame-latency handle behaves like an auto-reset event.
+            // Checking it without a frame ready would consume the signal and
+            // leave the swap chain waiting forever for a Present that cannot
+            // happen. Only consume readiness when presentation can follow.
+            if !self.decoded_video.is_empty() {
+                match self.graphics.is_present_ready() {
+                    Ok(true) => {
+                        let (frame, stale_frames) =
+                            take_frame_for_presentation(&mut self.decoded_video);
+                        for _ in 0..stale_frames {
+                            let _ = self
+                                .shared
+                                .events
+                                .push(BackendEvent::QueueOverflow(Subsystem::VideoPresentation));
+                        }
+                        if let Some(frame) = frame {
+                            did_work = true;
+                            if let Err(error) = self.graphics.present(
+                                &frame.texture,
+                                frame.subresource,
+                                frame.timestamp_100ns,
+                                frame.duration_100ns,
+                            ) {
+                                if let Err(error) =
+                                    self.recover_video(Subsystem::VideoPresentation, error)
+                                {
+                                    self.fail(error);
+                                    return;
+                                }
+                                continue;
+                            }
+                            self.shared
+                                .presented_frames
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if !self.first_frame_presented && self.graphics.is_visible() {
+                                self.first_frame_presented = true;
+                                let _ = self.shared.events.push(BackendEvent::FirstFramePresented);
+                            }
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        if let Err(error) = self.recover_video(Subsystem::VideoPresentation, error)
+                        {
                             self.fail(error);
                             return;
                         }
@@ -320,6 +395,7 @@ impl Worker {
             }
             match self.audio.render(&self.shared.audio) {
                 Ok(true) => {
+                    did_work = true;
                     let _ = self
                         .shared
                         .events
@@ -333,7 +409,11 @@ impl Worker {
                     }
                 }
             }
-            thread::sleep(Duration::from_millis(1));
+            if !did_work {
+                thread::sleep(Duration::from_millis(1));
+            } else {
+                thread::yield_now();
+            }
         }
 
         self.decoder.stop();
@@ -347,6 +427,8 @@ impl Worker {
         });
         self.shared.set_state(LifecycleState::Recovering);
         self.shared.video.clear();
+        self.decoded_video.clear();
+        self.first_frame_presented = false;
         let start = Instant::now();
         loop {
             if self.shared.state() == LifecycleState::Stopping {
@@ -394,6 +476,8 @@ impl Worker {
 
     fn rebuild_video(&mut self, subsystem: Subsystem, message: String) -> Result<(), BackendError> {
         self.decoder.stop();
+        self.decoded_video.clear();
+        self.first_frame_presented = false;
         match Decoder::new(&self.graphics, self.config.video) {
             Ok(decoder) => {
                 self.decoder = decoder;

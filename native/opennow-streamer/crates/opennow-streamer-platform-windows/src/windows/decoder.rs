@@ -1,8 +1,8 @@
+use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use ::windows::Win32::Foundation::{E_NOTIMPL, LUID};
 use ::windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -27,9 +27,46 @@ use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::core::Interface;
 
 use crate::queue::BoundedQueue;
-use crate::{BackendEvent, EncodedVideoFrame, VideoCodec, VideoFormat};
+use crate::{
+    ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendEvent, EncodedVideoFrame, Subsystem, VideoCodec,
+    VideoFormat,
+};
 
 use super::graphics::Graphics;
+
+const FRAME_DROP_THRESHOLD_X1000: i64 = 1_333;
+
+pub(super) struct DecodedVideoFrame {
+    pub(super) texture: ID3D11Texture2D,
+    pub(super) subresource: u32,
+    pub(super) timestamp_100ns: i64,
+    pub(super) duration_100ns: i64,
+}
+
+pub(super) fn take_frame_for_presentation(
+    frames: &mut VecDeque<DecodedVideoFrame>,
+) -> (Option<DecodedVideoFrame>, usize) {
+    let Some(newest) = frames.back() else {
+        return (None, 0);
+    };
+    let newest_timestamp = newest.timestamp_100ns;
+    let newest_duration = newest.duration_100ns.max(1);
+    let mut dropped = 0;
+    while frames.len() > 1
+        && frames.front().is_some_and(|oldest| {
+            frame_is_stale(oldest.timestamp_100ns, newest_timestamp, newest_duration)
+        })
+    {
+        frames.pop_front();
+        dropped += 1;
+    }
+    (frames.pop_front(), dropped)
+}
+
+fn frame_is_stale(oldest_timestamp: i64, newest_timestamp: i64, frame_duration: i64) -> bool {
+    let allowed_age = frame_duration.saturating_mul(FRAME_DROP_THRESHOLD_X1000) / 1_000;
+    newest_timestamp.saturating_sub(oldest_timestamp) > allowed_age
+}
 
 pub(super) struct Decoder {
     events: Option<IMFMediaEventGenerator>,
@@ -40,7 +77,6 @@ pub(super) struct Decoder {
     input_credits: u32,
     format: VideoFormat,
     output_provides_samples: bool,
-    first_frame_presented: bool,
     stopped: bool,
 }
 
@@ -73,7 +109,6 @@ impl Decoder {
                         input_credits,
                         format,
                         output_provides_samples,
-                        first_frame_presented: false,
                         stopped: false,
                     });
                 }
@@ -156,10 +191,10 @@ impl Decoder {
 
     pub(super) fn poll_output(
         &mut self,
-        graphics: &mut Graphics,
+        decoded_frames: &mut VecDeque<DecodedVideoFrame>,
         event_queue: &BoundedQueue<BackendEvent>,
-        presented_frames: &AtomicU64,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
+        let mut produced = 0;
         if let Some(events) = self.events.clone() {
             loop {
                 let event = match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
@@ -173,23 +208,29 @@ impl Decoder {
                 if event_type == METransformNeedInput.0 as u32 {
                     self.input_credits = self.input_credits.saturating_add(1);
                 } else if event_type == METransformHaveOutput.0 as u32 {
-                    let _ = self.process_output(graphics, event_queue, presented_frames)?;
+                    if self.process_output(decoded_frames, event_queue)? == OutputPoll::Produced {
+                        produced += 1;
+                    }
+                    // Keep decode and presentation interleaved on the shared
+                    // media worker. Draining every pending MFT output here can
+                    // create an artificial burst that looks stale even when
+                    // the source cadence and display cadence are healthy.
+                    break;
                 }
             }
         } else {
-            while self.process_output(graphics, event_queue, presented_frames)?
-                == OutputPoll::Produced
-            {}
+            if self.process_output(decoded_frames, event_queue)? == OutputPoll::Produced {
+                produced += 1;
+            }
             self.input_credits = 1;
         }
-        Ok(())
+        Ok(produced)
     }
 
     fn process_output(
         &mut self,
-        graphics: &mut Graphics,
+        decoded_frames: &mut VecDeque<DecodedVideoFrame>,
         event_queue: &BoundedQueue<BackendEvent>,
-        presented_frames: &AtomicU64,
     ) -> Result<OutputPoll, String> {
         let mut output = MFT_OUTPUT_DATA_BUFFER {
             dwStreamID: self.output_stream,
@@ -218,7 +259,6 @@ impl Decoder {
                     ..self.format
                 };
                 self.format = updated;
-                graphics.reconfigure_video(updated)?;
                 let _ = event_queue.push(BackendEvent::VideoFormatChanged(updated));
                 return Ok(OutputPoll::Produced);
             }
@@ -233,12 +273,24 @@ impl Decoder {
             }
         })?;
         let (texture, subresource) = dxgi_surface(&sample)?;
-        graphics.present(&texture, subresource)?;
-        presented_frames.fetch_add(1, Ordering::Relaxed);
-        if !self.first_frame_presented && graphics.is_visible() {
-            self.first_frame_presented = true;
-            let _ = event_queue.push(BackendEvent::FirstFramePresented);
+        let timestamp_100ns = unsafe { sample.GetSampleTime().unwrap_or(0) };
+        let duration_100ns = unsafe {
+            sample
+                .GetSampleDuration()
+                .ok()
+                .filter(|duration| *duration > 0)
+                .unwrap_or_else(|| self.format.frame_duration_100ns())
+        };
+        if decoded_frames.len() == ADAPTIVE_VIDEO_QUEUE_CAPACITY {
+            decoded_frames.pop_front();
+            let _ = event_queue.push(BackendEvent::QueueOverflow(Subsystem::VideoPresentation));
         }
+        decoded_frames.push_back(DecodedVideoFrame {
+            texture,
+            subresource,
+            timestamp_100ns,
+            duration_100ns,
+        });
         Ok(OutputPoll::Produced)
     }
 
@@ -275,6 +327,23 @@ impl Decoder {
                 .map_err(|error| error.to_string())?;
             Ok(((packed >> 32) as u32, packed as u32))
         }
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::frame_is_stale;
+
+    #[test]
+    fn follows_dynamic_frame_duration_without_treating_it_as_loss() {
+        assert!(!frame_is_stale(0, 166_667, 166_667));
+        assert!(!frame_is_stale(0, 83_333, 83_333));
+    }
+
+    #[test]
+    fn drops_frames_more_than_one_and_a_third_intervals_behind() {
+        assert!(!frame_is_stale(0, 111_080, 83_333));
+        assert!(frame_is_stale(0, 111_084, 83_333));
     }
 }
 

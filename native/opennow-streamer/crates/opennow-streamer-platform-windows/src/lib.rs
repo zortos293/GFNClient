@@ -18,6 +18,11 @@ pub use format::{
 };
 pub use queue::PushOutcome;
 
+/// Burst allowance for adaptive video delivery. The decoded presenter uses
+/// the same bound and trims stale frames before presentation, keeping latency
+/// low without treating ordinary game-FPS fluctuations as decoder loss.
+pub const ADAPTIVE_VIDEO_QUEUE_CAPACITY: usize = 7;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum LifecycleState {

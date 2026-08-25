@@ -1791,7 +1791,8 @@ impl WindowsOutput {
                         channels: AUDIO_CHANNELS as u16,
                     },
                     surface: initial_surface,
-                    video_queue_capacity: 2,
+                    video_queue_capacity:
+                        opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY,
                     audio_queue_capacity: 4,
                 },
             )
@@ -1868,8 +1869,13 @@ impl WindowsOutput {
             },
             BackendEvent::Fatal(error) => OutputEvent::Fatal(error.to_string()),
             BackendEvent::QueueOverflow(subsystem) => {
-                if subsystem == Subsystem::VideoDecode {
+                if matches!(
+                    subsystem,
+                    Subsystem::VideoDecode | Subsystem::VideoPresentation
+                ) {
                     self.dropped_video_frames = self.dropped_video_frames.saturating_add(1);
+                }
+                if subsystem == Subsystem::VideoDecode {
                     self.bridge.require_keyframe();
                 }
                 OutputEvent::QueueDropped(subsystem_label(subsystem))

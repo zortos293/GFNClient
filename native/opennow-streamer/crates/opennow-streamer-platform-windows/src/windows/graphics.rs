@@ -1,10 +1,12 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
+use std::mem::size_of;
 use std::num::NonZeroU32;
 
 use ::windows::Win32::Foundation::{
-    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, LUID,
-    RECT, WPARAM,
+    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HANDLE, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT,
+    LUID, RECT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM,
 };
 use ::windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1,
@@ -20,7 +22,7 @@ use ::windows::Win32::Graphics::Direct3D11::{
     D3D11_VIDEO_USAGE_OPTIMAL_SPEED, D3D11_VPIV_DIMENSION_TEXTURE2D,
     D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
     ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor,
-    ID3D11VideoProcessorEnumerator,
+    ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
 };
 use ::windows::Win32::Graphics::Direct3D11on12::{D3D11On12CreateDevice, ID3D11On12Device};
 use ::windows::Win32::Graphics::Direct3D12::{
@@ -32,13 +34,15 @@ use ::windows::Win32::Graphics::Dxgi::Common::{
     DXGI_SAMPLE_DESC,
 };
 use ::windows::Win32::Graphics::Dxgi::{
-    DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-    DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
-    IDXGISwapChain2,
+    DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT,
+    DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+    DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+    DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice,
+    IDXGIFactory2, IDXGIFactory5, IDXGISwapChain1, IDXGISwapChain2,
 };
 use ::windows::Win32::Media::MediaFoundation::{IMFDXGIDeviceManager, MFCreateDXGIDeviceManager};
 use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use ::windows::Win32::System::Threading::WaitForSingleObject;
 #[cfg(test)]
 use ::windows::Win32::UI::WindowsAndMessaging::WS_POPUP;
 use ::windows::Win32::UI::WindowsAndMessaging::{
@@ -49,7 +53,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
     WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW,
 };
-use ::windows::core::{IUnknown, Interface, w};
+use ::windows::core::{BOOL, IUnknown, Interface, w};
 
 use crate::{
     Bounds, ExistingWindow, OwnedWindow, SurfaceTarget, VideoCodec, VideoFormat, WindowHandle,
@@ -297,11 +301,24 @@ struct ProcessorResources {
     output_height: u32,
     enumerator: ID3D11VideoProcessorEnumerator,
     processor: ID3D11VideoProcessor,
+    input_views: HashMap<(usize, u32), ID3D11VideoProcessorInputView>,
+    output_view: ID3D11VideoProcessorOutputView,
+}
+
+struct SwapChainResources {
+    swap_chain: IDXGISwapChain1,
+    frame_latency_waitable: HANDLE,
+    flags: DXGI_SWAP_CHAIN_FLAG,
+    allow_tearing: bool,
 }
 
 pub(super) struct Graphics {
     processor: Option<ProcessorResources>,
     swap_chain: IDXGISwapChain1,
+    frame_latency_waitable: HANDLE,
+    swap_chain_flags: DXGI_SWAP_CHAIN_FLAG,
+    allow_tearing: bool,
+    has_presented: bool,
     window: RenderWindow,
     resources: DeviceResources,
     video_format: VideoFormat,
@@ -345,7 +362,11 @@ impl Graphics {
         let swap_chain = create_swap_chain(&resources.device, window.hwnd(), swap_size)?;
         let mut graphics = Self {
             processor: None,
-            swap_chain,
+            swap_chain: swap_chain.swap_chain,
+            frame_latency_waitable: swap_chain.frame_latency_waitable,
+            swap_chain_flags: swap_chain.flags,
+            allow_tearing: swap_chain.allow_tearing,
+            has_presented: false,
             window,
             resources,
             video_format,
@@ -399,8 +420,12 @@ impl Graphics {
         let swap_size = window.client_size()?;
         let swap_chain = create_swap_chain(&self.resources.device, window.hwnd(), swap_size)?;
         self.processor = None;
-        let old_swap_chain = std::mem::replace(&mut self.swap_chain, swap_chain);
+        let old_swap_chain = std::mem::replace(&mut self.swap_chain, swap_chain.swap_chain);
         drop(old_swap_chain);
+        self.frame_latency_waitable = swap_chain.frame_latency_waitable;
+        self.swap_chain_flags = swap_chain.flags;
+        self.allow_tearing = swap_chain.allow_tearing;
+        self.has_presented = false;
         self.window = window;
         self.swap_size = swap_size;
         self.video_format = video_format;
@@ -413,10 +438,34 @@ impl Graphics {
         self.ensure_processor(format.width, format.height)
     }
 
+    pub(super) fn is_present_ready(&self) -> Result<bool, String> {
+        if !self.has_presented {
+            return Ok(true);
+        }
+        let result = unsafe { WaitForSingleObject(self.frame_latency_waitable, 0) };
+        if result == WAIT_OBJECT_0 {
+            Ok(true)
+        } else if result == WAIT_TIMEOUT {
+            Ok(false)
+        } else if result == WAIT_FAILED {
+            Err(format!(
+                "DXGI frame-latency wait failed: {}",
+                unsafe { GetLastError() }.0
+            ))
+        } else {
+            Err(format!(
+                "unexpected DXGI frame-latency wait result: {}",
+                result.0
+            ))
+        }
+    }
+
     pub(super) fn present(
         &mut self,
         texture: &ID3D11Texture2D,
         subresource: u32,
+        _timestamp_100ns: i64,
+        _duration_100ns: i64,
     ) -> Result<(), String> {
         self.resize_if_needed()?;
         let mut texture_description = Default::default();
@@ -426,7 +475,7 @@ impl Graphics {
         self.ensure_processor(texture_description.Width, texture_description.Height)?;
         let processor = self
             .processor
-            .as_ref()
+            .as_mut()
             .ok_or("video processor is unavailable")?;
 
         unsafe {
@@ -440,39 +489,25 @@ impl Graphics {
                     },
                 },
             };
-            let mut input_view = None;
-            self.resources
-                .video_device
-                .CreateVideoProcessorInputView(
-                    texture,
-                    &processor.enumerator,
-                    &input_description,
-                    Some(&mut input_view),
-                )
-                .map_err(|error| error.to_string())?;
-            let input_view = input_view.ok_or("D3D11 returned no video processor input view")?;
-
-            let back_buffer: ID3D11Texture2D = self
-                .swap_chain
-                .GetBuffer(0)
-                .map_err(|error| error.to_string())?;
-            let output_description = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
-                ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
-                Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
-                    Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
-                },
+            let input_key = (texture.as_raw() as usize, subresource);
+            let input_view = if let Some(view) = processor.input_views.get(&input_key) {
+                view.clone()
+            } else {
+                let mut input_view = None;
+                self.resources
+                    .video_device
+                    .CreateVideoProcessorInputView(
+                        texture,
+                        &processor.enumerator,
+                        &input_description,
+                        Some(&mut input_view),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let input_view =
+                    input_view.ok_or("D3D11 returned no video processor input view")?;
+                processor.input_views.insert(input_key, input_view.clone());
+                input_view
             };
-            let mut output_view = None;
-            self.resources
-                .video_device
-                .CreateVideoProcessorOutputView(
-                    &back_buffer,
-                    &processor.enumerator,
-                    &output_description,
-                    Some(&mut output_view),
-                )
-                .map_err(|error| error.to_string())?;
-            let output_view = output_view.ok_or("D3D11 returned no video processor output view")?;
 
             let source = RECT {
                 left: 0,
@@ -518,7 +553,7 @@ impl Graphics {
             };
             let blit = self.resources.video_context.VideoProcessorBlt(
                 &processor.processor,
-                &output_view,
+                &processor.output_view,
                 0,
                 std::slice::from_ref(&stream),
             );
@@ -527,10 +562,16 @@ impl Graphics {
             if self.resources._d3d12.is_some() {
                 self.resources.context.Flush();
             }
+            let present_flags = if self.allow_tearing {
+                DXGI_PRESENT_ALLOW_TEARING
+            } else {
+                DXGI_PRESENT(0)
+            };
             self.swap_chain
-                .Present(0, DXGI_PRESENT(0))
+                .Present(0, present_flags)
                 .ok()
                 .map_err(|error| error.to_string())?;
+            self.has_presented = true;
         }
         Ok(())
     }
@@ -558,7 +599,7 @@ impl Graphics {
                     size.0,
                     size.1,
                     DXGI_FORMAT_UNKNOWN,
-                    DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+                    self.swap_chain_flags,
                 )
                 .map_err(|error| error.to_string())?;
         }
@@ -602,6 +643,26 @@ impl Graphics {
                 .video_device
                 .CreateVideoProcessor(&enumerator, 0)
                 .map_err(|error| error.to_string())?;
+            let back_buffer: ID3D11Texture2D = self
+                .swap_chain
+                .GetBuffer(0)
+                .map_err(|error| error.to_string())?;
+            let output_description = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+                ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
+                },
+            };
+            let mut output_view = None;
+            self.resources
+                .video_device
+                .CreateVideoProcessorOutputView(
+                    &back_buffer,
+                    &enumerator,
+                    &output_description,
+                    Some(&mut output_view),
+                )
+                .map_err(|error| error.to_string())?;
             self.processor = Some(ProcessorResources {
                 input_width,
                 input_height,
@@ -609,6 +670,8 @@ impl Graphics {
                 output_height: self.swap_size.1,
                 enumerator,
                 processor,
+                input_views: HashMap::new(),
+                output_view: output_view.ok_or("D3D11 returned no video processor output view")?,
             });
         }
         Ok(())
@@ -619,13 +682,19 @@ fn create_swap_chain(
     device: &ID3D11Device,
     hwnd: HWND,
     size: (u32, u32),
-) -> Result<IDXGISwapChain1, String> {
+) -> Result<SwapChainResources, String> {
     unsafe {
         let dxgi_device: IDXGIDevice = device.cast().map_err(|error| error.to_string())?;
         let adapter = dxgi_device
             .GetAdapter()
             .map_err(|error| error.to_string())?;
         let factory: IDXGIFactory2 = adapter.GetParent().map_err(|error| error.to_string())?;
+        let allow_tearing = supports_tearing(&factory);
+        let flags = if allow_tearing {
+            DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
+        } else {
+            DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+        };
         let description = DXGI_SWAP_CHAIN_DESC1 {
             Width: size.0,
             Height: size.1,
@@ -642,7 +711,7 @@ fn create_swap_chain(
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
             // IDXGISwapChain2::SetMaximumFrameLatency is only valid for a
             // waitable swap chain. Preserve the flag in ResizeBuffers too.
-            Flags: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32,
+            Flags: flags.0 as u32,
         };
         let swap_chain = factory
             .CreateSwapChainForHwnd(device, hwnd, &description, None, None)
@@ -652,7 +721,33 @@ fn create_swap_chain(
         swap_chain_2
             .SetMaximumFrameLatency(1)
             .map_err(|error| error.to_string())?;
-        Ok(swap_chain)
+        let frame_latency_waitable = swap_chain_2.GetFrameLatencyWaitableObject();
+        if frame_latency_waitable.0.is_null() {
+            return Err("DXGI returned no frame-latency waitable object".to_owned());
+        }
+        Ok(SwapChainResources {
+            swap_chain,
+            frame_latency_waitable,
+            flags,
+            allow_tearing,
+        })
+    }
+}
+
+fn supports_tearing(factory: &IDXGIFactory2) -> bool {
+    let Ok(factory): Result<IDXGIFactory5, _> = factory.cast() else {
+        return false;
+    };
+    let mut supported = BOOL::default();
+    unsafe {
+        factory
+            .CheckFeatureSupport(
+                DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                (&mut supported as *mut BOOL).cast(),
+                size_of::<BOOL>() as u32,
+            )
+            .is_ok()
+            && supported.as_bool()
     }
 }
 

@@ -406,7 +406,7 @@ impl MediaSession {
             .spawn(move || {
                 #[cfg(target_os = "windows")]
                 if use_windows_hardware {
-                    run_windows_video(video_shared);
+                    run_windows_video(video_shared, stream.fps);
                     return;
                 }
                 run_video_decoder(
@@ -648,12 +648,12 @@ impl MediaControl {
 }
 
 #[cfg(target_os = "windows")]
-fn run_windows_video(shared: Arc<SharedPipeline>) {
+fn run_windows_video(shared: Arc<SharedPipeline>, maximum_fps: u32) {
     use opennow_streamer_platform_windows::{
         EncodedVideoFrame, PushOutcome as WindowsPushOutcome, VideoCodec,
     };
 
-    let mut previous_timestamp = None;
+    let mut sample_clock = AdaptiveSampleClock::new(maximum_fps);
     while let Some(frame) = shared.video.pop() {
         if shared.paused.load(Ordering::Acquire) {
             continue;
@@ -684,11 +684,7 @@ fn run_windows_video(shared: Arc<SharedPipeline>) {
         };
         shared.windows_bridge.set_last_video_mid(&frame.mid);
         let timestamp_100ns = media_timestamp_100ns(frame.timestamp, frame.clock_rate_hz);
-        let duration_100ns = previous_timestamp
-            .replace(timestamp_100ns)
-            .and_then(|previous: i64| timestamp_100ns.checked_sub(previous))
-            .filter(|duration| *duration > 0)
-            .unwrap_or(166_667);
+        let duration_100ns = sample_clock.observe(timestamp_100ns);
         match backend.submit_video(EncodedVideoFrame {
             codec: match frame.codec {
                 MediaCodec::H264 => VideoCodec::H264,
@@ -733,6 +729,49 @@ fn run_windows_video(shared: Arc<SharedPipeline>) {
                 });
                 request_keyframe(&shared, &frame.mid, "D3D11 decoder rejected an access unit");
             }
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+struct AdaptiveSampleClock {
+    previous_timestamp_100ns: Option<i64>,
+    nominal_duration_100ns: i64,
+    recent_durations_100ns: VecDeque<i64>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl AdaptiveSampleClock {
+    const HISTORY_LENGTH: usize = 120;
+
+    fn new(maximum_fps: u32) -> Self {
+        Self {
+            previous_timestamp_100ns: None,
+            nominal_duration_100ns: 10_000_000_i64 / i64::from(maximum_fps.max(1)),
+            recent_durations_100ns: VecDeque::with_capacity(Self::HISTORY_LENGTH),
+        }
+    }
+
+    fn observe(&mut self, timestamp_100ns: i64) -> i64 {
+        let observed = self
+            .previous_timestamp_100ns
+            .replace(timestamp_100ns)
+            .and_then(|previous| timestamp_100ns.checked_sub(previous))
+            .filter(|duration| *duration > 0);
+
+        if let Some(duration) = observed {
+            if self.recent_durations_100ns.len() == Self::HISTORY_LENGTH {
+                self.recent_durations_100ns.pop_front();
+            }
+            self.recent_durations_100ns.push_back(duration);
+            return duration;
+        }
+
+        if self.recent_durations_100ns.is_empty() {
+            self.nominal_duration_100ns
+        } else {
+            self.recent_durations_100ns.iter().copied().sum::<i64>()
+                / self.recent_durations_100ns.len() as i64
         }
     }
 }
@@ -1693,6 +1732,23 @@ mod tests {
         assert_eq!(media_timestamp_100ns(90_000, 90_000), 10_000_000);
         assert_eq!(media_timestamp_100ns(45_000, 90_000), 5_000_000);
         assert_eq!(media_timestamp_100ns(90_000, 0), 0);
+    }
+
+    #[test]
+    fn adaptive_sample_clock_uses_the_negotiated_fps_only_as_a_ceiling() {
+        let mut clock = AdaptiveSampleClock::new(120);
+        assert_eq!(clock.observe(0), 83_333);
+        assert_eq!(clock.observe(83_333), 83_333);
+        assert_eq!(clock.observe(250_000), 166_667);
+        assert_eq!(clock.observe(583_334), 333_334);
+    }
+
+    #[test]
+    fn adaptive_sample_clock_recovers_from_a_repeated_timestamp() {
+        let mut clock = AdaptiveSampleClock::new(120);
+        assert_eq!(clock.observe(0), 83_333);
+        assert_eq!(clock.observe(83_333), 83_333);
+        assert_eq!(clock.observe(83_333), 83_333);
     }
 
     #[test]

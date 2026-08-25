@@ -38,6 +38,12 @@ use super::graphics::Graphics;
 // Preserve that small decoder burst for the presentation clock to space at the
 // negotiated cadence. Larger backlogs are still trimmed to bound latency.
 const FRAME_DROP_THRESHOLD_X1000: i64 = 2_000;
+// A 90 kHz RTP clock cannot represent 120 fps exactly after conversion to
+// Media Foundation's 100 ns units: adjacent durations alternate between
+// 83,333 and 83,334. Keep a small sub-frame tolerance so a valid three-frame
+// decoder burst is not discarded solely because its oldest/newest span rounds
+// one tick above two copies of the newest duration.
+const FRAME_TIMESTAMP_TOLERANCE_100NS: i64 = 1_000;
 
 pub(super) struct DecodedVideoFrame {
     pub(super) texture: ID3D11Texture2D,
@@ -67,7 +73,8 @@ pub(super) fn take_frame_for_presentation(
 }
 
 fn frame_is_stale(oldest_timestamp: i64, newest_timestamp: i64, frame_duration: i64) -> bool {
-    let allowed_age = frame_duration.saturating_mul(FRAME_DROP_THRESHOLD_X1000) / 1_000;
+    let allowed_age = (frame_duration.saturating_mul(FRAME_DROP_THRESHOLD_X1000) / 1_000)
+        .saturating_add(FRAME_TIMESTAMP_TOLERANCE_100NS);
     newest_timestamp.saturating_sub(oldest_timestamp) > allowed_age
 }
 
@@ -346,7 +353,12 @@ mod pacing_tests {
     #[test]
     fn preserves_three_frame_decoder_bursts_and_drops_larger_backlogs() {
         assert!(!frame_is_stale(0, 166_666, 83_333));
-        assert!(frame_is_stale(0, 166_667, 83_333));
+        assert!(frame_is_stale(0, 250_000, 83_333));
+    }
+
+    #[test]
+    fn tolerates_120_fps_rtp_rounding_at_the_burst_boundary() {
+        assert!(!frame_is_stale(83_333, 250_000, 83_333));
     }
 }
 

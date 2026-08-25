@@ -1408,6 +1408,16 @@ fn forward_nvst_event<R: NvstSessionResources>(
             resources.apply_cursor(bytes);
             false
         }
+        NvstReceiveEvent::Dropped(
+            NvstDropReason::AwaitingStartOfFrame
+            | NvstDropReason::StaleRtpPacket { .. }
+            | NvstDropReason::DuplicateRtpPacket { .. },
+        ) => {
+            // These are expected while a packet-gap recovery waits for the
+            // requested keyframe. Logging every following datagram can flood
+            // stdout and steal time from the receive/decode threads.
+            false
+        }
         NvstReceiveEvent::Dropped(reason) => {
             let _ = output.send(event(
                 "log",

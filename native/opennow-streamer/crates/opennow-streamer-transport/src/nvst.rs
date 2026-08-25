@@ -88,6 +88,10 @@ const NV_VIDEO_PACKET_LEN: usize = 16;
 // 150 Mbps and turns recoverable reordering into visible keyframe hitches.
 const DEFAULT_REORDER_WINDOW: usize = 1_024;
 const MAX_REORDER_WINDOW: usize = 2_048;
+// NVIDIA's Mjolnir receiver uses an 8 ms dequeue deadline. Keep the large
+// packet store for retransmissions, but never let one missing packet hold an
+// entire high-refresh stream until the store fills (roughly 300 ms at 120 fps).
+const MJOLNIR_REORDER_DEQUEUE_TIMEOUT: Duration = Duration::from_millis(8);
 const NVST_UDP_RECEIVE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_MAX_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ACCESS_UNIT_BYTES: usize = 16 * 1024 * 1024;
@@ -2228,6 +2232,7 @@ struct RtpReorderBuffer {
     next_index: Option<u64>,
     packets: BTreeMap<u64, RtpPacket>,
     max_packets: usize,
+    gap_wait: Option<(u64, Instant)>,
 }
 
 struct ReorderResult {
@@ -2243,15 +2248,17 @@ impl RtpReorderBuffer {
             next_index: None,
             packets: BTreeMap::new(),
             max_packets,
+            gap_wait: None,
         }
     }
 
     fn reset(&mut self) {
         self.next_index = None;
         self.packets.clear();
+        self.gap_wait = None;
     }
 
-    fn push(&mut self, packet: RtpPacket) -> ReorderResult {
+    fn push(&mut self, packet: RtpPacket, now: Instant) -> ReorderResult {
         let index = packet.index;
         let next_index = *self.next_index.get_or_insert(index);
         if index < next_index {
@@ -2279,43 +2286,55 @@ impl RtpReorderBuffer {
                 last_missing_index: index - 1,
             });
             self.next_index = Some(index);
+            self.gap_wait = None;
         }
         self.packets.insert(index, packet);
-        let first_available = *self
-            .packets
-            .first_key_value()
-            .expect("non-empty after insertion")
-            .0;
-        // Only NACK sequence numbers that are genuinely absent. Using the
-        // newest packet index as the range end also requested every packet
-        // already held in the reorder map, causing duplicate retransmission
-        // bursts that competed with live video traffic.
-        let expected = self.next_index.expect("next index remains initialized");
-        let mut nack = if recovery.is_none() && first_available > expected {
-            Some((expected, first_available.saturating_sub(1)))
-        } else {
-            None
-        };
-
-        if self.packets.len() >= self.max_packets {
-            let expected = self.next_index.expect("next index set above");
-            if first_available > expected {
-                recovery = Some(NvstRecovery::PacketGap {
-                    first_missing_index: expected,
-                    last_missing_index: first_available - 1,
-                });
-                self.next_index = Some(first_available);
-                nack = None;
-            }
-        }
-
         let mut ready = Vec::new();
-        while let Some(next) = self.next_index {
-            let Some(packet) = self.packets.remove(&next) else {
+        let mut nack = None;
+        loop {
+            while let Some(next) = self.next_index {
+                let Some(packet) = self.packets.remove(&next) else {
+                    break;
+                };
+                ready.push(packet);
+                self.next_index = Some(next + 1);
+            }
+
+            let Some((&first_available, _)) = self.packets.first_key_value() else {
+                self.gap_wait = None;
                 break;
             };
-            ready.push(packet);
-            self.next_index = Some(next + 1);
+            let expected = self.next_index.expect("next index remains initialized");
+            debug_assert!(first_available > expected);
+
+            // Only NACK sequence numbers that are genuinely absent. Using the
+            // newest packet index as the range end also requested every packet
+            // already held in the reorder map, causing duplicate retransmission
+            // bursts that competed with live video traffic.
+            nack = Some((expected, first_available.saturating_sub(1)));
+            let gap_started = match self.gap_wait {
+                Some((waiting_for, started)) if waiting_for == expected => started,
+                _ => {
+                    self.gap_wait = Some((expected, now));
+                    now
+                }
+            };
+            let gap_exceeded_window = first_available.saturating_sub(expected)
+                >= self.max_packets as u64
+                || self.packets.len() >= self.max_packets;
+            let gap_timed_out =
+                now.saturating_duration_since(gap_started) >= MJOLNIR_REORDER_DEQUEUE_TIMEOUT;
+            if !gap_exceeded_window && !gap_timed_out {
+                break;
+            }
+
+            recovery = Some(NvstRecovery::PacketGap {
+                first_missing_index: expected,
+                last_missing_index: first_available - 1,
+            });
+            self.next_index = Some(first_available);
+            self.gap_wait = None;
+            nack = None;
         }
         ReorderResult {
             ready,
@@ -2585,7 +2604,7 @@ impl NvstVideoReceiver {
         );
         self.config.feedback.resolve_nack(packet.index);
 
-        let result = self.reorder.push(packet);
+        let result = self.reorder.push(packet, now);
         let mut events = Vec::new();
         if let Some((first_missing_index, last_missing_index)) = result.nack {
             self.config
@@ -6041,6 +6060,57 @@ mod tests {
         }
         assert_eq!(feedback.take_nack(), Some((2, 2)));
         assert_eq!(feedback.take_nack(), None);
+    }
+
+    #[test]
+    fn reorder_gap_uses_mjolnir_dequeue_deadline_instead_of_filling_the_window() {
+        fn packet(index: u64) -> RtpPacket {
+            RtpPacket {
+                index,
+                header: RtpHeader {
+                    payload_type: 96,
+                    sequence_number: index as u16,
+                    timestamp: 90_000,
+                    ssrc: 1,
+                    payload_offset: RTP_FIXED_HEADER_LEN,
+                    has_padding: false,
+                    gs_video_header: None,
+                },
+                plaintext: vec![0; RTP_FIXED_HEADER_LEN],
+            }
+        }
+
+        let started = Instant::now();
+        let mut reorder = RtpReorderBuffer::new(DEFAULT_REORDER_WINDOW);
+        assert_eq!(reorder.push(packet(1), started).ready.len(), 1);
+
+        let waiting = reorder.push(packet(3), started + Duration::from_millis(1));
+        assert_eq!(waiting.nack, Some((2, 2)));
+        assert!(waiting.ready.is_empty());
+        assert!(waiting.recovery.is_none());
+
+        let still_waiting = reorder.push(packet(4), started + Duration::from_millis(8));
+        assert_eq!(still_waiting.nack, Some((2, 2)));
+        assert!(still_waiting.ready.is_empty());
+        assert!(still_waiting.recovery.is_none());
+
+        let recovered = reorder.push(packet(5), started + Duration::from_millis(9));
+        assert_eq!(
+            recovered.recovery,
+            Some(NvstRecovery::PacketGap {
+                first_missing_index: 2,
+                last_missing_index: 2,
+            })
+        );
+        assert_eq!(
+            recovered
+                .ready
+                .iter()
+                .map(|packet| packet.index)
+                .collect::<Vec<_>>(),
+            [3, 4, 5]
+        );
+        assert_eq!(recovered.nack, None);
     }
 
     #[test]

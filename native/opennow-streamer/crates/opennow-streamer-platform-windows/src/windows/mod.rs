@@ -24,6 +24,8 @@ use self::decoder::{DecodedVideoFrame, Decoder, take_frame_for_presentation};
 use self::graphics::Graphics;
 
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const AUDIO_RECOVERY_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+const AUDIO_RECOVERY_LOG_INTERVAL: Duration = Duration::from_secs(5);
 const PRESENTATION_SPIN_THRESHOLD: Duration = Duration::from_micros(300);
 const ARRIVAL_HISTORY_LENGTH: usize = 120;
 const QUEUE_HISTORY_LENGTH: usize = 3;
@@ -369,8 +371,15 @@ struct Worker {
     decoded_video: VecDeque<DecodedVideoFrame>,
     presentation_clock: PresentationClock,
     first_frame_presented: bool,
-    audio: AudioRenderer,
+    audio: Option<AudioRenderer>,
+    audio_recovery: Option<AudioRecovery>,
     _runtime: MediaRuntime,
+}
+
+struct AudioRecovery {
+    reason: String,
+    next_attempt: Instant,
+    next_log: Instant,
 }
 
 impl Worker {
@@ -399,7 +408,8 @@ impl Worker {
             decoded_video: VecDeque::with_capacity(ADAPTIVE_VIDEO_QUEUE_CAPACITY),
             presentation_clock,
             first_frame_presented: false,
-            audio,
+            audio: Some(audio),
+            audio_recovery: None,
             _runtime: runtime,
         })
     }
@@ -430,12 +440,7 @@ impl Worker {
                     }
                     Control::ReconfigureAudio(format) => {
                         self.config.audio = format;
-                        self.shared.audio.clear();
-                        if let Err(error) = self.rebuild_audio(error_label("audio reconfiguration"))
-                        {
-                            self.fail(error);
-                            return;
-                        }
+                        self.begin_audio_recovery(error_label("audio reconfiguration"));
                     }
                     Control::SetSurface(surface) => {
                         self.config.surface = surface;
@@ -460,14 +465,15 @@ impl Worker {
                         self.presentation_clock
                             .reset(self.config.video.frame_duration_100ns());
                         self.first_frame_presented = false;
-                        if let Err(error) = self.audio.set_paused(paused) {
-                            if let Err(error) = self.rebuild_audio(format!(
+                        let audio_error = self
+                            .audio
+                            .as_mut()
+                            .and_then(|audio| audio.set_paused(paused).err());
+                        if let Some(error) = audio_error {
+                            self.begin_audio_recovery(format!(
                                 "audio {} failed: {error}",
                                 if paused { "pause" } else { "resume" }
-                            )) {
-                                self.fail(error);
-                                return;
-                            }
+                            ));
                         }
                         if !paused {
                             if let Err(error) = self
@@ -483,25 +489,22 @@ impl Worker {
             if stopping {
                 break;
             }
-            match self.audio.default_endpoint_changed() {
-                Ok(true) => {
-                    if let Err(error) =
-                        self.rebuild_audio("default audio endpoint changed".to_owned())
-                    {
-                        self.fail(error);
-                        return;
-                    }
+            let endpoint_result = self
+                .audio
+                .as_mut()
+                .map(AudioRenderer::default_endpoint_changed);
+            match endpoint_result {
+                Some(Ok(true)) => {
+                    self.begin_audio_recovery("default audio endpoint changed".to_owned());
                 }
-                Ok(false) => {}
-                Err(error) => {
-                    if let Err(error) =
-                        self.rebuild_audio(format!("default audio endpoint check failed: {error}"))
-                    {
-                        self.fail(error);
-                        return;
-                    }
+                Some(Ok(false)) | None => {}
+                Some(Err(error)) => {
+                    self.begin_audio_recovery(format!(
+                        "default audio endpoint check failed: {error}"
+                    ));
                 }
             }
+            self.poll_audio_recovery();
             if self
                 .shared
                 .paused
@@ -615,20 +618,26 @@ impl Worker {
                     }
                 }
             }
-            match self.audio.render(&self.shared.audio) {
-                Ok(true) => {
+            let audio_result = self
+                .audio
+                .as_mut()
+                .map(|audio| audio.render(&self.shared.audio));
+            match audio_result {
+                Some(Ok(true)) => {
                     did_work = true;
                     let _ = self
                         .shared
                         .events
                         .push(BackendEvent::QueueOverflow(Subsystem::Audio));
                 }
-                Ok(false) => {}
-                Err(error) => {
-                    if let Err(error) = self.rebuild_audio(error) {
-                        self.fail(error);
-                        return;
-                    }
+                Some(Ok(false)) => {}
+                Some(Err(error)) => {
+                    self.begin_audio_recovery(error);
+                }
+                None => {
+                    // Audio remains real-time while an endpoint is unavailable.
+                    // Discard stale PCM instead of allowing it to backpressure video.
+                    self.shared.audio.clear();
                 }
             }
             let presentation_wait = if self.decoded_video.is_empty() {
@@ -661,7 +670,9 @@ impl Worker {
         }
 
         self.decoder.stop();
-        self.audio.stop();
+        if let Some(audio) = self.audio.as_mut() {
+            audio.stop();
+        }
     }
 
     fn recover_video(&mut self, subsystem: Subsystem, message: String) -> Result<(), BackendError> {
@@ -742,52 +753,64 @@ impl Worker {
         }
     }
 
-    fn rebuild_audio(&mut self, message: String) -> Result<(), BackendError> {
-        let _ = self.shared.events.push(BackendEvent::DeviceLost {
-            subsystem: Subsystem::Audio,
-            message: message.clone(),
-        });
-        self.shared.set_state(LifecycleState::Recovering);
+    fn begin_audio_recovery(&mut self, message: String) {
+        if self.audio_recovery.is_none() {
+            let _ = self.shared.events.push(BackendEvent::DeviceLost {
+                subsystem: Subsystem::Audio,
+                message: message.clone(),
+            });
+        }
         self.shared.audio.clear();
-        self.audio.stop();
-        let start = Instant::now();
-        loop {
-            if self.shared.state() == LifecycleState::Stopping {
-                return Ok(());
+        if let Some(mut audio) = self.audio.take() {
+            audio.stop();
+        }
+        let now = Instant::now();
+        self.audio_recovery = Some(AudioRecovery {
+            reason: message,
+            next_attempt: now,
+            next_log: now + AUDIO_RECOVERY_LOG_INTERVAL,
+        });
+    }
+
+    fn poll_audio_recovery(&mut self) {
+        let Some(recovery) = self.audio_recovery.as_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        if now < recovery.next_attempt {
+            return;
+        }
+        self.config.audio = *self
+            .shared
+            .audio_format
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let paused = self
+            .shared
+            .paused
+            .load(std::sync::atomic::Ordering::Acquire);
+        match AudioRenderer::new(self.config.audio).and_then(|mut audio| {
+            if paused {
+                audio.set_paused(true)?;
             }
-            self.config.audio = *self
-                .shared
-                .audio_format
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let paused = self
-                .shared
-                .paused
-                .load(std::sync::atomic::Ordering::Acquire);
-            match AudioRenderer::new(self.config.audio).and_then(|mut audio| {
-                if paused {
-                    audio.set_paused(true)?;
-                }
-                Ok(audio)
-            }) {
-                Ok(audio) => {
-                    self.audio = audio;
-                    let _ = self
-                        .shared
-                        .events
-                        .push(BackendEvent::DeviceRecovered(Subsystem::Audio));
-                    self.shared.set_state(LifecycleState::Running);
-                    return Ok(());
-                }
-                Err(error) if start.elapsed() < RECOVERY_TIMEOUT => {
-                    let _ = error;
-                    thread::sleep(Duration::from_millis(100));
-                }
-                Err(error) => {
-                    return Err(BackendError::DeviceLost {
-                        subsystem: Subsystem::Audio,
-                        message: format!("{message}; recovery timed out: {error}"),
-                    });
+            Ok(audio)
+        }) {
+            Ok(audio) => {
+                self.audio = Some(audio);
+                self.audio_recovery = None;
+                let _ = self
+                    .shared
+                    .events
+                    .push(BackendEvent::DeviceRecovered(Subsystem::Audio));
+            }
+            Err(error) => {
+                recovery.next_attempt = now + AUDIO_RECOVERY_RETRY_INTERVAL;
+                if now >= recovery.next_log {
+                    eprintln!(
+                        "WASAPI endpoint still unavailable after {}: {error}; video remains active",
+                        recovery.reason
+                    );
+                    recovery.next_log = now + AUDIO_RECOVERY_LOG_INTERVAL;
                 }
             }
         }

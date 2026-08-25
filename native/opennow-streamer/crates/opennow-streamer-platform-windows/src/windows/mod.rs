@@ -20,7 +20,7 @@ use crate::{
 };
 
 use self::audio::AudioRenderer;
-use self::decoder::{DecodedVideoFrame, Decoder, take_frame_for_presentation};
+use self::decoder::{DecodedVideoFrame, Decoder};
 use self::graphics::Graphics;
 
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -32,6 +32,7 @@ const QUEUE_HISTORY_LENGTH: usize = 3;
 const RENDER_HISTORY_LENGTH: usize = 60;
 const PACING_OUTLIER: Duration = Duration::from_millis(75);
 const PACING_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(5);
+const MAX_CATCH_UP_RATE: f64 = 0.10;
 
 /// Spaces decoded frames at the negotiated stream cadence without depending on
 /// GFN's RTP timestamps. H.265/AV1 can assign one timestamp to a small group of
@@ -157,9 +158,12 @@ impl PresentationClock {
         // I prevents a small persistent backlog, while the negotiated cadence
         // remains the hard upper-FPS limit.
         let correction = (queue_average * 0.10 + self.queue_integral * 0.004).clamp(0.0, 0.30);
-        Duration::from_secs_f64(
-            (estimated.as_secs_f64() / (1.0 + correction)).max(self.nominal_interval.as_secs_f64()),
-        )
+        let minimum = if queue_average > 0.0 {
+            self.nominal_interval.as_secs_f64() * (1.0 - MAX_CATCH_UP_RATE)
+        } else {
+            self.nominal_interval.as_secs_f64()
+        };
+        Duration::from_secs_f64((estimated.as_secs_f64() / (1.0 + correction)).max(minimum))
     }
 }
 
@@ -584,14 +588,14 @@ impl Worker {
             if !self.decoded_video.is_empty() && self.presentation_clock.is_due(presentation_now) {
                 match self.graphics.is_present_ready() {
                     Ok(true) => {
-                        let (frame, stale_frames) =
-                            take_frame_for_presentation(&mut self.decoded_video);
-                        for _ in 0..stale_frames {
-                            let _ = self
-                                .shared
-                                .events
-                                .push(BackendEvent::QueueOverflow(Subsystem::VideoPresentation));
-                        }
+                        // Keep every decoded frame while the bounded queue has
+                        // capacity. GFN's dynamic stream durations describe
+                        // game output cadence, not whether an older decoded
+                        // surface is stale; comparing them discarded normal
+                        // AV1/H.265 decoder bursts. The phase-preserving clock
+                        // drains bursts, while process_output's seven-surface
+                        // cap still bounds latency during a real overload.
+                        let frame = self.decoded_video.pop_front();
                         if let Some(frame) = frame {
                             did_work = true;
                             if let Err(error) = self.graphics.present(
@@ -913,5 +917,14 @@ mod tests {
         let interval = clock.controlled_interval(0.0);
         assert!(interval >= Duration::from_micros(8_200));
         assert!(interval <= Duration::from_micros(8_500));
+    }
+
+    #[test]
+    fn presentation_clock_uses_a_bounded_catch_up_rate_for_backlog() {
+        let clock = PresentationClock::new(83_333);
+        let interval = clock.controlled_interval(3.0);
+
+        assert!(interval < Duration::from_nanos(8_333_300));
+        assert!(interval >= Duration::from_nanos(7_499_970));
     }
 }

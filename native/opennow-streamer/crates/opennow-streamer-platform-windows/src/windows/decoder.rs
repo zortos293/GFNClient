@@ -34,48 +34,11 @@ use crate::{
 
 use super::graphics::Graphics;
 
-// Media Foundation commonly releases H.265/AV1 output in three-frame groups.
-// Preserve that small decoder burst for the presentation clock to space at the
-// negotiated cadence. Larger backlogs are still trimmed to bound latency.
-const FRAME_DROP_THRESHOLD_X1000: i64 = 2_000;
-// A 90 kHz RTP clock cannot represent 120 fps exactly after conversion to
-// Media Foundation's 100 ns units: adjacent durations alternate between
-// 83,333 and 83,334. Keep a small sub-frame tolerance so a valid three-frame
-// decoder burst is not discarded solely because its oldest/newest span rounds
-// one tick above two copies of the newest duration.
-const FRAME_TIMESTAMP_TOLERANCE_100NS: i64 = 1_000;
-
 pub(super) struct DecodedVideoFrame {
     pub(super) texture: ID3D11Texture2D,
     pub(super) subresource: u32,
     pub(super) timestamp_100ns: i64,
     pub(super) duration_100ns: i64,
-}
-
-pub(super) fn take_frame_for_presentation(
-    frames: &mut VecDeque<DecodedVideoFrame>,
-) -> (Option<DecodedVideoFrame>, usize) {
-    let Some(newest) = frames.back() else {
-        return (None, 0);
-    };
-    let newest_timestamp = newest.timestamp_100ns;
-    let newest_duration = newest.duration_100ns.max(1);
-    let mut dropped = 0;
-    while frames.len() > 1
-        && frames.front().is_some_and(|oldest| {
-            frame_is_stale(oldest.timestamp_100ns, newest_timestamp, newest_duration)
-        })
-    {
-        frames.pop_front();
-        dropped += 1;
-    }
-    (frames.pop_front(), dropped)
-}
-
-fn frame_is_stale(oldest_timestamp: i64, newest_timestamp: i64, frame_duration: i64) -> bool {
-    let allowed_age = (frame_duration.saturating_mul(FRAME_DROP_THRESHOLD_X1000) / 1_000)
-        .saturating_add(FRAME_TIMESTAMP_TOLERANCE_100NS);
-    newest_timestamp.saturating_sub(oldest_timestamp) > allowed_age
 }
 
 pub(super) struct Decoder {
@@ -337,28 +300,6 @@ impl Decoder {
                 .map_err(|error| error.to_string())?;
             Ok(((packed >> 32) as u32, packed as u32))
         }
-    }
-}
-
-#[cfg(test)]
-mod pacing_tests {
-    use super::frame_is_stale;
-
-    #[test]
-    fn follows_dynamic_frame_duration_without_treating_it_as_loss() {
-        assert!(!frame_is_stale(0, 166_667, 166_667));
-        assert!(!frame_is_stale(0, 83_333, 83_333));
-    }
-
-    #[test]
-    fn preserves_three_frame_decoder_bursts_and_drops_larger_backlogs() {
-        assert!(!frame_is_stale(0, 166_666, 83_333));
-        assert!(frame_is_stale(0, 250_000, 83_333));
-    }
-
-    #[test]
-    fn tolerates_120_fps_rtp_rounding_at_the_burst_boundary() {
-        assert!(!frame_is_stale(83_333, 250_000, 83_333));
     }
 }
 

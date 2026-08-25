@@ -9,6 +9,8 @@ mod queue;
 mod runtime;
 #[cfg(target_os = "windows")]
 mod windows_debug_overlay;
+#[cfg(target_os = "windows")]
+mod windows_raw_input;
 
 pub use media::{
     CapturedInput, CapturedInputQueue, EncodedFrame, MediaCodec, MediaControl, MediaFeedback,

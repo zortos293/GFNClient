@@ -17,6 +17,8 @@ use crate::media::{CapturedInput, CapturedInputQueue, MediaStreamConfig};
 use crate::native_surface::NativeSurface;
 #[cfg(target_os = "windows")]
 use crate::windows_debug_overlay::NativeDebugOverlay;
+#[cfg(target_os = "windows")]
+use crate::windows_raw_input::WindowsRawInputController;
 
 #[cfg(target_os = "linux")]
 use opennow_streamer_platform_linux::DecodedVideoFrame as LinuxDecodedVideoFrame;
@@ -450,6 +452,7 @@ struct SdlInputCapture {
     enabled: bool,
     focused: bool,
     relative_mouse: bool,
+    external_relative_motion: bool,
     cursor_state: RemoteCursorState,
     cursors: HashMap<(u8, u8), sdl2::mouse::Cursor>,
 }
@@ -462,7 +465,7 @@ enum RemoteCursorState {
 }
 
 impl SdlInputCapture {
-    fn new(enabled: bool) -> Self {
+    fn new(enabled: bool, external_relative_motion: bool) -> Self {
         Self {
             captured: Vec::new(),
             pressed_keys: HashMap::new(),
@@ -470,6 +473,7 @@ impl SdlInputCapture {
             enabled,
             focused: false,
             relative_mouse: false,
+            external_relative_motion,
             // Do not infer hidden-cursor gameplay before the first server
             // update. GFN sends a distinct predefined cursor ID 0 when the
             // game actually wants locked relative input.
@@ -522,6 +526,7 @@ impl SdlInputCapture {
                     });
                 }
             }
+            Event::MouseMotion { .. } if self.relative_mouse && self.external_relative_motion => {}
             Event::MouseMotion { xrel, yrel, .. } if self.relative_mouse => {
                 push_mouse_motion(&mut self.captured, xrel, yrel);
             }
@@ -795,6 +800,7 @@ impl SoftwareOutput {
             native_surface,
             input_capture: SdlInputCapture::new(
                 cfg!(target_os = "windows") && native_input_capture_enabled(),
+                false,
             ),
             external_renderer,
             visible: false,
@@ -1554,6 +1560,7 @@ struct WindowsExternalSdlSurface {
     event_pump: sdl2::EventPump,
     native_surface: NativeSurface,
     input_capture: SdlInputCapture,
+    raw_input: Option<WindowsRawInputController>,
     debug_overlay: NativeDebugOverlay,
     stream_size: (u32, u32),
     visible: bool,
@@ -1565,6 +1572,7 @@ impl WindowsExternalSdlSurface {
     fn initialize(
         stream: MediaStreamConfig,
         graphics_api: WindowsGraphicsApi,
+        captured_input: Arc<CapturedInputQueue>,
     ) -> Result<Self, String> {
         // Force the Windows RawInput path. Warp-relative motion is quantized by
         // cursor recentering and Windows pointer scaling, which is particularly
@@ -1596,15 +1604,33 @@ impl WindowsExternalSdlSurface {
             .event_pump()
             .map_err(|error| format!("external SDL event pump creation failed: {error}"))?;
         let capture_input = native_input_capture_enabled();
+        let raw_input = if capture_input {
+            match WindowsRawInputController::start(native_surface.window_handle(), captured_input) {
+                Ok(controller) => {
+                    eprintln!("Dedicated Windows Raw Input mouse thread ready");
+                    Some(controller)
+                }
+                Err(error) => {
+                    eprintln!(
+                        "Dedicated Windows Raw Input unavailable; retaining SDL motion: {error}"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         eprintln!(
             "External SDL stream window ready (native keyboard/mouse capture: {capture_input})"
         );
+        let external_relative_motion = raw_input.is_some();
         Ok(Self {
             sdl,
             window,
             event_pump,
             native_surface,
-            input_capture: SdlInputCapture::new(capture_input),
+            input_capture: SdlInputCapture::new(capture_input, external_relative_motion),
+            raw_input,
             debug_overlay,
             stream_size: (stream.width, stream.height),
             visible: false,
@@ -1621,6 +1647,9 @@ impl WindowsExternalSdlSurface {
     fn update(&mut self, surface: &RenderSurface) -> Result<(), String> {
         let Some(rect) = surface.rect.filter(|_| surface.visible) else {
             self.input_capture.release(&self.sdl, &mut self.window);
+            if let Some(raw_input) = self.raw_input.as_ref() {
+                raw_input.set_enabled(false);
+            }
             self.debug_overlay.hide();
             self.window.hide();
             self.visible = false;
@@ -1640,6 +1669,9 @@ impl WindowsExternalSdlSurface {
         }
         self.visible = true;
         self.focused = self.window.has_input_focus();
+        if let Some(raw_input) = self.raw_input.as_ref() {
+            raw_input.set_target(self.native_surface.window_handle());
+        }
         if self.focused {
             self.debug_overlay.show_if_enabled();
         }
@@ -1704,6 +1736,10 @@ impl WindowsExternalSdlSurface {
                 );
             }
         }
+        if let Some(raw_input) = self.raw_input.as_ref() {
+            raw_input
+                .set_enabled(self.visible && self.focused && self.input_capture.relative_mouse);
+        }
         self.debug_overlay.update(
             presented_frames,
             dropped_frames,
@@ -1713,6 +1749,9 @@ impl WindowsExternalSdlSurface {
 
     fn release(&mut self) {
         self.input_capture.release(&self.sdl, &mut self.window);
+        if let Some(raw_input) = self.raw_input.as_ref() {
+            raw_input.set_enabled(false);
+        }
         self.debug_overlay.hide();
         self.window.hide();
         self.visible = false;
@@ -1751,7 +1790,11 @@ impl WindowsOutput {
         let external_renderer = external_renderer_enabled();
         let graphics_api = selected_windows_graphics_api();
         let external_surface = if external_renderer {
-            Some(WindowsExternalSdlSurface::initialize(stream, graphics_api)?)
+            Some(WindowsExternalSdlSurface::initialize(
+                stream,
+                graphics_api,
+                output.captured_input(),
+            )?)
         } else {
             None
         };
@@ -2136,7 +2179,7 @@ mod tests {
 
     #[test]
     fn native_input_capture_waits_for_the_first_server_cursor_mode() {
-        let capture = SdlInputCapture::new(true);
+        let capture = SdlInputCapture::new(true, false);
         assert!(!capture.focused);
         assert!(!capture.relative_mouse);
         assert_eq!(capture.cursor_state, RemoteCursorState::Unknown);

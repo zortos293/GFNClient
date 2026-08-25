@@ -100,6 +100,9 @@ const PING_INTERVAL_AFTER_CONNECTION: Duration = Duration::from_millis(100);
 const CURSOR_CAPTURE_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_CURSOR_CAPTURE_ATTEMPTS: u8 = 8;
 const UDP_RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+// The WebRTC bundle owns the SCTP input channels. A 10 ms socket wait batches
+// raw mouse reports and makes high-refresh streams feel closer to 100 Hz.
+const CONTROL_RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const STUN_HEADER_LEN: usize = 20;
 const STUN_MAGIC_COOKIE: u32 = 0x2112_a442;
 const STUN_BINDING_REQUEST: u16 = 0x0001;
@@ -4346,7 +4349,7 @@ fn run_nvst_webrtc_bundle(
 
         let wait = timeout
             .saturating_duration_since(Instant::now())
-            .min(UDP_RECEIVE_POLL_INTERVAL);
+            .min(CONTROL_RECEIVE_POLL_INTERVAL);
         if wait.is_zero() {
             if let Err(error) = rtc.handle_input(Input::Timeout(Instant::now())) {
                 eprintln!("NVST WebRTC timer failed: {error}");

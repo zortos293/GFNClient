@@ -1212,6 +1212,7 @@ pub struct EncodedVideoAccessUnit {
     pub frame_index: u32,
     pub first_stream_packet_index: u32,
     pub keyframe: bool,
+    pub contiguous: bool,
     pub bytes: Vec<u8>,
 }
 
@@ -2013,6 +2014,7 @@ struct VideoAccessUnitAssembler {
     first_stream_packet_index: Option<u32>,
     keyframe_hint: bool,
     last_packet_payload_length: Option<usize>,
+    expected_access_unit_length: Option<usize>,
     invalid_av1_length_logged: bool,
     first_start_payload_logged: bool,
     first_access_unit_logged: bool,
@@ -2028,6 +2030,7 @@ impl VideoAccessUnitAssembler {
             first_stream_packet_index: None,
             keyframe_hint: false,
             last_packet_payload_length: None,
+            expected_access_unit_length: None,
             invalid_av1_length_logged: false,
             first_start_payload_logged: false,
             first_access_unit_logged: false,
@@ -2041,6 +2044,7 @@ impl VideoAccessUnitAssembler {
         self.first_stream_packet_index = None;
         self.keyframe_hint = false;
         self.last_packet_payload_length = None;
+        self.expected_access_unit_length = None;
         self.bytes.clear();
     }
 
@@ -2075,9 +2079,20 @@ impl VideoAccessUnitAssembler {
                 );
             }
             if self.codec == NvstVideoCodec::Av1 {
-                self.last_packet_payload_length = payload
-                    .get(4..6)
-                    .map(|length| usize::from(u16::from_le_bytes([length[0], length[1]])));
+                match payload.first() {
+                    Some(0x01) => {
+                        self.last_packet_payload_length = payload
+                            .get(4..6)
+                            .map(|length| usize::from(u16::from_le_bytes([length[0], length[1]])));
+                    }
+                    Some(0x81) => {
+                        self.expected_access_unit_length = payload.get(16..20).map(|length| {
+                            u32::from_le_bytes([length[0], length[1], length[2], length[3]])
+                                as usize
+                        });
+                    }
+                    _ => {}
+                }
             }
             self.current_frame = Some(header.frame_index);
             self.first_stream_packet_index = Some(header.stream_packet_index);
@@ -2088,14 +2103,13 @@ impl VideoAccessUnitAssembler {
 
         // GFN pads the final packet to its FEC block size. AVC/HEVC Annex B
         // decoders tolerate those trailing zeroes, while AV1 decoders require
-        // the exact payload length advertised in bytes 4..6 of the frame
-        // header. Some current GFN cloud streams do not provide a usable value
-        // in that legacy field, so treat it as an optional trimming hint rather
-        // than dropping an otherwise authenticated access unit. The advertised
-        // length includes the frame header only when the first and last packet
-        // are the same packet.
-        if self.codec == NvstVideoCodec::Av1 && header.is_end_of_frame() {
-            let reported = self.last_packet_payload_length.unwrap_or_default();
+        // exact access units. The short header's bytes 4..6 describe the final
+        // packet; the cloud 0x81 header instead advertises the complete AV1
+        // access-unit size in bytes 16..20 and is handled after assembly below.
+        if self.codec == NvstVideoCodec::Av1
+            && header.is_end_of_frame()
+            && let Some(reported) = self.last_packet_payload_length
+        {
             let exact_payload_length = reported.checked_sub(frame_header_size);
             if let Some(exact_payload_length) = exact_payload_length
                 && exact_payload_length > 0
@@ -2124,6 +2138,21 @@ impl VideoAccessUnitAssembler {
         }
 
         let mut bytes = std::mem::take(&mut self.bytes);
+        if self.codec == NvstVideoCodec::Av1
+            && let Some(reported) = self.expected_access_unit_length
+        {
+            if reported > 0 && reported <= bytes.len() {
+                bytes.truncate(reported);
+            } else {
+                let available = bytes.len();
+                self.reset();
+                return Err(NvstDropReason::InvalidLastPacketPayloadLength {
+                    reported,
+                    frame_header_size,
+                    available,
+                });
+            }
+        }
         strip_trailing_access_unit_delimiter(self.codec, &mut bytes);
         if !self.first_access_unit_logged {
             self.first_access_unit_logged = true;
@@ -2147,6 +2176,7 @@ impl VideoAccessUnitAssembler {
             frame_index: header.frame_index,
             first_stream_packet_index,
             keyframe: video_access_unit_is_keyframe(self.codec, &bytes, self.keyframe_hint),
+            contiguous: true,
             bytes,
         }))
     }
@@ -2448,6 +2478,7 @@ pub struct NvstVideoReceiver {
     reorder: RtpReorderBuffer,
     assembler: VideoAccessUnitAssembler,
     last_stream_packet_index: Option<u32>,
+    next_frame_contiguous: bool,
     state: NvstReceiverState,
     bound_ssrc: Option<u32>,
     highest_sequence_received: u32,
@@ -2471,6 +2502,7 @@ impl NvstVideoReceiver {
             reorder,
             assembler,
             last_stream_packet_index: None,
+            next_frame_contiguous: true,
             state: NvstReceiverState::Running,
             bound_ssrc: None,
             highest_sequence_received: 0,
@@ -2618,6 +2650,7 @@ impl NvstVideoReceiver {
         }
         if let Some(recovery) = result.recovery {
             self.assembler.reset();
+            self.next_frame_contiguous = false;
             // A sequence gap breaks the decoder's reference chain; ask (via the
             // bundle's rtcp1 channel) for a fresh keyframe to recover.
             self.config.feedback.request_keyframe();
@@ -2638,6 +2671,7 @@ impl NvstVideoReceiver {
                 Err(error) => {
                     self.assembler.reset();
                     self.last_stream_packet_index = None;
+                    self.next_frame_contiguous = false;
                     self.config.feedback.request_keyframe();
                     events.push(NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
                         error,
@@ -2661,6 +2695,7 @@ impl NvstVideoReceiver {
             {
                 self.assembler.reset();
                 self.last_stream_packet_index = Some(nv_packet.stream_packet_index);
+                self.next_frame_contiguous = false;
                 self.config.feedback.request_keyframe();
                 events.push(NvstReceiveEvent::Dropped(
                     NvstDropReason::FrameDiscontinuity,
@@ -2672,14 +2707,21 @@ impl NvstVideoReceiver {
                 .assembler
                 .push(nv_packet, packet.header.timestamp, media)
             {
-                Ok(Some(frame)) => {
+                Ok(Some(mut frame)) => {
+                    frame.contiguous = self.next_frame_contiguous;
+                    self.next_frame_contiguous = true;
                     self.frames_emitted += 1;
                     self.config.feedback.publish_completed_frame(&frame);
                     events.push(NvstReceiveEvent::Frame(frame));
                 }
                 Ok(None) => {}
                 Err(reason) => {
-                    if matches!(reason, NvstDropReason::FrameDiscontinuity) {
+                    if matches!(
+                        reason,
+                        NvstDropReason::FrameDiscontinuity
+                            | NvstDropReason::InvalidLastPacketPayloadLength { .. }
+                    ) {
+                        self.next_frame_contiguous = false;
                         self.config.feedback.request_keyframe();
                     }
                     events.push(NvstReceiveEvent::Dropped(reason));
@@ -2746,6 +2788,7 @@ impl NvstVideoReceiver {
         self.reorder.reset();
         self.assembler.reset();
         self.last_stream_packet_index = None;
+        self.next_frame_contiguous = false;
     }
 }
 
@@ -4695,7 +4738,7 @@ fn forward_receive_event(
                 .try_into()
                 .unwrap_or(u64::MAX),
             keyframe: frame.keyframe,
-            contiguous: true,
+            contiguous: frame.contiguous,
         };
         let (reason, keep_running) = match deliver_media_frame(media_consumer, media_frame) {
             Ok(()) => return true,
@@ -4734,6 +4777,7 @@ mod tests {
                 frame_index: 1,
                 first_stream_packet_index: 1,
                 keyframe: true,
+                contiguous: true,
                 bytes: vec![0, 0, 0, 1, 0x26],
             })
         };
@@ -5598,11 +5642,7 @@ mod tests {
         let mut payload = vec![0_u8; GFN_EXTENDED_FRAME_HEADER_BYTES];
         payload[0] = 0x81;
         payload[3] = 2;
-        payload[4..6].copy_from_slice(
-            &u16::try_from(GFN_EXTENDED_FRAME_HEADER_BYTES + 3)
-                .expect("test payload length fits u16")
-                .to_le_bytes(),
-        );
+        payload[16..20].copy_from_slice(&3_u32.to_le_bytes());
         // A temporal-unit length byte is not necessarily a valid OBU header.
         payload.extend_from_slice(&[0x81, 0x01, 0x12]);
         let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::Av1, 4096);
@@ -5613,6 +5653,32 @@ mod tests {
             .expect("complete frame");
 
         assert_eq!(frame.bytes, [0x81, 0x01, 0x12]);
+        assert!(frame.keyframe);
+    }
+
+    #[test]
+    fn trims_gfn_cloud_av1_padding_to_the_advertised_access_unit_size() {
+        let header = NvVideoPacket {
+            stream_packet_index: 1,
+            frame_index: 13,
+            flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            fec_current_block: 0,
+            fec_last_block: 0,
+            is_fec: false,
+        };
+        let mut payload = vec![0_u8; GFN_EXTENDED_FRAME_HEADER_BYTES];
+        payload[0] = 0x81;
+        payload[3] = 2;
+        payload[16..20].copy_from_slice(&5_u32.to_le_bytes());
+        payload.extend_from_slice(&[0x12, 0x00, 0x32, 0x01, 0xaa, 0, 0, 0]);
+        let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::Av1, 4096);
+
+        let frame = assembler
+            .push(header, 90_000, &payload)
+            .expect("valid padded AV1 frame")
+            .expect("complete frame");
+
+        assert_eq!(frame.bytes, [0x12, 0x00, 0x32, 0x01, 0xaa]);
         assert!(frame.keyframe);
     }
 
@@ -6145,6 +6211,25 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, NvstReceiveEvent::Frame(_)))
         );
+
+        let fresh = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(
+                7,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                2,
+                &[0, 0, 1, 0x65, 0xbb],
+            ),
+            0,
+        );
+        let fresh_events = receiver.process_datagram(peer(), &fresh, Instant::now());
+        let Some(NvstReceiveEvent::Frame(frame)) = fresh_events
+            .iter()
+            .find(|event| matches!(event, NvstReceiveEvent::Frame(_)))
+        else {
+            panic!("expected a fresh frame after the gap, got {fresh_events:?}");
+        };
+        assert!(!frame.contiguous);
     }
 
     #[test]
@@ -6404,6 +6489,7 @@ mod tests {
                 frame_index,
                 first_stream_packet_index: frame_index,
                 keyframe: false,
+                contiguous: true,
                 bytes: vec![frame_index as u8],
             });
         }

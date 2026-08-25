@@ -1353,14 +1353,18 @@ fn forward_nvst_event<R: NvstSessionResources>(
             "NVST receiver stopped unexpectedly".to_owned(),
         ),
         NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured) => {
-            emit_nvst_terminal(
-                output,
-                lifecycle,
-                generation,
-                resources,
-                "media-consumer-backpressured",
-                "NVST receiver stopped because the decoded media path is backpressured".to_owned(),
-            )
+            // A bounded decode queue protects latency. A momentary full queue
+            // means this access unit is stale, not that the network session is
+            // dead. Keep receiving and ask for a clean decoder reference.
+            resources.request_keyframe();
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "level": "warn",
+                    "message": "Dropped a backpressured NVST video frame and requested a fresh keyframe"
+                }),
+            ));
+            false
         }
         NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerClosed) => emit_nvst_terminal(
             output,
@@ -2195,6 +2199,33 @@ mod tests {
             receiver
                 .try_iter()
                 .all(|message| message["type"] != "error")
+        );
+    }
+
+    #[test]
+    fn transient_media_backpressure_requests_keyframe_without_stopping_session() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut recovery_attempts = 0;
+
+        assert!(!forward_nvst_event(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            &mut recovery_attempts,
+            NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured),
+        ));
+
+        assert_eq!(recovery_attempts, 0);
+        assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(resources.stops.load(Ordering::Relaxed), 0);
+        assert_eq!(lock_lifecycle(&lifecycle).state, State::Connected);
+        assert!(
+            receiver
+                .try_iter()
+                .all(|message| message["type"] != "error" && message["type"] != "status")
         );
     }
 

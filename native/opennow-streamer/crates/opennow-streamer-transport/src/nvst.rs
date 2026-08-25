@@ -4306,13 +4306,15 @@ fn run_nvst_webrtc_bundle(
                                 contiguous,
                             };
                             if let Err(error) = deliver_media_frame(&media_consumer, frame) {
-                                let reason = match error {
-                                    TransportError::MediaConsumerBackpressured => {
-                                        NvstDropReason::MediaConsumerBackpressured
-                                    }
-                                    _ => NvstDropReason::MediaConsumerClosed,
-                                };
-                                let _ = event_sender.send(NvstReceiveEvent::Dropped(reason));
+                                if matches!(error, TransportError::MediaConsumerBackpressured) {
+                                    // Audio is real-time data. If the decoder briefly falls
+                                    // behind, discard this packet and keep the transport alive;
+                                    // queued audio is more harmful than a short concealment gap.
+                                    continue;
+                                }
+                                let _ = event_sender.send(NvstReceiveEvent::Dropped(
+                                    NvstDropReason::MediaConsumerClosed,
+                                ));
                                 rtc.disconnect();
                                 forward_optional(&event_sender, receiver.stop());
                                 return;
@@ -4663,16 +4665,18 @@ fn forward_receive_event(
             keyframe: frame.keyframe,
             contiguous: true,
         };
-        let result = match deliver_media_frame(media_consumer, media_frame) {
+        let (reason, keep_running) = match deliver_media_frame(media_consumer, media_frame) {
             Ok(()) => return true,
             Err(TransportError::MediaConsumerBackpressured) => {
-                NvstDropReason::MediaConsumerBackpressured
+                (NvstDropReason::MediaConsumerBackpressured, true)
             }
-            Err(TransportError::MediaConsumerClosed) => NvstDropReason::MediaConsumerClosed,
-            Err(_) => NvstDropReason::MediaConsumerClosed,
+            Err(TransportError::MediaConsumerClosed) => {
+                (NvstDropReason::MediaConsumerClosed, false)
+            }
+            Err(_) => (NvstDropReason::MediaConsumerClosed, false),
         };
-        let _ = event_sender.send(NvstReceiveEvent::Dropped(result));
-        return false;
+        let _ = event_sender.send(NvstReceiveEvent::Dropped(reason));
+        return keep_running;
     }
     let _ = event_sender.send(event);
     true
@@ -4686,6 +4690,39 @@ mod tests {
     const TEST_KEY: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F";
     const TEST_SALT: &str = "000102030405060708090A0B0C0D";
     const TEST_PEER: &str = "192.0.2.20";
+
+    #[test]
+    fn transient_video_consumer_backpressure_does_not_stop_receiver() {
+        let (media_consumer, _media_receiver) = std::sync::mpsc::sync_channel(1);
+        let (event_sender, event_receiver) = std::sync::mpsc::channel();
+        let frame = || {
+            NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
+                codec: NvstVideoCodec::H265,
+                timestamp: 90_000,
+                frame_index: 1,
+                first_stream_packet_index: 1,
+                keyframe: true,
+                bytes: vec![0, 0, 0, 1, 0x26],
+            })
+        };
+
+        assert!(forward_receive_event(
+            &media_consumer,
+            &event_sender,
+            Instant::now(),
+            frame(),
+        ));
+        assert!(forward_receive_event(
+            &media_consumer,
+            &event_sender,
+            Instant::now(),
+            frame(),
+        ));
+        assert!(matches!(
+            event_receiver.recv().expect("backpressure event"),
+            NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured)
+        ));
+    }
 
     fn legacy_handoff() -> Value {
         json!({

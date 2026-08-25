@@ -24,7 +24,7 @@ use self::decoder::{DecodedVideoFrame, Decoder, take_frame_for_presentation};
 use self::graphics::Graphics;
 
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
-const PRESENTATION_SPIN_THRESHOLD: Duration = Duration::from_millis(1);
+const PRESENTATION_SPIN_THRESHOLD: Duration = Duration::from_micros(300);
 const ARRIVAL_HISTORY_LENGTH: usize = 120;
 const QUEUE_HISTORY_LENGTH: usize = 3;
 const RENDER_HISTORY_LENGTH: usize = 60;
@@ -637,10 +637,22 @@ impl Worker {
                 self.presentation_clock.time_until_due(Instant::now())
             };
             if !presentation_wait.is_zero() && presentation_wait <= PRESENTATION_SPIN_THRESHOLD {
-                // Avoid adding Windows' ~1 ms sleep jitter at the end of an
-                // 8.33 ms 120 Hz frame interval.
-                std::hint::spin_loop();
-                thread::yield_now();
+                // Avoid handing the final fraction of an 8.33 ms interval
+                // back to the Windows scheduler. The bounded 300 us precision
+                // phase costs less than four percent of one core at 120 Hz.
+                while !self
+                    .presentation_clock
+                    .time_until_due(Instant::now())
+                    .is_zero()
+                {
+                    std::hint::spin_loop();
+                }
+            } else if presentation_wait > PRESENTATION_SPIN_THRESHOLD {
+                thread::sleep(
+                    presentation_wait
+                        .saturating_sub(PRESENTATION_SPIN_THRESHOLD)
+                        .min(Duration::from_millis(1)),
+                );
             } else if !did_work {
                 thread::sleep(Duration::from_millis(1));
             } else {

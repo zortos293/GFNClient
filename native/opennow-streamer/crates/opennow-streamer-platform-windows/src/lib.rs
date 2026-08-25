@@ -284,7 +284,7 @@ impl WindowsBackend {
         let outcome = self
             .shared
             .video
-            .push(frame)
+            .push_or_clear_on_overflow(frame)
             .map_err(|_| BackendError::NotRunning(self.state()))?;
         if outcome == PushOutcome::DroppedOldest {
             let _ = self

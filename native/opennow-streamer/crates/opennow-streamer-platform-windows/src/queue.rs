@@ -53,6 +53,25 @@ impl<T> BoundedQueue<T> {
         Ok(outcome)
     }
 
+    /// Queues compressed inter-frame video without creating a broken reference
+    /// chain. Once full, every pending access unit and the incoming unit are
+    /// stale; retaining any of them after dropping an older reference frame can
+    /// make the hardware decoder reject the stream. The caller requests a new
+    /// keyframe after receiving `DroppedOldest`.
+    pub(crate) fn push_or_clear_on_overflow(&self, value: T) -> Result<PushOutcome, T> {
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        if inner.closed {
+            return Err(value);
+        }
+        if inner.values.len() == self.capacity {
+            inner.values.clear();
+            return Ok(PushOutcome::DroppedOldest);
+        }
+        inner.values.push_back(value);
+        self.ready.notify_one();
+        Ok(PushOutcome::Queued)
+    }
+
     pub(crate) fn try_pop(&self) -> Option<T> {
         self.inner
             .lock()
@@ -110,6 +129,18 @@ mod tests {
         assert_eq!(queue.push(3), Ok(PushOutcome::DroppedOldest));
         assert_eq!(queue.try_pop(), Some(2));
         assert_eq!(queue.try_pop(), Some(3));
+    }
+
+    #[test]
+    fn video_overflow_discards_the_pending_reference_chain() {
+        let queue = BoundedQueue::new(2);
+        assert_eq!(queue.push_or_clear_on_overflow(1), Ok(PushOutcome::Queued));
+        assert_eq!(queue.push_or_clear_on_overflow(2), Ok(PushOutcome::Queued));
+        assert_eq!(
+            queue.push_or_clear_on_overflow(3),
+            Ok(PushOutcome::DroppedOldest)
+        );
+        assert_eq!(queue.try_pop(), None);
     }
 
     #[test]

@@ -520,7 +520,7 @@ impl Worker {
             {
                 Ok(produced) => produced,
                 Err(error) => {
-                    if let Err(error) = self.recover_video(Subsystem::VideoDecode, error) {
+                    if let Err(error) = self.rebuild_video(Subsystem::VideoDecode, error) {
                         self.fail(error);
                         return;
                     }
@@ -554,7 +554,7 @@ impl Worker {
                 if let Some(frame) = self.shared.video.try_pop() {
                     did_work = true;
                     if let Err(error) = self.decoder.submit(frame) {
-                        if let Err(error) = self.recover_video(Subsystem::VideoDecode, error) {
+                        if let Err(error) = self.rebuild_video(Subsystem::VideoDecode, error) {
                             self.fail(error);
                             return;
                         }
@@ -733,6 +733,7 @@ impl Worker {
 
     fn rebuild_video(&mut self, subsystem: Subsystem, message: String) -> Result<(), BackendError> {
         self.decoder.stop();
+        self.shared.video.clear();
         self.decoded_video.clear();
         self.presentation_clock
             .reset(self.config.video.frame_duration_100ns());

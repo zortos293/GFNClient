@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -19,6 +19,8 @@ use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::{Texture, WindowCanvas};
 
+#[cfg(target_os = "linux")]
+use crate::linux_frame_pacing::{FrameSelectionPolicy, LinuxFramePacer};
 use crate::media::{CapturedInput, CapturedInputQueue, MediaStreamConfig};
 #[cfg(target_os = "linux")]
 use crate::native_stats_overlay::NativeStatsOverlay;
@@ -29,9 +31,7 @@ use crate::windows_debug_overlay::NativeDebugOverlay;
 use crate::windows_raw_input::WindowsRawInputController;
 
 #[cfg(target_os = "linux")]
-use opennow_streamer_platform_linux::{
-    DecodedVideoFrame as LinuxDecodedVideoFrame, PresentationPolicy,
-};
+use opennow_streamer_platform_linux::DecodedVideoFrame as LinuxDecodedVideoFrame;
 #[cfg(target_os = "windows")]
 use opennow_streamer_platform_windows::{
     AudioFormat, BackendConfig, BackendEvent, Bounds, ExistingWindow, OwnedWindow, Subsystem,
@@ -43,15 +43,7 @@ const AUDIO_CHANNELS: u8 = 2;
 const AUDIO_BUFFER_FRAMES: u16 = 480;
 const MAX_AUDIO_LATENCY_MS: usize = 120;
 #[cfg(target_os = "linux")]
-const LINUX_VIDEO_QUEUE_CAPACITY: usize = 3;
-#[cfg(target_os = "linux")]
-const LINUX_ARRIVAL_HISTORY_LENGTH: usize = 120;
-#[cfg(target_os = "linux")]
-const LINUX_QUEUE_HISTORY_LENGTH: usize = 3;
-#[cfg(target_os = "linux")]
-const LINUX_PACING_OUTLIER: Duration = Duration::from_millis(75);
-#[cfg(target_os = "linux")]
-const LINUX_MAX_CATCH_UP_RATE: f64 = 0.10;
+const LINUX_VIDEO_QUEUE_CAPACITY: usize = 6;
 
 #[derive(Debug)]
 pub(crate) struct DecodedVideoFrame {
@@ -76,6 +68,8 @@ pub(crate) struct OutputBuffers {
     software_video_drops: AtomicU64,
     #[cfg(target_os = "linux")]
     hardware_video_drops: AtomicU64,
+    #[cfg(target_os = "linux")]
+    display_video_skips: AtomicU64,
     #[cfg(target_os = "linux")]
     received_video_bytes: AtomicU64,
     audio: Mutex<VecDeque<f32>>,
@@ -170,6 +164,8 @@ impl OutputBuffers {
             #[cfg(target_os = "linux")]
             hardware_video_drops: AtomicU64::new(0),
             #[cfg(target_os = "linux")]
+            display_video_skips: AtomicU64::new(0),
+            #[cfg(target_os = "linux")]
             received_video_bytes: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::with_capacity(
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
@@ -238,25 +234,30 @@ impl OutputBuffers {
     }
 
     #[cfg(target_os = "linux")]
-    fn linux_video_queue_len(&self) -> usize {
-        self.linux_video
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .len()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn take_latest_linux_video(&self) -> Option<QueuedLinuxVideoFrame> {
+    fn take_linux_video_for_presentation(
+        &self,
+        selection: FrameSelectionPolicy,
+        target_queue_depth: usize,
+    ) -> Option<QueuedLinuxVideoFrame> {
         let mut queue = self
             .linux_video
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let frame = queue.pop_back();
-        let dropped = queue.len();
-        queue.clear();
-        if dropped > 0 {
-            self.hardware_video_drops.fetch_add(
-                u64::try_from(dropped).unwrap_or(u64::MAX),
+        if queue.len() <= target_queue_depth {
+            return None;
+        }
+        let (frame, skipped) = match selection {
+            FrameSelectionPolicy::OldestReady => (queue.pop_front(), 0),
+            FrameSelectionPolicy::LatestReady => {
+                let frame = queue.pop_back();
+                let skipped = queue.len();
+                queue.clear();
+                (frame, skipped)
+            }
+        };
+        if skipped > 0 {
+            self.display_video_skips.fetch_add(
+                u64::try_from(skipped).unwrap_or(u64::MAX),
                 Ordering::Relaxed,
             );
         }
@@ -279,6 +280,11 @@ impl OutputBuffers {
     #[cfg(target_os = "linux")]
     fn hardware_video_drops(&self) -> u64 {
         self.hardware_video_drops.load(Ordering::Relaxed)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn display_video_skips(&self) -> u64 {
+        self.display_video_skips.load(Ordering::Relaxed)
     }
 
     #[cfg(target_os = "linux")]
@@ -322,6 +328,7 @@ impl OutputBuffers {
             self.clear_linux_video();
             self.software_video_drops.store(0, Ordering::Relaxed);
             self.hardware_video_drops.store(0, Ordering::Relaxed);
+            self.display_video_skips.store(0, Ordering::Relaxed);
         }
         self.audio
             .lock()
@@ -334,131 +341,6 @@ impl OutputBuffers {
         for sample in destination {
             *sample = audio.pop_front().unwrap_or(0.0);
         }
-    }
-}
-
-#[cfg(target_os = "linux")]
-struct LinuxPresentationClock {
-    nominal_interval: Duration,
-    arrival_history: VecDeque<Duration>,
-    queue_history: VecDeque<usize>,
-    last_arrival: Option<Instant>,
-    next_deadline: Option<Instant>,
-    queue_integral: f64,
-}
-
-#[cfg(target_os = "linux")]
-impl LinuxPresentationClock {
-    fn new(nominal_interval: Duration) -> Self {
-        Self {
-            nominal_interval,
-            arrival_history: VecDeque::with_capacity(LINUX_ARRIVAL_HISTORY_LENGTH),
-            queue_history: VecDeque::with_capacity(LINUX_QUEUE_HISTORY_LENGTH),
-            last_arrival: None,
-            next_deadline: None,
-            queue_integral: 0.0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.arrival_history.clear();
-        self.queue_history.clear();
-        self.last_arrival = None;
-        self.next_deadline = None;
-        self.queue_integral = 0.0;
-    }
-
-    fn observe_arrival(&mut self, arrived_at: Instant) {
-        if let Some(previous) = self.last_arrival.replace(arrived_at) {
-            let interval = arrived_at.saturating_duration_since(previous);
-            if interval <= LINUX_PACING_OUTLIER {
-                push_linux_pacing_sample(
-                    &mut self.arrival_history,
-                    interval,
-                    LINUX_ARRIVAL_HISTORY_LENGTH,
-                );
-            } else {
-                // Loading/recovery gaps are not representative of the active
-                // stream cadence and must not slow the next history window.
-                self.arrival_history.clear();
-                self.next_deadline = None;
-            }
-        }
-    }
-
-    fn is_due(&self, now: Instant) -> bool {
-        self.next_deadline.is_none_or(|deadline| now >= deadline)
-    }
-
-    fn is_recovery_stall(&self, now: Instant) -> bool {
-        self.next_deadline
-            .is_some_and(|deadline| now.saturating_duration_since(deadline) > LINUX_PACING_OUTLIER)
-    }
-
-    fn mark_presented(&mut self, now: Instant, queued_frames: usize) {
-        push_linux_pacing_sample(
-            &mut self.queue_history,
-            queued_frames,
-            LINUX_QUEUE_HISTORY_LENGTH,
-        );
-        let queue_average = average_linux_queue_depth(&self.queue_history);
-        self.queue_integral = (self.queue_integral * 0.9 + queue_average).clamp(0.0, 12.0);
-        let interval = self.controlled_interval(queue_average);
-        let next = self
-            .next_deadline
-            .map_or(now + interval, |deadline| deadline + interval);
-        // Preserve phase while frames are waiting so a decoder burst drains at
-        // a bounded rate. Rebase only once the queue is empty; this avoids both
-        // permanent latency and the old high-FPS replay burst.
-        self.next_deadline = Some(if queued_frames == 0 && next <= now {
-            now + interval
-        } else {
-            next
-        });
-    }
-
-    fn controlled_interval(&self, queue_average: f64) -> Duration {
-        let estimated = average_linux_duration(&self.arrival_history)
-            .unwrap_or(self.nominal_interval)
-            .clamp(
-                self.nominal_interval,
-                self.nominal_interval.saturating_mul(2),
-            );
-        let correction = (queue_average * 0.10 + self.queue_integral * 0.004).clamp(0.0, 0.30);
-        let minimum = if queue_average > 0.0 {
-            self.nominal_interval.as_secs_f64() * (1.0 - LINUX_MAX_CATCH_UP_RATE)
-        } else {
-            self.nominal_interval.as_secs_f64()
-        };
-        Duration::from_secs_f64((estimated.as_secs_f64() / (1.0 + correction)).max(minimum))
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn push_linux_pacing_sample<T>(values: &mut VecDeque<T>, value: T, capacity: usize) {
-    if values.len() == capacity {
-        values.pop_front();
-    }
-    values.push_back(value);
-}
-
-#[cfg(target_os = "linux")]
-fn average_linux_duration(values: &VecDeque<Duration>) -> Option<Duration> {
-    if values.is_empty() {
-        return None;
-    }
-    let total_ns = values.iter().map(Duration::as_nanos).sum::<u128>();
-    Some(Duration::from_nanos(
-        u64::try_from(total_ns / values.len() as u128).unwrap_or(u64::MAX),
-    ))
-}
-
-#[cfg(target_os = "linux")]
-fn average_linux_queue_depth(values: &VecDeque<usize>) -> f64 {
-    if values.is_empty() {
-        0.0
-    } else {
-        values.iter().sum::<usize>() as f64 / values.len() as f64
     }
 }
 
@@ -480,10 +362,9 @@ pub(crate) struct LinuxHardwareOutput {
     stream_size: (u32, u32),
     surface_size: Option<(u32, u32)>,
     stream_fps: u32,
-    presentation_policy: PresentationPolicy,
     debug_overlay: NativeStatsOverlay,
     presented_frames: u64,
-    presentation_clock: LinuxPresentationClock,
+    frame_pacer: LinuxFramePacer,
     visible: bool,
     paused: bool,
     _sdl: sdl2::Sdl,
@@ -525,11 +406,17 @@ impl LinuxHardwareOutput {
             .build()
             .map_err(|error| format!("native Vulkan window creation failed: {error}"))?;
         let display_refresh_hz = linux_display_refresh_hz(&video, &window);
-        let presentation_policy = linux_presentation_policy(stream.fps, display_refresh_hz);
+        let frame_pacer = LinuxFramePacer::new(stream.fps, display_refresh_hz);
         eprintln!(
-            "Linux presentation policy: stream={}fps display={} policy={presentation_policy:?}",
+            "Linux presentation pacing: stream={}fps display={} output={:.1}Hz mode={}",
             stream.fps,
             display_refresh_hz.map_or_else(|| "unknown".to_owned(), |value| format!("{value}Hz")),
+            frame_pacer.presentation_hz(),
+            if frame_pacer.fast_stream() {
+                "nonblocking-fast-stream"
+            } else {
+                "adaptive-timestamp"
+            },
         );
         let native_surface = if external_renderer {
             Err("external Linux output does not use child-window embedding".to_owned())
@@ -566,12 +453,9 @@ impl LinuxHardwareOutput {
             stream_size: (stream.width.max(1), stream.height.max(1)),
             surface_size: None,
             stream_fps: stream.fps.max(1),
-            presentation_policy,
             debug_overlay: NativeStatsOverlay::new(stream, "LINUX / VULKAN"),
             presented_frames: 0,
-            presentation_clock: LinuxPresentationClock::new(Duration::from_secs_f64(
-                1.0 / f64::from(stream.fps.max(1)),
-            )),
+            frame_pacer,
             visible: false,
             paused: false,
             _sdl: sdl,
@@ -581,7 +465,7 @@ impl LinuxHardwareOutput {
     fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
         self.paused = false;
         self.presented_frames = 0;
-        self.presentation_clock.reset();
+        self.frame_pacer.reset();
         self.output.clear();
         self.audio.resume();
         if let Some(surface) = surface {
@@ -592,7 +476,7 @@ impl LinuxHardwareOutput {
 
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
-        self.presentation_clock.reset();
+        self.frame_pacer.reset();
         if paused {
             self.input_capture.release(&self._sdl, &mut self.window);
             self.audio.pause();
@@ -616,7 +500,7 @@ impl LinuxHardwareOutput {
         }
         self.visible = false;
         self.paused = false;
-        self.presentation_clock.reset();
+        self.frame_pacer.reset();
     }
 
     fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
@@ -661,18 +545,22 @@ impl LinuxHardwareOutput {
                 )?;
         }
         let display_refresh_hz = linux_display_refresh_hz(&self.video, &self.window);
-        let presentation_policy = linux_presentation_policy(self.stream_fps, display_refresh_hz);
-        if presentation_policy != self.presentation_policy {
+        if self
+            .frame_pacer
+            .reconfigure(self.stream_fps, display_refresh_hz)
+        {
             eprintln!(
-                "Linux presentation policy changed: stream={}fps display={} policy={presentation_policy:?}",
+                "Linux presentation pacing changed: stream={}fps display={} output={:.1}Hz mode={}",
                 self.stream_fps,
                 display_refresh_hz
                     .map_or_else(|| "unknown".to_owned(), |value| format!("{value}Hz")),
+                self.frame_pacer.presentation_hz(),
+                if self.frame_pacer.fast_stream() {
+                    "nonblocking-fast-stream"
+                } else {
+                    "adaptive-timestamp"
+                },
             );
-            self.presenter = None;
-            self.surface_size = None;
-            self.presentation_policy = presentation_policy;
-            self.presentation_clock.reset();
             self.output.clear_linux_video();
         }
         let size = if self.external_renderer {
@@ -682,12 +570,7 @@ impl LinuxHardwareOutput {
             (rect.width.max(2), rect.height.max(2))
         };
         if self.presenter.is_none() {
-            self.presenter = Some(create_linux_presenter(
-                &self.window,
-                size.0,
-                size.1,
-                self.presentation_policy,
-            )?);
+            self.presenter = Some(create_linux_presenter(&self.window, size.0, size.1)?);
         } else if self.surface_size != Some(size) {
             if let Some(presenter) = self.presenter.as_mut() {
                 presenter
@@ -749,6 +632,8 @@ impl LinuxHardwareOutput {
                 self.surface_size = self.presenter.as_ref().map(|presenter| presenter.extent());
             }
         }
+        self.debug_overlay
+            .set_presentation_skips(self.output.display_video_skips());
         self.debug_overlay.update(
             self.presented_frames,
             self.output.hardware_video_drops(),
@@ -756,20 +641,18 @@ impl LinuxHardwareOutput {
             self.output.received_video_bytes(),
         );
         let now = Instant::now();
-        if !self.presentation_clock.is_due(now) {
+        if !self.frame_pacer.is_due(now) {
             return Ok(false);
         }
-        let recovering_from_stall = self.presentation_clock.is_recovery_stall(now);
-        let frame = if recovering_from_stall {
-            self.output.take_latest_linux_video()
-        } else {
-            self.output.take_linux_video()
-        };
+        let decision = self.frame_pacer.decision(now);
+        let frame = self
+            .output
+            .take_linux_video_for_presentation(decision.selection, decision.target_queue_depth);
         let Some(queued_frame) = frame else {
             return Ok(false);
         };
-        self.presentation_clock
-            .observe_arrival(queued_frame.arrived_at);
+        self.frame_pacer
+            .observe_frame(queued_frame.arrived_at, queued_frame.frame.timestamp_us);
         let mut frame = queued_frame.frame;
         self.stream_size = (frame.format.width.max(1), frame.format.height.max(1));
         self.debug_overlay.composite_linux_frame(&mut frame);
@@ -783,8 +666,7 @@ impl LinuxHardwareOutput {
             .map_err(|error| error.to_string())?;
         if presented {
             self.presented_frames = self.presented_frames.saturating_add(1);
-            self.presentation_clock
-                .mark_presented(now, self.output.linux_video_queue_len());
+            self.frame_pacer.mark_presented(Instant::now());
         }
         Ok(presented)
     }
@@ -813,7 +695,6 @@ fn create_linux_presenter(
     window: &sdl2::video::Window,
     width: u32,
     height: u32,
-    presentation_policy: PresentationPolicy,
 ) -> Result<opennow_streamer_platform_linux::VulkanPresenter, String> {
     use std::ffi::c_void;
     use std::num::NonZeroU64;
@@ -854,13 +735,8 @@ fn create_linux_presenter(
             );
         }
     };
-    opennow_streamer_platform_linux::VulkanPresenter::new_with_policy(
-        &surface,
-        width,
-        height,
-        presentation_policy,
-    )
-    .map_err(|error| error.to_string())
+    opennow_streamer_platform_linux::VulkanPresenter::new(&surface, width, height)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -874,17 +750,6 @@ fn linux_display_refresh_hz(
 }
 
 #[cfg(target_os = "linux")]
-fn linux_presentation_policy(
-    stream_fps: u32,
-    display_refresh_hz: Option<u32>,
-) -> PresentationPolicy {
-    if display_refresh_hz.is_some_and(|refresh_hz| stream_fps > refresh_hz) {
-        PresentationPolicy::LatestFrame
-    } else {
-        PresentationPolicy::Synchronized
-    }
-}
-
 struct StreamAudioCallback {
     output: Arc<OutputBuffers>,
 }
@@ -1487,6 +1352,8 @@ impl SoftwareOutput {
         }
         let width = frame.format.width;
         let height = frame.format.height;
+        self.debug_overlay
+            .set_presentation_skips(self.output.display_video_skips());
         self.debug_overlay.update(
             self.presented_frames,
             self.output.hardware_video_drops(),
@@ -2745,6 +2612,8 @@ mod tests {
             #[cfg(target_os = "linux")]
             hardware_video_drops: AtomicU64::new(0),
             #[cfg(target_os = "linux")]
+            display_video_skips: AtomicU64::new(0),
+            #[cfg(target_os = "linux")]
             received_video_bytes: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::new()),
             audio_capacity: 4,
@@ -2812,13 +2681,14 @@ mod tests {
         }
         assert_eq!(
             recovery
-                .take_latest_linux_video()
+                .take_linux_video_for_presentation(FrameSelectionPolicy::LatestReady, 0)
                 .expect("latest recovery frame")
                 .frame
                 .timestamp_us,
             11,
         );
-        assert_eq!(recovery.hardware_video_drops(), 1);
+        assert_eq!(recovery.hardware_video_drops(), 0);
+        assert_eq!(recovery.display_video_skips(), 1);
         assert!(recovery.take_linux_video().is_none());
     }
 
@@ -2827,54 +2697,6 @@ mod tests {
         assert_eq!(
             aspect_fit(1920, 1080, 1000, 1000),
             Rect::new(0, 218, 1000, 563)
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_presentation_clock_only_flushes_after_a_real_stall() {
-        let interval = Duration::from_millis(10);
-        let origin = Instant::now();
-        let mut clock = LinuxPresentationClock::new(interval);
-        clock.mark_presented(origin, 0);
-        let deadline = clock.next_deadline.expect("deadline");
-        assert!(!clock.is_recovery_stall(deadline + Duration::from_millis(20)));
-        assert!(clock.is_recovery_stall(deadline + Duration::from_millis(76)));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_presentation_clock_bounds_backlog_catch_up() {
-        let interval = Duration::from_millis(10);
-        let mut clock = LinuxPresentationClock::new(interval);
-        let origin = Instant::now();
-        clock.mark_presented(origin, 2);
-        let deadline = clock.next_deadline.expect("deadline");
-        assert_eq!(deadline, origin + Duration::from_millis(9));
-
-        clock.reset();
-        clock.mark_presented(origin, 0);
-        assert_eq!(clock.next_deadline, Some(origin + interval));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_presentation_policy_only_replaces_frames_above_display_refresh() {
-        assert_eq!(
-            linux_presentation_policy(240, Some(165)),
-            PresentationPolicy::LatestFrame,
-        );
-        assert_eq!(
-            linux_presentation_policy(165, Some(165)),
-            PresentationPolicy::Synchronized,
-        );
-        assert_eq!(
-            linux_presentation_policy(120, Some(165)),
-            PresentationPolicy::Synchronized,
-        );
-        assert_eq!(
-            linux_presentation_policy(240, None),
-            PresentationPolicy::Synchronized,
         );
     }
 

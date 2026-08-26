@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 mod linux_backend;
+#[cfg(target_os = "linux")]
+mod linux_frame_pacing;
 #[cfg(target_os = "macos")]
 mod macos_backend;
 mod media;

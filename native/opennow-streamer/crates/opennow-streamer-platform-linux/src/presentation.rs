@@ -18,14 +18,6 @@ const ACQUIRE_WAIT_NS: u64 = 50_000_000;
 const NV12_VERTEX_SHADER: &[u8] = include_bytes!("../shaders/nv12.vert.spv");
 const NV12_FRAGMENT_SHADER: &[u8] = include_bytes!("../shaders/nv12.frag.spv");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresentationPolicy {
-    /// Queue every submitted frame for compositor VSync.
-    Synchronized,
-    /// Keep the newest submitted frame when the stream outruns the display.
-    LatestFrame,
-}
-
 struct GpuImage {
     image: vk::Image,
     memory: vk::DeviceMemory,
@@ -141,22 +133,12 @@ pub struct VulkanPresenter {
     staging_buffer: vk::Buffer,
     staging_memory: vk::DeviceMemory,
     staging_capacity: vk::DeviceSize,
-    presentation_policy: PresentationPolicy,
     needs_reconfigure: bool,
     _thread_affinity: PhantomData<Rc<()>>,
 }
 
 impl VulkanPresenter {
     pub fn new(target: &NativeSurface<'_>, width: u32, height: u32) -> Result<Self> {
-        Self::new_with_policy(target, width, height, PresentationPolicy::Synchronized)
-    }
-
-    pub fn new_with_policy(
-        target: &NativeSurface<'_>,
-        width: u32,
-        height: u32,
-        presentation_policy: PresentationPolicy,
-    ) -> Result<Self> {
         validate_presentation_extent(width, height)?;
         let entry = unsafe { Entry::load() }
             .map_err(|error| Error::unavailable(Subsystem::Vulkan, error.to_string()))?;
@@ -266,7 +248,6 @@ impl VulkanPresenter {
             staging_buffer: vk::Buffer::null(),
             staging_memory: vk::DeviceMemory::null(),
             staging_capacity: 0,
-            presentation_policy,
             needs_reconfigure: false,
             _thread_affinity: PhantomData,
         };
@@ -620,7 +601,7 @@ impl VulkanPresenter {
                 .get_physical_device_surface_present_modes(self.physical_device, self.surface)
         }
         .map_err(|error| vk_error("query surface present modes", error))?;
-        let present_mode = choose_present_mode(&present_modes, self.presentation_policy);
+        let present_mode = choose_present_mode(&present_modes);
         self.surface_format = choose_surface_format(&formats)?;
         self.extent = choose_extent(capabilities, requested_width, requested_height);
         validate_presentation_extent(self.extent.width, self.extent.height)?;
@@ -1411,26 +1392,16 @@ fn choose_composite_alpha(supported: vk::CompositeAlphaFlagsKHR) -> vk::Composit
     .unwrap_or(vk::CompositeAlphaFlagsKHR::OPAQUE)
 }
 
-/// FIFO/VSync preserves every frame while the stream fits the display cadence.
-/// When the stream rate exceeds the physical refresh rate, MAILBOX keeps the
-/// freshest completed frame without blocking the decoder behind an impossible
-/// FIFO cadence. Immediate is the low-latency fallback when mailbox is absent.
-fn choose_present_mode(
-    supported: &[vk::PresentModeKHR],
-    policy: PresentationPolicy,
-) -> vk::PresentModeKHR {
-    let preferred = match policy {
-        PresentationPolicy::Synchronized => [
-            vk::PresentModeKHR::FIFO,
-            vk::PresentModeKHR::MAILBOX,
-            vk::PresentModeKHR::IMMEDIATE,
-        ],
-        PresentationPolicy::LatestFrame => [
-            vk::PresentModeKHR::MAILBOX,
-            vk::PresentModeKHR::IMMEDIATE,
-            vk::PresentModeKHR::FIFO,
-        ],
-    };
+/// Match the official Linux client's synchronized swapchain. Frame selection
+/// and stale-frame skipping happen before submission, so WSI receives at most
+/// one intentional frame per display interval and does not need MAILBOX to
+/// hide an upstream backlog.
+fn choose_present_mode(supported: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+    let preferred = [
+        vk::PresentModeKHR::FIFO,
+        vk::PresentModeKHR::MAILBOX,
+        vk::PresentModeKHR::IMMEDIATE,
+    ];
     preferred
         .into_iter()
         .find(|mode| supported.contains(mode))
@@ -1614,32 +1585,16 @@ mod tests {
     #[test]
     fn present_mode_uses_fifo_vsync_when_supported() {
         assert_eq!(
-            choose_present_mode(
-                &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX],
-                PresentationPolicy::Synchronized,
-            ),
+            choose_present_mode(&[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX]),
             vk::PresentModeKHR::FIFO
         );
         assert_eq!(
-            choose_present_mode(
-                &[vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::IMMEDIATE],
-                PresentationPolicy::Synchronized,
-            ),
+            choose_present_mode(&[vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::IMMEDIATE]),
             vk::PresentModeKHR::MAILBOX
         );
         assert_eq!(
-            choose_present_mode(
-                &[vk::PresentModeKHR::FIFO],
-                PresentationPolicy::Synchronized,
-            ),
+            choose_present_mode(&[vk::PresentModeKHR::FIFO]),
             vk::PresentModeKHR::FIFO
-        );
-        assert_eq!(
-            choose_present_mode(
-                &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX],
-                PresentationPolicy::LatestFrame,
-            ),
-            vk::PresentModeKHR::MAILBOX
         );
     }
 }

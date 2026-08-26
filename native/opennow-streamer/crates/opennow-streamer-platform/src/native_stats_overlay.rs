@@ -62,6 +62,7 @@ pub(crate) struct NativeStatsOverlay {
     measured_bitrate_bps: f32,
     fps_history: VecDeque<f32>,
     dropped_frames: u64,
+    presentation_skips: u64,
     relative_mouse: bool,
     rendered: Option<OverlayFrame>,
 }
@@ -79,6 +80,7 @@ impl NativeStatsOverlay {
             measured_bitrate_bps: 0.0,
             fps_history: VecDeque::with_capacity(18),
             dropped_frames: 0,
+            presentation_skips: 0,
             relative_mouse: false,
             rendered: None,
         }
@@ -129,6 +131,11 @@ impl NativeStatsOverlay {
         self.fps_history.push_back(self.measured_fps);
         self.render();
         true
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn set_presentation_skips(&mut self, presentation_skips: u64) {
+        self.presentation_skips = presentation_skips;
     }
 
     pub(crate) fn frame(&self) -> Option<&OverlayFrame> {
@@ -328,9 +335,9 @@ impl NativeStatsOverlay {
         canvas.row(
             20,
             250,
-            "PRESENT DROPS",
+            "DROPS / SKIPS",
             460,
-            &format!("{} TOTAL", self.dropped_frames),
+            &format!("{} / {}", self.dropped_frames, self.presentation_skips),
             if self.dropped_frames == 0 {
                 TEXT
             } else {

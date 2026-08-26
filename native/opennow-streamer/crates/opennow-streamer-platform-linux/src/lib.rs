@@ -36,7 +36,7 @@ pub use format::{
     PixelFormat, StreamFormat, VideoCodec,
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
-pub use presentation::{NativeSurface, PresentationPolicy, VulkanPresenter};
+pub use presentation::{NativeSurface, VulkanPresenter};
 #[cfg(target_os = "linux")]
 pub use session::{
     BackendEvent, DecoderBackend, DecoderPreference, LifecycleState, LinuxSession, PushOutcome,

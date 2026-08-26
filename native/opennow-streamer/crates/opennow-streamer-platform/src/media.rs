@@ -47,6 +47,8 @@ pub struct MediaStreamConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate_bps: u32,
+    /// CloudMatch accepted Cloud G-SYNC and the host presentation path is VRR-capable.
+    pub cloud_gsync: bool,
 }
 
 impl Default for MediaStreamConfig {
@@ -57,6 +59,7 @@ impl Default for MediaStreamConfig {
             height: 1080,
             fps: 60,
             bitrate_bps: 10_000_000,
+            cloud_gsync: false,
         }
     }
 }

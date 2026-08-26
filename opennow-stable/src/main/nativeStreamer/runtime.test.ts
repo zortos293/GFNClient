@@ -21,7 +21,7 @@ test("v2 runtime is self-contained and removes inherited GStreamer variables", (
     protocolVersion: 4,
     videoBackendPreference: "auto",
     externalRendererEnabled: false,
-    cloudGsyncMode: "auto",
+    cloudGsyncMode: "disabled",
     d3dFullscreenMode: "auto",
   });
 
@@ -68,6 +68,25 @@ test("explicit Linux video backend preference is passed to the child", () => {
   });
 
   assert.equal(result.env.OPENNOW_NATIVE_VIDEO_BACKEND, "v4l2");
+});
+
+test("Cloud G-SYNC uses a top-level native output on X11", () => {
+  const result = createNativeStreamerRuntimeEnvironment({
+    executablePath: "/tmp/opennow-streamer",
+    baseEnv: { DISPLAY: ":1", XDG_SESSION_TYPE: "x11" },
+    platform: "linux",
+    arch: "x64",
+    userDataPath: "/tmp/opennow-test",
+    protocolVersion: 4,
+    videoBackendPreference: "auto",
+    externalRendererEnabled: false,
+    cloudGsyncMode: "auto",
+    d3dFullscreenMode: "auto",
+  });
+
+  assert.equal(result.env.OPENNOW_NATIVE_EXTERNAL_RENDERER, "1");
+  assert.equal(result.env.OPENNOW_NATIVE_INPUT_OWNER, "native");
+  assert.match(result.runtimeStatus.message, /Cloud G-SYNC\/VRR/);
 });
 
 test("Wayland uses a native top-level renderer and owns its input", () => {

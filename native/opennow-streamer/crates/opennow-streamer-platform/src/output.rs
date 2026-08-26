@@ -365,6 +365,7 @@ pub(crate) struct LinuxHardwareOutput {
     debug_overlay: NativeStatsOverlay,
     presented_frames: u64,
     frame_pacer: LinuxFramePacer,
+    vrr_fullscreen_initialized: bool,
     visible: bool,
     paused: bool,
     _sdl: sdl2::Sdl,
@@ -406,13 +407,15 @@ impl LinuxHardwareOutput {
             .build()
             .map_err(|error| format!("native Vulkan window creation failed: {error}"))?;
         let display_refresh_hz = linux_display_refresh_hz(&video, &window);
-        let frame_pacer = LinuxFramePacer::new(stream.fps, display_refresh_hz);
+        let frame_pacer = LinuxFramePacer::new(stream.fps, display_refresh_hz, stream.cloud_gsync);
         eprintln!(
             "Linux presentation pacing: stream={}fps display={} output={:.1}Hz mode={}",
             stream.fps,
             display_refresh_hz.map_or_else(|| "unknown".to_owned(), |value| format!("{value}Hz")),
             frame_pacer.presentation_hz(),
-            if frame_pacer.fast_stream() {
+            if frame_pacer.vrr_enabled() {
+                "cloud-gsync-vrr"
+            } else if frame_pacer.fast_stream() {
                 "nonblocking-fast-stream"
             } else {
                 "adaptive-timestamp"
@@ -453,9 +456,17 @@ impl LinuxHardwareOutput {
             stream_size: (stream.width.max(1), stream.height.max(1)),
             surface_size: None,
             stream_fps: stream.fps.max(1),
-            debug_overlay: NativeStatsOverlay::new(stream, "LINUX / VULKAN"),
+            debug_overlay: NativeStatsOverlay::new(
+                stream,
+                if stream.cloud_gsync {
+                    "LINUX / VULKAN VRR"
+                } else {
+                    "LINUX / VULKAN"
+                },
+            ),
             presented_frames: 0,
             frame_pacer,
+            vrr_fullscreen_initialized: false,
             visible: false,
             paused: false,
             _sdl: sdl,
@@ -466,6 +477,7 @@ impl LinuxHardwareOutput {
         self.paused = false;
         self.presented_frames = 0;
         self.frame_pacer.reset();
+        self.vrr_fullscreen_initialized = false;
         self.output.clear();
         self.audio.resume();
         if let Some(surface) = surface {
@@ -477,6 +489,7 @@ impl LinuxHardwareOutput {
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
         self.frame_pacer.reset();
+        self.vrr_fullscreen_initialized = false;
         if paused {
             self.input_capture.release(&self._sdl, &mut self.window);
             self.audio.pause();
@@ -501,6 +514,7 @@ impl LinuxHardwareOutput {
         self.visible = false;
         self.paused = false;
         self.frame_pacer.reset();
+        self.vrr_fullscreen_initialized = false;
     }
 
     fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
@@ -530,6 +544,19 @@ impl LinuxHardwareOutput {
             if !self.visible {
                 self.window.raise();
             }
+            if self.frame_pacer.vrr_enabled() && !self.vrr_fullscreen_initialized {
+                use sdl2::video::FullscreenType;
+
+                self.window
+                    .set_fullscreen(FullscreenType::Desktop)
+                    .map_err(|error| {
+                        format!("Cloud G-SYNC could not enter compositor fullscreen: {error}")
+                    })?;
+                self.vrr_fullscreen_initialized = true;
+                eprintln!(
+                    "Linux Cloud G-SYNC presentation requested compositor fullscreen for VRR"
+                );
+            }
         } else {
             let parent_handle = surface.window_handle.as_deref().ok_or_else(|| {
                 "visible native surface is missing Electron windowHandle".to_owned()
@@ -555,7 +582,9 @@ impl LinuxHardwareOutput {
                 display_refresh_hz
                     .map_or_else(|| "unknown".to_owned(), |value| format!("{value}Hz")),
                 self.frame_pacer.presentation_hz(),
-                if self.frame_pacer.fast_stream() {
+                if self.frame_pacer.vrr_enabled() {
+                    "cloud-gsync-vrr"
+                } else if self.frame_pacer.fast_stream() {
                     "nonblocking-fast-stream"
                 } else {
                     "adaptive-timestamp"

@@ -331,7 +331,12 @@ impl NativeStatsOverlay {
             ),
             TEXT,
         );
-        canvas.row(20, 226, "FRAME PERIOD", 460, &frame_ms, GREEN);
+        let pacing = if self.stream.cloud_gsync {
+            format!("{frame_ms} / CLOUD VRR")
+        } else {
+            frame_ms.clone()
+        };
+        canvas.row(20, 226, "FRAME PERIOD", 460, &pacing, GREEN);
         canvas.row(
             20,
             250,

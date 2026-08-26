@@ -81,10 +81,15 @@ export function createNativeStreamerRuntimeEnvironment(
   const linuxWindowSystem = options.platform === "linux"
     ? resolveLinuxWindowSystem(options.linuxOzonePlatform, options.baseEnv)
     : null;
+  const linuxCloudGsyncOutput = options.platform === "linux"
+    && options.cloudGsyncMode !== "disabled";
   // Wayland deliberately gives the streamer its own compositor-managed window:
   // the protocol has no portable equivalent of X11 child-window reparenting.
+  // Cloud G-SYNC also needs a top-level window on X11 so SDL/Vulkan can enter
+  // compositor-managed fullscreen and drive the VRR scanout directly.
   const externalRendererEnabled = options.externalRendererEnabled
-    || linuxWindowSystem === "wayland";
+    || linuxWindowSystem === "wayland"
+    || linuxCloudGsyncOutput;
   const env: NodeJS.ProcessEnv = {
     ...options.baseEnv,
     OPENNOW_NATIVE_STREAMER_PROTOCOL: String(options.protocolVersion),
@@ -125,6 +130,8 @@ export function createNativeStreamerRuntimeEnvironment(
       message:
         linuxWindowSystem === "wayland"
           ? "Native streamer v2 is using a compositor-managed Wayland output window; no external media runtime is required."
+          : linuxCloudGsyncOutput
+            ? "Native streamer v2 is using a top-level Linux output window for Cloud G-SYNC/VRR; no external media runtime is required."
           : "Native streamer v2 is self-contained; no external media runtime is required.",
     },
   };

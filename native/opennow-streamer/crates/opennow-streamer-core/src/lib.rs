@@ -1709,12 +1709,18 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(10);
+    let cloud_gsync = context
+        .settings
+        .get("enableCloudGsync")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     MediaStreamConfig {
         codec,
         width: resolution.0,
         height: resolution.1,
         fps,
         bitrate_bps: bitrate_mbps.saturating_mul(1_000_000).max(1),
+        cloud_gsync,
     }
 }
 
@@ -2382,7 +2388,8 @@ mod tests {
             "codec": "H264",
             "resolution": "2560x1440",
             "fps": 120,
-            "maxBitrateMbps": 75
+            "maxBitrateMbps": 75,
+            "enableCloudGsync": true
         });
         let context: SessionContext = serde_json::from_value(value).expect("context");
 
@@ -2394,6 +2401,7 @@ mod tests {
                 height: 1440,
                 fps: 120,
                 bitrate_bps: 75_000_000,
+                cloud_gsync: true,
             }
         );
 

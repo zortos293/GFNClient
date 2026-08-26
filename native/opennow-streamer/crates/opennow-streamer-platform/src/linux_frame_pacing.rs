@@ -27,6 +27,7 @@ pub(crate) struct LinuxFramePacer {
     display_interval: Option<Duration>,
     presentation_interval: Duration,
     fast_stream: bool,
+    vrr_enabled: bool,
     last_arrival: Option<(Instant, u64)>,
     jitter_ema_ns: f64,
     jitter_bound_ns: f64,
@@ -34,7 +35,7 @@ pub(crate) struct LinuxFramePacer {
 }
 
 impl LinuxFramePacer {
-    pub(crate) fn new(stream_fps: u32, display_refresh_hz: Option<u32>) -> Self {
+    pub(crate) fn new(stream_fps: u32, display_refresh_hz: Option<u32>, vrr_enabled: bool) -> Self {
         let stream_interval = frame_interval(stream_fps);
         let display_interval = display_refresh_hz.map(frame_interval);
         let (presentation_interval, fast_stream) = pacing_mode(stream_interval, display_interval);
@@ -43,6 +44,7 @@ impl LinuxFramePacer {
             display_interval,
             presentation_interval,
             fast_stream,
+            vrr_enabled,
             last_arrival: None,
             jitter_ema_ns: 0.0,
             jitter_bound_ns: 0.0,
@@ -72,10 +74,23 @@ impl LinuxFramePacer {
     }
 
     pub(crate) fn is_due(&self, now: Instant) -> bool {
+        if self.vrr_enabled {
+            return true;
+        }
         self.next_deadline.is_none_or(|deadline| now >= deadline)
     }
 
     pub(crate) fn decision(&self, now: Instant) -> PacingDecision {
+        // With compositor VRR enabled, submit the freshest complete server
+        // frame immediately. FIFO provides tear-free scanout while the output
+        // refresh follows server arrival timing; replaying a burst after a
+        // hitch would defeat Cloud G-SYNC and add input latency.
+        if self.vrr_enabled {
+            return PacingDecision {
+                selection: FrameSelectionPolicy::LatestReady,
+                target_queue_depth: 0,
+            };
+        }
         let stalled = self
             .next_deadline
             .is_some_and(|deadline| now.saturating_duration_since(deadline) > PACING_OUTLIER);
@@ -124,6 +139,10 @@ impl LinuxFramePacer {
     }
 
     pub(crate) fn mark_presented(&mut self, now: Instant) {
+        if self.vrr_enabled {
+            self.next_deadline = None;
+            return;
+        }
         let next = self
             .next_deadline
             .map_or(now + self.presentation_interval, |deadline| {
@@ -140,6 +159,10 @@ impl LinuxFramePacer {
 
     pub(crate) const fn fast_stream(&self) -> bool {
         self.fast_stream
+    }
+
+    pub(crate) const fn vrr_enabled(&self) -> bool {
+        self.vrr_enabled
     }
 
     pub(crate) fn presentation_hz(&self) -> f64 {
@@ -186,7 +209,7 @@ mod tests {
 
     #[test]
     fn fast_stream_samples_latest_at_display_rate() {
-        let pacer = LinuxFramePacer::new(240, Some(165));
+        let pacer = LinuxFramePacer::new(240, Some(165), false);
         assert!(pacer.fast_stream());
         assert_eq!(
             pacer.decision(Instant::now()).selection,
@@ -197,7 +220,7 @@ mod tests {
 
     #[test]
     fn matched_stream_uses_ordered_adaptive_queue() {
-        let pacer = LinuxFramePacer::new(120, Some(165));
+        let pacer = LinuxFramePacer::new(120, Some(165), false);
         assert!(!pacer.fast_stream());
         assert_eq!(
             pacer.decision(Instant::now()),
@@ -211,7 +234,7 @@ mod tests {
 
     #[test]
     fn missed_deadline_is_rebased_without_catch_up_burst() {
-        let mut pacer = LinuxFramePacer::new(120, Some(120));
+        let mut pacer = LinuxFramePacer::new(120, Some(120), false);
         let origin = Instant::now();
         pacer.mark_presented(origin);
         let late = origin + Duration::from_millis(20);
@@ -222,7 +245,7 @@ mod tests {
 
     #[test]
     fn sustained_arrival_jitter_adds_bounded_queue_depth() {
-        let mut pacer = LinuxFramePacer::new(120, Some(165));
+        let mut pacer = LinuxFramePacer::new(120, Some(165), false);
         let origin = Instant::now();
         pacer.observe_frame(origin, 0);
         for index in 1..20_u64 {
@@ -235,5 +258,22 @@ mod tests {
         assert_eq!(decision.selection, FrameSelectionPolicy::OldestReady);
         assert!(decision.target_queue_depth > 0);
         assert!(decision.target_queue_depth <= MAX_ADAPTIVE_QUEUE_DEPTH);
+    }
+
+    #[test]
+    fn vrr_submits_latest_frame_without_a_fixed_deadline() {
+        let mut pacer = LinuxFramePacer::new(120, Some(165), true);
+        let now = Instant::now();
+        assert!(pacer.is_due(now));
+        assert!(pacer.vrr_enabled());
+        assert_eq!(
+            pacer.decision(now),
+            PacingDecision {
+                selection: FrameSelectionPolicy::LatestReady,
+                target_queue_depth: 0,
+            }
+        );
+        pacer.mark_presented(now);
+        assert!(pacer.is_due(now));
     }
 }

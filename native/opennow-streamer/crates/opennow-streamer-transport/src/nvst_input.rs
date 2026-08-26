@@ -14,6 +14,7 @@ const CONTROL_PARTIAL_LABEL: &str = "control_channel_partially_reliable";
 const CONTROL_UNRELIABLE_LABEL: &str = "control_channel_unreliable";
 const INPUT_PARTIAL_LABEL: &str = "input_channel_partially_reliable";
 const CURSOR_LABEL: &str = "cursor_channel";
+const RTCP_ON_SCTP_LABEL: &str = "rtcp_on_sctp_private";
 const PARTIAL_RELIABLE_LIFETIME_MS: u16 = 300;
 
 const COMMAND_SYSTEM_CURSOR: u16 = 0x010f;
@@ -60,7 +61,7 @@ pub(crate) struct NvstChannelDefinition {
     pub(crate) reliability: NvstChannelReliability,
 }
 
-pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 7] = [
+pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 8] = [
     NvstChannelDefinition {
         sid: 0,
         label: CONTROL_RELIABLE_LABEL,
@@ -103,6 +104,12 @@ pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 7] = [
         ordered: true,
         reliability: NvstChannelReliability::Reliable,
     },
+    NvstChannelDefinition {
+        sid: 14,
+        label: RTCP_ON_SCTP_LABEL,
+        ordered: true,
+        reliability: NvstChannelReliability::Reliable,
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -114,6 +121,7 @@ pub(crate) struct NvstInputChannels {
     pub(crate) control_unreliable: ChannelId,
     pub(crate) input_partial: ChannelId,
     pub(crate) cursor: ChannelId,
+    pub(crate) rtcp: ChannelId,
 }
 
 impl NvstInputChannels {
@@ -133,6 +141,7 @@ impl NvstInputChannels {
             control_unreliable: ids[4],
             input_partial: ids[5],
             cursor: ids[6],
+            rtcp: ids[7],
         }
     }
 
@@ -155,6 +164,8 @@ impl NvstInputChannels {
             INPUT_PARTIAL_LABEL
         } else if id == self.cursor {
             CURSOR_LABEL
+        } else if id == self.rtcp {
+            RTCP_ON_SCTP_LABEL
         } else {
             "unknown"
         }
@@ -985,7 +996,7 @@ mod tests {
     fn channel_profile_matches_official_sids_labels_and_reliability() {
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.sid),
-            [0, 2, 4, 6, 8, 10, 12]
+            [0, 2, 4, 6, 8, 10, 12, 14]
         );
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.label),
@@ -997,6 +1008,7 @@ mod tests {
                 CONTROL_UNRELIABLE_LABEL,
                 INPUT_PARTIAL_LABEL,
                 CURSOR_LABEL,
+                RTCP_ON_SCTP_LABEL,
             ]
         );
         assert!(
@@ -1014,10 +1026,11 @@ mod tests {
                 NvstChannelReliability::MaxRetransmits(0),
                 NvstChannelReliability::Lifetime(300),
                 NvstChannelReliability::Reliable,
+                NvstChannelReliability::Reliable,
             ]
         );
         let configs = NVST_CHANNEL_PROFILE.map(channel_config);
-        assert_eq!(configs.clone().map(|config| config.ordered), [true; 7]);
+        assert_eq!(configs.clone().map(|config| config.ordered), [true; 8]);
         assert_eq!(
             configs.map(|config| config.reliability),
             [
@@ -1028,8 +1041,14 @@ mod tests {
                 Reliability::MaxRetransmits { retransmits: 0 },
                 Reliability::MaxPacketLifetime { lifetime: 300 },
                 Reliability::Reliable,
+                Reliability::Reliable,
             ]
         );
+
+        let mut rtc = Rtc::new(Instant::now());
+        let channels = NvstInputChannels::create(&mut rtc);
+        assert_eq!(channels.label(channels.rtcp), RTCP_ON_SCTP_LABEL);
+        assert!(!channels.contains(channels.rtcp));
     }
 
     #[test]

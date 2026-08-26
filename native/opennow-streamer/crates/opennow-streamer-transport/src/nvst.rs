@@ -4170,9 +4170,11 @@ fn run_nvst_webrtc_bundle(
                             sctp_started = true;
                             sctp_started_at = Some(Instant::now());
                             rtc.direct_api().start_sctp(true);
-                            input_channels = Some(NvstInputChannels::create(&mut rtc));
+                            let channels = NvstInputChannels::create(&mut rtc);
+                            rtcp_channel = Some(channels.rtcp);
+                            input_channels = Some(channels);
                             let _ = event_sender.send(NvstReceiveEvent::TransportReady("sctp"));
-                            eprintln!("NVST SCTP started with the seven-channel Bifrost profile");
+                            eprintln!("NVST SCTP started with the eight-channel Bifrost profile");
                         }
                     }
                     Event::ChannelOpen(id, label) => {
@@ -4204,8 +4206,7 @@ fn run_nvst_webrtc_bundle(
                                     Some(Instant::now() + CURSOR_CAPTURE_RETRY_INTERVAL);
                             }
                         }
-                        if label.contains("rtcp") {
-                            rtcp_channel = Some(id);
+                        if Some(id) == rtcp_channel {
                             rtcp_channel_open = true;
                             // Ask for a keyframe immediately so the decoder can start.
                             feedback.request_keyframe();

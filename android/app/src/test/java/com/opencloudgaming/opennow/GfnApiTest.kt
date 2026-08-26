@@ -253,6 +253,48 @@ class GfnApiTest {
     }
 
     @Test
+    fun appStoreEnumSerializationFailureIsRecognizedForFallback() {
+        val error = IllegalStateException(
+            "GFN GraphQL failed (400): {\"errors\":[{\"message\":\"Enum 'AppStoreEnum' cannot represent value: 'NCSOFT'\"}]}",
+        )
+
+        assertTrue(isAppStoreEnumSerializationError(error))
+        assertFalse(isAppStoreEnumSerializationError(IllegalStateException("GFN GraphQL failed (500)")))
+    }
+
+    @Test
+    fun variantStorePrefersGraphQlValueAndInfersEnumFreeMetadata() {
+        val explicit = buildJsonObject {
+            put("appStore", JsonPrimitive("STEAM"))
+            put("storeUrl", JsonPrimitive("https://www.epicgames.com/store/p/example"))
+        }
+        val epic = buildJsonObject {
+            put("storeUrl", JsonPrimitive("https://www.epicgames.com/store/p/example"))
+        }
+        val ncsoft = buildJsonObject {
+            put("shortName", JsonPrimitive("guild_wars_2_gfn_pc"))
+            put("storeUrl", JsonPrimitive("https://www.guildwars2.com/?utm_source=nvidia"))
+            put("publisherName", JsonPrimitive("NCsoft Corp."))
+        }
+
+        assertEquals("STEAM", gameStoreFromVariant(explicit))
+        assertEquals("EPIC", gameStoreFromVariant(epic))
+        assertEquals("NCSOFT", gameStoreFromVariant(ncsoft))
+    }
+
+    @Test
+    fun enumFreeVariantFieldsRetainStoreInferenceMetadata() {
+        val primaryFields = gfnVariantMetadataFields(includeAppStore = true)
+        val fallbackFields = gfnVariantMetadataFields(includeAppStore = false)
+
+        assertTrue(primaryFields.lineSequence().any { it.trim() == "appStore" })
+        assertFalse(fallbackFields.lineSequence().any { it.trim() == "appStore" })
+        assertTrue(fallbackFields.contains("shortName"))
+        assertTrue(fallbackFields.contains("storeUrl"))
+        assertTrue(fallbackFields.contains("publisherName"))
+    }
+
+    @Test
     fun canonicalizesOldGamesGraphQlHost() {
         val url = canonicalizeGfnRequestUrl(
             "https://games.geforcenow.com/graphql?requestType=panels%2FMainV2".toHttpUrl(),

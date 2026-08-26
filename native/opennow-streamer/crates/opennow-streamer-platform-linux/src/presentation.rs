@@ -1,12 +1,11 @@
 use std::ffi::{CStr, c_void};
+use std::io::Cursor;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
 use ash::{Entry, Instance, vk};
-#[cfg(feature = "ffmpeg")]
-use ffmpeg_next::ffi;
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
     XlibDisplayHandle, XlibWindowHandle,
@@ -16,6 +15,22 @@ use crate::{ColorMatrix, ColorRange, DecodedVideoFrame, Error, PixelFormat, Resu
 
 const PRESENT_WAIT_NS: u64 = 1_000_000_000;
 const ACQUIRE_WAIT_NS: u64 = 50_000_000;
+const NV12_VERTEX_SHADER: &[u8] = include_bytes!("../shaders/nv12.vert.spv");
+const NV12_FRAGMENT_SHADER: &[u8] = include_bytes!("../shaders/nv12.frag.spv");
+
+struct GpuImage {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+}
+
+struct Nv12Images {
+    width: u32,
+    height: u32,
+    luma: GpuImage,
+    chroma: GpuImage,
+    initialized: bool,
+}
 
 pub enum NativeSurface<'a> {
     X11 {
@@ -98,9 +113,18 @@ pub struct VulkanPresenter {
     swapchain_loader: ash::khr::swapchain::Device,
     swapchain: vk::SwapchainKHR,
     images: Vec<vk::Image>,
-    initialized_images: Vec<bool>,
+    image_views: Vec<vk::ImageView>,
+    framebuffers: Vec<vk::Framebuffer>,
     surface_format: vk::SurfaceFormatKHR,
     extent: vk::Extent2D,
+    render_pass: vk::RenderPass,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_set: vk::DescriptorSet,
+    sampler: vk::Sampler,
+    nv12_images: Option<Nv12Images>,
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
     image_available: vk::Semaphore,
@@ -109,7 +133,6 @@ pub struct VulkanPresenter {
     staging_buffer: vk::Buffer,
     staging_memory: vk::DeviceMemory,
     staging_capacity: vk::DeviceSize,
-    converter: FrameConverter,
     needs_reconfigure: bool,
     _thread_affinity: PhantomData<Rc<()>>,
 }
@@ -205,9 +228,18 @@ impl VulkanPresenter {
             swapchain_loader,
             swapchain: vk::SwapchainKHR::null(),
             images: Vec::new(),
-            initialized_images: Vec::new(),
+            image_views: Vec::new(),
+            framebuffers: Vec::new(),
             surface_format: vk::SurfaceFormatKHR::default(),
             extent: vk::Extent2D { width, height },
+            render_pass: vk::RenderPass::null(),
+            descriptor_set_layout: vk::DescriptorSetLayout::null(),
+            pipeline_layout: vk::PipelineLayout::null(),
+            pipeline: vk::Pipeline::null(),
+            descriptor_pool: vk::DescriptorPool::null(),
+            descriptor_set: vk::DescriptorSet::null(),
+            sampler: vk::Sampler::null(),
+            nv12_images: None,
             command_pool,
             command_buffer,
             image_available,
@@ -216,7 +248,6 @@ impl VulkanPresenter {
             staging_buffer: vk::Buffer::null(),
             staging_memory: vk::DeviceMemory::null(),
             staging_capacity: 0,
-            converter: FrameConverter::new(),
             needs_reconfigure: false,
             _thread_affinity: PhantomData,
         };
@@ -249,6 +280,12 @@ impl VulkanPresenter {
     /// down the media session.
     pub fn present(&mut self, frame: &DecodedVideoFrame) -> Result<bool> {
         frame.validate()?;
+        if frame.format.pixel_format != PixelFormat::Nv12 || frame.planes.len() != 2 {
+            return Err(Error::InvalidFormat(format!(
+                "GPU presentation requires two-plane NV12, received {:?}",
+                frame.format.pixel_format
+            )));
+        }
         if self.needs_reconfigure {
             return Err(Error::backend(
                 Subsystem::Vulkan,
@@ -260,22 +297,35 @@ impl VulkanPresenter {
                 .wait_for_fences(&[self.in_flight], true, PRESENT_WAIT_NS)
         }
         .map_err(|error| vk_error("wait for presentation", error))?;
-        self.converter
-            .convert(frame, self.extent, self.surface_format.format)?;
-        let rgba_len = self.converter.output().len();
-        self.ensure_staging(rgba_len as vk::DeviceSize)?;
+        self.ensure_nv12_images(frame.format.width, frame.format.height)?;
+        let luma_len = frame.format.width as usize * frame.format.height as usize;
+        let chroma_len = luma_len / 2;
+        let upload_len = luma_len.checked_add(chroma_len).ok_or_else(|| {
+            Error::InvalidFormat("NV12 presentation buffer size overflow".to_owned())
+        })?;
+        self.ensure_staging(upload_len as vk::DeviceSize)?;
         let mapped = unsafe {
             self.device.map_memory(
                 self.staging_memory,
                 0,
-                rgba_len as vk::DeviceSize,
+                upload_len as vk::DeviceSize,
                 vk::MemoryMapFlags::empty(),
             )
         }
         .map_err(|error| vk_error("map staging memory", error))?;
-        let rgba = self.converter.output();
         unsafe {
-            std::ptr::copy_nonoverlapping(rgba.as_ptr(), mapped.cast(), rgba.len());
+            copy_plane_rows(
+                &frame.planes[0],
+                mapped.cast(),
+                frame.format.width as usize,
+                frame.format.height as usize,
+            );
+            copy_plane_rows(
+                &frame.planes[1],
+                mapped.cast::<u8>().add(luma_len),
+                frame.format.width as usize,
+                frame.format.height as usize / 2,
+            );
             self.device.unmap_memory(self.staging_memory);
         }
 
@@ -300,7 +350,7 @@ impl VulkanPresenter {
         };
         let image_index = image_index as usize;
         if image_index >= self.images.len()
-            || image_index >= self.initialized_images.len()
+            || image_index >= self.framebuffers.len()
             || image_index >= self.render_finished.len()
         {
             self.needs_reconfigure = true;
@@ -326,67 +376,157 @@ impl VulkanPresenter {
                 self.needs_reconfigure = true;
                 return Err(vk_error("begin presentation command buffer", error));
             }
-            let old_layout = if self.initialized_images[image_index] {
-                vk::ImageLayout::PRESENT_SRC_KHR
+            let nv12 = self.nv12_images.as_ref().ok_or_else(|| {
+                Error::backend(Subsystem::Vulkan, "NV12 GPU images are unavailable")
+            })?;
+            let source_stage = if nv12.initialized {
+                vk::PipelineStageFlags::FRAGMENT_SHADER
+            } else {
+                vk::PipelineStageFlags::TOP_OF_PIPE
+            };
+            let source_access = if nv12.initialized {
+                vk::AccessFlags::SHADER_READ
+            } else {
+                vk::AccessFlags::empty()
+            };
+            let old_layout = if nv12.initialized {
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
             } else {
                 vk::ImageLayout::UNDEFINED
             };
-            let to_transfer = vk::ImageMemoryBarrier::default()
-                .old_layout(old_layout)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .image(self.images[image_index])
-                .subresource_range(color_range());
+            let to_transfer = [nv12.luma.image, nv12.chroma.image].map(|image| {
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(old_layout)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .src_access_mask(source_access)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .image(image)
+                    .subresource_range(color_range())
+            });
             self.device.cmd_pipeline_barrier(
                 self.command_buffer,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
+                source_stage,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[to_transfer],
+                &to_transfer,
             );
-            let copy = vk::BufferImageCopy::default()
+            let luma_copy = vk::BufferImageCopy::default()
                 .image_subresource(
                     vk::ImageSubresourceLayers::default()
                         .aspect_mask(vk::ImageAspectFlags::COLOR)
                         .layer_count(1),
                 )
                 .image_extent(vk::Extent3D {
-                    width: self.extent.width,
-                    height: self.extent.height,
+                    width: frame.format.width,
+                    height: frame.format.height,
+                    depth: 1,
+                });
+            let chroma_copy = vk::BufferImageCopy::default()
+                .buffer_offset(luma_len as vk::DeviceSize)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1),
+                )
+                .image_extent(vk::Extent3D {
+                    width: frame.format.width / 2,
+                    height: frame.format.height / 2,
                     depth: 1,
                 });
             self.device.cmd_copy_buffer_to_image(
                 self.command_buffer,
                 self.staging_buffer,
-                self.images[image_index],
+                nv12.luma.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[copy],
+                &[luma_copy],
             );
-            let to_present = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::empty())
-                .image(self.images[image_index])
-                .subresource_range(color_range());
+            self.device.cmd_copy_buffer_to_image(
+                self.command_buffer,
+                self.staging_buffer,
+                nv12.chroma.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[chroma_copy],
+            );
+            let to_sample = [nv12.luma.image, nv12.chroma.image].map(|image| {
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .image(image)
+                    .subresource_range(color_range())
+            });
             self.device.cmd_pipeline_barrier(
                 self.command_buffer,
                 vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[to_present],
+                &to_sample,
             );
+            let clear_values = [vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+            }];
+            let render_area = vk::Rect2D::default().extent(self.extent);
+            let render_begin = vk::RenderPassBeginInfo::default()
+                .render_pass(self.render_pass)
+                .framebuffer(self.framebuffers[image_index])
+                .render_area(render_area)
+                .clear_values(&clear_values);
+            self.device.cmd_begin_render_pass(
+                self.command_buffer,
+                &render_begin,
+                vk::SubpassContents::INLINE,
+            );
+            let viewport = vk::Viewport::default()
+                .width(self.extent.width as f32)
+                .height(self.extent.height as f32)
+                .max_depth(1.0);
+            self.device
+                .cmd_set_viewport(self.command_buffer, 0, &[viewport]);
+            self.device
+                .cmd_set_scissor(self.command_buffer, 0, &[render_area]);
+            self.device.cmd_bind_pipeline(
+                self.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline,
+            );
+            self.device.cmd_bind_descriptor_sets(
+                self.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[self.descriptor_set],
+                &[],
+            );
+            let constants = conversion_constants(frame, self.extent);
+            let constants = std::slice::from_raw_parts(
+                (&constants as *const ConversionConstants).cast::<u8>(),
+                std::mem::size_of::<ConversionConstants>(),
+            );
+            self.device.cmd_push_constants(
+                self.command_buffer,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                0,
+                constants,
+            );
+            self.device.cmd_draw(self.command_buffer, 3, 1, 0, 0);
+            self.device.cmd_end_render_pass(self.command_buffer);
+            if let Some(nv12) = self.nv12_images.as_mut() {
+                nv12.initialized = true;
+            }
             if let Err(error) = self.device.end_command_buffer(self.command_buffer) {
                 self.needs_reconfigure = true;
                 return Err(vk_error("end presentation command buffer", error));
             }
             let wait_semaphores = [self.image_available];
-            let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+            let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let command_buffers = [self.command_buffer];
             let signal_semaphores = [self.render_finished[image_index]];
             let submit = [vk::SubmitInfo::default()
@@ -405,7 +545,6 @@ impl VulkanPresenter {
                 self.needs_reconfigure = true;
                 return Err(vk_error("submit presentation command buffer", error));
             }
-            self.initialized_images[image_index] = true;
             let swapchains = [self.swapchain];
             let image_indices = [image_index as u32];
             let present = vk::PresentInfoKHR::default()
@@ -445,11 +584,11 @@ impl VulkanPresenter {
         .map_err(|error| vk_error("query surface capabilities", error))?;
         if !capabilities
             .supported_usage_flags
-            .contains(vk::ImageUsageFlags::TRANSFER_DST)
+            .contains(vk::ImageUsageFlags::COLOR_ATTACHMENT)
         {
             return Err(Error::unavailable(
                 Subsystem::Vulkan,
-                "surface swapchain images do not support transfer-destination usage",
+                "surface swapchain images do not support color-attachment usage",
             ));
         }
         let formats = unsafe {
@@ -477,7 +616,7 @@ impl VulkanPresenter {
             .image_color_space(self.surface_format.color_space)
             .image_extent(self.extent)
             .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::TRANSFER_DST)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(capabilities.current_transform)
             .composite_alpha(choose_composite_alpha(
@@ -509,8 +648,263 @@ impl VulkanPresenter {
             }
         }
         self.render_finished = render_finished;
-        self.initialized_images = vec![false; self.images.len()];
+        self.create_render_resources()?;
         Ok(())
+    }
+
+    fn create_render_resources(&mut self) -> Result<()> {
+        let attachment = [vk::AttachmentDescription::default()
+            .format(self.surface_format.format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)];
+        let color_reference = [vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let subpasses = [vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&color_reference)];
+        let dependencies = [vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)];
+        let render_pass_info = vk::RenderPassCreateInfo::default()
+            .attachments(&attachment)
+            .subpasses(&subpasses)
+            .dependencies(&dependencies);
+        self.render_pass = unsafe { self.device.create_render_pass(&render_pass_info, None) }
+            .map_err(|error| vk_error("create NV12 render pass", error))?;
+
+        let descriptor_bindings = [0, 1].map(|binding| {
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(binding)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        });
+        let descriptor_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_bindings);
+        self.descriptor_set_layout = unsafe {
+            self.device
+                .create_descriptor_set_layout(&descriptor_layout_info, None)
+        }
+        .map_err(|error| vk_error("create NV12 descriptor layout", error))?;
+        let descriptor_layouts = [self.descriptor_set_layout];
+        let push_range = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            .size(std::mem::size_of::<ConversionConstants>() as u32)];
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&descriptor_layouts)
+            .push_constant_ranges(&push_range);
+        self.pipeline_layout = unsafe {
+            self.device
+                .create_pipeline_layout(&pipeline_layout_info, None)
+        }
+        .map_err(|error| vk_error("create NV12 pipeline layout", error))?;
+
+        let vertex_words = ash::util::read_spv(&mut Cursor::new(NV12_VERTEX_SHADER))
+            .map_err(|error| Error::backend(Subsystem::Vulkan, error.to_string()))?;
+        let fragment_words = ash::util::read_spv(&mut Cursor::new(NV12_FRAGMENT_SHADER))
+            .map_err(|error| Error::backend(Subsystem::Vulkan, error.to_string()))?;
+        let vertex_info = vk::ShaderModuleCreateInfo::default().code(&vertex_words);
+        let fragment_info = vk::ShaderModuleCreateInfo::default().code(&fragment_words);
+        let vertex_module = unsafe { self.device.create_shader_module(&vertex_info, None) }
+            .map_err(|error| vk_error("create NV12 vertex shader", error))?;
+        let fragment_module =
+            match unsafe { self.device.create_shader_module(&fragment_info, None) } {
+                Ok(module) => module,
+                Err(error) => {
+                    unsafe { self.device.destroy_shader_module(vertex_module, None) };
+                    return Err(vk_error("create NV12 fragment shader", error));
+                }
+            };
+        let shader_stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vertex_module)
+                .name(c"main"),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(fragment_module)
+                .name(c"main"),
+        ];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let color_attachment = [vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let color_blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&color_attachment);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let pipeline_info = [vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization)
+            .multisample_state(&multisample)
+            .color_blend_state(&color_blend)
+            .dynamic_state(&dynamic)
+            .layout(self.pipeline_layout)
+            .render_pass(self.render_pass)
+            .subpass(0)];
+        let pipeline_result = unsafe {
+            self.device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_info, None)
+        };
+        unsafe {
+            self.device.destroy_shader_module(fragment_module, None);
+            self.device.destroy_shader_module(vertex_module, None);
+        }
+        self.pipeline = pipeline_result
+            .map_err(|(_, error)| vk_error("create NV12 graphics pipeline", error))?[0];
+
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .max_lod(0.0);
+        self.sampler = unsafe { self.device.create_sampler(&sampler_info, None) }
+            .map_err(|error| vk_error("create NV12 sampler", error))?;
+        let pool_sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(2)];
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(&pool_sizes);
+        self.descriptor_pool = unsafe { self.device.create_descriptor_pool(&pool_info, None) }
+            .map_err(|error| vk_error("create NV12 descriptor pool", error))?;
+        let allocate_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(self.descriptor_pool)
+            .set_layouts(&descriptor_layouts);
+        self.descriptor_set = unsafe { self.device.allocate_descriptor_sets(&allocate_info) }
+            .map_err(|error| vk_error("allocate NV12 descriptor set", error))?[0];
+
+        for image in &self.images {
+            let create = vk::ImageViewCreateInfo::default()
+                .image(*image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(self.surface_format.format)
+                .subresource_range(color_range());
+            let view = unsafe { self.device.create_image_view(&create, None) }
+                .map_err(|error| vk_error("create swapchain image view", error))?;
+            self.image_views.push(view);
+        }
+        for view in &self.image_views {
+            let attachments = [*view];
+            let create = vk::FramebufferCreateInfo::default()
+                .render_pass(self.render_pass)
+                .attachments(&attachments)
+                .width(self.extent.width)
+                .height(self.extent.height)
+                .layers(1);
+            let framebuffer = unsafe { self.device.create_framebuffer(&create, None) }
+                .map_err(|error| vk_error("create swapchain framebuffer", error))?;
+            self.framebuffers.push(framebuffer);
+        }
+        if self.nv12_images.is_some() {
+            self.update_nv12_descriptors();
+        }
+        Ok(())
+    }
+
+    fn ensure_nv12_images(&mut self, width: u32, height: u32) -> Result<()> {
+        if self
+            .nv12_images
+            .as_ref()
+            .is_some_and(|images| images.width == width && images.height == height)
+        {
+            return Ok(());
+        }
+        self.destroy_nv12_images();
+        let luma = create_sampled_image(
+            &self.instance,
+            self.physical_device,
+            &self.device,
+            width,
+            height,
+            vk::Format::R8_UNORM,
+        )?;
+        let chroma = match create_sampled_image(
+            &self.instance,
+            self.physical_device,
+            &self.device,
+            width / 2,
+            height / 2,
+            vk::Format::R8G8_UNORM,
+        ) {
+            Ok(image) => image,
+            Err(error) => {
+                destroy_gpu_image(&self.device, luma);
+                return Err(error);
+            }
+        };
+        self.nv12_images = Some(Nv12Images {
+            width,
+            height,
+            luma,
+            chroma,
+            initialized: false,
+        });
+        self.update_nv12_descriptors();
+        Ok(())
+    }
+
+    fn update_nv12_descriptors(&self) {
+        let Some(images) = self.nv12_images.as_ref() else {
+            return;
+        };
+        if self.descriptor_set == vk::DescriptorSet::null() {
+            return;
+        }
+        let luma = [vk::DescriptorImageInfo::default()
+            .sampler(self.sampler)
+            .image_view(images.luma.view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let chroma = [vk::DescriptorImageInfo::default()
+            .sampler(self.sampler)
+            .image_view(images.chroma.view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_set)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&luma),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_set)
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&chroma),
+        ];
+        unsafe { self.device.update_descriptor_sets(&writes, &[]) };
+    }
+
+    fn destroy_nv12_images(&mut self) {
+        if let Some(images) = self.nv12_images.take() {
+            destroy_gpu_image(&self.device, images.chroma);
+            destroy_gpu_image(&self.device, images.luma);
+        }
     }
 
     fn recreate_command_resources(&mut self) -> Result<()> {
@@ -539,6 +933,42 @@ impl VulkanPresenter {
     }
 
     fn destroy_swapchain(&mut self) {
+        for framebuffer in self.framebuffers.drain(..) {
+            unsafe { self.device.destroy_framebuffer(framebuffer, None) };
+        }
+        for image_view in self.image_views.drain(..) {
+            unsafe { self.device.destroy_image_view(image_view, None) };
+        }
+        unsafe {
+            if self.pipeline != vk::Pipeline::null() {
+                self.device.destroy_pipeline(self.pipeline, None);
+                self.pipeline = vk::Pipeline::null();
+            }
+            if self.pipeline_layout != vk::PipelineLayout::null() {
+                self.device
+                    .destroy_pipeline_layout(self.pipeline_layout, None);
+                self.pipeline_layout = vk::PipelineLayout::null();
+            }
+            if self.descriptor_pool != vk::DescriptorPool::null() {
+                self.device
+                    .destroy_descriptor_pool(self.descriptor_pool, None);
+                self.descriptor_pool = vk::DescriptorPool::null();
+                self.descriptor_set = vk::DescriptorSet::null();
+            }
+            if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
+                self.device
+                    .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+                self.descriptor_set_layout = vk::DescriptorSetLayout::null();
+            }
+            if self.sampler != vk::Sampler::null() {
+                self.device.destroy_sampler(self.sampler, None);
+                self.sampler = vk::Sampler::null();
+            }
+            if self.render_pass != vk::RenderPass::null() {
+                self.device.destroy_render_pass(self.render_pass, None);
+                self.render_pass = vk::RenderPass::null();
+            }
+        }
         for semaphore in self.render_finished.drain(..) {
             unsafe { self.device.destroy_semaphore(semaphore, None) };
         }
@@ -549,7 +979,6 @@ impl VulkanPresenter {
             };
             self.swapchain = vk::SwapchainKHR::null();
             self.images.clear();
-            self.initialized_images.clear();
         }
     }
 
@@ -614,6 +1043,136 @@ impl VulkanPresenter {
     }
 }
 
+#[repr(C)]
+struct ConversionConstants {
+    texture_scale: [f32; 2],
+    color_matrix: u32,
+    full_range: u32,
+}
+
+fn conversion_constants(frame: &DecodedVideoFrame, extent: vk::Extent2D) -> ConversionConstants {
+    let (_, _, fitted_width, fitted_height) = aspect_fit_extent(
+        frame.format.width,
+        frame.format.height,
+        extent.width,
+        extent.height,
+    );
+    ConversionConstants {
+        texture_scale: [
+            extent.width as f32 / fitted_width.max(1) as f32,
+            extent.height as f32 / fitted_height.max(1) as f32,
+        ],
+        color_matrix: match frame.format.color_matrix {
+            ColorMatrix::Bt601 => 0,
+            ColorMatrix::Bt709 => 1,
+            ColorMatrix::Bt2020 => 2,
+        },
+        full_range: u32::from(frame.format.color_range == ColorRange::Full),
+    }
+}
+
+unsafe fn copy_plane_rows(
+    plane: &crate::FramePlane,
+    destination: *mut u8,
+    row_bytes: usize,
+    rows: usize,
+) {
+    for row in 0..rows {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                plane.data.as_ptr().add(row * plane.stride),
+                destination.add(row * row_bytes),
+                row_bytes,
+            );
+        }
+    }
+}
+
+fn create_sampled_image(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    device: &ash::Device,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+) -> Result<GpuImage> {
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = unsafe { device.create_image(&image_info, None) }
+        .map_err(|error| vk_error("create NV12 plane image", error))?;
+    let requirements = unsafe { device.get_image_memory_requirements(image) };
+    let memory_type = match find_memory_type(
+        instance,
+        physical_device,
+        requirements.memory_type_bits,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    ) {
+        Ok(memory_type) => memory_type,
+        Err(error) => {
+            unsafe { device.destroy_image(image, None) };
+            return Err(error);
+        }
+    };
+    let allocation = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(memory_type);
+    let memory = match unsafe { device.allocate_memory(&allocation, None) } {
+        Ok(memory) => memory,
+        Err(error) => {
+            unsafe { device.destroy_image(image, None) };
+            return Err(vk_error("allocate NV12 plane memory", error));
+        }
+    };
+    if let Err(error) = unsafe { device.bind_image_memory(image, memory, 0) } {
+        unsafe {
+            device.free_memory(memory, None);
+            device.destroy_image(image, None);
+        }
+        return Err(vk_error("bind NV12 plane memory", error));
+    }
+    let view_info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(format)
+        .subresource_range(color_range());
+    let view = match unsafe { device.create_image_view(&view_info, None) } {
+        Ok(view) => view,
+        Err(error) => {
+            unsafe {
+                device.free_memory(memory, None);
+                device.destroy_image(image, None);
+            }
+            return Err(vk_error("create NV12 plane view", error));
+        }
+    };
+    Ok(GpuImage {
+        image,
+        memory,
+        view,
+    })
+}
+
+fn destroy_gpu_image(device: &ash::Device, image: GpuImage) {
+    unsafe {
+        device.destroy_image_view(image.view, None);
+        device.destroy_image(image.image, None);
+        device.free_memory(image.memory, None);
+    }
+}
+
 fn create_command_resources(
     device: &ash::Device,
     queue_family: u32,
@@ -662,6 +1221,7 @@ impl Drop for VulkanPresenter {
             let _ = self.device.device_wait_idle();
         }
         self.destroy_swapchain();
+        self.destroy_nv12_images();
         unsafe {
             if self.staging_buffer != vk::Buffer::null() {
                 self.device.destroy_buffer(self.staging_buffer, None);
@@ -872,250 +1432,6 @@ fn color_range() -> vk::ImageSubresourceRange {
         .layer_count(1)
 }
 
-struct FrameConverter {
-    #[cfg(feature = "ffmpeg")]
-    context: *mut ffi::SwsContext,
-    output: Vec<u8>,
-}
-
-impl FrameConverter {
-    fn new() -> Self {
-        Self {
-            #[cfg(feature = "ffmpeg")]
-            context: std::ptr::null_mut(),
-            output: Vec::new(),
-        }
-    }
-
-    fn output(&self) -> &[u8] {
-        &self.output
-    }
-
-    #[cfg(feature = "ffmpeg")]
-    fn convert(
-        &mut self,
-        frame: &DecodedVideoFrame,
-        extent: vk::Extent2D,
-        surface_format: vk::Format,
-    ) -> Result<()> {
-        frame.validate()?;
-        let output_len = (extent.width as usize)
-            .checked_mul(extent.height as usize)
-            .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or_else(|| Error::InvalidFormat("presentation buffer size overflow".to_owned()))?;
-        self.output
-            .try_reserve(output_len.saturating_sub(self.output.len()))
-            .map_err(|error| {
-                Error::backend(
-                    Subsystem::Vulkan,
-                    format!("allocate presentation buffer: {error}"),
-                )
-            })?;
-        self.output.resize(output_len, 0);
-
-        let (offset_x, offset_y, target_width, target_height) = aspect_fit_extent(
-            frame.format.width,
-            frame.format.height,
-            extent.width,
-            extent.height,
-        );
-        if offset_x != 0
-            || offset_y != 0
-            || target_width != extent.width
-            || target_height != extent.height
-        {
-            self.output.fill(0);
-            for alpha in self.output[3..].iter_mut().step_by(4) {
-                *alpha = 255;
-            }
-        }
-
-        let source_format = match frame.format.pixel_format {
-            PixelFormat::Nv12 => ffi::AVPixelFormat::AV_PIX_FMT_NV12,
-            PixelFormat::I420 => ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
-            PixelFormat::Bgra8 => ffi::AVPixelFormat::AV_PIX_FMT_BGRA,
-            PixelFormat::Rgba8 => ffi::AVPixelFormat::AV_PIX_FMT_RGBA,
-        };
-        let destination_format = if matches!(
-            surface_format,
-            vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB
-        ) {
-            ffi::AVPixelFormat::AV_PIX_FMT_BGRA
-        } else {
-            ffi::AVPixelFormat::AV_PIX_FMT_RGBA
-        };
-        let context = unsafe {
-            ffi::sws_getCachedContext(
-                self.context,
-                frame.format.width as i32,
-                frame.format.height as i32,
-                source_format,
-                target_width as i32,
-                target_height as i32,
-                destination_format,
-                ffi::SwsFlags::SWS_FAST_BILINEAR as i32,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            )
-        };
-        if context.is_null() {
-            // sws_getCachedContext may free the previous context while trying
-            // to replace it, so never retain the old pointer on failure.
-            self.context = std::ptr::null_mut();
-            return Err(Error::backend(
-                Subsystem::Vulkan,
-                "FFmpeg could not create the accelerated color converter",
-            ));
-        }
-        self.context = context;
-
-        if matches!(
-            frame.format.pixel_format,
-            PixelFormat::Nv12 | PixelFormat::I420
-        ) {
-            let colorspace = match frame.format.color_matrix {
-                ColorMatrix::Bt601 => ffi::SWS_CS_ITU601,
-                ColorMatrix::Bt709 => ffi::SWS_CS_ITU709,
-                ColorMatrix::Bt2020 => ffi::SWS_CS_BT2020,
-            };
-            let coefficients = unsafe { ffi::sws_getCoefficients(colorspace) };
-            let source_range = i32::from(frame.format.color_range == ColorRange::Full);
-            let color_result = unsafe {
-                ffi::sws_setColorspaceDetails(
-                    self.context,
-                    coefficients,
-                    source_range,
-                    coefficients,
-                    1,
-                    0,
-                    1 << 16,
-                    1 << 16,
-                )
-            };
-            if color_result < 0 {
-                return Err(Error::backend(
-                    Subsystem::Vulkan,
-                    format!("FFmpeg color conversion setup failed: {color_result}"),
-                ));
-            }
-        }
-
-        let mut source_data = [std::ptr::null(); 4];
-        let mut source_stride = [0_i32; 4];
-        for (index, plane) in frame.planes.iter().enumerate() {
-            source_data[index] = plane.data.as_ptr();
-            source_stride[index] = i32::try_from(plane.stride).map_err(|_| {
-                Error::InvalidFormat("video plane stride exceeds FFmpeg limits".to_owned())
-            })?;
-        }
-        let destination_offset = ((offset_y * extent.width + offset_x) * 4) as usize;
-        let destination_data = unsafe { self.output.as_mut_ptr().add(destination_offset) };
-        let destination = [
-            destination_data,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        ];
-        let destination_stride = [
-            i32::try_from(extent.width as usize * 4).map_err(|_| {
-                Error::InvalidFormat("presentation stride exceeds FFmpeg limits".to_owned())
-            })?,
-            0,
-            0,
-            0,
-        ];
-        let rows = unsafe {
-            ffi::sws_scale(
-                self.context,
-                source_data.as_ptr(),
-                source_stride.as_ptr(),
-                0,
-                frame.format.height as i32,
-                destination.as_ptr(),
-                destination_stride.as_ptr(),
-            )
-        };
-        if rows != target_height as i32 {
-            return Err(Error::backend(
-                Subsystem::Vulkan,
-                format!("FFmpeg converted {rows} rows, expected {target_height}"),
-            ));
-        }
-        Ok(())
-    }
-
-    #[cfg(not(feature = "ffmpeg"))]
-    fn convert(
-        &mut self,
-        frame: &DecodedVideoFrame,
-        extent: vk::Extent2D,
-        surface_format: vk::Format,
-    ) -> Result<()> {
-        self.output = convert_frame(frame, extent, surface_format)?;
-        Ok(())
-    }
-}
-
-#[cfg(feature = "ffmpeg")]
-impl Drop for FrameConverter {
-    fn drop(&mut self) {
-        if !self.context.is_null() {
-            unsafe { ffi::sws_freeContext(self.context) };
-            self.context = std::ptr::null_mut();
-        }
-    }
-}
-
-#[cfg(not(feature = "ffmpeg"))]
-fn convert_frame(
-    frame: &DecodedVideoFrame,
-    extent: vk::Extent2D,
-    surface_format: vk::Format,
-) -> Result<Vec<u8>> {
-    let bgra = matches!(
-        surface_format,
-        vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB
-    );
-    let output_len = (extent.width as usize)
-        .checked_mul(extent.height as usize)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| Error::InvalidFormat("presentation buffer size overflow".to_owned()))?;
-    let mut output = Vec::new();
-    output.try_reserve_exact(output_len).map_err(|error| {
-        Error::backend(
-            Subsystem::Vulkan,
-            format!("allocate presentation buffer: {error}"),
-        )
-    })?;
-    output.resize(output_len, 0);
-    for pixel in output.chunks_exact_mut(4) {
-        pixel[3] = 255;
-    }
-    let (offset_x, offset_y, target_width, target_height) = aspect_fit_extent(
-        frame.format.width,
-        frame.format.height,
-        extent.width,
-        extent.height,
-    );
-    for relative_y in 0..target_height as usize {
-        let source_y = relative_y * frame.format.height as usize / target_height as usize;
-        let target_y = offset_y as usize + relative_y;
-        for relative_x in 0..target_width as usize {
-            let source_x = relative_x * frame.format.width as usize / target_width as usize;
-            let target_x = offset_x as usize + relative_x;
-            let (r, g, b) = sample_rgb(frame, source_x, source_y)?;
-            let offset = (target_y * extent.width as usize + target_x) * 4;
-            if bgra {
-                output[offset..offset + 4].copy_from_slice(&[b, g, r, 255]);
-            } else {
-                output[offset..offset + 4].copy_from_slice(&[r, g, b, 255]);
-            }
-        }
-    }
-    Ok(output)
-}
-
 fn aspect_fit_extent(
     source_width: u32,
     source_height: u32,
@@ -1134,50 +1450,7 @@ fn aspect_fit_extent(
     )
 }
 
-#[cfg(not(feature = "ffmpeg"))]
-fn sample_rgb(frame: &DecodedVideoFrame, x: usize, y: usize) -> Result<(u8, u8, u8)> {
-    if matches!(
-        frame.format.pixel_format,
-        PixelFormat::Bgra8 | PixelFormat::Rgba8
-    ) {
-        let plane = &frame.planes[0];
-        let offset = y * plane.stride + x * 4;
-        let pixel = &plane.data[offset..offset + 4];
-        return Ok(if frame.format.pixel_format == PixelFormat::Bgra8 {
-            (pixel[2], pixel[1], pixel[0])
-        } else {
-            (pixel[0], pixel[1], pixel[2])
-        });
-    }
-    let y_sample = frame.planes[0].data[y * frame.planes[0].stride + x];
-    let (u_sample, v_sample) = match frame.format.pixel_format {
-        PixelFormat::Nv12 => {
-            let offset = (y / 2) * frame.planes[1].stride + (x / 2) * 2;
-            (
-                frame.planes[1].data[offset],
-                frame.planes[1].data[offset + 1],
-            )
-        }
-        PixelFormat::I420 => (
-            frame.planes[1].data[(y / 2) * frame.planes[1].stride + x / 2],
-            frame.planes[2].data[(y / 2) * frame.planes[2].stride + x / 2],
-        ),
-        _ => {
-            return Err(Error::InvalidFormat(
-                "unsupported presentation format".to_owned(),
-            ));
-        }
-    };
-    Ok(yuv_to_rgb(
-        y_sample,
-        u_sample,
-        v_sample,
-        frame.format.color_matrix,
-        frame.format.color_range,
-    ))
-}
-
-#[cfg(any(not(feature = "ffmpeg"), test))]
+#[cfg(test)]
 fn yuv_to_rgb(y: u8, u: u8, v: u8, matrix: ColorMatrix, range: ColorRange) -> (u8, u8, u8) {
     let (y, u, v) = match range {
         ColorRange::Limited => (
@@ -1207,7 +1480,7 @@ fn yuv_to_rgb(y: u8, u: u8, v: u8, matrix: ColorMatrix, range: ColorRange) -> (u
     (clamp_u8(r), clamp_u8(g), clamp_u8(b))
 }
 
-#[cfg(any(not(feature = "ffmpeg"), test))]
+#[cfg(test)]
 fn clamp_u8(value: f32) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
@@ -1238,11 +1511,6 @@ fn vk_error(operation: &str, error: vk::Result) -> Error {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "ffmpeg")]
-    use std::sync::Arc;
-    #[cfg(feature = "ffmpeg")]
-    use std::time::Instant;
-
     use super::*;
 
     #[test]
@@ -1267,6 +1535,48 @@ mod tests {
     }
 
     #[test]
+    fn gpu_conversion_constants_preserve_range_matrix_and_letterboxing() {
+        use std::sync::Arc;
+
+        use crate::{ChromaLocation, FramePlane, StreamFormat};
+
+        let frame = DecodedVideoFrame {
+            format: StreamFormat {
+                width: 1920,
+                height: 1080,
+                pixel_format: PixelFormat::Nv12,
+                color_range: ColorRange::Full,
+                color_matrix: ColorMatrix::Bt2020,
+                chroma_location: ChromaLocation::Left,
+            },
+            planes: vec![
+                FramePlane {
+                    data: Arc::from(vec![0; 1920 * 1080]),
+                    stride: 1920,
+                    rows: 1080,
+                },
+                FramePlane {
+                    data: Arc::from(vec![0; 1920 * 540]),
+                    stride: 1920,
+                    rows: 540,
+                },
+            ],
+            timestamp_us: 0,
+        };
+        let constants = conversion_constants(
+            &frame,
+            vk::Extent2D {
+                width: 1024,
+                height: 768,
+            },
+        );
+        assert_eq!(constants.texture_scale, [1.0, 768.0 / 576.0]);
+        assert_eq!(constants.color_matrix, 2);
+        assert_eq!(constants.full_range, 1);
+        assert_eq!(std::mem::size_of::<ConversionConstants>(), 16);
+    }
+
+    #[test]
     fn low_latency_present_mode_avoids_fifo_when_supported() {
         assert_eq!(
             choose_present_mode(&[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX]),
@@ -1279,57 +1589,6 @@ mod tests {
         assert_eq!(
             choose_present_mode(&[vk::PresentModeKHR::FIFO]),
             vk::PresentModeKHR::FIFO
-        );
-    }
-
-    #[cfg(feature = "ffmpeg")]
-    #[test]
-    fn ffmpeg_converter_processes_1440p_frames() {
-        use crate::{ChromaLocation, FramePlane, StreamFormat};
-
-        let width = 2560;
-        let height = 1440;
-        let frame = DecodedVideoFrame {
-            format: StreamFormat {
-                width,
-                height,
-                pixel_format: PixelFormat::Nv12,
-                color_range: ColorRange::Limited,
-                color_matrix: ColorMatrix::Bt709,
-                chroma_location: ChromaLocation::Left,
-            },
-            planes: vec![
-                FramePlane {
-                    data: Arc::from(vec![16_u8; width as usize * height as usize]),
-                    stride: width as usize,
-                    rows: height as usize,
-                },
-                FramePlane {
-                    data: Arc::from(vec![128_u8; width as usize * height as usize / 2]),
-                    stride: width as usize,
-                    rows: height as usize / 2,
-                },
-            ],
-            timestamp_us: 0,
-        };
-        let mut converter = FrameConverter::new();
-        let started = Instant::now();
-        for _ in 0..30 {
-            converter
-                .convert(
-                    &frame,
-                    vk::Extent2D { width, height },
-                    vk::Format::B8G8R8A8_UNORM,
-                )
-                .expect("convert NV12");
-        }
-        eprintln!(
-            "1440p NV12 conversion average: {:.2} ms",
-            started.elapsed().as_secs_f64() * 1000.0 / 30.0
-        );
-        assert_eq!(
-            converter.output().len(),
-            width as usize * height as usize * 4
         );
     }
 }

@@ -81,7 +81,12 @@ impl SessionConfig {
             stream_format,
             decoder_preference: DecoderPreference::Automatic,
             v4l2_device: None,
-            encoded_queue_depth: 4,
+            // Hardware decoders can briefly stop consuming while the driver
+            // retires a large frame or reallocates surfaces. Four frames is
+            // too small for a 120 Hz stream and turns a harmless burst into a
+            // decoder reset. Keep this bounded, but absorb roughly two frame
+            // batches before initiating keyframe recovery.
+            encoded_queue_depth: 16,
             decoded_queue_depth: 3,
             audio: Some(AudioConfig::default()),
         }
@@ -157,6 +162,7 @@ pub struct LinuxSession {
     audio_packets: Option<Arc<BoundedQueue<AudioPacket>>>,
     events: EventQueue,
     video_generation: AtomicU64,
+    video_needs_keyframe: AtomicBool,
     paused: AtomicBool,
     video_submit: Mutex<()>,
     video_worker: Option<JoinHandle<()>>,
@@ -258,6 +264,7 @@ impl LinuxSession {
             audio_packets,
             events,
             video_generation: AtomicU64::new(0),
+            video_needs_keyframe: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             video_submit: Mutex::new(()),
             video_worker: Some(video_worker),
@@ -284,33 +291,13 @@ impl LinuxSession {
             .video_submit
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let generation = self.video_generation.load(Ordering::Acquire);
-        match self.video_commands.push(VideoCommand::Decode {
-            frame: frame.clone(),
-            generation,
-            reset: false,
-        }) {
-            QueuePush::Added => Ok(PushOutcome::Queued),
-            QueuePush::Full => {
-                let generation = self.video_generation.fetch_add(1, Ordering::AcqRel) + 1;
-                match self.video_commands.replace_where(
-                    VideoCommand::Decode {
-                        frame,
-                        generation,
-                        reset: true,
-                    },
-                    |queued| matches!(queued, VideoCommand::Decode { .. }),
-                ) {
-                    QueuePush::Closed => return Err(Error::QueueClosed),
-                    QueuePush::Added | QueuePush::DroppedOldest | QueuePush::Full => {}
-                }
-                emit(&self.events, BackendEvent::QueueOverflow { media: "video" });
-                emit(&self.events, BackendEvent::NeedKeyframe);
-                Ok(PushOutcome::DroppedOldest)
-            }
-            QueuePush::DroppedOldest => unreachable!(),
-            QueuePush::Closed => Err(Error::QueueClosed),
-        }
+        queue_video_command(
+            &self.video_commands,
+            &self.events,
+            &self.video_generation,
+            &self.video_needs_keyframe,
+            frame,
+        )
     }
 
     pub fn submit_audio(&self, packet: AudioPacket) -> Result<PushOutcome> {
@@ -344,6 +331,7 @@ impl LinuxSession {
             .video_submit
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        self.video_needs_keyframe.store(true, Ordering::Release);
         let generation = self.video_generation.fetch_add(1, Ordering::AcqRel) + 1;
         match self
             .video_commands
@@ -423,6 +411,84 @@ impl LinuxSession {
 impl Drop for LinuxSession {
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+fn queue_video_command(
+    commands: &BoundedQueue<VideoCommand>,
+    events: &EventQueue,
+    generation: &AtomicU64,
+    needs_keyframe: &AtomicBool,
+    frame: EncodedVideoFrame,
+) -> Result<PushOutcome> {
+    // Once an access unit has been dropped, later inter-frames are no longer
+    // decodable. Do not let them fill the queue or evict the recovery IDR.
+    // The first keyframe atomically replaces only decode work (never control
+    // commands) and starts a fresh decoder generation.
+    if needs_keyframe.load(Ordering::Acquire) {
+        if !frame.keyframe {
+            return Ok(PushOutcome::DroppedOldest);
+        }
+        let generation = generation.fetch_add(1, Ordering::AcqRel) + 1;
+        return match commands.replace_where(
+            VideoCommand::Decode {
+                frame,
+                generation,
+                reset: true,
+            },
+            |queued| matches!(queued, VideoCommand::Decode { .. }),
+        ) {
+            QueuePush::Added => {
+                needs_keyframe.store(false, Ordering::Release);
+                Ok(PushOutcome::Queued)
+            }
+            QueuePush::DroppedOldest => {
+                needs_keyframe.store(false, Ordering::Release);
+                Ok(PushOutcome::DroppedOldest)
+            }
+            QueuePush::Full => Ok(PushOutcome::DroppedOldest),
+            QueuePush::Closed => Err(Error::QueueClosed),
+        };
+    }
+
+    let active_generation = generation.load(Ordering::Acquire);
+    match commands.push(VideoCommand::Decode {
+        frame: frame.clone(),
+        generation: active_generation,
+        reset: false,
+    }) {
+        QueuePush::Added => Ok(PushOutcome::Queued),
+        QueuePush::Full => {
+            emit(events, BackendEvent::QueueOverflow { media: "video" });
+            needs_keyframe.store(true, Ordering::Release);
+
+            // A keyframe that happens to arrive at the overflow boundary can
+            // recover immediately. Non-keyframes are deliberately discarded;
+            // preserving the already queued contiguous frames is preferable to
+            // repeatedly reopening the decoder with an undecodable P-frame.
+            if frame.keyframe {
+                let recovery_generation = generation.fetch_add(1, Ordering::AcqRel) + 1;
+                match commands.replace_where(
+                    VideoCommand::Decode {
+                        frame,
+                        generation: recovery_generation,
+                        reset: true,
+                    },
+                    |queued| matches!(queued, VideoCommand::Decode { .. }),
+                ) {
+                    QueuePush::Closed => return Err(Error::QueueClosed),
+                    QueuePush::Added | QueuePush::DroppedOldest => {
+                        needs_keyframe.store(false, Ordering::Release);
+                    }
+                    QueuePush::Full => {}
+                }
+            } else {
+                emit(events, BackendEvent::NeedKeyframe);
+            }
+            Ok(PushOutcome::DroppedOldest)
+        }
+        QueuePush::DroppedOldest => unreachable!(),
+        QueuePush::Closed => Err(Error::QueueClosed),
     }
 }
 
@@ -907,5 +973,113 @@ mod tests {
         assert!(LifecycleState::Stopping.can_transition_to(LifecycleState::Failed));
         assert!(LifecycleState::Failed.can_transition_to(LifecycleState::Stopping));
         assert!(LifecycleState::Stopping.can_transition_to(LifecycleState::Stopped));
+    }
+
+    #[test]
+    fn overflow_preserves_recovery_keyframe_and_rejects_inter_frames_until_it_arrives() {
+        let commands = BoundedQueue::new(2);
+        let events = Arc::new(BoundedQueue::new(8));
+        let generation = AtomicU64::new(0);
+        let needs_keyframe = AtomicBool::new(false);
+        let frame = |timestamp_us, keyframe| {
+            EncodedVideoFrame::new(vec![timestamp_us as u8 + 1], timestamp_us, keyframe).unwrap()
+        };
+
+        assert_eq!(
+            queue_video_command(
+                &commands,
+                &events,
+                &generation,
+                &needs_keyframe,
+                frame(0, false),
+            )
+            .unwrap(),
+            PushOutcome::Queued
+        );
+        assert_eq!(
+            queue_video_command(
+                &commands,
+                &events,
+                &generation,
+                &needs_keyframe,
+                frame(1, false),
+            )
+            .unwrap(),
+            PushOutcome::Queued
+        );
+        assert_eq!(
+            queue_video_command(
+                &commands,
+                &events,
+                &generation,
+                &needs_keyframe,
+                frame(2, false),
+            )
+            .unwrap(),
+            PushOutcome::DroppedOldest
+        );
+        assert!(needs_keyframe.load(Ordering::Acquire));
+
+        // This P-frame is discarded instead of evicting queued recovery work.
+        assert_eq!(
+            queue_video_command(
+                &commands,
+                &events,
+                &generation,
+                &needs_keyframe,
+                frame(3, false),
+            )
+            .unwrap(),
+            PushOutcome::DroppedOldest
+        );
+        assert_eq!(commands.len(), 2);
+
+        // The IDR atomically replaces stale decode work. Its following P-frame
+        // is queued behind it with the same generation.
+        assert_eq!(
+            queue_video_command(
+                &commands,
+                &events,
+                &generation,
+                &needs_keyframe,
+                frame(4, true),
+            )
+            .unwrap(),
+            PushOutcome::DroppedOldest
+        );
+        assert!(!needs_keyframe.load(Ordering::Acquire));
+        assert_eq!(
+            queue_video_command(
+                &commands,
+                &events,
+                &generation,
+                &needs_keyframe,
+                frame(5, false),
+            )
+            .unwrap(),
+            PushOutcome::Queued
+        );
+
+        let QueuePop::Item(VideoCommand::Decode {
+            frame,
+            generation: keyframe_generation,
+            reset,
+        }) = commands.wait_pop(Duration::ZERO)
+        else {
+            panic!("expected queued recovery keyframe");
+        };
+        assert!(frame.keyframe);
+        assert!(reset);
+        let QueuePop::Item(VideoCommand::Decode {
+            frame,
+            generation: inter_generation,
+            reset,
+        }) = commands.wait_pop(Duration::ZERO)
+        else {
+            panic!("expected inter-frame after recovery keyframe");
+        };
+        assert!(!frame.keyframe);
+        assert!(!reset);
+        assert_eq!(inter_generation, keyframe_generation);
     }
 }

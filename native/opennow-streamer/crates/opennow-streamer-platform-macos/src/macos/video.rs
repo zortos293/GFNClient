@@ -29,6 +29,7 @@ use super::{BackendError, Counters};
 pub(super) struct DecodedFrame {
     pub(super) image: CFRetained<CVImageBuffer>,
     pub(super) color_space: VideoColorSpace,
+    pub(super) minimum_frame_duration_seconds: f64,
 }
 
 // The callback retains the CVImageBuffer and no code mutates it after publication to the queue.
@@ -268,7 +269,7 @@ unsafe extern "C-unwind" fn decompression_callback(
     _info_flags: VTDecodeInfoFlags,
     image_buffer: *mut CVImageBuffer,
     _presentation_time_stamp: CMTime,
-    _presentation_duration: CMTime,
+    presentation_duration: CMTime,
 ) {
     let Some(context) = NonNull::new(output_refcon.cast::<CallbackContext>()) else {
         return;
@@ -280,6 +281,7 @@ unsafe extern "C-unwind" fn decompression_callback(
             let frame = DecodedFrame {
                 image,
                 color_space: context.color_space,
+                minimum_frame_duration_seconds: frame_duration_seconds(presentation_duration),
             };
             context
                 .counters
@@ -293,6 +295,10 @@ unsafe extern "C-unwind" fn decompression_callback(
                 context
                     .counters
                     .video_frames_dropped
+                    .fetch_add(1, Ordering::Relaxed);
+                context
+                    .counters
+                    .video_decoded_queue_dropped
                     .fetch_add(1, Ordering::Relaxed);
             }
         } else {
@@ -310,6 +316,31 @@ unsafe extern "C-unwind" fn decompression_callback(
         context.failures.video_decode_failed(Some(status));
     }
     context.in_flight.release();
+}
+
+fn frame_duration_seconds(duration: CMTime) -> f64 {
+    if duration.value > 0 && duration.timescale > 0 {
+        (duration.value as f64 / f64::from(duration.timescale)).clamp(1.0 / 240.0, 1.0 / 24.0)
+    } else {
+        1.0 / 60.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::frame_duration_seconds;
+    use objc2_core_media::{CMTime, CMTimeFlags};
+
+    #[test]
+    fn converts_120_hz_core_media_duration_to_seconds() {
+        let duration = CMTime {
+            value: 750,
+            timescale: 90_000,
+            flags: CMTimeFlags(1),
+            epoch: 0,
+        };
+        assert!((frame_duration_seconds(duration) - 1.0 / 120.0).abs() < f64::EPSILON);
+    }
 }
 
 fn create_format_description(

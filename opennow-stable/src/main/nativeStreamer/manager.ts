@@ -2,6 +2,7 @@ import electron from "electron";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
+import type { Readable, Writable } from "node:stream";
 
 import {
   createUnsupportedNativeStreamerStatus,
@@ -43,6 +44,7 @@ import {
   type NativeStreamerCommandInput,
 } from "./protocol";
 import { createNativeStreamerRuntimeEnvironment } from "./runtime";
+import { launchMacOSStreamerApp } from "./macosLaunchServices";
 import { NativeSurfaceUpdateQueue } from "./surfaceUpdateQueue";
 
 const { app } = electron;
@@ -82,6 +84,15 @@ interface PendingNvstReadiness {
   timeout: NodeJS.Timeout;
 }
 
+interface NativeStreamerProcessIo {
+  child: ChildProcessWithoutNullStreams;
+  stdin: Writable;
+  stdout: Readable;
+  stderr: Readable;
+  launchMode: "direct" | "macos-launch-services";
+  cleanup(): void;
+}
+
 const HELLO_TIMEOUT_MS = 10000;
 const BUNDLED_NATIVE_HELLO_TIMEOUT_MS = process.platform === "win32" ? 120000 : 30000;
 const CONTROL_TIMEOUT_MS = 8000;
@@ -99,8 +110,11 @@ function toError(error: unknown): Error {
 
 export class NativeStreamerManager {
   private child: ChildProcessWithoutNullStreams | null = null;
+  private processIo: NativeStreamerProcessIo | null = null;
+  private nativeProcessPid: number | null = null;
   private startupPromise: Promise<void> | null = null;
   private stdoutBuffer = "";
+  private stderrBuffer = "";
   private stderrTail: string[] = [];
   private runtimeStatus: NativeStreamerRuntimeStatus | null = null;
   private pending = new Map<string, PendingRequest>();
@@ -459,12 +473,14 @@ export class NativeStreamerManager {
 
   sendInput(input: NativeStreamerInputPacket): void {
     const child = this.child;
+    const stdin = child ? this.processStdin(child) : null;
     if (
       !child
+      || !stdin
       || child.killed
-      || !child.stdin.writable
-      || child.stdin.destroyed
-      || child.stdin.writableEnded
+      || !stdin.writable
+      || stdin.destroyed
+      || stdin.writableEnded
       || !this.activeSessionId
       || !this.capabilities?.supportsInput
       || !this.activeTransportCapabilities?.supportsInput
@@ -473,7 +489,7 @@ export class NativeStreamerManager {
       return;
     }
 
-    if (child.stdin.writableLength > MAX_INPUT_STDIN_BUFFER_BYTES) {
+    if (stdin.writableLength > MAX_INPUT_STDIN_BUFFER_BYTES) {
       if (!this.inputBackpressureWarned) {
         this.inputBackpressureWarned = true;
         console.warn("[NativeStreamer] Dropping native input while streamer stdin is backpressured.");
@@ -517,7 +533,7 @@ export class NativeStreamerManager {
     let writeFailed = false;
     let flushed: boolean;
     try {
-      flushed = child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
+      flushed = stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
         if (!error) {
           return;
         }
@@ -526,7 +542,7 @@ export class NativeStreamerManager {
       });
     } catch (error) {
       const writeError = toError(error);
-      if (!isTerminalBrokenWriteError(writeError, child.stdin)) {
+      if (!isTerminalBrokenWriteError(writeError, stdin)) {
         this.rejectPendingRequest(payload.id, writeError);
         throw error;
       }
@@ -541,7 +557,7 @@ export class NativeStreamerManager {
     if (!flushed && !this.inputBackpressureWarned) {
       this.inputBackpressureWarned = true;
       console.warn("[NativeStreamer] Native input writer reported backpressure; input will be dropped until it drains.");
-      child.stdin.once("drain", () => {
+      stdin.once("drain", () => {
         this.inputBackpressureWarned = false;
       });
     } else if (flushed) {
@@ -656,6 +672,7 @@ export class NativeStreamerManager {
       this.rejectPending(new Error("Native streamer startup handshake did not complete."));
       this.terminateProcess();
       this.stdoutBuffer = "";
+      this.stderrBuffer = "";
       this.stderrTail = [];
     }
 
@@ -687,6 +704,7 @@ export class NativeStreamerManager {
           this.rejectPending(lastError);
           this.terminateProcess();
           this.stdoutBuffer = "";
+          this.stderrBuffer = "";
           this.stderrTail = [];
           this.capabilities = null;
         }
@@ -724,9 +742,8 @@ export class NativeStreamerManager {
       userDataPath: app.getPath("userData"),
       protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
       videoBackendPreference,
-      externalRendererEnabled: process.platform === "win32"
-        ? this.options.getExternalRendererEnabled()
-        : false,
+      externalRendererEnabled: process.platform === "darwin"
+        || (process.platform === "win32" && this.options.getExternalRendererEnabled()),
       linuxOzonePlatform: app.commandLine.getSwitchValue("ozone-platform")
         || app.commandLine.getSwitchValue("ozone-platform-hint"),
       cloudGsyncMode: this.options.getCloudGsyncMode(),
@@ -739,33 +756,48 @@ export class NativeStreamerManager {
     });
     console.log("[NativeStreamer]", runtimeStatus.message, runtimeStatus.path);
 
-    const child = spawn(executablePath, [], {
+    const launched = process.platform === "darwin"
+      ? launchMacOSStreamerApp(executablePath, childEnv)
+      : null;
+    const child = launched?.child ?? spawn(executablePath, [], {
       stdio: "pipe",
       // The native presenter may own a top-level window on Windows.
       windowsHide: false,
       env: childEnv,
     });
+    const processIo: NativeStreamerProcessIo = launched
+      ? {
+          child,
+          stdin: launched.stdin,
+          stdout: launched.stdout,
+          stderr: launched.stderr,
+          launchMode: "macos-launch-services",
+          cleanup: launched.cleanup,
+        }
+      : {
+          child,
+          stdin: child.stdin,
+          stdout: child.stdout,
+          stderr: child.stderr,
+          launchMode: "direct",
+          cleanup: () => undefined,
+        };
 
     this.child = child;
+    this.processIo = processIo;
+    this.nativeProcessPid = null;
     this.nativeInputOwner = childEnv.OPENNOW_NATIVE_INPUT_OWNER === "native"
       ? "native"
       : "electron";
     this.stdoutBuffer = "";
+    this.stderrBuffer = "";
     this.stderrTail = [];
     this.inputBackpressureWarned = false;
 
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => this.handleStdout(child, chunk));
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      if (this.child !== child) return;
-      for (const line of chunk.split(/\r?\n/)) {
-        if (line.trim()) {
-          this.appendStderr(line);
-          console.warn(`[NativeStreamer] ${line}`);
-        }
-      }
-    });
+    processIo.stdout.setEncoding("utf8");
+    processIo.stdout.on("data", (chunk: string) => this.handleStdout(child, chunk));
+    processIo.stderr.setEncoding("utf8");
+    processIo.stderr.on("data", (chunk: string) => this.handleStderr(child, chunk));
     this.installStdinErrorHandler(child);
 
     child.once("error", (error) => {
@@ -789,8 +821,17 @@ export class NativeStreamerManager {
     }
 
     this.capabilities = response.capabilities;
+    this.nativeProcessPid = response.processId ?? child.pid ?? null;
+    if (processIo.launchMode === "macos-launch-services") {
+      console.log(
+        `[NativeStreamer] Independent macOS app ready: nativePid=${this.nativeProcessPid ?? "unknown"}`
+        + ` launchServicesMonitorPid=${child.pid ?? "unknown"}`,
+      );
+    }
     this.retainDiagnosticState({
       processState: "ready",
+      launchMode: processIo.launchMode,
+      nativeProcessPid: this.nativeProcessPid ?? "unknown",
       backend: response.capabilities.backend,
       protocolVersion: response.capabilities.protocolVersion,
       supportsOfferAnswer: response.capabilities.supportsOfferAnswer,
@@ -807,12 +848,14 @@ export class NativeStreamerManager {
 
   private request(input: NativeStreamerCommandInput, timeoutMs: number): Promise<NativeStreamerResponse> {
     const child = this.child;
+    const stdin = child ? this.processStdin(child) : null;
     if (
       !child
+      || !stdin
       || child.killed
-      || !child.stdin.writable
-      || child.stdin.destroyed
-      || child.stdin.writableEnded
+      || !stdin.writable
+      || stdin.destroyed
+      || stdin.writableEnded
     ) {
       return Promise.reject(new Error("Native streamer process is not running."));
     }
@@ -840,14 +883,14 @@ export class NativeStreamerManager {
       });
 
       try {
-        child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
+        stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
           if (error) {
             this.handleStdinFailure(child, error);
           }
         });
       } catch (error) {
         const writeError = toError(error);
-        if (isTerminalBrokenWriteError(writeError, child.stdin)) {
+        if (isTerminalBrokenWriteError(writeError, stdin)) {
           this.handleStdinFailure(child, writeError);
           return;
         }
@@ -868,6 +911,18 @@ export class NativeStreamerManager {
         continue;
       }
       this.handleLine(trimmed);
+    }
+  }
+
+  private handleStderr(child: ChildProcessWithoutNullStreams, chunk: string): void {
+    if (this.child !== child) return;
+    this.stderrBuffer += chunk;
+    const lines = this.stderrBuffer.split(/\r?\n/);
+    this.stderrBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      this.appendStderr(line);
+      console.warn(`[NativeStreamer] ${line}`);
     }
   }
 
@@ -1049,7 +1104,8 @@ export class NativeStreamerManager {
       return;
     }
 
-    if (!isTerminalBrokenWriteError(error, child.stdin)) {
+    const stdin = this.processStdin(child);
+    if (!isTerminalBrokenWriteError(error, stdin ?? child.stdin)) {
       console.error("[NativeStreamer] Streamer stdin failed:", error);
     }
 
@@ -1065,7 +1121,8 @@ export class NativeStreamerManager {
   }
 
   private installStdinErrorHandler(child: ChildProcessWithoutNullStreams): void {
-    child.stdin.on("error", (error) => {
+    const stdin = this.processStdin(child) ?? child.stdin;
+    stdin.on("error", (error) => {
       this.handleStdinFailure(child, error);
     });
   }
@@ -1078,6 +1135,9 @@ export class NativeStreamerManager {
       return;
     }
 
+    if (this.stderrBuffer.trim()) {
+      this.appendStderr(this.stderrBuffer);
+    }
     const tail = this.formatStderrTail();
     const hadActiveSession = this.activeSessionId !== null;
     const stoppedReason = `process ended (${reason})`;
@@ -1090,7 +1150,10 @@ export class NativeStreamerManager {
       recentStderr: tail || "none",
     });
     this.child = null;
+    this.releaseProcessIo(child);
+    this.nativeProcessPid = null;
     this.stdoutBuffer = "";
+    this.stderrBuffer = "";
     this.stderrTail = [];
     this.activeSessionId = null;
     this.activeTransport = null;
@@ -1212,11 +1275,80 @@ export class NativeStreamerManager {
       return;
     }
 
+    const processIo = this.takeProcessIo(child);
+    const nativeProcessPid = this.nativeProcessPid;
     this.child = null;
+    this.nativeProcessPid = null;
+
+    if (processIo?.launchMode === "macos-launch-services") {
+      const shutdown = {
+        id: randomUUID(),
+        type: "shutdown",
+        reason: "Electron host stopped native streamer",
+      } satisfies NativeStreamerCommand;
+      try {
+        processIo.stdin.end(`${JSON.stringify(shutdown)}\n`, "utf8");
+      } catch (error) {
+        if (!isTerminalBrokenWriteError(error, processIo.stdin)) {
+          console.warn("[NativeStreamer] Failed to request native app shutdown:", error);
+        }
+        processIo.stdin.destroy();
+      }
+
+      let finalized = false;
+      const finalize = (): void => {
+        if (finalized) return;
+        finalized = true;
+        processIo.cleanup();
+      };
+      child.once("exit", finalize);
+      const forceTimer = setTimeout(() => {
+        if (nativeProcessPid) {
+          try {
+            process.kill(nativeProcessPid, "SIGTERM");
+          } catch (error) {
+            const code = error && typeof error === "object" && "code" in error
+              ? error.code
+              : undefined;
+            if (code !== "ESRCH") {
+              console.warn("[NativeStreamer] Failed to terminate native macOS app:", error);
+            }
+          }
+        }
+        if (!child.killed) {
+          try {
+            child.kill();
+          } catch (error) {
+            console.warn("[NativeStreamer] Failed to terminate LaunchServices monitor:", error);
+          }
+        }
+        finalize();
+      }, STOP_TIMEOUT_MS);
+      forceTimer.unref?.();
+      child.once("exit", () => clearTimeout(forceTimer));
+      return;
+    }
+
+    processIo?.cleanup();
     try {
       child.kill();
     } catch (error) {
       console.warn("[NativeStreamer] Failed to terminate process:", error);
     }
+  }
+
+  private processStdin(child: ChildProcessWithoutNullStreams): Writable | null {
+    return this.processIo?.child === child ? this.processIo.stdin : child.stdin;
+  }
+
+  private takeProcessIo(child: ChildProcessWithoutNullStreams): NativeStreamerProcessIo | null {
+    if (this.processIo?.child !== child) return null;
+    const processIo = this.processIo;
+    this.processIo = null;
+    return processIo;
+  }
+
+  private releaseProcessIo(child: ChildProcessWithoutNullStreams): void {
+    this.takeProcessIo(child)?.cleanup();
   }
 }

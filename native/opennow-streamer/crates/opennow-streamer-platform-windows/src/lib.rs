@@ -219,6 +219,7 @@ impl WindowsBackend {
         }
         #[cfg(not(windows))]
         {
+            let _ = api;
             CapabilityProbe {
                 available: false,
                 h264_hardware_decode: false,
@@ -240,6 +241,7 @@ impl WindowsBackend {
 
         #[cfg(not(windows))]
         {
+            let _ = api;
             let _ = config;
             Err(BackendError::UnsupportedPlatform)
         }

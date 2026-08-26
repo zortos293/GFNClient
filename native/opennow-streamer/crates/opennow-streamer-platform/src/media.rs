@@ -20,9 +20,23 @@ use crate::runtime::HostCommand;
 use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 
 const VIDEO_QUEUE_CAPACITY: usize = 2;
+#[cfg(target_os = "macos")]
+const MAC_VIDEO_QUEUE_MAX_CAPACITY: usize = 60;
 const AUDIO_QUEUE_CAPACITY: usize = 4;
 const OPUS_SAMPLE_RATE: u32 = 48_000;
 const MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL: usize = 5_760;
+
+#[cfg(target_os = "macos")]
+fn macos_video_queue_capacity(fps: u32) -> usize {
+    // FEC/NACK intentionally holds an incomplete block for up to 150 ms. Once repaired, several
+    // encoded frames can be released together, so keep 250 ms of compressed video to absorb that
+    // bounded recovery burst plus AppKit scheduling jitter. Decoded IOSurfaces remain in the small
+    // VideoToolbox/Metal queues and never pass through this buffer.
+    let frames_for_recovery_burst = fps.max(1).div_ceil(4);
+    usize::try_from(frames_for_recovery_burst)
+        .unwrap_or(MAC_VIDEO_QUEUE_MAX_CAPACITY)
+        .clamp(VIDEO_QUEUE_CAPACITY, MAC_VIDEO_QUEUE_MAX_CAPACITY)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaVideoCodec {
@@ -364,7 +378,7 @@ impl MediaSession {
         let _ = &stream;
         #[cfg(target_os = "macos")]
         if use_hardware {
-            return Self::spawn_macos(output, feedback, host_commands);
+            return Self::spawn_macos(output, feedback, host_commands, stream);
         }
         #[cfg(target_os = "windows")]
         let use_windows_hardware = use_hardware && windows_bridge.backend().is_some();
@@ -473,9 +487,12 @@ impl MediaSession {
         output: Arc<OutputBuffers>,
         feedback: Sender<MediaFeedback>,
         host_commands: Sender<HostCommand>,
+        stream: MediaStreamConfig,
     ) -> Result<Self, String> {
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            // Keep a bounded scheduler-burst reserve. The VideoToolbox worker drains this queue
+            // asynchronously; decoded frames remain latest-first at the Metal presentation edge.
+            video: Arc::new(BoundedQueue::new(macos_video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -490,7 +507,7 @@ impl MediaSession {
         let video_commands = host_commands.clone();
         let video_worker = thread::Builder::new()
             .name("opennow-videotoolbox-submit".to_owned())
-            .spawn(move || run_macos_video(video_shared, video_commands))
+            .spawn(move || run_macos_video(video_shared, video_commands, stream.fps))
             .map_err(|error| format!("failed to start VideoToolbox submit worker: {error}"))?;
         let audio_shared = Arc::clone(&shared);
         let audio_worker = match thread::Builder::new()
@@ -1332,7 +1349,11 @@ fn media_timestamp_us(timestamp: u64, clock_rate_hz: u32) -> u64 {
 }
 
 #[cfg(target_os = "macos")]
-fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostCommand>) {
+fn run_macos_video(
+    shared: Arc<SharedPipeline>,
+    host_commands: Sender<HostCommand>,
+    stream_fps: u32,
+) {
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -1351,20 +1372,21 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
             continue;
         }
         if let Some(sink) = backend_sink.as_ref() {
+            let mut decode_loss = None;
             while let Some(loss) = sink.pop_video_decode_loss() {
-                let message = loss.status.map_or_else(
-                    || "VideoToolbox produced no decoded pixel buffer".to_owned(),
-                    |status| format!("VideoToolbox decode failed with OSStatus {status}"),
-                );
-                let _ = shared.feedback.send(MediaFeedback::DecoderError {
-                    codec: "h264",
-                    message,
-                });
-                mark_macos_video_desynced(
-                    &shared,
-                    &frame.mid,
-                    "VideoToolbox lost decoder synchronization",
-                );
+                decode_loss = Some(loss);
+            }
+            if let Some(loss) = decode_loss {
+                let reason =
+                    loss.status
+                        .map_or("VideoToolbox produced no decoded pixel buffer", |status| {
+                            if status == -12_909 {
+                                "VideoToolbox rejected damaged H.264 data"
+                            } else {
+                                "VideoToolbox lost decoder synchronization"
+                            }
+                        });
+                mark_macos_video_desynced(&shared, &frame.mid, reason);
             }
             if let Some(failure) = sink.fatal_failure() {
                 shared.mac_software_fallback.store(true, Ordering::Release);
@@ -1401,17 +1423,7 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
                 continue;
             }
         };
-        let parameter_sets = match tracker.parameter_sets() {
-            Ok(parameter_sets) => parameter_sets,
-            Err(message) => {
-                let _ = shared.feedback.send(MediaFeedback::DecoderError {
-                    codec: "h264",
-                    message,
-                });
-                mark_macos_video_desynced(&shared, &frame.mid, "invalid H.264 parameter sets");
-                continue;
-            }
-        };
+        let parameter_sets = tracker.parameter_sets();
         if shared.video_desynced.load(Ordering::Acquire) && !frame.keyframe {
             continue;
         }
@@ -1440,6 +1452,7 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
                         .mac_sink
                         .lock()
                         .unwrap_or_else(|error| error.into_inner()) = Some(sink.clone());
+                    tracker.commit_parameter_sets(parameter_sets.clone());
                     configured_parameter_sets = Some(parameter_sets);
                     backend_sink = Some(sink);
                 }
@@ -1477,26 +1490,34 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
                     return;
                 }
             }
-        } else if let Some(parameter_sets) = parameter_sets
-            && configured_parameter_sets.as_ref() != Some(&parameter_sets)
+        } else if let Some(ref parameter_sets) = parameter_sets
+            && configured_parameter_sets.as_ref() != Some(parameter_sets)
+            && frame.keyframe
         {
             let format = H264Format::new(parameter_sets.clone(), VideoColorSpace::Bt709);
             let Some(sink) = backend_sink.as_ref() else {
                 return;
             };
             if let Err(error) = sink.reconfigure_h264(format) {
-                let _ = shared.feedback.send(MediaFeedback::DecoderError {
-                    codec: "h264",
-                    message: error.to_string(),
-                });
+                eprintln!(
+                    "Rejected H.264 parameter-set update; retaining the last known-good VideoToolbox decoder: {error} (spsBytes={}, ppsBytes={})",
+                    parameter_sets.sequence().len(),
+                    parameter_sets.picture().len(),
+                );
                 mark_macos_video_desynced(
                     &shared,
                     &frame.mid,
-                    "VideoToolbox reconfiguration failed",
+                    "rejected H.264 parameter-set update; waiting for a clean keyframe",
                 );
                 continue;
             }
-            configured_parameter_sets = Some(parameter_sets);
+            tracker.commit_parameter_sets(parameter_sets.clone());
+            configured_parameter_sets = Some(parameter_sets.clone());
+        } else if let Some(parameter_sets) = parameter_sets
+            && configured_parameter_sets.as_ref() == Some(&parameter_sets)
+        {
+            // Clear an identical candidate pair without perturbing the active decoder.
+            tracker.commit_parameter_sets(parameter_sets);
         }
 
         shared.video_desynced.store(false, Ordering::Release);
@@ -1507,7 +1528,7 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
             .unwrap_or(90_000);
         let timing = FrameTiming::new(
             i64::try_from(frame.timestamp).unwrap_or(i64::MAX),
-            0,
+            i64::from(timescale) / i64::from(stream_fps.max(1)),
             timescale,
         );
         let Some(sink) = backend_sink.as_ref() else {
@@ -1528,14 +1549,10 @@ fn run_macos_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
                 );
             }
             Err(error) => {
-                let _ = shared.feedback.send(MediaFeedback::DecoderError {
-                    codec: "h264",
-                    message: error.to_string(),
-                });
                 mark_macos_video_desynced(
                     &shared,
                     &frame.mid,
-                    "VideoToolbox rejected an H.264 access unit",
+                    &format!("VideoToolbox rejected an H.264 access unit: {error}"),
                 );
             }
         }
@@ -1644,6 +1661,15 @@ mod tests {
     use openh264::formats::{RgbSliceU8, YUVBuffer};
     use opus::{Application, Encoder as OpusEncoder};
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_encoded_queue_keeps_bounded_scheduler_burst_tolerance() {
+        assert_eq!(macos_video_queue_capacity(30), 8);
+        assert_eq!(macos_video_queue_capacity(60), 15);
+        assert_eq!(macos_video_queue_capacity(120), 30);
+        assert_eq!(macos_video_queue_capacity(240), 60);
+    }
+
     #[test]
     fn decodes_a_synthetic_h264_keyframe() {
         let width = 32;
@@ -1735,6 +1761,7 @@ mod tests {
             linux_software_fallback: Arc::new(AtomicBool::new(true)),
             #[cfg(target_os = "linux")]
             linux_video_mid: Mutex::new(String::new()),
+            #[cfg(target_os = "linux")]
             linux_codec: MediaVideoCodec::H264,
         });
         shared.video.close();

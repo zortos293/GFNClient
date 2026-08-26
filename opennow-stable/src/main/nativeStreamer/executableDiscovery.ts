@@ -27,26 +27,40 @@ export function resolveNativeStreamerExecutableCandidates(
   }
   // On macOS the streamer must run from inside an .app bundle: a bundle-less process is
   // refused window compositing by the WindowServer, so the video overlay never appears.
-  const bundledMacBinary =
-    options.platform === "darwin"
-      ? resolve(
-          options.mainDir,
-          "../../../native/opennow-streamer/bin",
-          platformKey,
-          "OpenNOWStreamer.app/Contents/MacOS",
-          exeName,
-        )
-      : undefined;
-  const checked = [
+  const macBundleRelativeExecutable = join(
+    platformKey,
+    "OpenNOWStreamer.app",
+    "Contents",
+    "MacOS",
+    exeName,
+  );
+  const explicitCandidates = [
     configuredPath || undefined,
     options.envExecutablePath,
-    bundledMacBinary,
-    join(options.resourcesPath, "native", "opennow-streamer", platformKey, exeName),
-    resolve(options.mainDir, "../../../native/opennow-streamer/bin", platformKey, exeName),
-    resolve(options.mainDir, "../../../native/opennow-streamer/target/release", exeName),
-    resolve(options.mainDir, "../../../native/opennow-streamer/target/debug", exeName),
-    resolve(options.appPath, "../native/opennow-streamer/bin", platformKey, exeName),
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  ];
+  const automaticCandidates = options.platform === "darwin"
+    ? [
+        join(options.resourcesPath, "native", "opennow-streamer", macBundleRelativeExecutable),
+        resolve(
+          options.mainDir,
+          "../../../native/opennow-streamer/bin",
+          macBundleRelativeExecutable,
+        ),
+        resolve(
+          options.appPath,
+          "../native/opennow-streamer/bin",
+          macBundleRelativeExecutable,
+        ),
+      ]
+    : [
+        join(options.resourcesPath, "native", "opennow-streamer", platformKey, exeName),
+        resolve(options.mainDir, "../../../native/opennow-streamer/bin", platformKey, exeName),
+        resolve(options.mainDir, "../../../native/opennow-streamer/target/release", exeName),
+        resolve(options.mainDir, "../../../native/opennow-streamer/target/debug", exeName),
+        resolve(options.appPath, "../native/opennow-streamer/bin", platformKey, exeName),
+      ];
+  const checked = [...explicitCandidates, ...automaticCandidates]
+    .filter((candidate): candidate is string => Boolean(candidate));
   const candidates = checked.filter((candidate, index) =>
     isExistingFile(candidate) && checked.indexOf(candidate) === index,
   );

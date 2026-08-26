@@ -174,6 +174,7 @@ impl MainThreadHost {
         let mut paused = false;
         let mut feedback: Option<Sender<MediaFeedback>> = None;
         let mut software_playback_started = false;
+        #[cfg(target_os = "linux")]
         let mut active_stream = MediaStreamConfig::default();
         loop {
             match self.commands.recv_timeout(HOST_POLL_INTERVAL) {
@@ -182,7 +183,10 @@ impl MainThreadHost {
                     feedback: session_feedback,
                     stream,
                 }) => {
-                    active_stream = stream;
+                    #[cfg(target_os = "linux")]
+                    {
+                        active_stream = stream;
+                    }
                     if let Some(output) = active.as_mut() {
                         output.stop();
                     }

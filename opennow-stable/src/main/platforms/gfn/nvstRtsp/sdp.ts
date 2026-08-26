@@ -3,6 +3,9 @@ import { randomBytes } from "node:crypto";
 import { clampNativeStreamFps, type NvstAudioTrack } from "@shared/gfn";
 import { deriveSrtpSaltHex } from "./srtp";
 
+/** Negotiated NVST video payload size used by both ANNOUNCE and native FEC reconstruction. */
+export const NVST_VIDEO_PACKET_SIZE = 1280;
+
 /** Official macOS ANNOUNCE baseline. */
 const ANNOUNCE_ALLOWLIST = {
   video: {
@@ -10,7 +13,7 @@ const ANNOUNCE_ALLOWLIST = {
     clientViewportHt: "1080",
     videoSplitEncodeStripsPerFrame: "64",
     updateSplitEncodeStateDynamically: "1",
-    packetSize: "1280",
+    packetSize: String(NVST_VIDEO_PACKET_SIZE),
     enableRtpNack: "1",
     rtpNackQueueLength: "2048",
     rtpNackQueueMaxPackets: "1024",
@@ -30,10 +33,15 @@ const ANNOUNCE_ALLOWLIST = {
   },
   vqos: {
     bitStreamFormat: "0",
-    "fec.enable": "0",
-    "fec.repairPercent": "0",
-    "fec.repairMinPercent": "0",
-    "fec.repairMaxPercent": "0",
+    // Match the native GameStream/Moonlight resilience baseline. At 120 FPS a 5% reserve is only
+    // a handful of packets and cannot absorb normal Wi-Fi scheduling bursts; 20% keeps repair
+    // local while NACK remains available for larger outages.
+    "fec.enable": "1",
+    "fec.rateDropWindow": "10",
+    "fec.minRequiredFecPackets": "2",
+    "fec.repairPercent": "20",
+    "fec.repairMinPercent": "20",
+    "fec.repairMaxPercent": "35",
     "bllFec.enable": "0",
     // Official native Linux NVST config enables all H.264/H.265 GRC modes.
     // Keep the user's bitrate as a ceiling while allowing the server to react
@@ -47,9 +55,9 @@ const ANNOUNCE_ALLOWLIST = {
     version: "3",
     mode: "1",
     numGroups: "5",
-    maxDelayUs: "1000",
+    maxDelayUs: "2000",
     minNumPacketsFrame: "10",
-    minNumPacketsPerGroup: "0",
+    minNumPacketsPerGroup: "15",
     enableAccurateSleep: "1",
     enableSmoothTransition: "1",
     allowFpsBasedToggle: "1",
@@ -121,6 +129,10 @@ export function buildAnnounceSdp(
       session?: number;
       /** Official `general.clientPorts.localAddress` — routable NIC IPv4. */
       localAddress?: string;
+      /** Use Bifrost's reserved Mjolnir port layout (video 49005, bundle 49006). */
+      useReserved?: boolean;
+      /** Permit Bifrost's dynamic-port fallback when the reserved pair is unavailable. */
+      fallbackDynamic?: boolean;
     };
     /** Official `general.clientBundlePort` — ICE/DTLS socket, distinct from clientPorts.bundle. */
     clientBundlePort?: number;
@@ -213,7 +225,13 @@ export function buildAnnounceSdp(
   lines.push("a=x-nv-vqos[0].drc.bitrateIirFilterFactor:128");
   lines.push("a=x-nv-vqos[0].resControl.bitrateIirFilterFactor:128");
   lines.push("a=x-nv-vqos[0].dynamicStreamingMode:0");
-  pushGroup("packetPacing", false, ANNOUNCE_ALLOWLIST.packetPacing);
+  // Five groups squeezed into 1 ms caused dense 120 FPS UDP bursts and large Wi-Fi receive gaps.
+  // Spread high-refresh frames across less than half of their 8.33 ms frame interval; lower frame
+  // rates retain the conservative baseline. This changes packet timing, not encode or display FPS.
+  pushGroup("packetPacing", false, {
+    ...ANNOUNCE_ALLOWLIST.packetPacing,
+    maxDelayUs: fps >= 100 ? "4000" : ANNOUNCE_ALLOWLIST.packetPacing.maxDelayUs,
+  });
   pushGroup("ri", false, ANNOUNCE_ALLOWLIST.ri);
   pushGroup("aqos", false, ANNOUNCE_ALLOWLIST.aqos);
   pushGroup("bwe", false, ANNOUNCE_ALLOWLIST.bwe);
@@ -238,21 +256,27 @@ export function buildAnnounceSdp(
     if (options.clientPorts.localAddress) {
       lines.push(`a=x-nv-general.clientPorts.localAddress:${options.clientPorts.localAddress}`);
     }
-    lines.push(`a=x-nv-general.clientPorts.video:${options.clientPorts.video}`);
+    if (options.clientPorts.useReserved !== undefined) {
+      lines.push(`a=x-nv-general.clientPorts.useReserved:${options.clientPorts.useReserved ? 1 : 0}`);
+    }
+    if (options.clientPorts.fallbackDynamic !== undefined) {
+      lines.push(`a=x-nv-general.clientPorts.fallbackDynamic:${options.clientPorts.fallbackDynamic ? 1 : 0}`);
+    }
+    if (options.clientPorts.session !== undefined) {
+      lines.push(`a=x-nv-general.clientPorts.session:${options.clientPorts.session}`);
+    }
     if (options.clientPorts.audio !== undefined) {
       lines.push(`a=x-nv-general.clientPorts.audio:${options.clientPorts.audio}`);
     }
     if (options.clientPorts.mic !== undefined) {
       lines.push(`a=x-nv-general.clientPorts.mic:${options.clientPorts.mic}`);
     }
+    lines.push(`a=x-nv-general.clientPorts.video:${options.clientPorts.video}`);
     if (options.clientPorts.control !== undefined) {
       lines.push(`a=x-nv-general.clientPorts.control:${options.clientPorts.control}`);
     }
     if (options.clientPorts.bundle !== undefined) {
       lines.push(`a=x-nv-general.clientPorts.bundle:${options.clientPorts.bundle}`);
-    }
-    if (options.clientPorts.session !== undefined) {
-      lines.push(`a=x-nv-general.clientPorts.session:${options.clientPorts.session}`);
     }
   }
   if (options.clientBundlePort !== undefined) {

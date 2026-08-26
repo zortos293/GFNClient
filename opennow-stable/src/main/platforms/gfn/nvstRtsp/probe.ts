@@ -30,6 +30,7 @@ import {
   extractRuntimeEncryptionKey,
   generateClientEncryptionKey,
   generateNvstIceCredentials,
+  NVST_VIDEO_PACKET_SIZE,
   packSrtpMasterKeySalt,
   redactKey,
 } from "./sdp";
@@ -853,6 +854,7 @@ export async function negotiateNvstRtspSession(
     };
     const videoSession: NvstVideoSession = {
       clientUdpPort: clientPort,
+      packetSize: NVST_VIDEO_PACKET_SIZE,
       // Native-owned Mjolnir video socket: the native streamer reads raw-SRTP video
       // here while the bundle DTLS socket carries control/audio.
       mjolnirUdpPort: nativeMjolnirPort,
@@ -874,6 +876,7 @@ export async function negotiateNvstRtspSession(
       remoteIcePassword: iceCredentials?.password,
       localDtlsFingerprint,
       remoteDtlsFingerprint: dtlsFingerprint ?? undefined,
+      rtcpOnSctp: describedRtcpOnSctp === "1",
       codec: input.codec,
       ...(negotiatedAudioTrack ? { audioTrack: negotiatedAudioTrack } : {}),
       timeoutMs: 60_000,
@@ -989,6 +992,11 @@ export async function negotiateNvstRtspSession(
             bundle: 0,
             session: 0,
             localAddress: localIpv4,
+            // The native streamer has already bound Bifrost's 49005/49006 pair. Tell the
+            // seat to select that reserved Mjolnir route instead of treating every zero
+            // clientPorts value as an unbound media stream.
+            useReserved: true,
+            fallbackDynamic: true,
           },
           clientBundlePort: clientPort,
           nativeRtcOnBundlePort: "1",

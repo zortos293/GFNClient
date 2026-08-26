@@ -116,13 +116,6 @@
       {
         "from": "../THIRD_PARTY_NOTICES",
         "to": "THIRD_PARTY_NOTICES"
-      },
-      {
-        "from": "../native/opennow-streamer/bin",
-        "to": "native/opennow-streamer",
-        "filter": [
-          "**/*"
-        ]
       }
     ],
     "electronLanguages": [
@@ -144,6 +137,15 @@
     ],
     "asar": true,
     "win": {
+      "extraResources": [
+        {
+          "from": "../native/opennow-streamer/bin/win32-${arch}",
+          "to": "native/opennow-streamer/win32-${arch}",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ],
       "target": [
         "nsis",
         "portable"
@@ -156,6 +158,15 @@
       "artifactName": "OpenNOW-v${version}-portable-${arch}.${ext}"
     },
     "mac": {
+      "extraResources": [
+        {
+          "from": "../native/opennow-streamer/bin/darwin-${arch}",
+          "to": "native/opennow-streamer/darwin-${arch}",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ],
       "target": [
         "dmg",
         "zip"
@@ -169,6 +180,13 @@
         {
           "from": "../logo.png",
           "to": "app-icon.png"
+        },
+        {
+          "from": "../native/opennow-streamer/bin/linux-${arch}",
+          "to": "native/opennow-streamer/linux-${arch}",
+          "filter": [
+            "**/*"
+          ]
         }
       ],
       "target": [

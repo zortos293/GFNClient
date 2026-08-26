@@ -5,8 +5,10 @@ use crate::media::MediaStreamConfig;
 
 const FULL_SIZE: (u32, u32) = (480, 470);
 const MINIMAL_SIZE: (u32, u32) = (180, 40);
+#[cfg(any(target_os = "linux", test))]
 const EDGE_MARGIN: u32 = 24;
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg(any(target_os = "linux", test))]
 const OVERLAY_ALPHA: u16 = 245;
 
 type Rgb = [u8; 3];
@@ -92,7 +94,7 @@ impl NativeStatsOverlay {
         eprintln!("Native F3 stream stats overlay: {:?}", self.mode);
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub(crate) const fn mode(&self) -> OverlayMode {
         self.mode
     }
@@ -142,6 +144,7 @@ impl NativeStatsOverlay {
         self.rendered.as_ref()
     }
 
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn composite_rgb24(
         &self,
         destination: &mut [u8],
@@ -456,6 +459,7 @@ fn measured_bitrate_bps(bytes: u64, elapsed: Duration) -> f32 {
     bytes as f32 * 8.0 / elapsed.as_secs_f32().max(0.001)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn overlay_origin(
     mode: OverlayMode,
     width: u32,
@@ -472,6 +476,7 @@ fn overlay_origin(
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn blend(destination: u8, source: u8) -> u8 {
     let inverse = 255 - OVERLAY_ALPHA;
     ((u16::from(source) * OVERLAY_ALPHA + u16::from(destination) * inverse + 127) / 255) as u8

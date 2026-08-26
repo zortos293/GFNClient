@@ -23,7 +23,10 @@ thiserror.workspace = true
 str0m = { workspace = true, features = ["wincrypto-dimpl"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-str0m = { workspace = true, features = ["apple-crypto"] }
+# Keep transport crypto architecture-independent. The Apple/Swift provider's
+# static archive discovery breaks x86_64 cross-builds on Apple Silicon, while
+# WebRTC crypto is not on the VideoToolbox/Metal media hot path.
+str0m = { workspace = true, features = ["rust-crypto"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 str0m = { workspace = true, features = ["rust-crypto"] }

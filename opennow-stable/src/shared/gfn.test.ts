@@ -12,6 +12,7 @@ import {
   isGameInLibrary,
   isNativeDirectXBackendSupported,
   isNativeExternalRendererSupported,
+  isNativeExternalRendererRequired,
   isNativeStreamerSupportedPlatform,
   isNvstTransportSupported,
   isOwnedLibraryStatus,
@@ -251,16 +252,19 @@ test("reports unsupported native streamer status on unknown platforms only", () 
   assert.equal(isNativeStreamerSupportedPlatform("android"), false);
 });
 
-test("external renderer is available with the native Windows presenter", () => {
+test("external renderer is selectable on Windows and required on macOS", () => {
   assert.equal(isNativeExternalRendererSupported("win32"), true);
   assert.equal(isNativeExternalRendererSupported("windows"), true);
   assert.equal(isNativeExternalRendererSupported("linux"), false);
-  assert.equal(isNativeExternalRendererSupported("darwin"), false);
+  assert.equal(isNativeExternalRendererSupported("darwin"), true);
+  assert.equal(isNativeExternalRendererRequired("darwin"), true);
+  assert.equal(isNativeExternalRendererRequired("win32"), false);
   assert.equal(isNativeDirectXBackendSupported("win32"), true);
   assert.equal(isNativeDirectXBackendSupported("linux"), false);
   assert.equal(normalizeNativeExternalRendererForPlatform(true, "linux"), false);
   assert.equal(normalizeNativeExternalRendererForPlatform(true, "win32"), true);
   assert.equal(normalizeNativeExternalRendererForPlatform(false, "win32"), false);
+  assert.equal(normalizeNativeExternalRendererForPlatform(false, "darwin"), true);
 
   const status = createUnsupportedNativeStreamerStatus();
   assert.equal(status.detected, false);

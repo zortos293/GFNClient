@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -15,6 +16,24 @@ pub enum H264Framing {
 pub enum VideoColorSpace {
     Bt601,
     Bt709,
+}
+
+/// Placement for a small GPU-composited diagnostic surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GpuOverlayPlacement {
+    TopLeft,
+    TopRight,
+}
+
+/// Immutable RGBA8 pixels uploaded only when diagnostic text changes.
+///
+/// Metal samples this surface without reading a decoded video pixel buffer back to the CPU.
+#[derive(Clone, Debug)]
+pub struct GpuOverlayFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<[u8]>,
+    pub placement: GpuOverlayPlacement,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,7 +147,11 @@ impl Default for QueueLimits {
     fn default() -> Self {
         Self {
             video_frames_in_flight: 8,
-            decoded_video_frames: 3,
+            // Match the official client's bounded AsyncFrameQueue behavior: keep enough decoded
+            // frames to absorb short NVST/VideoToolbox bursts without building material latency.
+            // The GFN sender/VideoToolbox callback can deliver roughly 50-60 ms bursts at 120 Hz.
+            // Hold one measured burst plus headroom; AsyncFrameQueue consumes it at display rate.
+            decoded_video_frames: 16,
             opus_packets: 12,
             pcm_milliseconds: 120,
             max_video_access_unit_bytes: 8 * 1024 * 1024,

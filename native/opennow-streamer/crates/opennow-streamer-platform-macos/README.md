@@ -16,8 +16,11 @@ The crate is a member of the native-streamer workspace and is linked only on mac
 
 ## Integration API
 
-Create `H264ParameterSets` from the current SPS and PPS, provide absolute Electron screen bounds,
-and start the process-owned passive overlay on AppKit's main thread:
+Create `H264ParameterSets` from the current SPS and PPS and start the backend on AppKit's main
+thread. OpenNOW's native host creates a standalone SDL/AppKit window and supplies its dedicated
+`NSView` through `SurfaceTarget::NsView`, allowing SDL to own window input while Metal replaces
+that view's backing layer. `OwnedOverlay` remains available to other same-process integrations and
+debug tooling:
 
 ```rust,no_run
 use opennow_streamer_platform_macos::{
@@ -44,8 +47,9 @@ backend.stop();
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The native streamer never passes Electron's `NSView` or `NSWindow` address to this Rust child.
-Live layout and visibility updates use only the absolute `screenRect` contract:
+The native streamer never passes Electron's `NSView` or `NSWindow` address to this Rust child. In
+standalone mode it passes only the helper's own SDL `NSView`. The alternative passive-overlay API
+uses absolute screen rectangles:
 
 ```rust,no_run
 use opennow_streamer_platform_macos::ScreenRect;
@@ -55,9 +59,11 @@ backend.update_owned_overlay(ScreenRect::new(120.0, 80.0, 960.0, 540.0), false)?
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Screen rectangles use Electron's top-left device-independent coordinates. The backend converts
-them to AppKit's bottom-left coordinate space. Its `NSPanel` is borderless and non-activating,
-ignores mouse events, rejects key/main-window status, and orders without stealing focus. The
+Screen rectangles in overlay mode use Electron's top-left device-independent coordinates. The backend converts
+them to AppKit's bottom-left coordinate space. Its concrete `NSPanel` is borderless and
+non-activating, ignores mouse events, and orders without stealing focus. The helper runs from a
+regular LaunchServices application bundle; bare command-line executables are not a supported
+deployment shape because WindowServer does not reliably composite their cross-process windows. The
 native streamer also compares the frontmost application with its Electron parent process on every
 main-thread pump, ordering the panel out while another application is active. The separately owned
 SDL window used by the software fallback applies the same parent/frontmost gate.
@@ -73,7 +79,7 @@ Only H.264 is implemented. The workspace advertises this backend only when
 makes no H.265, AV1, software-decoder, or non-macOS capability claim.
 
 The workspace performs full backend construction after the first SPS/PPS arrive. If VideoToolbox,
-Metal, CoreAudio, or overlay construction fails at that point, the main-thread host destroys the
+Metal, CoreAudio, or surface construction fails at that point, the main-thread host destroys the
 partial macOS output, initializes the existing SDL output, and hands the pending keyframe plus the
 same bounded H.264/Opus queues to the OpenH264/software workers. Hardware selection is disabled for
 later sessions in that process and later capability replies report VideoToolbox unavailable.

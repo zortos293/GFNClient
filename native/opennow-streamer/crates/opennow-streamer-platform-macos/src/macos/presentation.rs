@@ -1,31 +1,34 @@
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
+use block2::RcBlock;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CFRetained;
 use objc2_core_video::{
-    CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBufferGetHeightOfPlane,
-    CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount, CVPixelBufferGetWidthOfPlane,
+    CVDisplayLink, CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVOptionFlags,
+    CVPixelBufferGetHeightOfPlane, CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType,
+    CVPixelBufferGetPlaneCount, CVPixelBufferGetWidthOfPlane, CVTimeStamp,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
 use objc2_foundation::NSString;
 use objc2_metal::{
     MTLClearColor, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
-    MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLLibrary, MTLLoadAction,
-    MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStoreAction, MTLTexture, MTLViewport,
+    MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLLibrary, MTLLoadAction, MTLOrigin,
+    MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 
 use crate::failure::{BackendSubsystem, FailureReporter};
-use crate::format::VideoColorSpace;
-use crate::queue::BoundedQueue;
+use crate::format::{GpuOverlayFrame, GpuOverlayPlacement, VideoColorSpace};
+use crate::queue::{BoundedQueue, TryPopResult};
 
 use super::video::DecodedFrame;
 use super::{BackendError, Counters};
@@ -37,6 +40,12 @@ using namespace metal;
 struct VertexOut {
     float4 position [[position]];
     float2 texcoord;
+};
+
+struct OverlayUniforms {
+    float4 bounds;
+    uint enabled;
+    uint3 padding;
 };
 
 vertex VertexOut video_vertex(uint vertex_id [[vertex_id]]) {
@@ -52,7 +61,9 @@ fragment float4 video_fragment(
     VertexOut in [[stage_in]],
     texture2d<float> luma [[texture(0)]],
     texture2d<float> chroma [[texture(1)]],
-    constant uint &color_space [[buffer(0)]]) {
+    texture2d<float> overlay [[texture(2)]],
+    constant uint &color_space [[buffer(0)]],
+    constant OverlayUniforms &overlay_uniforms [[buffer(1)]]) {
     constexpr sampler linear_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
     float y = (luma.sample(linear_sampler, in.texcoord).r - (16.0 / 255.0)) * (255.0 / 219.0);
     float2 cbcr = chroma.sample(linear_sampler, in.texcoord).rg - float2(0.5);
@@ -68,13 +79,34 @@ fragment float4 video_fragment(
             y - 0.213249 * cbcr.x - 0.532909 * cbcr.y,
             y + 2.112402 * cbcr.x);
     }
-    return float4(saturate(rgb), 1.0);
+    float4 video = float4(saturate(rgb), 1.0);
+    float2 position = in.position.xy;
+    float4 bounds = overlay_uniforms.bounds;
+    if (overlay_uniforms.enabled != 0 &&
+        position.x >= bounds.x && position.y >= bounds.y &&
+        position.x < bounds.x + bounds.z && position.y < bounds.y + bounds.w) {
+        constexpr sampler overlay_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
+        float2 overlay_coord = (position - bounds.xy) / bounds.zw;
+        float4 diagnostic = overlay.sample(overlay_sampler, overlay_coord);
+        return mix(video, diagnostic, diagnostic.a);
+    }
+    return video;
 }
 "#;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct OverlayUniforms {
+    bounds: [f32; 4],
+    enabled: u32,
+    padding: [u32; 3],
+}
 
 pub(super) struct PresenterHandle {
     queue: Arc<BoundedQueue<DecodedFrame>>,
     worker: Option<JoinHandle<()>>,
+    diagnostics_stop: Arc<AtomicBool>,
+    diagnostics_worker: Option<JoinHandle<()>>,
 }
 
 impl PresenterHandle {
@@ -84,17 +116,41 @@ impl PresenterHandle {
         queue: Arc<BoundedQueue<DecodedFrame>>,
         counters: Arc<Counters>,
         failures: Arc<FailureReporter>,
+        overlay: Arc<RwLock<Option<Arc<GpuOverlayFrame>>>>,
     ) -> Result<Self, BackendError> {
-        let mut presenter = MetalPresenter::new(layer)?;
+        let mut presenter = MetalPresenter::new(layer, overlay, Arc::clone(&counters))?;
+        let telemetry = Arc::clone(&presenter.telemetry);
+        let display_clock = DisplayClock::start()?;
         let worker_queue = Arc::clone(&queue);
         let worker_failures = Arc::clone(&failures);
+        let worker_counters = Arc::clone(&counters);
         let worker = thread::Builder::new()
             .name("opennow-metal-present".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    while let Some(frame) = worker_queue.pop_wait() {
+                    let mut tick = 0;
+                    let mut primed = false;
+                    loop {
+                        if !display_clock.wait_next(&mut tick) {
+                            break;
+                        }
+                        // Prime one complete measured decode burst before starting scanout.
+                        if !primed && worker_queue.len() < 8 {
+                            continue;
+                        }
+                        let frame = match worker_queue.pop_now() {
+                            TryPopResult::Value(frame) => frame,
+                            TryPopResult::Empty => {
+                                worker_counters
+                                    .video_display_underflows
+                                    .fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
+                            TryPopResult::Closed => break,
+                        };
+                        primed = true;
                         if !visible.load(Ordering::Acquire) {
-                            counters
+                            worker_counters
                                 .video_frames_dropped
                                 .fetch_add(1, Ordering::Relaxed);
                             continue;
@@ -103,10 +159,9 @@ impl PresenterHandle {
                         match result {
                             Ok(()) => {
                                 failures.metal_succeeded();
-                                counters.video_presented.fetch_add(1, Ordering::Relaxed);
                             }
                             Err(error) => {
-                                counters
+                                worker_counters
                                     .video_present_errors
                                     .fetch_add(1, Ordering::Relaxed);
                                 if failures.metal_failed(error.to_string()) {
@@ -125,24 +180,216 @@ impl PresenterHandle {
                 }
             })
             .map_err(|_| BackendError::Thread("Metal presenter"))?;
+        let diagnostics_stop = Arc::new(AtomicBool::new(false));
+        let diagnostics_should_stop = Arc::clone(&diagnostics_stop);
+        let diagnostics_worker = thread::Builder::new()
+            .name("opennow-video-diagnostics".into())
+            .spawn(move || {
+                let mut previous = PipelineCounterSnapshot::default();
+                while !diagnostics_should_stop.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_secs(1));
+                    if diagnostics_should_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let current = PipelineCounterSnapshot::read(&counters);
+                    let timing = telemetry.take_timing();
+                    eprintln!(
+                        "macOS video pipeline: encodedSubmitted={} (+{}) decoded={} (+{}) decodedQueueDropped={} (+{}) metalSubmitted={} (+{}) displayed={} (+{}) displayUnderflows={} (+{}) scanoutSkipped={} (+{}) totalDropped={} (+{}) backpressured={} decodeErrors={} presentErrors={} scanoutAverageMs={:.3} scanoutMaximumMs={:.3} missedRefreshes={}",
+                        current.encoded_submitted,
+                        current.encoded_submitted.saturating_sub(previous.encoded_submitted),
+                        current.decoded,
+                        current.decoded.saturating_sub(previous.decoded),
+                        current.decoded_queue_dropped,
+                        current.decoded_queue_dropped.saturating_sub(previous.decoded_queue_dropped),
+                        current.metal_submitted,
+                        current.metal_submitted.saturating_sub(previous.metal_submitted),
+                        current.displayed,
+                        current.displayed.saturating_sub(previous.displayed),
+                        current.display_underflows,
+                        current.display_underflows.saturating_sub(previous.display_underflows),
+                        current.scanout_skipped,
+                        current.scanout_skipped.saturating_sub(previous.scanout_skipped),
+                        current.total_dropped,
+                        current.total_dropped.saturating_sub(previous.total_dropped),
+                        counters.video_backpressured.load(Ordering::Relaxed),
+                        counters.video_decode_errors.load(Ordering::Relaxed),
+                        counters.video_present_errors.load(Ordering::Relaxed),
+                        timing.average_interval_seconds * 1_000.0,
+                        timing.maximum_interval_seconds * 1_000.0,
+                        timing.missed_refreshes,
+                    );
+                    previous = current;
+                }
+            })
+            .map_err(|_| BackendError::Thread("video diagnostics"))?;
         Ok(Self {
             queue,
             worker: Some(worker),
+            diagnostics_stop,
+            diagnostics_worker: Some(diagnostics_worker),
         })
     }
 
     pub(super) fn stop(mut self) {
+        self.diagnostics_stop.store(true, Ordering::Release);
         self.queue.close_and_discard();
         if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        if let Some(worker) = self.diagnostics_worker.take() {
             let _ = worker.join();
         }
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct PipelineCounterSnapshot {
+    encoded_submitted: u64,
+    decoded: u64,
+    decoded_queue_dropped: u64,
+    metal_submitted: u64,
+    displayed: u64,
+    display_underflows: u64,
+    scanout_skipped: u64,
+    total_dropped: u64,
+}
+
+impl PipelineCounterSnapshot {
+    fn read(counters: &Counters) -> Self {
+        Self {
+            encoded_submitted: counters.video_submitted.load(Ordering::Relaxed),
+            decoded: counters.video_decoded.load(Ordering::Relaxed),
+            decoded_queue_dropped: counters.video_decoded_queue_dropped.load(Ordering::Relaxed),
+            metal_submitted: counters.video_metal_submitted.load(Ordering::Relaxed),
+            displayed: counters.video_presented.load(Ordering::Relaxed),
+            display_underflows: counters.video_display_underflows.load(Ordering::Relaxed),
+            scanout_skipped: counters.video_scanout_skipped.load(Ordering::Relaxed),
+            total_dropped: counters.video_frames_dropped.load(Ordering::Relaxed),
+        }
+    }
+}
+
+struct DisplayClockState {
+    generation: AtomicU64,
+    stopped: AtomicBool,
+    wait_lock: Mutex<()>,
+    ready: Condvar,
+}
+
+struct DisplayClock {
+    link: CFRetained<CVDisplayLink>,
+    state: Arc<DisplayClockState>,
+}
+
+// CVDisplayLink is explicitly designed to invoke a callback from its own high-priority thread.
+unsafe impl Send for DisplayClock {}
+
+impl DisplayClock {
+    fn start() -> Result<Self, BackendError> {
+        let state = Arc::new(DisplayClockState {
+            generation: AtomicU64::new(0),
+            stopped: AtomicBool::new(false),
+            wait_lock: Mutex::new(()),
+            ready: Condvar::new(),
+        });
+        let mut link_ptr = ptr::null_mut();
+        #[allow(deprecated)]
+        let status =
+            unsafe { CVDisplayLink::create_with_active_cg_displays(NonNull::from(&mut link_ptr)) };
+        if status != 0 {
+            return Err(BackendError::AppleApi {
+                api: "CVDisplayLinkCreateWithActiveCGDisplays",
+                status,
+            });
+        }
+        let link_ptr = NonNull::new(link_ptr).ok_or(BackendError::AppleApi {
+            api: "CVDisplayLinkCreateWithActiveCGDisplays",
+            status: -1,
+        })?;
+        let link = unsafe { CFRetained::from_raw(link_ptr) };
+        #[allow(deprecated)]
+        let status = unsafe {
+            link.set_output_callback(
+                Some(display_link_callback),
+                Arc::as_ptr(&state).cast_mut().cast::<c_void>(),
+            )
+        };
+        if status != 0 {
+            return Err(BackendError::AppleApi {
+                api: "CVDisplayLinkSetOutputCallback",
+                status,
+            });
+        }
+        #[allow(deprecated)]
+        let status = link.start();
+        if status != 0 {
+            return Err(BackendError::AppleApi {
+                api: "CVDisplayLinkStart",
+                status,
+            });
+        }
+        eprintln!("macOS AsyncFrameQueue display clock active");
+        Ok(Self { link, state })
+    }
+
+    fn wait_next(&self, previous_generation: &mut u64) -> bool {
+        let mut guard = self
+            .state
+            .wait_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            if self.state.stopped.load(Ordering::Acquire) {
+                return false;
+            }
+            let generation = self.state.generation.load(Ordering::Acquire);
+            if generation != *previous_generation {
+                *previous_generation = generation;
+                return true;
+            }
+            guard = self
+                .state
+                .ready
+                .wait(guard)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
+impl Drop for DisplayClock {
+    fn drop(&mut self) {
+        self.state.stopped.store(true, Ordering::Release);
+        self.state.ready.notify_all();
+        #[allow(deprecated)]
+        let _ = self.link.stop();
+    }
+}
+
+unsafe extern "C-unwind" fn display_link_callback(
+    _display_link: NonNull<CVDisplayLink>,
+    _now: NonNull<CVTimeStamp>,
+    _output_time: NonNull<CVTimeStamp>,
+    _flags_in: CVOptionFlags,
+    _flags_out: NonNull<CVOptionFlags>,
+    user_info: *mut c_void,
+) -> i32 {
+    let Some(state) = NonNull::new(user_info.cast::<DisplayClockState>()) else {
+        return 0;
+    };
+    let state = unsafe { state.as_ref() };
+    state.generation.fetch_add(1, Ordering::AcqRel);
+    state.ready.notify_one();
+    0
+}
+
 impl Drop for PresenterHandle {
     fn drop(&mut self) {
+        self.diagnostics_stop.store(true, Ordering::Release);
         self.queue.close_and_discard();
         if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        if let Some(worker) = self.diagnostics_worker.take() {
             let _ = worker.join();
         }
     }
@@ -158,10 +405,109 @@ struct PendingFrame {
 
 struct MetalPresenter {
     layer: Retained<CAMetalLayer>,
+    device: Retained<ProtocolObject<dyn MTLDevice>>,
     command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     texture_cache: CFRetained<CVMetalTextureCache>,
+    overlay: Arc<RwLock<Option<Arc<GpuOverlayFrame>>>>,
+    uploaded_overlay: Option<UploadedOverlay>,
+    overlay_texture_pool: Vec<OverlayTextureSlot>,
+    next_overlay_texture: usize,
     pending: VecDeque<PendingFrame>,
+    telemetry: Arc<PresentationTelemetry>,
+    zero_copy_confirmed: bool,
+    pacing_confirmed: bool,
+}
+
+#[derive(Default)]
+struct PresentationTiming {
+    previous_time: Option<f64>,
+    interval_samples: u64,
+    interval_sum_seconds: f64,
+    maximum_interval_seconds: f64,
+    missed_refreshes: u64,
+}
+
+struct PresentationTelemetry {
+    counters: Arc<Counters>,
+    timing: Mutex<PresentationTiming>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct PresentationTimingSnapshot {
+    average_interval_seconds: f64,
+    maximum_interval_seconds: f64,
+    missed_refreshes: u64,
+}
+
+impl PresentationTelemetry {
+    fn record(&self, presented_time: f64, expected_period: f64) {
+        if !presented_time.is_finite() || presented_time <= 0.0 {
+            self.counters
+                .video_frames_dropped
+                .fetch_add(1, Ordering::Relaxed);
+            self.counters
+                .video_scanout_skipped
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        self.counters
+            .video_presented
+            .fetch_add(1, Ordering::Relaxed);
+        let mut timing = self
+            .timing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(previous_time) = timing.previous_time {
+            let interval = presented_time - previous_time;
+            if interval.is_finite() && interval > 0.0 {
+                timing.interval_samples += 1;
+                timing.interval_sum_seconds += interval;
+                timing.maximum_interval_seconds = timing.maximum_interval_seconds.max(interval);
+                if expected_period.is_finite()
+                    && expected_period > 0.0
+                    && interval > expected_period * 1.25
+                {
+                    timing.missed_refreshes +=
+                        (interval / expected_period).round().max(1.0) as u64 - 1;
+                }
+            }
+        }
+        timing.previous_time = Some(presented_time);
+    }
+
+    fn take_timing(&self) -> PresentationTimingSnapshot {
+        let mut timing = self
+            .timing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let snapshot = PresentationTimingSnapshot {
+            average_interval_seconds: if timing.interval_samples == 0 {
+                0.0
+            } else {
+                timing.interval_sum_seconds / timing.interval_samples as f64
+            },
+            maximum_interval_seconds: timing.maximum_interval_seconds,
+            missed_refreshes: timing.missed_refreshes,
+        };
+        timing.interval_samples = 0;
+        timing.interval_sum_seconds = 0.0;
+        timing.maximum_interval_seconds = 0.0;
+        timing.missed_refreshes = 0;
+        snapshot
+    }
+}
+
+struct UploadedOverlay {
+    source: Arc<GpuOverlayFrame>,
+    texture: Retained<ProtocolObject<dyn MTLTexture>>,
+}
+
+struct OverlayTextureSlot {
+    width: u32,
+    height: u32,
+    texture: Retained<ProtocolObject<dyn MTLTexture>>,
 }
 
 // Metal objects are thread-safe. AppKit attaches and detaches the layer on the main thread; after
@@ -169,14 +515,24 @@ struct MetalPresenter {
 unsafe impl Send for MetalPresenter {}
 
 impl MetalPresenter {
-    fn new(layer: Retained<CAMetalLayer>) -> Result<Self, BackendError> {
+    fn new(
+        layer: Retained<CAMetalLayer>,
+        overlay: Arc<RwLock<Option<Arc<GpuOverlayFrame>>>>,
+        counters: Arc<Counters>,
+    ) -> Result<Self, BackendError> {
         let device = MTLCreateSystemDefaultDevice()
             .ok_or_else(|| BackendError::Metal("Metal is unavailable on this Mac".into()))?;
         layer.setDevice(Some(&device));
         layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
         layer.setFramebufferOnly(true);
+        // Match the native NVIDIA renderer's normal three-drawable asynchronous path. The queue
+        // remains bounded, but a transient command-buffer completion delay can no longer force a
+        // synchronous wait every other 120 Hz frame.
         layer.setMaximumDrawableCount(3);
         layer.setPresentsWithTransaction(false);
+        // Fixed-rate presentation is synchronized by CAMetalLayer. NVIDIA's fixed path submits a
+        // plain presentDrawable and reserves explicit target/duration scheduling for adaptive
+        // modes; doing the same avoids slipping past a ProMotion refresh boundary once per beat.
         layer.setDisplaySyncEnabled(true);
         layer.setAllowsNextDrawableTimeout(true);
 
@@ -220,15 +576,26 @@ impl MetalPresenter {
         let texture_cache = unsafe { CFRetained::from_raw(cache_ptr) };
         Ok(Self {
             layer,
+            device,
             command_queue,
             pipeline,
             texture_cache,
+            overlay,
+            uploaded_overlay: None,
+            overlay_texture_pool: Vec::with_capacity(2),
+            next_overlay_texture: 0,
             pending: VecDeque::with_capacity(3),
+            telemetry: Arc::new(PresentationTelemetry {
+                counters,
+                timing: Mutex::new(PresentationTiming::default()),
+            }),
+            zero_copy_confirmed: false,
+            pacing_confirmed: false,
         })
     }
 
     fn present(&mut self, frame: DecodedFrame) -> Result<(), BackendError> {
-        if self.pending.len() >= 2 {
+        if self.pending.len() >= 3 {
             self.wait_for_oldest()?;
         }
         if CVPixelBufferGetPixelFormatType(&frame.image)
@@ -238,6 +605,17 @@ impl MetalPresenter {
             return Err(BackendError::Metal(
                 "VideoToolbox returned a non-NV12 pixel buffer".into(),
             ));
+        }
+        if CVPixelBufferGetIOSurface(Some(&frame.image)).is_none() {
+            return Err(BackendError::Metal(
+                "VideoToolbox returned a pixel buffer without IOSurface backing".into(),
+            ));
+        }
+        if !self.zero_copy_confirmed {
+            self.zero_copy_confirmed = true;
+            eprintln!(
+                "macOS zero-copy video active: VideoToolbox IOSurface -> CVMetalTexture -> CAMetalLayer"
+            );
         }
 
         let width = CVPixelBufferGetWidthOfPlane(&frame.image, 0);
@@ -301,18 +679,63 @@ impl MetalPresenter {
         };
         let destination_width = drawable_texture.width() as f64;
         let destination_height = drawable_texture.height() as f64;
-        encoder.setViewport(aspect_fit_viewport(
+        let viewport = aspect_fit_viewport(
             width as f64,
             height as f64,
             destination_width,
             destination_height,
-        ));
+        );
+        let overlay = self.overlay_texture()?;
+        let overlay_uniforms = overlay
+            .as_ref()
+            .map_or_else(OverlayUniforms::default, |overlay| {
+                overlay_uniforms(&overlay.source, viewport)
+            });
+        unsafe {
+            encoder.setFragmentTexture_atIndex(
+                overlay
+                    .as_ref()
+                    .map(|overlay| &*overlay.texture)
+                    .or(Some(&*luma_texture)),
+                2,
+            );
+            encoder.setFragmentBytes_length_atIndex(
+                NonNull::from(&overlay_uniforms).cast::<c_void>(),
+                std::mem::size_of_val(&overlay_uniforms),
+                1,
+            );
+        }
+        encoder.setViewport(viewport);
         unsafe { encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3) };
         encoder.endEncoding();
         let drawable_ref: &ProtocolObject<dyn CAMetalDrawable> = &drawable;
         let drawable_as_base: &ProtocolObject<dyn MTLDrawable> = drawable_ref.as_ref();
+        if !self.pacing_confirmed {
+            self.pacing_confirmed = true;
+            eprintln!(
+                "macOS Metal fixed-rate presentation active: sourcePeriodMs={:.3} displaySync=true drawables=3",
+                frame.minimum_frame_duration_seconds * 1_000.0,
+            );
+        }
+        let telemetry = Arc::clone(&self.telemetry);
+        let expected_period = frame.minimum_frame_duration_seconds;
+        let presented_handler: RcBlock<dyn Fn(NonNull<ProtocolObject<dyn MTLDrawable>>)> =
+            RcBlock::new(move |drawable: NonNull<ProtocolObject<dyn MTLDrawable>>| {
+                // SAFETY: Metal supplies a valid drawable pointer for the duration of this block.
+                let presented_time = unsafe { drawable.as_ref() }.presentedTime();
+                telemetry.record(presented_time, expected_period);
+            });
+        // SAFETY: `presented_handler` is a valid Objective-C block. Metal copies the escaping
+        // handler and invokes it after the drawable reaches scanout.
+        unsafe {
+            drawable_as_base.addPresentedHandler(RcBlock::as_ptr(&presented_handler));
+        }
         command_buffer.presentDrawable(drawable_as_base);
         command_buffer.commit();
+        self.telemetry
+            .counters
+            .video_metal_submitted
+            .fetch_add(1, Ordering::Relaxed);
         self.pending.push_back(PendingFrame {
             command_buffer,
             _luma_cv_texture: luma_cv_texture,
@@ -321,6 +744,89 @@ impl MetalPresenter {
             _chroma_texture: chroma_texture,
         });
         Ok(())
+    }
+
+    fn overlay_texture(&mut self) -> Result<Option<&UploadedOverlay>, BackendError> {
+        let current = self
+            .overlay
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(current) = current else {
+            self.uploaded_overlay = None;
+            self.overlay_texture_pool.clear();
+            self.next_overlay_texture = 0;
+            return Ok(None);
+        };
+        if self
+            .uploaded_overlay
+            .as_ref()
+            .is_some_and(|uploaded| Arc::ptr_eq(&uploaded.source, &current))
+        {
+            return Ok(self.uploaded_overlay.as_ref());
+        }
+        let expected = current.width as usize * current.height as usize * 4;
+        if current.width == 0 || current.height == 0 || current.rgba.len() != expected {
+            return Err(BackendError::Metal(
+                "diagnostic overlay has invalid RGBA dimensions".into(),
+            ));
+        }
+        if self
+            .overlay_texture_pool
+            .first()
+            .is_some_and(|slot| slot.width != current.width || slot.height != current.height)
+        {
+            self.overlay_texture_pool.clear();
+            self.next_overlay_texture = 0;
+        }
+        while self.overlay_texture_pool.len() < 2 {
+            let descriptor = unsafe {
+                MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                    MTLPixelFormat::RGBA8Unorm,
+                    current.width as usize,
+                    current.height as usize,
+                    false,
+                )
+            };
+            descriptor.setUsage(MTLTextureUsage::ShaderRead);
+            let texture = self
+                .device
+                .newTextureWithDescriptor(&descriptor)
+                .ok_or_else(|| {
+                    BackendError::Metal("failed to allocate stats overlay texture".into())
+                })?;
+            self.overlay_texture_pool.push(OverlayTextureSlot {
+                width: current.width,
+                height: current.height,
+                texture,
+            });
+        }
+        let texture_index = self.next_overlay_texture;
+        self.next_overlay_texture = (self.next_overlay_texture + 1) % 2;
+        let texture = self.overlay_texture_pool[texture_index].texture.clone();
+        let region = MTLRegion {
+            origin: MTLOrigin { x: 0, y: 0, z: 0 },
+            size: MTLSize {
+                width: current.width as usize,
+                height: current.height as usize,
+                depth: 1,
+            },
+        };
+        let bytes = NonNull::new(current.rgba.as_ptr().cast_mut().cast::<c_void>())
+            .expect("validated overlay pixels are non-empty");
+        unsafe {
+            texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                region,
+                0,
+                bytes,
+                current.width as usize * 4,
+            );
+        }
+        self.uploaded_overlay = Some(UploadedOverlay {
+            source: current,
+            texture,
+        });
+        Ok(self.uploaded_overlay.as_ref())
     }
 
     fn make_texture(
@@ -386,6 +892,31 @@ impl Drop for MetalPresenter {
     }
 }
 
+fn overlay_uniforms(frame: &GpuOverlayFrame, viewport: MTLViewport) -> OverlayUniforms {
+    const EDGE_MARGIN: f64 = 24.0;
+    let available_width = (viewport.width - EDGE_MARGIN * 2.0).max(1.0);
+    let available_height = (viewport.height - EDGE_MARGIN * 2.0).max(1.0);
+    let scale = (available_width / f64::from(frame.width))
+        .min(available_height / f64::from(frame.height))
+        .min(1.0);
+    let width = f64::from(frame.width) * scale;
+    let height = f64::from(frame.height) * scale;
+    let x = match frame.placement {
+        GpuOverlayPlacement::TopLeft => viewport.originX + EDGE_MARGIN,
+        GpuOverlayPlacement::TopRight => viewport.originX + viewport.width - width - EDGE_MARGIN,
+    };
+    OverlayUniforms {
+        bounds: [
+            x as f32,
+            (viewport.originY + EDGE_MARGIN) as f32,
+            width as f32,
+            height as f32,
+        ],
+        enabled: 1,
+        padding: [0; 3],
+    }
+}
+
 fn aspect_fit_viewport(
     source_width: f64,
     source_height: f64,
@@ -424,5 +955,19 @@ mod tests {
         assert_eq!(portrait.height, 768.0);
         assert_eq!(portrait.width, 432.0);
         assert_eq!(portrait.originX, 296.0);
+    }
+
+    #[test]
+    fn overlay_placement_stays_inside_the_video_viewport() {
+        let frame = GpuOverlayFrame {
+            width: 180,
+            height: 40,
+            rgba: Arc::from(vec![0_u8; 180 * 40 * 4]),
+            placement: GpuOverlayPlacement::TopRight,
+        };
+        let viewport = aspect_fit_viewport(1920.0, 1080.0, 1024.0, 768.0);
+        let uniforms = overlay_uniforms(&frame, viewport);
+        assert_eq!(uniforms.enabled, 1);
+        assert_eq!(uniforms.bounds, [820.0, 120.0, 180.0, 40.0]);
     }
 }

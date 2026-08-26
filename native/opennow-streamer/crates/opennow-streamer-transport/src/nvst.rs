@@ -3,7 +3,8 @@
 //! This module only implements the receive side of the classic NVST video handoff:
 //! authenticated SRTP video datagrams from the negotiated peer become bounded H.264
 //! Annex-B access units. Standard Opus RTP and the existing input data-channel contract
-//! use the negotiated DTLS bundle. Proprietary FEC repair remains deliberately unsupported.
+//! use the negotiated DTLS bundle. NVIDIA's systematic Reed-Solomon video FEC is repaired before
+//! access-unit assembly so isolated UDP loss does not flush the hardware decoder reference chain.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
@@ -64,10 +65,10 @@ const GFN_SRTCP_SALT_LABEL: u8 = 0x05;
 const SRTCP_ENCRYPTED_FLAG: u32 = 0x8000_0000;
 const RTCP_SENDER_SSRC: u32 = 0x4f4e_4f57; // "ONOW"
 const SRTCP_RR_INTERVAL: Duration = Duration::from_secs(1);
-// GFN's Windows client starts RTP loss recovery after 1 ms. Waiting for the
-// old 20 ms cadence allowed a 120 fps / high-bitrate stream to exhaust the
-// reorder queue before the first NACK was even transmitted.
-const RTCP_RECOVERY_INTERVAL: Duration = Duration::from_millis(1);
+// Start recovery promptly without retransmitting the same tiny range on every poll. Four
+// milliseconds still fits inside the reorder grace period while avoiding self-inflicted bursts.
+const RTCP_RECOVERY_INTERVAL: Duration = Duration::from_millis(10);
+const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(250);
 const MAX_PENDING_NACK_RANGES: usize = 16;
 const MAX_PENDING_FRAME_ACKS: usize = 512;
 
@@ -81,17 +82,31 @@ fn verbose_diagnostics_enabled() -> bool {
 }
 const MAX_NACK_PACKET_COUNT: usize = 64;
 const MAX_NACK_FCI_ENTRIES: usize = MAX_NACK_PACKET_COUNT.div_ceil(17);
+// At 120 FPS several FEC blocks can arrive during a single retransmission round trip. Keep them
+// ordered instead of throwing away the incomplete head block when its successor arrives.
+const MAX_PENDING_FEC_BLOCKS: usize = 128;
 const NV_VIDEO_PACKET_LEN: usize = 16;
+// GameStream's Reed-Solomon shards cover packetSize plus room for the fixed RTP header and
+// extension prefix. This is MAX_RTP_HEADER_SIZE in Moonlight's reference receive path.
+const NVST_FEC_RTP_HEADER_ALLOWANCE: usize = 16;
+const DEFAULT_NVST_VIDEO_PACKET_SIZE: usize = 1_280;
+const MIN_NVST_VIDEO_PACKET_SIZE: usize = 256;
+const MAX_NVST_VIDEO_PACKET_SIZE: usize = 65_519;
 // Match the official client's bounded NACK/dejitter envelope: it keeps up to
 // 1,024 RTP packets available for late or retransmitted packets and permits a
 // 2,048-entry NACK queue. A 32-packet window is only a few milliseconds at
 // 150 Mbps and turns recoverable reordering into visible keyframe hitches.
 const DEFAULT_REORDER_WINDOW: usize = 1_024;
 const MAX_REORDER_WINDOW: usize = 2_048;
-// NVIDIA's Mjolnir receiver uses an 8 ms dequeue deadline. Keep the large
-// packet store for retransmissions, but never let one missing packet hold an
-// entire high-refresh stream until the store fills (roughly 300 ms at 120 fps).
-const MJOLNIR_REORDER_DEQUEUE_TIMEOUT: Duration = Duration::from_millis(8);
+// Cloud packet reordering plus RTCP-over-SCTP NACK round trips can exceed one or two frame times.
+// Keep the wait exceptional and bounded, but long enough for a retransmission to beat an IDR
+// reset. This adds latency only while a sequence gap is open; the normal path still drains at once.
+const MJOLNIR_REORDER_DEQUEUE_TIMEOUT: Duration = Duration::from_millis(150);
+// The replay filter must be at least as deep as the reorder/NACK window. The old 64-packet bitmap
+// rejected valid retransmissions after roughly 10 ms on a high-bitrate stream, guaranteeing that
+// every NACK eventually degraded into a keyframe reset.
+const SRTP_REPLAY_WINDOW_PACKETS: usize = MAX_REORDER_WINDOW;
+const SRTP_REPLAY_WINDOW_WORDS: usize = SRTP_REPLAY_WINDOW_PACKETS.div_ceil(u64::BITS as usize);
 const NVST_UDP_RECEIVE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_MAX_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ACCESS_UNIT_BYTES: usize = 16 * 1024 * 1024;
@@ -120,7 +135,6 @@ const MAX_ICE_CREDENTIAL_BYTES: usize = 256;
 
 /// The independently documented `NV_VIDEO_PACKET` flag values used by an earlier OpenNOW
 /// implementation. This module does not borrow code or binaries from NVIDIA.
-#[cfg(test)]
 const FLAG_CONTAINS_PIC_DATA: u8 = 0x01;
 const FLAG_EOF: u8 = 0x02;
 const FLAG_SOF: u8 = 0x04;
@@ -402,17 +416,19 @@ impl NvstFeedbackState {
         pending.push_back((first_missing_index, last_missing_index));
     }
 
-    fn resolve_nack(&self, received_index: u64) {
+    fn resolve_nack(&self, received_index: u64) -> bool {
         let mut pending = self
             .pending_nacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut updated = VecDeque::with_capacity(pending.len().saturating_add(1));
+        let mut resolved = false;
         while let Some((first, last)) = pending.pop_front() {
             if received_index < first || received_index > last {
                 updated.push_back((first, last));
                 continue;
             }
+            resolved = true;
             if first < received_index {
                 updated.push_back((first, received_index - 1));
             }
@@ -421,6 +437,7 @@ impl NvstFeedbackState {
             }
         }
         *pending = updated;
+        resolved
     }
 
     fn publish_completed_frame(&self, frame: &EncodedVideoAccessUnit) {
@@ -431,6 +448,9 @@ impl NvstFeedbackState {
         );
         self.last_completed_rtp_timestamp
             .store(frame.timestamp, Ordering::Release);
+        if frame.keyframe {
+            self.keyframe_needed.store(false, Ordering::Release);
+        }
     }
 
     pub fn publish_accepted_frame(&self, bytes: u32, accepted_at: Instant) {
@@ -553,6 +573,9 @@ pub struct NvstVideoConfig {
     ping_version: Option<u8>,
     stun_credentials: Option<NvstStunCredentials>,
     remote_dtls_fingerprint: Option<String>,
+    /// The peer assigned RTCP feedback to the `rtcp1` SCTP data channel. When true, the
+    /// dedicated Mjolnir socket must not send a second raw SRTCP Receiver Report.
+    rtcp_on_sctp: bool,
     /// Dedicated NATT-only video (Mjolnir) socket port in the official two-socket
     /// cloud model. When set, video RTP/SRTP arrives on this socket while the
     /// ICE/DTLS bundle socket only carries control/audio keepalive traffic.
@@ -565,6 +588,8 @@ pub struct NvstVideoConfig {
     max_access_unit_bytes: usize,
     timeout: Duration,
     frame_time_us: u32,
+    /// Negotiated `x-nv-video[0].packetSize`; FEC shards are this plus 16 RTP bytes.
+    video_packet_size: usize,
     /// Feedback plane shared with the ICE/DTLS bundle (cloned configs share it).
     feedback: SharedNvstFeedback,
 }
@@ -584,6 +609,7 @@ impl fmt::Debug for NvstVideoConfig {
                 "remote_dtls_fingerprint_bytes",
                 &self.remote_dtls_fingerprint.as_ref().map(String::len),
             )
+            .field("rtcp_on_sctp", &self.rtcp_on_sctp)
             .field("mjolnir_udp_port", &self.mjolnir_udp_port)
             .field("codec", &self.codec)
             .field("audio_track", &self.audio_track)
@@ -593,6 +619,7 @@ impl fmt::Debug for NvstVideoConfig {
             .field("max_access_unit_bytes", &self.max_access_unit_bytes)
             .field("timeout", &self.timeout)
             .field("frame_time_us", &self.frame_time_us)
+            .field("video_packet_size", &self.video_packet_size)
             .finish()
     }
 }
@@ -819,6 +846,16 @@ impl NvstVideoConfig {
         let ping_version = optional_u8(object, "pingVersion")?;
         let remote_dtls_fingerprint =
             optional_string(object, "remoteDtlsFingerprint")?.map(str::to_owned);
+        let rtcp_on_sctp = match object.get("rtcpOnSctp") {
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return Err(NvstConfigError::InvalidFieldType {
+                    field: "rtcpOnSctp",
+                    expected: "boolean",
+                });
+            }
+            None => false,
+        };
         let mjolnir_udp_port = optional_u16(object, "mjolnirUdpPort")?;
         if mjolnir_udp_port == Some(0) {
             return Err(NvstConfigError::OutOfRange {
@@ -865,6 +902,13 @@ impl NvstVideoConfig {
         if !(MIN_TIMEOUT..=MAX_TIMEOUT).contains(&timeout) {
             return Err(NvstConfigError::OutOfRange { field: "timeoutMs" });
         }
+        let video_packet_size =
+            optional_usize(object, "packetSize")?.unwrap_or(DEFAULT_NVST_VIDEO_PACKET_SIZE);
+        if !(MIN_NVST_VIDEO_PACKET_SIZE..=MAX_NVST_VIDEO_PACKET_SIZE).contains(&video_packet_size) {
+            return Err(NvstConfigError::OutOfRange {
+                field: "packetSize",
+            });
+        }
 
         Ok(Self {
             client_udp_port,
@@ -875,6 +919,7 @@ impl NvstVideoConfig {
             ping_version,
             stun_credentials,
             remote_dtls_fingerprint,
+            rtcp_on_sctp,
             mjolnir_udp_port,
             codec,
             audio_track,
@@ -884,6 +929,7 @@ impl NvstVideoConfig {
             max_access_unit_bytes,
             timeout,
             frame_time_us: DEFAULT_FRAME_TIME_US,
+            video_packet_size,
             feedback: Arc::new(NvstFeedbackState::default()),
         })
     }
@@ -923,6 +969,10 @@ impl NvstVideoConfig {
 
     pub fn remote_dtls_fingerprint(&self) -> Option<&str> {
         self.remote_dtls_fingerprint.as_deref()
+    }
+
+    pub fn rtcp_on_sctp(&self) -> bool {
+        self.rtcp_on_sctp
     }
 
     pub fn mjolnir_udp_port(&self) -> Option<u16> {
@@ -1388,7 +1438,7 @@ impl RtpHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RtpPacket {
     index: u64,
     header: RtpHeader,
@@ -1901,10 +1951,20 @@ fn build_rtcp_nack(
     packet
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct ReplayWindow {
     highest_index: Option<u64>,
-    seen: u64,
+    // Bit N records `highest_index - N`. Words are little-endian by packet age.
+    seen: [u64; SRTP_REPLAY_WINDOW_WORDS],
+}
+
+impl Default for ReplayWindow {
+    fn default() -> Self {
+        Self {
+            highest_index: None,
+            seen: [0; SRTP_REPLAY_WINDOW_WORDS],
+        }
+    }
 }
 
 impl ReplayWindow {
@@ -1933,7 +1993,12 @@ impl ReplayWindow {
             return Ok(());
         }
         let age = highest_index - index;
-        if age >= 64 || self.seen & (1_u64 << age) != 0 {
+        let Ok(age) = usize::try_from(age) else {
+            return Err(NvstDropReason::ReplayRejected);
+        };
+        if age >= SRTP_REPLAY_WINDOW_PACKETS
+            || self.seen[age / u64::BITS as usize] & (1_u64 << (age % u64::BITS as usize)) != 0
+        {
             return Err(NvstDropReason::ReplayRejected);
         }
         Ok(())
@@ -1943,19 +2008,37 @@ impl ReplayWindow {
         match self.highest_index {
             None => {
                 self.highest_index = Some(index);
-                self.seen = 1;
+                self.seen.fill(0);
+                self.seen[0] = 1;
             }
             Some(highest_index) if index > highest_index => {
-                let advance = index - highest_index;
-                self.seen = if advance >= 64 {
-                    1
+                let advance = usize::try_from(index - highest_index).unwrap_or(usize::MAX);
+                if advance >= SRTP_REPLAY_WINDOW_PACKETS {
+                    self.seen.fill(0);
                 } else {
-                    (self.seen << advance) | 1
-                };
+                    let word_shift = advance / u64::BITS as usize;
+                    let bit_shift = advance % u64::BITS as usize;
+                    for destination in (0..SRTP_REPLAY_WINDOW_WORDS).rev() {
+                        self.seen[destination] = if destination < word_shift {
+                            0
+                        } else {
+                            let source = destination - word_shift;
+                            let mut shifted = self.seen[source] << bit_shift;
+                            if bit_shift != 0 && source > 0 {
+                                shifted |=
+                                    self.seen[source - 1] >> (u64::BITS as usize - bit_shift);
+                            }
+                            shifted
+                        };
+                    }
+                }
+                self.seen[0] |= 1;
                 self.highest_index = Some(index);
             }
             Some(highest_index) => {
-                self.seen |= 1_u64 << (highest_index - index);
+                let age = usize::try_from(highest_index - index)
+                    .expect("replay age was validated before commit");
+                self.seen[age / u64::BITS as usize] |= 1_u64 << (age % u64::BITS as usize);
             }
         }
     }
@@ -2272,6 +2355,7 @@ struct ReorderResult {
     nack: Option<(u64, u64)>,
     recovery: Option<NvstRecovery>,
     dropped: Option<NvstDropReason>,
+    fec_repaired: usize,
 }
 
 impl RtpReorderBuffer {
@@ -2299,6 +2383,7 @@ impl RtpReorderBuffer {
                 nack: None,
                 recovery: None,
                 dropped: Some(NvstDropReason::StaleRtpPacket { index }),
+                fec_repaired: 0,
             };
         }
         if self.packets.contains_key(&index) {
@@ -2307,6 +2392,7 @@ impl RtpReorderBuffer {
                 nack: None,
                 recovery: None,
                 dropped: Some(NvstDropReason::DuplicateRtpPacket { index }),
+                fec_repaired: 0,
             };
         }
 
@@ -2373,7 +2459,646 @@ impl RtpReorderBuffer {
             nack,
             recovery,
             dropped: None,
+            fec_repaired: 0,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FecPacketLayout {
+    frame_index: u32,
+    block_index: u8,
+    last_block_index: u8,
+    shard_index: usize,
+    data_shards: usize,
+    parity_shards: usize,
+}
+
+impl FecPacketLayout {
+    fn from_packet(packet: &RtpPacket) -> Option<Self> {
+        let extension = packet.header.gs_video_header?;
+        let frame_index = u32::from_le_bytes(extension[4..8].try_into().ok()?);
+        let fec_word = u32::from_le_bytes(extension[12..16].try_into().ok()?);
+        let repair_percent = usize::try_from((fec_word >> 4) & 0xff).ok()?;
+        let shard_index = usize::try_from((fec_word >> 12) & 0x3ff).ok()?;
+        let data_shards = usize::try_from((fec_word >> 22) & 0x3ff).ok()?;
+        if data_shards == 0 || repair_percent == 0 {
+            return None;
+        }
+        let parity_shards = data_shards.saturating_mul(repair_percent).div_ceil(100);
+        let total_shards = data_shards.checked_add(parity_shards)?;
+        if parity_shards == 0 || shard_index >= total_shards || total_shards > 1_023 {
+            return None;
+        }
+        Some(Self {
+            frame_index,
+            block_index: (extension[11] >> 4) & 0x03,
+            last_block_index: (extension[11] >> 6) & 0x03,
+            shard_index,
+            data_shards,
+            parity_shards,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct FecBlock {
+    layout: FecPacketLayout,
+    base_index: u64,
+    shards: Vec<Option<RtpPacket>>,
+    repair_failed: bool,
+}
+
+struct Gf256Tables {
+    exponent: [u8; 512],
+    logarithm: [u8; 256],
+}
+
+fn gf256_tables() -> &'static Gf256Tables {
+    static TABLES: OnceLock<Gf256Tables> = OnceLock::new();
+    TABLES.get_or_init(|| {
+        // NVIDIA's GameStream FEC uses GF(2^8) with primitive polynomial 0x11d.
+        let mut exponent = [0_u8; 512];
+        let mut logarithm = [0_u8; 256];
+        let mut value = 1_u16;
+        for (power, slot) in exponent.iter_mut().take(255).enumerate() {
+            *slot = value as u8;
+            logarithm[value as usize] = power as u8;
+            value <<= 1;
+            if value & 0x100 != 0 {
+                value ^= 0x11d;
+            }
+        }
+        let mut power = 255;
+        while power < exponent.len() {
+            exponent[power] = exponent[power - 255];
+            power += 1;
+        }
+        Gf256Tables {
+            exponent,
+            logarithm,
+        }
+    })
+}
+
+fn gf256_multiply(left: u8, right: u8) -> u8 {
+    if left == 0 || right == 0 {
+        return 0;
+    }
+    let tables = gf256_tables();
+    tables.exponent[usize::from(tables.logarithm[left as usize])
+        + usize::from(tables.logarithm[right as usize])]
+}
+
+fn gf256_inverse(value: u8) -> Option<u8> {
+    (value != 0).then(|| {
+        let tables = gf256_tables();
+        tables.exponent[255 - usize::from(tables.logarithm[value as usize])]
+    })
+}
+
+fn gf256_axpy(destination: &mut [u8], source: &[u8], coefficient: u8) {
+    debug_assert_eq!(destination.len(), source.len());
+    if coefficient == 0 {
+        return;
+    }
+    if coefficient == 1 {
+        for (destination, source) in destination.iter_mut().zip(source) {
+            *destination ^= *source;
+        }
+        return;
+    }
+    for (destination, source) in destination.iter_mut().zip(source) {
+        *destination ^= gf256_multiply(coefficient, *source);
+    }
+}
+
+fn gf256_scale(bytes: &mut [u8], coefficient: u8) {
+    if coefficient == 1 {
+        return;
+    }
+    for byte in bytes {
+        *byte = gf256_multiply(*byte, coefficient);
+    }
+}
+
+fn nvst_cauchy_coefficient(
+    data_index: usize,
+    parity_index: usize,
+    parity_shards: usize,
+) -> Option<u8> {
+    let data_coordinate = u8::try_from(parity_shards.checked_add(data_index)?).ok()?;
+    let parity_coordinate = u8::try_from(parity_index).ok()?;
+    gf256_inverse(data_coordinate ^ parity_coordinate)
+}
+
+/// Reconstructs GameStream's systematic Cauchy Reed-Solomon data shards. Common generic Reed-
+/// Solomon crates use a different Vandermonde generator matrix; feeding NVIDIA parity to one
+/// produces mathematically valid but corrupt H.264 packets.
+fn reconstruct_nvst_cauchy_data(
+    shards: &mut [Option<Vec<u8>>],
+    data_shards: usize,
+    parity_shards: usize,
+    shard_len: usize,
+) -> Result<(), NvstDropReason> {
+    if data_shards == 0
+        || parity_shards == 0
+        || data_shards + parity_shards > u8::MAX as usize
+        || shards.len() != data_shards + parity_shards
+    {
+        return Err(NvstDropReason::Unsupported(
+            NvstUnsupportedFeature::FecRepair,
+        ));
+    }
+    let missing = shards[..data_shards]
+        .iter()
+        .enumerate()
+        .filter_map(|(index, shard)| shard.is_none().then_some(index))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let parity_rows = shards[data_shards..]
+        .iter()
+        .enumerate()
+        .filter_map(|(index, shard)| shard.is_some().then_some(index))
+        .take(missing.len())
+        .collect::<Vec<_>>();
+    if parity_rows.len() != missing.len() {
+        return Err(NvstDropReason::Unsupported(
+            NvstUnsupportedFeature::FecRepair,
+        ));
+    }
+
+    let mut matrix = parity_rows
+        .iter()
+        .map(|&parity_index| {
+            missing
+                .iter()
+                .map(|&data_index| {
+                    nvst_cauchy_coefficient(data_index, parity_index, parity_shards).ok_or(
+                        NvstDropReason::Unsupported(NvstUnsupportedFeature::FecRepair),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut recovered = parity_rows
+        .iter()
+        .map(|&parity_index| {
+            let mut bytes = shards[data_shards + parity_index]
+                .as_ref()
+                .expect("selected parity shard is present")
+                .clone();
+            bytes.resize(shard_len, 0);
+            bytes
+        })
+        .collect::<Vec<_>>();
+
+    for (row, &parity_index) in parity_rows.iter().enumerate() {
+        for (data_index, known) in shards[..data_shards].iter().enumerate() {
+            let Some(known) = known.as_ref() else {
+                continue;
+            };
+            let coefficient = nvst_cauchy_coefficient(data_index, parity_index, parity_shards)
+                .ok_or(NvstDropReason::Unsupported(
+                    NvstUnsupportedFeature::FecRepair,
+                ))?;
+            let known_len = known.len().min(shard_len);
+            gf256_axpy(
+                &mut recovered[row][..known_len],
+                &known[..known_len],
+                coefficient,
+            );
+        }
+    }
+
+    // Reduce the missing-data coefficient matrix to identity while applying the same row
+    // operations to whole packet shards.
+    for column in 0..missing.len() {
+        let pivot = (column..missing.len())
+            .find(|&row| matrix[row][column] != 0)
+            .ok_or(NvstDropReason::Unsupported(
+                NvstUnsupportedFeature::FecRepair,
+            ))?;
+        matrix.swap(column, pivot);
+        recovered.swap(column, pivot);
+        let inverse = gf256_inverse(matrix[column][column]).ok_or(NvstDropReason::Unsupported(
+            NvstUnsupportedFeature::FecRepair,
+        ))?;
+        gf256_scale(&mut matrix[column][column..], inverse);
+        gf256_scale(&mut recovered[column], inverse);
+        for row in 0..missing.len() {
+            if row == column {
+                continue;
+            }
+            let coefficient = matrix[row][column];
+            if coefficient == 0 {
+                continue;
+            }
+            let (target_matrix, pivot_matrix) = if row < column {
+                let (before, after) = matrix.split_at_mut(column);
+                (&mut before[row], &after[0])
+            } else {
+                let (before, after) = matrix.split_at_mut(row);
+                (&mut after[0], &before[column])
+            };
+            gf256_axpy(
+                &mut target_matrix[column..],
+                &pivot_matrix[column..],
+                coefficient,
+            );
+            let (target_shard, pivot_shard) = if row < column {
+                let (before, after) = recovered.split_at_mut(column);
+                (&mut before[row], &after[0])
+            } else {
+                let (before, after) = recovered.split_at_mut(row);
+                (&mut after[0], &before[column])
+            };
+            gf256_axpy(target_shard, pivot_shard, coefficient);
+        }
+    }
+
+    for (data_index, bytes) in missing.into_iter().zip(recovered) {
+        shards[data_index] = Some(bytes);
+    }
+    Ok(())
+}
+
+impl FecBlock {
+    fn new(layout: FecPacketLayout, packet_index: u64) -> Self {
+        let total = layout.data_shards + layout.parity_shards;
+        Self {
+            layout,
+            base_index: packet_index.saturating_sub(layout.shard_index as u64),
+            shards: (0..total).map(|_| None).collect(),
+            repair_failed: false,
+        }
+    }
+
+    fn matches(&self, layout: FecPacketLayout, packet_index: u64) -> bool {
+        self.layout.frame_index == layout.frame_index
+            && self.layout.block_index == layout.block_index
+            && self.layout.last_block_index == layout.last_block_index
+            && self.layout.data_shards == layout.data_shards
+            && self.layout.parity_shards == layout.parity_shards
+            && self.base_index == packet_index.saturating_sub(layout.shard_index as u64)
+    }
+
+    fn missing_data_range(&self) -> Option<(u64, u64)> {
+        let first = self.shards[..self.layout.data_shards]
+            .iter()
+            .position(Option::is_none)?;
+        let last = self.shards[..self.layout.data_shards]
+            .iter()
+            .rposition(Option::is_none)
+            .unwrap_or(first);
+        Some((
+            self.base_index + first as u64,
+            self.base_index + last as u64,
+        ))
+    }
+
+    fn first_missing_data_run(&self) -> Option<(u64, u64)> {
+        let first = self.shards[..self.layout.data_shards]
+            .iter()
+            .position(Option::is_none)?;
+        let length = self.shards[first..self.layout.data_shards]
+            .iter()
+            .take_while(|shard| shard.is_none())
+            .count();
+        Some((
+            self.base_index + first as u64,
+            self.base_index + first as u64 + length.saturating_sub(1) as u64,
+        ))
+    }
+
+    fn insert(&mut self, layout: FecPacketLayout, packet: RtpPacket) -> Option<NvstDropReason> {
+        let slot = &mut self.shards[layout.shard_index];
+        if slot.is_some() {
+            return Some(NvstDropReason::DuplicateRtpPacket {
+                index: packet.index,
+            });
+        }
+        *slot = Some(packet);
+        // A newly arrived data or parity shard can make a previously failed reconstruction
+        // solvable. Permit one new attempt, but do not spin on every unrelated packet.
+        self.repair_failed = false;
+        None
+    }
+
+    fn has_enough_shards(&self) -> bool {
+        self.shards.iter().filter(|shard| shard.is_some()).count() >= self.layout.data_shards
+    }
+
+    fn finish(mut self, shard_len: usize) -> Result<(Vec<RtpPacket>, usize), NvstDropReason> {
+        let missing_data = self.shards[..self.layout.data_shards]
+            .iter()
+            .filter(|shard| shard.is_none())
+            .count();
+        if missing_data == 0 {
+            return Ok((
+                self.shards[..self.layout.data_shards]
+                    .iter_mut()
+                    .filter_map(Option::take)
+                    .collect(),
+                0,
+            ));
+        }
+
+        if self
+            .shards
+            .iter()
+            .flatten()
+            .any(|packet| packet.plaintext.len() > shard_len)
+        {
+            return Err(NvstDropReason::Unsupported(
+                NvstUnsupportedFeature::FecRepair,
+            ));
+        }
+        let template = self.shards[..self.layout.data_shards]
+            .iter()
+            .flatten()
+            .next()
+            .ok_or(NvstDropReason::Unsupported(
+                NvstUnsupportedFeature::FecRepair,
+            ))?;
+        let template_header = template.header;
+        let mut shard_bytes = self
+            .shards
+            .iter()
+            .map(|shard| {
+                shard.as_ref().map(|packet| {
+                    let mut bytes = packet.plaintext.clone();
+                    bytes.resize(shard_len, 0);
+                    bytes
+                })
+            })
+            .collect::<Vec<_>>();
+        reconstruct_nvst_cauchy_data(
+            &mut shard_bytes,
+            self.layout.data_shards,
+            self.layout.parity_shards,
+            shard_len,
+        )?;
+
+        let extension_start = template_header
+            .payload_offset
+            .checked_sub(NV_VIDEO_PACKET_LEN)
+            .ok_or(NvstDropReason::MalformedRtp(
+                RtpParseError::InvalidExtensionLength,
+            ))?;
+        let template_rtp_envelope = template.plaintext[..extension_start].to_vec();
+        for (index, shard) in shard_bytes[..self.layout.data_shards]
+            .iter_mut()
+            .enumerate()
+        {
+            if self.shards[index].is_some() {
+                continue;
+            }
+            let plaintext = shard.as_mut().ok_or(NvstDropReason::Unsupported(
+                NvstUnsupportedFeature::FecRepair,
+            ))?;
+            if plaintext.len() < extension_start + NV_VIDEO_PACKET_LEN {
+                return Err(NvstDropReason::MalformedRtp(
+                    RtpParseError::InvalidExtensionLength,
+                ));
+            }
+            let sequence = (self.base_index + index as u64) as u16;
+            // A parity packet has its own valid RTP envelope, so those bytes are not necessarily
+            // the raw Reed-Solomon parity of the data-packet envelopes. Moonlight restores the
+            // recovered RTP header from a received packet before consuming NV_VIDEO_PACKET. Do
+            // the equivalent here, including the GS extension profile/length that our strict RTP
+            // parser validates. The NVIDIA metadata and encoded payload remain FEC output.
+            plaintext[..extension_start].copy_from_slice(&template_rtp_envelope);
+            plaintext[2..4].copy_from_slice(&sequence.to_be_bytes());
+            plaintext[extension_start + 4..extension_start + 8]
+                .copy_from_slice(&self.layout.frame_index.to_le_bytes());
+            plaintext[extension_start + 11] =
+                (self.layout.last_block_index << 6) | (self.layout.block_index << 4);
+            let header = RtpHeader::parse(plaintext).map_err(NvstDropReason::MalformedRtp)?;
+            let flags = header.gs_video_header.ok_or(NvstDropReason::MalformedRtp(
+                RtpParseError::MissingNvVideoHeader,
+            ))?[8]
+                & 0x0f;
+            let invalid_flags = flags & !(FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA) != 0;
+            if invalid_flags {
+                return Err(NvstDropReason::Unsupported(
+                    NvstUnsupportedFeature::FecRepair,
+                ));
+            }
+            let recovered = RtpPacket {
+                index: self.base_index + index as u64,
+                header,
+                plaintext: std::mem::take(plaintext),
+            };
+            // Do not validate the reconstructed FEC word. NVIDIA's reference-compatible
+            // receivers explicitly exclude fecInfo from recovered-packet validation because
+            // it is transport metadata and can differ in a valid repaired data shard. The
+            // frame and multi-FEC block coordinates above are restored from the already
+            // authenticated block, just like the RTP envelope. Requiring fecInfo to describe
+            // a data shard caused every real cloud repair to be rejected even though the H.264
+            // payload had been reconstructed successfully.
+            self.shards[index] = Some(recovered);
+        }
+        Ok((
+            self.shards[..self.layout.data_shards]
+                .iter_mut()
+                .filter_map(Option::take)
+                .collect(),
+            missing_data,
+        ))
+    }
+}
+
+struct FecReorderBuffer {
+    blocks: BTreeMap<u64, FecBlock>,
+    completed_through: Option<u64>,
+    gap_wait: Option<(u64, Instant)>,
+    shard_len: usize,
+}
+
+impl FecReorderBuffer {
+    fn new(video_packet_size: usize) -> Self {
+        Self {
+            blocks: BTreeMap::new(),
+            completed_through: None,
+            gap_wait: None,
+            shard_len: video_packet_size + NVST_FEC_RTP_HEADER_ALLOWANCE,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.blocks.clear();
+        self.completed_through = None;
+        self.gap_wait = None;
+    }
+
+    fn push(&mut self, packet: RtpPacket, layout: FecPacketLayout, now: Instant) -> ReorderResult {
+        let packet_base = packet.index.saturating_sub(layout.shard_index as u64);
+        if self
+            .completed_through
+            .is_some_and(|completed_through| packet.index < completed_through)
+        {
+            return ReorderResult {
+                ready: Vec::new(),
+                nack: None,
+                recovery: None,
+                dropped: None,
+                fec_repaired: 0,
+            };
+        }
+        let block = self
+            .blocks
+            .entry(packet_base)
+            .or_insert_with(|| FecBlock::new(layout, packet.index));
+        if !block.matches(layout, packet.index) {
+            return ReorderResult {
+                ready: Vec::new(),
+                nack: None,
+                recovery: None,
+                dropped: Some(NvstDropReason::Unsupported(
+                    NvstUnsupportedFeature::FecRepair,
+                )),
+                fec_repaired: 0,
+            };
+        }
+        let dropped = block.insert(layout, packet);
+        if dropped.is_some() {
+            return ReorderResult {
+                ready: Vec::new(),
+                nack: None,
+                recovery: None,
+                dropped,
+                fec_repaired: 0,
+            };
+        }
+
+        let mut result = ReorderResult {
+            ready: Vec::new(),
+            nack: None,
+            recovery: None,
+            dropped: None,
+            fec_repaired: 0,
+        };
+        loop {
+            let Some((&base, head)) = self.blocks.first_key_value() else {
+                self.gap_wait = None;
+                break;
+            };
+
+            if let Some(expected) = self.completed_through
+                && base > expected
+            {
+                result.nack = Some((expected, base - 1));
+                let started = match self.gap_wait {
+                    Some((waiting_for, started)) if waiting_for == expected => started,
+                    _ => {
+                        self.gap_wait = Some((expected, now));
+                        now
+                    }
+                };
+                if now.saturating_duration_since(started) < MJOLNIR_REORDER_DEQUEUE_TIMEOUT
+                    && base.saturating_sub(expected) < MAX_REORDER_WINDOW as u64
+                    && self.blocks.len() < MAX_PENDING_FEC_BLOCKS
+                {
+                    break;
+                }
+                result.recovery = Some(NvstRecovery::PacketGap {
+                    first_missing_index: expected,
+                    last_missing_index: base - 1,
+                });
+                result.nack = None;
+                self.completed_through = Some(base);
+                self.gap_wait = None;
+                continue;
+            }
+
+            if head.has_enough_shards() && !head.repair_failed {
+                let completed = self
+                    .blocks
+                    .remove(&base)
+                    .expect("head FEC block is present");
+                let completed_through =
+                    base + (completed.layout.data_shards + completed.layout.parity_shards) as u64;
+                match completed.clone().finish(self.shard_len) {
+                    Ok((mut ready, repaired)) => {
+                        result.ready.append(&mut ready);
+                        result.fec_repaired += repaired;
+                        self.completed_through = Some(completed_through);
+                        self.gap_wait = None;
+                        continue;
+                    }
+                    Err(reason) => {
+                        let mut pending = completed;
+                        pending.repair_failed = true;
+                        let (first_missing, last_missing) = pending
+                            .first_missing_data_run()
+                            .expect("failed FEC reconstruction has missing data");
+                        eprintln!(
+                            "NVST FEC reconstruction deferred to NACK: frame={} block={}/{} data={} parity={} missing={}..={} reason={reason:?}",
+                            pending.layout.frame_index,
+                            pending.layout.block_index,
+                            pending.layout.last_block_index,
+                            pending.layout.data_shards,
+                            pending.layout.parity_shards,
+                            first_missing,
+                            last_missing,
+                        );
+                        self.blocks.insert(base, pending);
+                        result.nack = Some((first_missing, last_missing));
+                        self.gap_wait = Some((first_missing, now));
+                        break;
+                    }
+                }
+            }
+
+            // A later block proves that the head block has stopped arriving normally. Ask for
+            // only the first contiguous missing run and retain all subsequent blocks while the
+            // retransmission is in flight.
+            if self.blocks.len() == 1 {
+                break;
+            }
+            let (first_missing, last_missing) = head
+                .first_missing_data_run()
+                .expect("an incomplete FEC block has missing data");
+            result.nack = Some((first_missing, last_missing));
+            let started = match self.gap_wait {
+                Some((waiting_for, started)) if waiting_for == first_missing => started,
+                _ => {
+                    self.gap_wait = Some((first_missing, now));
+                    now
+                }
+            };
+            let block_span = self
+                .blocks
+                .last_key_value()
+                .map_or(0, |(&last_base, _)| last_base.saturating_sub(base));
+            if now.saturating_duration_since(started) < MJOLNIR_REORDER_DEQUEUE_TIMEOUT
+                && block_span < MAX_REORDER_WINDOW as u64
+                && self.blocks.len() < MAX_PENDING_FEC_BLOCKS
+            {
+                break;
+            }
+
+            let failed = self
+                .blocks
+                .remove(&base)
+                .expect("head FEC block is present");
+            let (first_missing_index, last_missing_index) = failed
+                .missing_data_range()
+                .expect("an incomplete FEC block has missing data");
+            result.recovery = Some(NvstRecovery::PacketGap {
+                first_missing_index,
+                last_missing_index,
+            });
+            result.nack = None;
+            self.completed_through =
+                Some(base + (failed.layout.data_shards + failed.layout.parity_shards) as u64);
+            self.gap_wait = None;
+            // Emit any complete successors after the assembler has been marked discontinuous.
+        }
+        result
     }
 }
 
@@ -2476,6 +3201,7 @@ pub struct NvstVideoReceiver {
     srtp: SrtpReceiver,
     srtcp: Option<SrtcpSender>,
     reorder: RtpReorderBuffer,
+    fec_reorder: FecReorderBuffer,
     assembler: VideoAccessUnitAssembler,
     last_stream_packet_index: Option<u32>,
     next_frame_contiguous: bool,
@@ -2484,7 +3210,12 @@ pub struct NvstVideoReceiver {
     highest_sequence_received: u32,
     authenticated_packets: u64,
     fec_packets: u64,
+    fec_repaired_packets: u64,
     frames_emitted: u64,
+    replay_rejections: u64,
+    stale_packets: u64,
+    recovered_retransmissions: u64,
+    packet_gap_recoveries: u64,
     timeout_origin: Instant,
     last_authenticated_packet: Option<Instant>,
 }
@@ -2492,14 +3223,18 @@ pub struct NvstVideoReceiver {
 impl NvstVideoReceiver {
     pub fn new(config: NvstVideoConfig) -> Self {
         let srtp = SrtpReceiver::from_material(&config.srtp);
-        let srtcp = SrtcpSender::from_material(&config.srtp);
+        let srtcp = (!config.rtcp_on_sctp)
+            .then(|| SrtcpSender::from_material(&config.srtp))
+            .flatten();
         let reorder = RtpReorderBuffer::new(config.reorder_window_packets);
+        let fec_reorder = FecReorderBuffer::new(config.video_packet_size);
         let assembler = VideoAccessUnitAssembler::new(config.codec, config.max_access_unit_bytes);
         Self {
             config,
             srtp,
             srtcp,
             reorder,
+            fec_reorder,
             assembler,
             last_stream_packet_index: None,
             next_frame_contiguous: true,
@@ -2508,7 +3243,12 @@ impl NvstVideoReceiver {
             highest_sequence_received: 0,
             authenticated_packets: 0,
             fec_packets: 0,
+            fec_repaired_packets: 0,
             frames_emitted: 0,
+            replay_rejections: 0,
+            stale_packets: 0,
+            recovered_retransmissions: 0,
+            packet_gap_recoveries: 0,
             timeout_origin: Instant::now(),
             last_authenticated_packet: None,
         }
@@ -2604,7 +3344,12 @@ impl NvstVideoReceiver {
         }
         let packet = match self.srtp.unprotect(datagram) {
             Ok(packet) => packet,
-            Err(reason) => return vec![NvstReceiveEvent::Dropped(reason)],
+            Err(reason) => {
+                if reason == NvstDropReason::ReplayRejected {
+                    self.replay_rejections += 1;
+                }
+                return vec![NvstReceiveEvent::Dropped(reason)];
+            }
         };
         if let Some(expected) = self.config.expected_payload_type
             && packet.header.payload_type != expected
@@ -2636,9 +3381,19 @@ impl NvstVideoReceiver {
             packet.header.timestamp,
             now,
         );
-        self.config.feedback.resolve_nack(packet.index);
+        if self.config.feedback.resolve_nack(packet.index) {
+            self.recovered_retransmissions += 1;
+        }
 
-        let result = self.reorder.push(packet, now);
+        let result = if let Some(layout) = FecPacketLayout::from_packet(&packet) {
+            if layout.shard_index >= layout.data_shards {
+                self.fec_packets += 1;
+            }
+            self.fec_reorder.push(packet, layout, now)
+        } else {
+            self.reorder.push(packet, now)
+        };
+        self.fec_repaired_packets += result.fec_repaired as u64;
         let mut events = Vec::new();
         if let Some((first_missing_index, last_missing_index)) = result.nack {
             self.config
@@ -2646,9 +3401,13 @@ impl NvstVideoReceiver {
                 .request_nack(first_missing_index, last_missing_index);
         }
         if let Some(reason) = result.dropped {
+            if matches!(reason, NvstDropReason::StaleRtpPacket { .. }) {
+                self.stale_packets += 1;
+            }
             events.push(NvstReceiveEvent::Dropped(reason));
         }
         if let Some(recovery) = result.recovery {
+            self.packet_gap_recoveries += 1;
             self.assembler.reset();
             self.next_frame_contiguous = false;
             // A sequence gap breaks the decoder's reference chain; ask (via the
@@ -2746,11 +3505,16 @@ impl NvstVideoReceiver {
     /// depend on when buffered log lines happen to flush.
     pub fn stats_line(&self, origin: Instant) -> String {
         format!(
-            "elapsed={:.1}s auth={} fec={} frames={} ssrc={:?}",
+            "elapsed={:.1}s auth={} fec={} fecRecovered={} frames={} replay={} stale={} nackRecovered={} gaps={} ssrc={:?}",
             origin.elapsed().as_secs_f64(),
             self.authenticated_packets,
             self.fec_packets,
+            self.fec_repaired_packets,
             self.frames_emitted,
+            self.replay_rejections,
+            self.stale_packets,
+            self.recovered_retransmissions,
+            self.packet_gap_recoveries,
             self.bound_ssrc,
         )
     }
@@ -2786,6 +3550,7 @@ impl NvstVideoReceiver {
 
     fn reset_media_state(&mut self) {
         self.reorder.reset();
+        self.fec_reorder.reset();
         self.assembler.reset();
         self.last_stream_packet_index = None;
         self.next_frame_contiguous = false;
@@ -3769,8 +4534,8 @@ fn run_nvst_webrtc_bundle(
     let rtcp_sender_ssrc = RTCP_SENDER_SSRC;
     let mut last_rtcp_send = Instant::now() - SRTCP_RR_INTERVAL;
     let mut last_recovery_send = Instant::now();
+    let mut last_keyframe_send = Instant::now() - KEYFRAME_REQUEST_COOLDOWN;
     let mut rtcp_reports_sent = 0_u64;
-    let mut last_frame_accepted_at: Option<Instant> = None;
     let mut qos_sequence = 0_u32;
     let mut last_qos_send = Instant::now() - QOS_REPORT_INTERVAL;
     let mut sctp_started_at: Option<Instant> = None;
@@ -3989,25 +4754,13 @@ fn run_nvst_webrtc_bundle(
 
         if control_partial_open && let Some(channels) = input_channels {
             while let Some(frame) = feedback.take_completed_frame() {
-                let observed_us =
-                    last_frame_accepted_at
-                        .replace(frame.accepted_at)
-                        .map(|previous| {
-                            u32::try_from(
-                                frame
-                                    .accepted_at
-                                    .saturating_duration_since(previous)
-                                    .as_micros(),
-                            )
-                            .unwrap_or(u32::MAX)
-                        });
-                let pacing_error_us = observed_us.map_or(frame_time_us, |observed| {
-                    observed.abs_diff(frame_time_us).min(frame_time_us)
-                });
                 if frame.frame_number % FRAMES_PER_PACING_REPORT == 1 {
+                    // Packet-completion intervals are intentionally bursty and are not display
+                    // pacing error. Feeding that network jitter into the server PID made its
+                    // encoder cadence oscillate. Until a real vsync timestamp is available,
+                    // report a neutral error exactly as the unavailable ACK stage metrics do.
                     let pacing =
-                        frame_pacing_report(frame.frame_number, frame_time_us, pacing_error_us)
-                            .encoded();
+                        frame_pacing_report(frame.frame_number, frame_time_us, 0).encoded();
                     let _ = channels.send_partial_control(&mut rtc, &pacing);
                 }
                 let client_time_ms = frame
@@ -4101,26 +4854,32 @@ fn run_nvst_webrtc_bundle(
                 }
             }
             if feedback.take_keyframe_request() {
-                let mut sent = false;
-                if rtcp_channel_open
-                    && let Some(channel_id) = rtcp_channel
-                    && let Some(mut channel) = rtc.channel(channel_id)
-                {
-                    let pli = build_rtcp_pli(rtcp_sender_ssrc, media_ssrc);
-                    if channel.write(true, &pli).unwrap_or(false) {
-                        eprintln!("NVST rtcp1 PLI sent for mediaSsrc={media_ssrc}");
+                if now.duration_since(last_keyframe_send) < KEYFRAME_REQUEST_COOLDOWN {
+                    feedback.request_keyframe();
+                } else {
+                    let mut sent = false;
+                    if rtcp_channel_open
+                        && let Some(channel_id) = rtcp_channel
+                        && let Some(mut channel) = rtc.channel(channel_id)
+                    {
+                        let pli = build_rtcp_pli(rtcp_sender_ssrc, media_ssrc);
+                        if channel.write(true, &pli).unwrap_or(false) {
+                            eprintln!("NVST rtcp1 PLI sent for mediaSsrc={media_ssrc}");
+                            sent = true;
+                        }
+                    }
+                    if input_state.control_is_open()
+                        && let Some(channels) = input_channels
+                        && channels.send_control(&mut rtc, &idr_request().encoded())
+                    {
+                        eprintln!("NVST control 0x302 IDR request sent");
                         sent = true;
                     }
-                }
-                if input_state.control_is_open()
-                    && let Some(channels) = input_channels
-                    && channels.send_control(&mut rtc, &idr_request().encoded())
-                {
-                    eprintln!("NVST control 0x302 IDR request sent");
-                    sent = true;
-                }
-                if !sent {
-                    feedback.request_keyframe();
+                    if !sent {
+                        feedback.request_keyframe();
+                    } else {
+                        last_keyframe_send = now;
+                    }
                 }
             }
             last_recovery_send = now;
@@ -4590,16 +5349,9 @@ fn run_nvst_udp_receiver(
         };
         if now.duration_since(last_ping) >= ping_interval {
             if let Some(credentials) = stun_credentials.as_ref() {
-                // Bifrost's dedicated Mjolnir video socket still uses the
-                // legacy literal PING to select the return path, even when
-                // ping-version 6 and ICE credentials are present. Send it
-                // before the authenticated binding request. Some seats accept
-                // the latter alone, while others leave video unrouted.
-                if let Err(error) = socket.send_to(b"PING", receiver.config.video_peer) {
-                    eprintln!("NVST legacy video PING send failed: {error}");
-                    forward_optional(&event_sender, receiver.stop());
-                    return;
-                }
+                // Ping version 6 is an authenticated STUN Binding request. The official
+                // NattHolePunch::SendPing path does not prepend a legacy raw `PING`; doing so
+                // can make the relay retain its legacy route instead of publishing Mjolnir.
                 let mut transaction_id = [0_u8; 12];
                 if let Err(error) = getrandom::fill(&mut transaction_id) {
                     eprintln!("NVST NATT transaction generation failed: {error}");
@@ -4666,9 +5418,8 @@ fn run_nvst_udp_receiver(
                         StunDatagram::NotStun => non_stun += 1,
                     }
                 }
-                peer_seen |= source == receiver.config.video_peer;
-                for event in receiver.process_datagram(source, &datagram[..length], Instant::now())
-                {
+                let events = receiver.process_datagram(source, &datagram[..length], Instant::now());
+                for event in events {
                     if !forward_receive_event(
                         &media_consumer,
                         &event_sender,
@@ -5938,9 +6689,8 @@ mod tests {
     }
 
     #[test]
-    fn fec_repair_packets_do_not_advance_gs_source_index_continuity() {
+    fn fec_repair_packets_are_not_forwarded_as_video_payload() {
         let config = config();
-        let feedback = config.feedback();
         let crypto = test_srtp(&config);
         let first = protect_for_test(
             &crypto,
@@ -5950,9 +6700,6 @@ mod tests {
         let mut repair = build_plaintext_rtp(11, FLAG_CONTAINS_PIC_DATA, 9, &[0xee]);
         repair[28..32].copy_from_slice(&0x00c0_3420_u32.to_le_bytes());
         let repair = protect_for_test(&crypto, repair, 0);
-        let mut next_source = build_plaintext_rtp(12, FLAG_EOF, 9, &[0xaa]);
-        next_source[16..20].copy_from_slice(&(11_u32 << 8).to_le_bytes());
-        let next_source = protect_for_test(&crypto, next_source, 0);
         let mut receiver = NvstVideoReceiver::new(config);
 
         assert!(
@@ -5960,18 +6707,12 @@ mod tests {
                 .process_datagram(peer(), &first, Instant::now())
                 .is_empty()
         );
-        assert_eq!(
-            receiver.process_datagram(peer(), &repair, Instant::now()),
-            [NvstReceiveEvent::Dropped(NvstDropReason::Unsupported(
-                NvstUnsupportedFeature::FecRepair
-            ))]
+        assert!(
+            receiver
+                .process_datagram(peer(), &repair, Instant::now())
+                .is_empty(),
+            "a parity shard must stay in the FEC buffer rather than reaching H.264 assembly",
         );
-        let events = receiver.process_datagram(peer(), &next_source, Instant::now());
-        let [NvstReceiveEvent::Frame(frame)] = events.as_slice() else {
-            panic!("expected a frame after filtered FEC repair, got {events:?}");
-        };
-        assert_eq!(frame.bytes, [0, 0, 1, 0x65, 0xaa]);
-        assert!(!feedback.take_keyframe_request());
     }
 
     #[test]
@@ -6111,6 +6852,242 @@ mod tests {
     }
 
     #[test]
+    fn replay_window_accepts_late_unseen_packets_across_the_full_reorder_window() {
+        let mut replay = ReplayWindow::default();
+        replay.check(10).expect("first packet");
+        replay.commit(10);
+        replay.check(1_500).expect("new highest packet");
+        replay.commit(1_500);
+
+        // This packet is far beyond the old 64-entry filter but is still inside the bounded
+        // 2,048-packet reorder/NACK envelope and has never been authenticated before.
+        replay.check(11).expect("late retransmission");
+        replay.commit(11);
+        assert_eq!(replay.check(11), Err(NvstDropReason::ReplayRejected));
+
+        replay.check(2_058).expect("advance to replay edge");
+        replay.commit(2_058);
+        assert_eq!(replay.check(10), Err(NvstDropReason::ReplayRejected));
+        assert_eq!(replay.check(11), Err(NvstDropReason::ReplayRejected));
+        replay
+            .check(12)
+            .expect("old unseen packet inside replay edge");
+        assert_eq!(replay.check(2_057), Ok(()));
+    }
+
+    #[test]
+    fn replay_window_shift_preserves_seen_bits_across_word_boundaries() {
+        let mut replay = ReplayWindow::default();
+        for index in [100, 99, 63, 1] {
+            replay.check(index).expect("unseen packet");
+            replay.commit(index);
+        }
+        replay.check(165).expect("advance across a bitmap word");
+        replay.commit(165);
+        for index in [100, 99, 63, 1, 165] {
+            assert_eq!(replay.check(index), Err(NvstDropReason::ReplayRejected));
+        }
+        replay
+            .check(98)
+            .expect("nearby unseen packet remains admissible");
+    }
+
+    #[test]
+    fn fec_block_reconstructs_a_missing_shard_inside_a_multiblock_frame() {
+        let base_index = 4_000_u64;
+        let mut data = (0..3_u16)
+            .map(|offset| {
+                // This is block 1 of 0..=2, so neither its first nor last shard carries the
+                // whole-frame SOF/EOF markers.
+                let mut packet = build_plaintext_rtp_with_fec_blocks(
+                    (base_index as u16).wrapping_add(offset),
+                    FLAG_CONTAINS_PIC_DATA,
+                    77,
+                    1,
+                    2,
+                    &[offset as u8; 32],
+                );
+                let fec_word = (33_u32 << 4) | (u32::from(offset) << 12) | (3_u32 << 22);
+                let extension_start = RtpHeader::parse(&packet)
+                    .expect("RTP header")
+                    .payload_offset
+                    - NV_VIDEO_PACKET_LEN;
+                packet[extension_start + 12..extension_start + 16]
+                    .copy_from_slice(&fec_word.to_le_bytes());
+                packet
+            })
+            .collect::<Vec<_>>();
+        let expected_middle = data[1].clone();
+        let mut parity = vec![0; data[0].len()];
+        for (data_index, shard) in data.iter().enumerate() {
+            let coefficient =
+                nvst_cauchy_coefficient(data_index, 0, 1).expect("Cauchy parity coefficient");
+            gf256_axpy(&mut parity, shard, coefficient);
+        }
+        // Parity is transported inside its own parseable RTP envelope. These bytes are not part
+        // of the useful recovered NV payload and must be restored before strict RTP parsing.
+        parity[..16].copy_from_slice(&data[0][..16]);
+        parity[2..4].copy_from_slice(&(base_index as u16 + 3).to_be_bytes());
+        // NVIDIA's fecInfo bytes are transport metadata and are not guaranteed to reconstruct
+        // to the original data-shard value. Moonlight deliberately excludes them from its
+        // recovered-packet checks. Model that cloud behavior while keeping the encoded video
+        // bytes themselves recoverable.
+        let fec_info_start = RtpHeader::parse(&expected_middle)
+            .expect("RTP header")
+            .payload_offset;
+        parity[fec_info_start - 4..fec_info_start].fill(0xa5);
+        data.push(parity);
+
+        let layout = |shard_index| FecPacketLayout {
+            frame_index: 77,
+            block_index: 1,
+            last_block_index: 2,
+            shard_index,
+            data_shards: 3,
+            parity_shards: 1,
+        };
+        let packet = |shard_index: usize, plaintext: Vec<u8>| RtpPacket {
+            index: base_index + shard_index as u64,
+            header: RtpHeader::parse(&expected_middle).expect("template header"),
+            plaintext,
+        };
+        let mut block = FecBlock::new(layout(0), base_index);
+        assert_eq!(block.insert(layout(0), packet(0, data[0].clone())), None);
+        assert_eq!(block.insert(layout(2), packet(2, data[2].clone())), None);
+        assert_eq!(block.insert(layout(3), packet(3, data[3].clone())), None);
+        assert!(block.has_enough_shards());
+
+        let (repaired, repaired_count) = block.finish(expected_middle.len()).expect("FEC repair");
+        assert_eq!(repaired_count, 1);
+        assert_eq!(repaired.len(), 3);
+        assert_eq!(repaired[1].index, base_index + 1);
+        assert_eq!(
+            &repaired[1].plaintext[..fec_info_start - 4],
+            &expected_middle[..fec_info_start - 4]
+        );
+        assert_ne!(
+            &repaired[1].plaintext[fec_info_start - 4..fec_info_start],
+            &expected_middle[fec_info_start - 4..fec_info_start]
+        );
+        assert_eq!(
+            &repaired[1].plaintext[fec_info_start..],
+            &expected_middle[fec_info_start..]
+        );
+
+        let mut reorder = FecReorderBuffer::new(data[0].len() - NVST_FEC_RTP_HEADER_ALLOWANCE);
+        assert!(
+            reorder
+                .push(packet(0, data[0].clone()), layout(0), Instant::now())
+                .ready
+                .is_empty()
+        );
+        assert!(
+            reorder
+                .push(packet(1, data[1].clone()), layout(1), Instant::now())
+                .ready
+                .is_empty()
+        );
+        assert_eq!(
+            reorder
+                .push(packet(2, data[2].clone()), layout(2), Instant::now())
+                .ready
+                .len(),
+            3
+        );
+        let late_parity = reorder.push(packet(3, data[3].clone()), layout(3), Instant::now());
+        assert!(late_parity.ready.is_empty());
+        assert!(late_parity.recovery.is_none());
+    }
+
+    #[test]
+    fn nvst_cauchy_fec_reconstructs_multiple_missing_data_shards() {
+        let data = (0..5_usize)
+            .map(|shard| {
+                (0..97_usize)
+                    .map(|byte| (shard * 41 + byte * 17) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let mut shards = data.iter().cloned().map(Some).collect::<Vec<_>>();
+        for parity_index in 0..2 {
+            let mut parity = vec![0_u8; data[0].len()];
+            for (data_index, source) in data.iter().enumerate() {
+                let coefficient = nvst_cauchy_coefficient(data_index, parity_index, 2)
+                    .expect("Cauchy coefficient");
+                gf256_axpy(&mut parity, source, coefficient);
+            }
+            shards.push(Some(parity));
+        }
+        shards[1] = None;
+        shards[3] = None;
+
+        reconstruct_nvst_cauchy_data(&mut shards, 5, 2, data[0].len()).expect("two-shard repair");
+        assert_eq!(shards[1].as_deref(), Some(data[1].as_slice()));
+        assert_eq!(shards[3].as_deref(), Some(data[3].as_slice()));
+    }
+
+    #[test]
+    fn fec_reorder_retains_following_blocks_while_a_retransmission_is_pending() {
+        fn packet(index: u64) -> RtpPacket {
+            let mut plaintext = vec![0_u8; RTP_FIXED_HEADER_LEN];
+            plaintext[0] = 0x80;
+            plaintext[1] = 96;
+            plaintext[2..4].copy_from_slice(&(index as u16).to_be_bytes());
+            plaintext[4..8].copy_from_slice(&90_000_u32.to_be_bytes());
+            plaintext[8..12].copy_from_slice(&1_u32.to_be_bytes());
+            RtpPacket {
+                index,
+                header: RtpHeader::parse(&plaintext).expect("RTP header"),
+                plaintext,
+            }
+        }
+        fn layout(block_index: u8, shard_index: usize) -> FecPacketLayout {
+            FecPacketLayout {
+                frame_index: 7,
+                block_index,
+                last_block_index: 1,
+                shard_index,
+                data_shards: 2,
+                parity_shards: 1,
+            }
+        }
+
+        let started = Instant::now();
+        let mut reorder = FecReorderBuffer::new(48);
+        assert!(
+            reorder
+                .push(packet(100), layout(0, 0), started)
+                .ready
+                .is_empty()
+        );
+
+        let successor = reorder.push(
+            packet(103),
+            layout(1, 0),
+            started + Duration::from_millis(1),
+        );
+        assert_eq!(successor.nack, Some((101, 101)));
+        assert!(successor.ready.is_empty());
+        assert!(successor.recovery.is_none());
+
+        let retransmitted = reorder.push(
+            packet(101),
+            layout(0, 1),
+            started + Duration::from_millis(20),
+        );
+        assert_eq!(
+            retransmitted
+                .ready
+                .iter()
+                .map(|packet| packet.index)
+                .collect::<Vec<_>>(),
+            [100, 101]
+        );
+        assert!(retransmitted.recovery.is_none());
+        assert_eq!(reorder.blocks.len(), 1, "the successor stays buffered");
+    }
+
+    #[test]
     fn reorder_nack_excludes_packets_already_buffered_after_the_gap() {
         let config = config();
         let feedback = Arc::clone(&config.feedback);
@@ -6162,12 +7139,12 @@ mod tests {
         assert!(waiting.ready.is_empty());
         assert!(waiting.recovery.is_none());
 
-        let still_waiting = reorder.push(packet(4), started + Duration::from_millis(8));
+        let still_waiting = reorder.push(packet(4), started + Duration::from_millis(140));
         assert_eq!(still_waiting.nack, Some((2, 2)));
         assert!(still_waiting.ready.is_empty());
         assert!(still_waiting.recovery.is_none());
 
-        let recovered = reorder.push(packet(5), started + Duration::from_millis(9));
+        let recovered = reorder.push(packet(5), started + Duration::from_millis(151));
         assert_eq!(
             recovered.recovery,
             Some(NvstRecovery::PacketGap {
@@ -6335,6 +7312,25 @@ mod tests {
     }
 
     #[test]
+    fn raw_receiver_report_is_disabled_when_rtcp_is_on_sctp() {
+        let mut handoff = legacy_handoff();
+        handoff["rtcpOnSctp"] = json!(true);
+        let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).expect("valid config");
+        assert!(config.rtcp_on_sctp());
+        let crypto = test_srtp(&config);
+        let packet = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(10, FLAG_SOF | FLAG_EOF, 1, &[0, 0, 1, 0x65]),
+            0,
+        );
+        let now = Instant::now();
+        let mut receiver = NvstVideoReceiver::new(config);
+        let _ = receiver.process_datagram(peer(), &packet, now);
+
+        assert!(receiver.poll_receiver_report(now).is_none());
+    }
+
+    #[test]
     fn duplicate_rtp_timestamps_do_not_inflate_interarrival_jitter() {
         let feedback = NvstFeedbackState::default();
         let now = Instant::now();
@@ -6476,6 +7472,42 @@ mod tests {
         assert_eq!(&datagram[..first_len], b"negotiated-ping");
         let (second_len, _) = server.recv_from(&mut datagram).expect("repeated ping");
         assert_eq!(&datagram[..second_len], b"negotiated-ping");
+
+        session.stop();
+    }
+
+    #[test]
+    fn mjolnir_receiver_sends_only_version_six_stun_with_the_setup_identity() {
+        let server = UdpSocket::bind("127.0.0.1:0").expect("server socket");
+        server
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("server timeout");
+        let client = UdpSocket::bind("127.0.0.1:0").expect("client socket");
+
+        let mut config = config();
+        config.client_udp_port = client.local_addr().expect("client address").port();
+        config.video_peer = server.local_addr().expect("server address");
+        config.ping_payload = b"setup-ping".to_vec();
+        config.stun_credentials = Some(stun_credentials());
+        let (media_consumer, _media_receiver) = mpsc::sync_channel(1);
+        let (event_sender, _event_receiver) = mpsc::channel();
+        let session = spawn_nvst_mjolnir_receiver(client, config, media_consumer, event_sender)
+            .expect("Mjolnir receiver");
+
+        let mut datagram = [0_u8; 512];
+        let (setup_len, _) = server
+            .recv_from(&mut datagram)
+            .expect("SETUP identity probe");
+        let (_, setup_username) =
+            find_stun_attribute(&datagram[..setup_len], STUN_ATTR_USERNAME).expect("USERNAME");
+        assert_eq!(setup_username, b"setup-ping:loc1");
+
+        let (repeated_len, _) = server
+            .recv_from(&mut datagram)
+            .expect("repeated SETUP identity probe");
+        let (_, repeated_username) =
+            find_stun_attribute(&datagram[..repeated_len], STUN_ATTR_USERNAME).expect("USERNAME");
+        assert_eq!(repeated_username, b"setup-ping:loc1");
 
         session.stop();
     }

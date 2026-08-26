@@ -38,12 +38,15 @@ const COMMAND_SYSTEM_STATE: u16 = 0x0321;
 
 const INPUT_KEY_DOWN: u32 = 3;
 const INPUT_KEY_UP: u32 = 4;
+const INPUT_HEARTBEAT: u32 = 2;
 const INPUT_MOUSE_ABSOLUTE: u32 = 5;
 const INPUT_MOUSE_RELATIVE: u32 = 7;
 const INPUT_MOUSE_BUTTON_DOWN: u32 = 8;
 const INPUT_MOUSE_BUTTON_UP: u32 = 9;
 const INPUT_MOUSE_WHEEL: u32 = 10;
 const INPUT_GAMEPAD: u32 = 12;
+const INPUT_HAPTICS_ENABLED: u32 = 13;
+const INPUT_LOCK_KEYS_SYNC: u32 = 19;
 const INPUT_TEXT: u32 = 23;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,6 +478,7 @@ pub(crate) fn native_input_types(packet: &[u8]) -> Result<Vec<u32>, NvstInputCod
 
 pub(crate) fn native_input_type_name(input_type: u32) -> &'static str {
     match input_type {
+        INPUT_HEARTBEAT => "heartbeat",
         INPUT_KEY_DOWN => "key-down",
         INPUT_KEY_UP => "key-up",
         INPUT_MOUSE_ABSOLUTE => "mouse-absolute",
@@ -483,6 +487,8 @@ pub(crate) fn native_input_type_name(input_type: u32) -> &'static str {
         INPUT_MOUSE_BUTTON_UP => "mouse-button-up",
         INPUT_MOUSE_WHEEL => "mouse-wheel",
         INPUT_GAMEPAD => "gamepad",
+        INPUT_HAPTICS_ENABLED => "haptics-enabled",
+        INPUT_LOCK_KEYS_SYNC => "lock-keys-sync",
         INPUT_TEXT => "text",
         _ => "unknown",
     }
@@ -544,6 +550,10 @@ impl NvstInputCodec {
             let input_type = read_u32_le(event.bytes, 0)
                 .ok_or(NvstInputCodecError::Malformed("missing input type"))?;
             match input_type {
+                // The native bundle has its own control-channel keepalive. Renderer heartbeat
+                // packets are transport keepalives, not remote HID events, so consuming them is
+                // correct and prevents a benign packet from disabling all native input.
+                INPUT_HEARTBEAT => {}
                 INPUT_KEY_DOWN | INPUT_KEY_UP => {
                     require_len(event.bytes, 18, "short keyboard packet")?;
                     let key = read_u16_be(event.bytes, 4).expect("keyboard length checked");
@@ -636,6 +646,17 @@ impl NvstInputCodec {
                         route: NvstInputRoute::InputPartial,
                         bytes: gamepad_command(event.bytes, timestamp, self.gamepad_sequence),
                     });
+                }
+                INPUT_HAPTICS_ENABLED => {
+                    // Haptics capability is negotiated by the native gamepad descriptor. The
+                    // browser-side toggle has no separate NVST control command to forward.
+                }
+                INPUT_LOCK_KEYS_SYNC => {
+                    require_len(event.bytes, 5, "short lock-key sync packet")?;
+                    encoded.push(remote_input_message(
+                        remote_input_packet(input_type, &[event.bytes[4]]),
+                        event.timestamp_us,
+                    ));
                 }
                 INPUT_TEXT => encoded.extend(text_messages(&event)?),
                 other => return Err(NvstInputCodecError::UnsupportedType(other)),
@@ -741,10 +762,13 @@ fn native_events(
 
 fn native_event_length(input_type: u32, remaining: usize) -> Result<usize, NvstInputCodecError> {
     match input_type {
+        INPUT_HEARTBEAT => Ok(4),
         INPUT_KEY_DOWN | INPUT_KEY_UP | INPUT_MOUSE_BUTTON_DOWN | INPUT_MOUSE_BUTTON_UP => Ok(18),
         INPUT_MOUSE_RELATIVE | INPUT_MOUSE_WHEEL => Ok(22),
         INPUT_MOUSE_ABSOLUTE => Ok(26),
         INPUT_GAMEPAD => Ok(38),
+        INPUT_HAPTICS_ENABLED => Ok(6),
+        INPUT_LOCK_KEYS_SYNC => Ok(5),
         INPUT_TEXT => Ok(remaining),
         other => Err(NvstInputCodecError::UnsupportedType(other)),
     }
@@ -1227,11 +1251,47 @@ mod tests {
     }
 
     #[test]
+    fn transport_control_inputs_do_not_disable_native_input() {
+        let mut codec = NvstInputCodec::default();
+
+        assert!(
+            codec
+                .encode(&INPUT_HEARTBEAT.to_le_bytes(), 0)
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut haptics = vec![0x23];
+        haptics.extend_from_slice(&11_u64.to_be_bytes());
+        haptics.push(0x22);
+        haptics.extend_from_slice(&INPUT_HAPTICS_ENABLED.to_le_bytes());
+        haptics.extend_from_slice(&1_u16.to_be_bytes());
+        assert!(codec.encode(&haptics, 0).unwrap().is_empty());
+
+        let mut lock_keys = vec![0x23];
+        lock_keys.extend_from_slice(&12_u64.to_be_bytes());
+        lock_keys.push(0x22);
+        lock_keys.extend_from_slice(&INPUT_LOCK_KEYS_SYNC.to_le_bytes());
+        lock_keys.push(0b011);
+        let encoded = codec.encode(&lock_keys, 0).expect("lock-key sync");
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0].route, NvstInputRoute::ControlReliable);
+        let lock_keys_type = INPUT_LOCK_KEYS_SYNC.to_le_bytes();
+        assert!(
+            encoded[0]
+                .bytes
+                .windows(lock_keys_type.len())
+                .any(|bytes| bytes == lock_keys_type)
+        );
+        assert!(encoded[0].bytes.contains(&0b011));
+    }
+
+    #[test]
     fn unsupported_packets_fail_closed() {
         let mut codec = NvstInputCodec::default();
         assert_eq!(
-            codec.encode(&13_u32.to_le_bytes(), 0),
-            Err(NvstInputCodecError::UnsupportedType(13))
+            codec.encode(&99_u32.to_le_bytes(), 0),
+            Err(NvstInputCodecError::UnsupportedType(99))
         );
         let mut text = vec![0x22];
         text.extend_from_slice(&INPUT_TEXT.to_le_bytes());

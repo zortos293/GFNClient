@@ -865,7 +865,6 @@ fn linux_display_refresh_hz(
     u32::try_from(refresh_rate).ok().filter(|value| *value > 0)
 }
 
-#[cfg(target_os = "linux")]
 struct StreamAudioCallback {
     output: Arc<OutputBuffers>,
 }
@@ -878,7 +877,7 @@ impl AudioCallback for StreamAudioCallback {
     }
 }
 
-struct SdlInputCapture {
+pub(crate) struct SdlInputCapture {
     captured: Vec<CapturedInput>,
     pressed_keys: HashMap<sdl2::keyboard::Scancode, u16>,
     pressed_buttons: HashSet<u8>,
@@ -898,7 +897,7 @@ enum RemoteCursorState {
 }
 
 impl SdlInputCapture {
-    fn new(enabled: bool, external_relative_motion: bool) -> Self {
+    pub(crate) fn new(enabled: bool, external_relative_motion: bool) -> Self {
         Self {
             captured: Vec::new(),
             pressed_keys: HashMap::new(),
@@ -915,7 +914,7 @@ impl SdlInputCapture {
         }
     }
 
-    fn handle_event(
+    pub(crate) fn handle_event(
         &mut self,
         sdl: &sdl2::Sdl,
         window: &mut sdl2::video::Window,
@@ -1051,7 +1050,7 @@ impl SdlInputCapture {
         }
     }
 
-    fn apply_cursor(
+    pub(crate) fn apply_cursor(
         &mut self,
         sdl: &sdl2::Sdl,
         window: &mut sdl2::video::Window,
@@ -1131,7 +1130,7 @@ impl SdlInputCapture {
         }
     }
 
-    fn release(&mut self, sdl: &sdl2::Sdl, window: &mut sdl2::video::Window) {
+    pub(crate) fn release(&mut self, sdl: &sdl2::Sdl, window: &mut sdl2::video::Window) {
         for (_, virtual_key) in self.pressed_keys.drain() {
             self.captured.push(CapturedInput::Key {
                 virtual_key,
@@ -1150,8 +1149,12 @@ impl SdlInputCapture {
         sdl.mouse().show_cursor(true);
     }
 
-    fn take(&mut self) -> Vec<CapturedInput> {
+    pub(crate) fn take(&mut self) -> Vec<CapturedInput> {
         std::mem::take(&mut self.captured)
+    }
+
+    pub(crate) const fn relative_mouse_enabled(&self) -> bool {
+        self.relative_mouse
     }
 }
 
@@ -1182,7 +1185,7 @@ pub(crate) struct SoftwareOutput {
 }
 
 impl SoftwareOutput {
-    fn initialize(output: Arc<OutputBuffers>, stream: MediaStreamConfig) -> Result<Self, String> {
+    fn initialize(output: Arc<OutputBuffers>, _stream: MediaStreamConfig) -> Result<Self, String> {
         #[cfg(target_os = "linux")]
         configure_linux_sdl_video_driver();
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
@@ -1278,7 +1281,7 @@ impl SoftwareOutput {
             output,
             external_renderer,
             #[cfg(target_os = "linux")]
-            debug_overlay: NativeStatsOverlay::new(stream, "LINUX / SDL"),
+            debug_overlay: NativeStatsOverlay::new(_stream, "LINUX / SDL"),
             #[cfg(target_os = "linux")]
             presented_frames: 0,
             #[cfg(target_os = "linux")]
@@ -1448,11 +1451,12 @@ impl SoftwareOutput {
         if let Some(frame) = self.output.take_linux_video() {
             return self.present_linux_frame(frame.frame);
         }
-        let Some(mut frame) = self.output.take_video() else {
+        let Some(frame) = self.output.take_video() else {
             return Ok(false);
         };
         #[cfg(target_os = "linux")]
-        {
+        let frame = {
+            let mut frame = frame;
             self.presented_linux_frame = false;
             self.debug_overlay.update(
                 self.presented_frames,
@@ -1466,7 +1470,8 @@ impl SoftwareOutput {
                 frame.height,
                 frame.width as usize * 3,
             );
-        }
+            frame
+        };
         if self.texture_size != Some((frame.width, frame.height))
             || self.texture_format != Some(PixelFormatEnum::RGB24)
         {
@@ -1980,7 +1985,7 @@ fn handle_linux_stats_shortcut(
     }
 }
 
-fn handle_native_window_shortcut(
+pub(crate) fn handle_native_window_shortcut(
     window: &mut sdl2::video::Window,
     event: &sdl2::event::Event,
 ) -> bool {
@@ -2020,7 +2025,7 @@ fn handle_native_window_shortcut(
     }
 }
 
-fn native_input_capture_enabled() -> bool {
+pub(crate) fn native_input_capture_enabled() -> bool {
     native_input_capture_enabled_value(std::env::var("OPENNOW_NATIVE_INPUT_OWNER").ok().as_deref())
 }
 
@@ -2035,7 +2040,7 @@ pub(crate) enum ActiveOutput {
     #[cfg(target_os = "linux")]
     LinuxHardware(Box<LinuxHardwareOutput>),
     #[cfg(target_os = "macos")]
-    Mac(crate::macos_backend::MacOutput),
+    Mac(Box<crate::macos_backend::MacOutput>),
 }
 
 impl ActiveOutput {
@@ -2058,7 +2063,9 @@ impl ActiveOutput {
     ) -> Result<Self, String> {
         #[cfg(target_os = "macos")]
         if use_hardware {
-            return Ok(Self::Mac(crate::macos_backend::MacOutput::initialize()));
+            return crate::macos_backend::MacOutput::initialize(stream)
+                .map(Box::new)
+                .map(Self::Mac);
         }
         #[cfg(target_os = "windows")]
         if use_hardware {
@@ -2164,7 +2171,7 @@ impl ActiveOutput {
             #[cfg(target_os = "linux")]
             Self::LinuxHardware(output) => output.take_captured_input(),
             #[cfg(target_os = "macos")]
-            Self::Mac(_) => Vec::new(),
+            Self::Mac(output) => output.take_captured_input(),
         }
     }
 
@@ -2176,7 +2183,7 @@ impl ActiveOutput {
             #[cfg(target_os = "linux")]
             Self::LinuxHardware(output) => output.update_cursor(bytes),
             #[cfg(target_os = "macos")]
-            Self::Mac(_) => {}
+            Self::Mac(output) => output.update_cursor(bytes),
         }
     }
 
@@ -2681,7 +2688,7 @@ fn windows_surface(surface: &RenderSurface) -> Result<SurfaceTarget, String> {
     }))
 }
 
-fn external_renderer_enabled() -> bool {
+pub(crate) fn external_renderer_enabled() -> bool {
     external_renderer_enabled_value(
         std::env::var("OPENNOW_NATIVE_EXTERNAL_RENDERER")
             .ok()

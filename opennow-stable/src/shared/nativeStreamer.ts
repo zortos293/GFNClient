@@ -97,6 +97,11 @@ export type NativeStreamerCommand =
       id: string;
       type: "stop";
       reason?: string;
+    }
+  | {
+      id: string;
+      type: "shutdown";
+      reason?: string;
     };
 
 export type NativeStreamerResponse =
@@ -104,6 +109,7 @@ export type NativeStreamerResponse =
       id: string;
       type: "ready";
       capabilities: NativeStreamerCapabilities;
+      processId?: number;
     }
   | {
       id: string;

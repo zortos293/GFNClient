@@ -77,7 +77,12 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   assert.match(sdp, /a=x-nv-general\.clientPorts\.audio:45002/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.control:45004/);
   assert.match(sdp, /a=x-nv-video\[0\]\.enableRtpNack:1/);
-  assert.match(sdp, /a=x-nv-vqos\[0\]\.fec\.enable:0/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.fec\.enable:1/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.fec\.repairPercent:20/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.fec\.repairMinPercent:20/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.fec\.repairMaxPercent:35/);
+  assert.match(sdp, /a=x-nv-packetPacing\.minNumPacketsPerGroup:15/);
+  assert.match(sdp, /a=x-nv-packetPacing\.maxDelayUs:2000/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bitStreamFormat:0/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bllFec\.enable:0/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.grc\.enable:7/);
@@ -100,6 +105,7 @@ test("buildAnnounceSdp advertises the negotiated high-FPS ceiling", () => {
   assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:240/);
   const normalSdp = buildAnnounceSdp({ fps: 120 });
   assert.match(normalSdp, /a=x-nv-video\[0\]\.maxFPS:120/);
+  assert.match(normalSdp, /a=x-nv-packetPacing\.maxDelayUs:4000/);
 });
 
 test("buildAnnounceSdp selects H.265 and AV1 NVST bitstreams", () => {
@@ -161,6 +167,8 @@ test("buildAnnounceSdp matches official cloud bundle flags", () => {
       bundle: 0,
       session: 0,
       localAddress: "192.0.2.8",
+      useReserved: true,
+      fallbackDynamic: true,
     },
     clientBundlePort: 49006,
     nativeRtcOnBundlePort: "1",
@@ -171,6 +179,8 @@ test("buildAnnounceSdp matches official cloud bundle flags", () => {
     enableUnifiedSocket: false,
   });
   assert.match(sdp, /a=x-nv-general\.clientPorts\.video:0/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.useReserved:1/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.fallbackDynamic:1/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.audio:0/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.mic:0/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.bundle:0/);

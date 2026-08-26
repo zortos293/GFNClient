@@ -35,12 +35,22 @@ export function isNativeStreamerSupportedPlatform(platform: string): boolean {
 }
 
 export function isNativeExternalRendererSupported(platform: string): boolean {
-  return isNativeDirectXBackendSupported(platform);
+  return isNativeDirectXBackendSupported(platform) || isMacOsPlatform(platform);
+}
+
+/** macOS cannot embed an AppKit view across the Electron/helper process boundary. */
+export function isNativeExternalRendererRequired(platform: string): boolean {
+  return isMacOsPlatform(platform);
 }
 
 export function isNativeDirectXBackendSupported(platform: string): boolean {
   const normalized = platform.toLowerCase();
   return normalized === "win32" || normalized.startsWith("win") || normalized.includes("windows");
+}
+
+function isMacOsPlatform(platform: string): boolean {
+  const normalized = platform.toLowerCase();
+  return normalized === "darwin" || normalized.includes("mac");
 }
 export function isNvstTransportSupported(platform: string): boolean {
   return isNativeStreamerSupportedPlatform(platform);
@@ -51,7 +61,8 @@ export function normalizeStreamClientModeForPlatform(mode: StreamClientMode, pla
 }
 
 export function normalizeNativeExternalRendererForPlatform(enabled: boolean, platform: string): boolean {
-  return enabled && isNativeExternalRendererSupported(platform);
+  return isNativeExternalRendererRequired(platform)
+    || (enabled && isNativeExternalRendererSupported(platform));
 }
 
 export function normalizeTransportModeForPlatform(

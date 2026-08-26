@@ -64,6 +64,8 @@ export type NvstSrtpProfile =
 
 export interface NvstVideoSession {
   clientUdpPort: number;
+  /** Negotiated NVST packet payload size. FEC covers this plus the RTP header allowance. */
+  packetSize?: number;
   /**
    * Dedicated NATT-only video (Mjolnir) socket port reserved by the native
    * streamer. When present, the native streamer reads raw-SRTP video from this
@@ -89,6 +91,8 @@ export interface NvstVideoSession {
   localDtlsFingerprint?: string;
   /** SHA-256 colon hex advertised by DESCRIBE (`dtlsFingerprint` / `V2`). */
   remoteDtlsFingerprint?: string;
+  /** True when DESCRIBE assigns all RTCP feedback to the `rtcp1` SCTP channel. */
+  rtcpOnSctp?: boolean;
   codec?: string;
   audioTrack?: NvstAudioTrack;
   /** Idle receive timeout. Handshake needs longer than the 5s media default. */

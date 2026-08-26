@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import type { NativeStreamerStatus, NativeVideoBackendCapability, Settings } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
+  isNativeExternalRendererRequired,
   isNativeExternalRendererSupported,
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
@@ -22,6 +23,7 @@ import { ModalSurface } from "../../ui/ModalSurface";
 const nativePlatformHint = `${navigator.platform} ${navigator.userAgent}`;
 const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(nativePlatformHint);
 const supportsNativeExternalRenderer = isNativeExternalRendererSupported(nativePlatformHint);
+const requiresNativeExternalRenderer = isNativeExternalRendererRequired(nativePlatformHint);
 
 function getNativeHostPlatform(): "windows" | "macos" | "linux" | "other" {
   const normalized = nativePlatformHint.toLowerCase();
@@ -474,7 +476,13 @@ export function SettingsNativeStreamerSection({
                 </span>
               </div>
 
-              {supportsNativeExternalRenderer ? (
+              {requiresNativeExternalRenderer ? (
+                <div className="settings-row settings-row--choice">
+                  <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
+                  <div className="settings-chip-row"><span className="settings-inline-badge">{t("settings.nativeStreamer.renderModeExternal")}</span></div>
+                  <span className="settings-subtle-hint">{t("settings.nativeStreamer.renderModeExternalRequiredHint")}</span>
+                </div>
+              ) : supportsNativeExternalRenderer ? (
                 <div className="settings-row settings-row--choice">
                   <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
                   <div className="settings-chip-row">

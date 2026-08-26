@@ -6,6 +6,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +27,14 @@ const protocolSourcePath = join(
   "lib.rs",
 );
 const appProtocolSourcePath = join(packageRoot, "src", "shared", "nativeStreamer.ts");
+const macInfoPlistSourcePath = join(workspaceRoot, "macos", "OpenNOWStreamer-Info.plist");
+const workspaceManifestSource = readFileSync(manifestPath, "utf8");
+const nativePackageVersion = workspaceManifestSource.match(
+  /\[workspace\.package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/,
+)?.[1];
+if (!nativePackageVersion) {
+  throw new Error(`Unable to read native streamer package version from ${manifestPath}`);
+}
 const nativeTarget = process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
 const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim()
   || `${process.platform}-${process.arch}`;
@@ -40,7 +49,11 @@ const releaseDir = nativeTarget
   : join(workspaceRoot, "target", "release");
 const builtBinary = join(releaseDir, exeName);
 const binRoot = join(workspaceRoot, "bin");
-const platformBinary = join(binRoot, platformKey, exeName);
+const platformDirectory = join(binRoot, platformKey);
+const macBundle = join(platformDirectory, "OpenNOWStreamer.app");
+const platformBinary = platformKey.startsWith("darwin-")
+  ? join(macBundle, "Contents", "MacOS", exeName)
+  : join(platformDirectory, exeName);
 rmSync(join(binRoot, exeName), { force: true });
 
 function readVersion(path, pattern, label) {
@@ -92,8 +105,40 @@ const build = spawnSync("cargo", cargoArgs, {
 if (build.status !== 0) process.exit(build.status ?? 1);
 if (!existsSync(builtBinary)) throw new Error(`Native streamer build missing: ${builtBinary}`);
 
-mkdirSync(dirname(platformBinary), { recursive: true });
-if (process.platform === "linux" && platformKey.startsWith("linux-")) {
+if (platformKey.startsWith("darwin-")) {
+  if (!existsSync(macInfoPlistSourcePath)) {
+    throw new Error(`Native streamer macOS Info.plist is missing: ${macInfoPlistSourcePath}`);
+  }
+  // WindowServer does not reliably composite windows owned by a bare
+  // command-line process. Ship the streamer as a regular application; Electron
+  // launches the bundle through LaunchServices and communicates over FIFOs.
+  rmSync(join(platformDirectory, exeName), { force: true });
+  rmSync(macBundle, { recursive: true, force: true });
+  mkdirSync(dirname(platformBinary), { recursive: true });
+  mkdirSync(join(macBundle, "Contents", "Resources"), { recursive: true });
+  const macInfoPlist = readFileSync(macInfoPlistSourcePath, "utf8")
+    .replaceAll("__OPENNOW_STREAMER_VERSION__", nativePackageVersion);
+  writeFileSync(join(macBundle, "Contents", "Info.plist"), macInfoPlist);
+  copyFileSync(builtBinary, platformBinary);
+  chmodSync(platformBinary, 0o755);
+  if (process.platform === "darwin") {
+    // Copying the linker-signed Mach-O into an application bundle changes its
+    // code-signing resource context. Re-sign inside-out so local development
+    // and unsigned builds launch the same valid nested code shape as releases.
+    for (const [target, extraArgs] of [
+      [platformBinary, ["--identifier", "com.zortos.opennow.streamer.executable"]],
+      [macBundle, []],
+    ]) {
+      const sign = spawnSync(
+        "codesign",
+        ["--force", "--sign", "-", ...extraArgs, target],
+        { stdio: "inherit" },
+      );
+      if (sign.status !== 0) process.exit(sign.status ?? 1);
+    }
+  }
+} else if (process.platform === "linux" && platformKey.startsWith("linux-")) {
+  mkdirSync(dirname(platformBinary), { recursive: true });
   // A running ELF cannot be truncated in place (ETXTBSY). Stage the new
   // executable beside it and atomically replace the directory entry so an
   // active session can finish on the old inode while the next one uses this
@@ -108,6 +153,7 @@ if (process.platform === "linux" && platformKey.startsWith("linux-")) {
     rmSync(stagedBinary, { force: true });
   }
 } else {
+  mkdirSync(dirname(platformBinary), { recursive: true });
   copyFileSync(builtBinary, platformBinary);
   if (!platformKey.startsWith("win32-")) {
     chmodSync(platformBinary, 0o755);

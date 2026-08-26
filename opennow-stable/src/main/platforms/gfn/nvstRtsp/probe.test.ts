@@ -268,10 +268,12 @@ test("negotiation retains RTSPS control and video UDP until native rebind", asyn
   ]);
   assert.equal(client.closed, false);
   assert.equal(negotiated.videoSession.clientUdpPort, 45678);
+  assert.equal(negotiated.videoSession.packetSize, 1280);
   assert.equal(negotiated.videoSession.videoPeerIp, "192.0.2.4");
   assert.equal(negotiated.videoSession.codec, "H265");
   assert.equal(negotiated.videoSession.srtpSaltHex, "00000000000000000000002A");
   assert.equal(negotiated.videoSession.srtpProfile, undefined);
+  assert.equal(negotiated.videoSession.rtcpOnSctp, false);
   assert.deepEqual(negotiated.videoSession.audioTrack, {
     payloadType: 97,
     codec: "opus",
@@ -349,6 +351,30 @@ test("negotiation hands off an explicitly advertised DESCRIBE SRTP profile", asy
   assert.equal(negotiated.srtp.profile, "AEAD_AES_256_GCM");
   assert.equal(negotiated.videoSession.srtpProfile, "AEAD_AES_256_GCM");
   assert.equal(negotiated.videoSession.srtpSaltHex, negotiated.srtp.saltHex);
+  await negotiated.release("test complete");
+});
+
+test("negotiation hands RTCP ownership to the advertised SCTP channel", async () => {
+  const events: string[] = [];
+  const { dependencies } = createNegotiationHarness(events, (method) => {
+    if (method === "DESCRIBE") {
+      return response(
+        { session: "rtsp-session;timeout=60" },
+        DESCRIBE_SDP.replace(
+          "m=video",
+          "a=x-nv-general.rtcpOnSctp:1\r\nm=video",
+        ),
+      );
+    }
+    return undefined;
+  });
+
+  const negotiated = await negotiateNvstRtspSession({
+    sessionId: "gfn-session",
+    rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+  }, dependencies);
+
+  assert.equal(negotiated.videoSession.rtcpOnSctp, true);
   await negotiated.release("test complete");
 });
 

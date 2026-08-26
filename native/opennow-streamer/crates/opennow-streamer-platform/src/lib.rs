@@ -7,6 +7,7 @@ mod linux_xinput;
 #[cfg(target_os = "macos")]
 mod macos_backend;
 mod media;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native_stats_overlay;
 mod native_surface;
 mod output;
@@ -41,25 +42,19 @@ pub fn video_backends() -> Vec<VideoBackendCapability> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let mut backends = Vec::new();
         #[cfg(target_os = "windows")]
         {
             use opennow_streamer_platform_windows::WindowsGraphicsApi;
-            backends.push(windows_hardware_backend(
-                WindowsGraphicsApi::D3d12,
-                "d3d12",
-                "d3d11on12-nv12",
-            ));
-            backends.push(windows_hardware_backend(
-                WindowsGraphicsApi::D3d11,
-                "d3d11",
-                "d3d11-nv12",
-            ));
+            vec![
+                windows_hardware_backend(WindowsGraphicsApi::D3d12, "d3d12", "d3d11on12-nv12"),
+                windows_hardware_backend(WindowsGraphicsApi::D3d11, "d3d11", "d3d11-nv12"),
+                software_backend(),
+            ]
         }
         #[cfg(not(target_os = "windows"))]
-        backends.push(hardware_backend());
-        backends.push(software_backend());
-        backends
+        {
+            vec![hardware_backend(), software_backend()]
+        }
     }
 }
 

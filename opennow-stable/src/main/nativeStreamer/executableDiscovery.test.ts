@@ -6,10 +6,15 @@ import test from "node:test";
 
 import { resolveNativeStreamerExecutableCandidates } from "./executableDiscovery";
 
-function options(root: string, configuredPath = "") {
+function options(
+  root: string,
+  configuredPath = "",
+  platform: NodeJS.Platform = "linux",
+  arch = "x64",
+) {
   return {
-    platform: "linux" as const,
-    arch: "x64",
+    platform,
+    arch,
     resourcesPath: join(root, "resources"),
     appPath: join(root, "app"),
     mainDir: join(root, "app", "out", "main"),
@@ -27,6 +32,44 @@ test("discovers the packaged self-contained executable", () => {
     chmodSync(executable, 0o755);
 
     assert.deepEqual(resolveNativeStreamerExecutableCandidates(options(root)), [executable]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("discovers only the bundled helper automatically on macOS", () => {
+  const root = mkdtempSync(join(tmpdir(), "opennow-native-discovery-"));
+  try {
+    const plainExecutable = join(
+      root,
+      "resources",
+      "native",
+      "opennow-streamer",
+      "darwin-arm64",
+      "opennow-streamer",
+    );
+    const bundledExecutable = join(
+      root,
+      "resources",
+      "native",
+      "opennow-streamer",
+      "darwin-arm64",
+      "OpenNOWStreamer.app",
+      "Contents",
+      "MacOS",
+      "opennow-streamer",
+    );
+    mkdirSync(join(plainExecutable, ".."), { recursive: true });
+    mkdirSync(join(bundledExecutable, ".."), { recursive: true });
+    writeFileSync(plainExecutable, "legacy-unbundled-native");
+    writeFileSync(bundledExecutable, "bundled-native");
+    chmodSync(plainExecutable, 0o755);
+    chmodSync(bundledExecutable, 0o755);
+
+    assert.deepEqual(
+      resolveNativeStreamerExecutableCandidates(options(root, "", "darwin", "arm64")),
+      [bundledExecutable],
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

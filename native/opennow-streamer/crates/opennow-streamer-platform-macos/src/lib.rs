@@ -40,9 +40,9 @@ mod macos;
 
 pub use failure::{BackendFailure, BackendSubsystem, VideoDecodeLoss};
 pub use format::{
-    AudioFormat, BackendConfig, BorrowedNsView, BorrowedNsWindow, FrameTiming, H264Format,
-    H264Framing, H264ParameterSets, OwnedOverlayConfig, QueueLimits, RendererRect, ScreenRect,
-    SurfaceTarget, VideoColorSpace, WindowSurfaceConfig,
+    AudioFormat, BackendConfig, BorrowedNsView, BorrowedNsWindow, FrameTiming, GpuOverlayFrame,
+    GpuOverlayPlacement, H264Format, H264Framing, H264ParameterSets, OwnedOverlayConfig,
+    QueueLimits, RendererRect, ScreenRect, SurfaceTarget, VideoColorSpace, WindowSurfaceConfig,
 };
 pub use lifecycle::BackendState;
 
@@ -56,7 +56,7 @@ pub(crate) const fn overlay_should_be_ordered(
 #[cfg(target_os = "macos")]
 pub use macos::{
     BackendError, BackendStats, MacOsBackend, NativeSurfaceHandle, StreamSink, SubmitOutcome,
-    debug_show_overlay_window, probe_h264_hardware, pump_app_events,
+    activate_stream_application, debug_show_overlay_window, probe_h264_hardware, pump_app_events,
 };
 
 #[cfg(test)]

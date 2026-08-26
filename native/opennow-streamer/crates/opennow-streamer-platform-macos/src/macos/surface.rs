@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSColor, NSScreen, NSView, NSWindow, NSWindowStyleMask,
-    NSWorkspace,
+    NSApplication, NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSPanel, NSScreen, NSView,
+    NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_quartz_core::{CALayer, CAMetalLayer};
@@ -55,6 +55,11 @@ enum Attachment {
         previous_layer: Option<Retained<CALayer>>,
         previous_wants_layer: bool,
     },
+    /// SDL_Metal_CreateView owns this CAMetalLayer and keeps its geometry and
+    /// drawable size synchronized across resize, fullscreen, Space, and
+    /// display transitions. The backend borrows it for presentation but must
+    /// never replace or detach it.
+    ExistingMetal,
     WindowChild {
         parent: Retained<NSView>,
     },
@@ -63,26 +68,18 @@ enum Attachment {
 /// Creates the overlay window exactly as `SurfaceOwner::attach` does for `OwnedOverlay`,
 /// for isolating window-server behavior without a streaming session.
 pub(super) fn debug_overlay_window(main_thread: MainThreadMarker) {
-    let application = NSApplication::sharedApplication(main_thread);
-    application.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
-    application.finishLaunching();
-    application.activate();
     let rect = ScreenRect::new(200.0, 167.0, 1400.0, 868.0);
-    let styles =
-        NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
-    let window: Retained<NSWindow> = unsafe {
-        msg_send![
-            main_thread.alloc::<NSWindow>(),
-            initWithContentRect: appkit_screen_frame(rect, main_thread).expect("screen frame"),
-            styleMask: styles,
-            backing: NSBackingStoreType::Buffered,
-            defer: false
-        ]
-    };
-    window.setTitle(&objc2_foundation::NSString::from_str("OpenNOW Video"));
-    window.orderFront(None);
+    let surface = SurfaceOwner::attach(
+        SurfaceTarget::OwnedOverlay(crate::format::OwnedOverlayConfig::new(rect, true)),
+        main_thread,
+    )
+    .expect("production overlay surface");
+    if let Some(window) = &surface.window {
+        window.orderFrontRegardless();
+    }
+    surface.visible.store(true, Ordering::Release);
     eprintln!("NVST debug-overlay-window created");
-    std::mem::forget(window);
+    std::mem::forget(surface);
 }
 
 pub(super) struct SurfaceOwner {
@@ -104,7 +101,16 @@ impl SurfaceOwner {
         main_thread: MainThreadMarker,
     ) -> Result<Self, BackendError> {
         let ordered_visible;
-        let (window, view, owns_window, overlay, child_parent, requested_visible, parent_pid) =
+        let (
+            window,
+            view,
+            owns_window,
+            overlay,
+            child_parent,
+            requested_visible,
+            parent_pid,
+            reuse_existing_metal_layer,
+        ) =
             match target {
                 SurfaceTarget::OwnedOverlay(config) => {
                     let application = NSApplication::sharedApplication(main_thread);
@@ -119,15 +125,14 @@ impl SurfaceOwner {
                     let parent_pid = unsafe { libc::getppid() };
                     let frontmost = application_is_frontmost(parent_pid);
                     let ordered = overlay_should_be_ordered(config.visible, frontmost);
-                    let styles = NSWindowStyleMask::Titled
-                        | NSWindowStyleMask::Closable
-                        | NSWindowStyleMask::Resizable;
-                    // A runtime-defined NSWindow/NSPanel subclass never composites in this
-                    // process (the window server lists it but keeps it offscreen and
-                    // unsynced); a plain NSWindow through the same init path works.
-                    let window: Retained<NSWindow> = unsafe {
+                    let styles =
+                        NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+                    // Use AppKit's concrete NSPanel rather than a runtime-defined subclass.
+                    // The helper's application bundle gives WindowServer the process metadata
+                    // it needs to composite this passive cross-process overlay reliably.
+                    let window: Retained<NSPanel> = unsafe {
                         msg_send![
-                            main_thread.alloc::<NSWindow>(),
+                            main_thread.alloc::<NSPanel>(),
                             initWithContentRect: appkit_screen_frame(config.screen_rect, main_thread)?,
                             styleMask: styles,
                             backing: NSBackingStoreType::Buffered,
@@ -135,21 +140,36 @@ impl SurfaceOwner {
                         ]
                     };
                     unsafe { window.setReleasedWhenClosed(false) };
-                    window.setTitle(&objc2_foundation::NSString::from_str("OpenNOW Video"));
-                    window.setIgnoresMouseEvents(false);
+                    window.setBecomesKeyOnlyIfNeeded(true);
+                    // The panel belongs to the accessory helper, while Electron remains the
+                    // active application. NSPanel may otherwise hide itself as soon as the
+                    // helper deactivates, leaving a live native surface that is never visible.
+                    window.setHidesOnDeactivate(false);
+                    // Cross-process child windows are not supported by AppKit. Keep this passive
+                    // panel above the Electron content while it is ordered, and explicitly order
+                    // it out whenever the Electron parent is no longer frontmost.
+                    window.setLevel(NSFloatingWindowLevel);
+                    window.setCollectionBehavior(
+                        NSWindowCollectionBehavior::CanJoinAllSpaces
+                            | NSWindowCollectionBehavior::FullScreenAuxiliary
+                            | NSWindowCollectionBehavior::IgnoresCycle,
+                    );
+                    window.setIgnoresMouseEvents(true);
                     window.setAcceptsMouseMovedEvents(false);
-                    window.setHasShadow(true);
+                    window.setHasShadow(false);
                     window.setOpaque(true);
                     window.setBackgroundColor(Some(&NSColor::blackColor()));
                     let view = window
                         .contentView()
                         .ok_or(BackendError::MissingContentView)?;
                     if ordered {
-                        window.orderFront(None);
+                        window.orderFrontRegardless();
                     } else {
                         window.orderOut(None);
                     }
                     ordered_visible = ordered;
+                    let panel: Retained<NSPanel> = window;
+                    let window: Retained<NSWindow> = panel.into_super();
                     (
                         Some(window),
                         view,
@@ -158,6 +178,7 @@ impl SurfaceOwner {
                         None,
                         config.visible,
                         Some(parent_pid),
+                        false,
                     )
                 }
                 SurfaceTarget::NsView(view) => {
@@ -165,7 +186,7 @@ impl SurfaceOwner {
                         .ok_or(BackendError::MissingContentView)?;
                     let window = view.window();
                     ordered_visible = true;
-                    (window, view, false, false, None, true, None)
+                    (window, view, false, false, None, true, None, true)
                 }
                 SurfaceTarget::NsWindow(config) => {
                     config.validate()?;
@@ -190,11 +211,14 @@ impl SurfaceOwner {
                         Some(parent),
                         config.visible,
                         None,
+                        false,
                     )
                 }
             };
 
-        let attachment = if let Some(parent) = child_parent {
+        let attachment = if reuse_existing_metal_layer {
+            Attachment::ExistingMetal
+        } else if let Some(parent) = child_parent {
             Attachment::WindowChild { parent }
         } else {
             Attachment::Dedicated {
@@ -202,14 +226,29 @@ impl SurfaceOwner {
                 previous_wants_layer: view.wantsLayer(),
             }
         };
-        let layer = CAMetalLayer::new();
-        layer.setFrame(view.bounds());
+        let layer = if reuse_existing_metal_layer {
+            let layer = view.layer().ok_or_else(|| {
+                BackendError::Metal("SDL Metal view has no backing CAMetalLayer".to_owned())
+            })?;
+            layer.downcast::<CAMetalLayer>().map_err(|_| {
+                BackendError::Metal("SDL Metal view has a non-Metal backing layer".to_owned())
+            })?
+        } else {
+            CAMetalLayer::new()
+        };
+        if !reuse_existing_metal_layer {
+            layer.setFrame(view.bounds());
+        }
         let scale = window
             .as_ref()
             .map_or(1.0, |window| window.backingScaleFactor());
         layer.setContentsScale(scale);
-        view.setWantsLayer(true);
-        view.setLayer(Some(&layer));
+        if !reuse_existing_metal_layer {
+            view.setWantsLayer(true);
+            view.setLayer(Some(&layer));
+        } else {
+            eprintln!("macOS presentation using SDL-managed CAMetalLayer");
+        }
         if let Attachment::WindowChild { parent } = &attachment {
             parent.addSubview(&view);
         }
@@ -283,7 +322,7 @@ impl SurfaceOwner {
         let ordered = overlay_should_be_ordered(visible, frontmost);
         if self.visible.swap(ordered, Ordering::AcqRel) != ordered {
             if ordered {
-                window.orderFront(None);
+                window.orderFrontRegardless();
             } else {
                 window.orderOut(None);
             }
@@ -302,7 +341,7 @@ impl SurfaceOwner {
             return Ok(());
         }
         if ordered {
-            window.orderFront(None);
+            window.orderFrontRegardless();
         } else {
             window.orderOut(None);
         }
@@ -326,6 +365,7 @@ impl SurfaceOwner {
                 }
             }
             Attachment::WindowChild { .. } => self.view.removeFromSuperview(),
+            Attachment::ExistingMetal => {}
         }
         if self.owns_window {
             if let Some(window) = &self.window {

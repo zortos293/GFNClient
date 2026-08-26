@@ -6,7 +6,7 @@ mod video;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice};
@@ -14,8 +14,8 @@ use thiserror::Error;
 
 use crate::failure::{BackendFailure, FailureReporter, VideoDecodeLoss};
 use crate::format::{
-    AudioFormat, BackendConfig, FormatError, FrameTiming, H264Format, H264Framing, RendererRect,
-    ScreenRect, access_unit_to_avcc,
+    AudioFormat, BackendConfig, FormatError, FrameTiming, GpuOverlayFrame, H264Format, H264Framing,
+    RendererRect, ScreenRect, access_unit_to_avcc,
 };
 use crate::lifecycle::{BackendState, Lifecycle};
 use crate::queue::{BoundedQueue, PushResult};
@@ -58,6 +58,22 @@ pub fn pump_app_events() {
         }
     }
     application.updateWindows();
+}
+
+/// Activates the standalone stream window as a regular macOS application.
+/// LaunchServices starts it in the background for the protocol handshake; it
+/// becomes the menu-bar and input owner only when media makes the window visible.
+pub fn activate_stream_application() {
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return;
+    };
+    let application = NSApplication::sharedApplication(main_thread);
+    application.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    application.finishLaunching();
+    #[allow(deprecated)]
+    application.activateIgnoringOtherApps(true);
 }
 
 #[derive(Debug, Error)]
@@ -116,10 +132,15 @@ pub enum SubmitOutcome {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BackendStats {
     pub video_submitted: u64,
+    pub video_submitted_bytes: u64,
     pub video_backpressured: u64,
     pub video_decoded: u64,
     pub video_decode_errors: u64,
     pub video_frames_dropped: u64,
+    pub video_decoded_queue_dropped: u64,
+    pub video_metal_submitted: u64,
+    pub video_display_underflows: u64,
+    pub video_scanout_skipped: u64,
     pub video_presented: u64,
     pub video_present_errors: u64,
     pub opus_submitted: u64,
@@ -132,10 +153,15 @@ pub struct BackendStats {
 #[derive(Default)]
 pub(super) struct Counters {
     video_submitted: AtomicU64,
+    video_submitted_bytes: AtomicU64,
     video_backpressured: AtomicU64,
     video_decoded: AtomicU64,
     video_decode_errors: AtomicU64,
     video_frames_dropped: AtomicU64,
+    video_decoded_queue_dropped: AtomicU64,
+    video_metal_submitted: AtomicU64,
+    video_display_underflows: AtomicU64,
+    video_scanout_skipped: AtomicU64,
     video_presented: AtomicU64,
     video_present_errors: AtomicU64,
     opus_submitted: AtomicU64,
@@ -149,10 +175,15 @@ impl Counters {
     fn snapshot(&self) -> BackendStats {
         BackendStats {
             video_submitted: self.video_submitted.load(Ordering::Relaxed),
+            video_submitted_bytes: self.video_submitted_bytes.load(Ordering::Relaxed),
             video_backpressured: self.video_backpressured.load(Ordering::Relaxed),
             video_decoded: self.video_decoded.load(Ordering::Relaxed),
             video_decode_errors: self.video_decode_errors.load(Ordering::Relaxed),
             video_frames_dropped: self.video_frames_dropped.load(Ordering::Relaxed),
+            video_decoded_queue_dropped: self.video_decoded_queue_dropped.load(Ordering::Relaxed),
+            video_metal_submitted: self.video_metal_submitted.load(Ordering::Relaxed),
+            video_display_underflows: self.video_display_underflows.load(Ordering::Relaxed),
+            video_scanout_skipped: self.video_scanout_skipped.load(Ordering::Relaxed),
             video_presented: self.video_presented.load(Ordering::Relaxed),
             video_present_errors: self.video_present_errors.load(Ordering::Relaxed),
             opus_submitted: self.opus_submitted.load(Ordering::Relaxed),
@@ -226,6 +257,10 @@ impl StreamSink {
             .counters
             .video_submitted
             .fetch_add(1, Ordering::Relaxed);
+        self.shared
+            .counters
+            .video_submitted_bytes
+            .fetch_add(access_unit.len() as u64, Ordering::Relaxed);
         Ok(SubmitOutcome::Accepted)
     }
 
@@ -359,6 +394,7 @@ struct Shared {
     video: Mutex<Option<VideoDecoder>>,
     audio: Mutex<Option<AudioPipeline>>,
     presenter: Mutex<Option<PresenterHandle>>,
+    overlay: Arc<RwLock<Option<Arc<GpuOverlayFrame>>>>,
     video_frames_in_flight: usize,
     opus_packets: usize,
     pcm_milliseconds: u32,
@@ -411,12 +447,14 @@ impl MacOsBackend {
         let counters = Arc::new(Counters::default());
         let failures = Arc::new(FailureReporter::default());
         let video_queue = Arc::new(BoundedQueue::new(config.queues.decoded_video_frames));
+        let overlay = Arc::new(RwLock::new(None));
         let presenter = PresenterHandle::start(
             surface.metal_layer(),
             surface.presentation_visibility(),
             Arc::clone(&video_queue),
             Arc::clone(&counters),
             Arc::clone(&failures),
+            Arc::clone(&overlay),
         )?;
         let video = VideoDecoder::new(
             &config.video,
@@ -441,6 +479,7 @@ impl MacOsBackend {
             video: Mutex::new(Some(video)),
             audio: Mutex::new(Some(audio)),
             presenter: Mutex::new(Some(presenter)),
+            overlay,
             video_frames_in_flight: config.queues.video_frames_in_flight,
             opus_packets: config.queues.opus_packets,
             pcm_milliseconds: config.queues.pcm_milliseconds,
@@ -517,6 +556,15 @@ impl MacOsBackend {
 
     pub fn stats(&self) -> BackendStats {
         self.shared.counters.snapshot()
+    }
+
+    /// Replaces the optional diagnostic surface sampled by the Metal presentation shader.
+    pub fn set_gpu_overlay(&mut self, overlay: Option<GpuOverlayFrame>) {
+        *self
+            .shared
+            .overlay
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = overlay.map(Arc::new);
     }
 
     pub fn fatal_failure(&self) -> Option<BackendFailure> {

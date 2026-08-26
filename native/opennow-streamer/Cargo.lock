@@ -59,16 +59,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "apple-cryptokit-rs"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "508eed99695e0ddc94adb8dda623477e76bb8b5dcc9f59a01b43ce646f715343"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -420,7 +410,7 @@ dependencies = [
  "bitflags 1.3.2",
  "block",
  "cocoa-foundation",
- "core-foundation 0.9.4",
+ "core-foundation",
  "core-graphics",
  "foreign-types",
  "libc",
@@ -435,7 +425,7 @@ checksum = "8c6234cbb2e4c785b456c0644748b1ac416dd045799740356f8363dfe00c93f7"
 dependencies = [
  "bitflags 1.3.2",
  "block",
- "core-foundation 0.9.4",
+ "core-foundation",
  "core-graphics-types",
  "libc",
  "objc",
@@ -468,16 +458,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-foundation"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
-dependencies = [
- "core-foundation-sys",
- "libc",
-]
-
-[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -490,7 +470,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c07782be35f9e1140080c6b96f0d44b739e2278479f64e02fdab4e32dfd8b081"
 dependencies = [
  "bitflags 1.3.2",
- "core-foundation 0.9.4",
+ "core-foundation",
  "core-graphics-types",
  "foreign-types",
  "libc",
@@ -503,7 +483,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "45390e6114f68f718cc7a830514a96f903cccd70d02a8f6d9f643ac4ba45afaf"
 dependencies = [
  "bitflags 1.3.2",
- "core-foundation 0.9.4",
+ "core-foundation",
  "libc",
 ]
 
@@ -1499,8 +1479,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags 2.13.1",
+ "libc",
  "objc2",
  "objc2-core-foundation",
+ "objc2-foundation",
 ]
 
 [[package]]
@@ -1659,6 +1641,7 @@ dependencies = [
 name = "opennow-streamer-platform-macos"
 version = "0.2.0"
 dependencies = [
+ "block2",
  "libc",
  "objc2",
  "objc2-app-kit",
@@ -1668,6 +1651,7 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation",
+ "objc2-io-surface",
  "objc2-metal",
  "objc2-quartz-core",
  "objc2-video-toolbox",
@@ -2110,29 +2094,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "security-framework"
-version = "3.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
-dependencies = [
- "bitflags 2.13.1",
- "core-foundation 0.10.1",
- "core-foundation-sys",
- "libc",
- "security-framework-sys",
-]
-
-[[package]]
-name = "security-framework-sys"
-version = "2.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
-dependencies = [
- "core-foundation-sys",
- "libc",
-]
-
-[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2292,34 +2253,12 @@ dependencies = [
  "is",
  "sctp-proto",
  "serde",
- "str0m-apple-crypto",
  "str0m-proto",
  "str0m-rust-crypto",
  "str0m-wincrypto",
  "subtle",
  "time",
  "tracing",
-]
-
-[[package]]
-name = "str0m-apple-crypto"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f0fe88675a99679ce154c87ee356eb133af5ade7657fb5fe2db97689b4c41eb"
-dependencies = [
- "apple-cryptokit-rs",
- "cc",
- "core-foundation 0.10.1",
- "der",
- "dimpl",
- "pkcs8",
- "sec1",
- "security-framework",
- "spki",
- "str0m-proto",
- "subtle",
- "time",
- "x509-cert",
 ]
 
 [[package]]

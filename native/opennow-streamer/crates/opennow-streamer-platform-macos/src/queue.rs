@@ -7,6 +7,12 @@ pub(crate) enum PushResult<T> {
     Closed(T),
 }
 
+pub(crate) enum TryPopResult<T> {
+    Value(T),
+    Empty,
+    Closed,
+}
+
 pub(crate) struct BoundedQueue<T> {
     capacity: usize,
     state: Mutex<QueueState<T>>,
@@ -68,6 +74,28 @@ impl<T> BoundedQueue<T> {
         }
     }
 
+    pub(crate) fn pop_now(&self) -> TryPopResult<T> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(value) = state.values.pop_front() {
+            TryPopResult::Value(value)
+        } else if state.closed {
+            TryPopResult::Closed
+        } else {
+            TryPopResult::Empty
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values
+            .len()
+    }
+
     pub(crate) fn close(&self) {
         let mut state = self
             .state
@@ -95,15 +123,6 @@ impl<T> BoundedQueue<T> {
         let discarded = state.values.len();
         state.values.clear();
         discarded
-    }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .values
-            .len()
     }
 }
 

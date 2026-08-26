@@ -213,6 +213,10 @@ impl Engine {
                 self.stop(command.reason.as_deref().unwrap_or("stopped"));
                 Ok(vec![response(id, "ok")])
             }
+            "shutdown" => {
+                self.stop(command.reason.as_deref().unwrap_or("shutdown"));
+                return (vec![response(id, "ok")], false);
+            }
             other => Err(error(
                 Some(&id),
                 "unknown-command",
@@ -255,6 +259,7 @@ impl Engine {
         Ok(vec![json!({
             "id": command.id,
             "type": "ready",
+            "processId": std::process::id(),
             "capabilities": capabilities,
         })])
     }

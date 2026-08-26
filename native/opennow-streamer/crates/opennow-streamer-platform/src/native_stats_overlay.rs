@@ -182,7 +182,9 @@ impl NativeStatsOverlay {
     ) {
         use opennow_streamer_platform_linux::PixelFormat;
 
-        if frame.format.pixel_format != PixelFormat::Nv12 || frame.planes.len() != 2 {
+        if frame.format.pixel_format != PixelFormat::Nv12
+            || (frame.vulkan.is_none() && frame.dmabuf.is_none() && frame.planes.len() != 2)
+        {
             return;
         }
         let Some(source) = self.frame() else {
@@ -197,10 +199,62 @@ impl NativeStatsOverlay {
         let origin_y = origin_y & !1;
         let copy_width = source
             .width
-            .min(frame.format.width.saturating_sub(origin_x));
+            .min(frame.format.width.saturating_sub(origin_x))
+            & !1;
         let copy_height = source
             .height
-            .min(frame.format.height.saturating_sub(origin_y));
+            .min(frame.format.height.saturating_sub(origin_y))
+            & !1;
+        if frame.vulkan.is_some() || frame.dmabuf.is_some() {
+            let mut luma = vec![0_u8; (copy_width * copy_height) as usize];
+            let mut chroma = vec![0_u8; (copy_width * copy_height / 2) as usize];
+            for row in 0..copy_height as usize {
+                for column in 0..copy_width as usize {
+                    let source_offset = (row * source.width as usize + column) * 3;
+                    let rgb = &source.rgb[source_offset..source_offset + 3];
+                    let (y, _, _) = rgb_to_limited_bt709(rgb[0], rgb[1], rgb[2]);
+                    luma[row * copy_width as usize + column] = y;
+                }
+            }
+            for row in (0..copy_height as usize).step_by(2) {
+                for column in (0..copy_width as usize).step_by(2) {
+                    let mut rgb = [0_u32; 3];
+                    for sample_y in row..row + 2 {
+                        for sample_x in column..column + 2 {
+                            let offset = (sample_y * source.width as usize + sample_x) * 3;
+                            rgb[0] += u32::from(source.rgb[offset]);
+                            rgb[1] += u32::from(source.rgb[offset + 1]);
+                            rgb[2] += u32::from(source.rgb[offset + 2]);
+                        }
+                    }
+                    let (_, u, v) = rgb_to_limited_bt709(
+                        (rgb[0] / 4) as u8,
+                        (rgb[1] / 4) as u8,
+                        (rgb[2] / 4) as u8,
+                    );
+                    let offset = row / 2 * copy_width as usize + column;
+                    chroma[offset] = u;
+                    chroma[offset + 1] = v;
+                }
+            }
+            frame.overlay = Some(opennow_streamer_platform_linux::FrameOverlay {
+                origin_x,
+                origin_y,
+                width: copy_width,
+                height: copy_height,
+                luma: opennow_streamer_platform_linux::FramePlane {
+                    data: std::sync::Arc::from(luma),
+                    stride: copy_width as usize,
+                    rows: copy_height as usize,
+                },
+                chroma: opennow_streamer_platform_linux::FramePlane {
+                    data: std::sync::Arc::from(chroma),
+                    stride: copy_width as usize,
+                    rows: copy_height as usize / 2,
+                },
+            });
+            return;
+        }
         let (y_planes, uv_planes) = frame.planes.split_at_mut(1);
         let y_stride = y_planes[0].stride;
         let uv_stride = uv_planes[0].stride;
@@ -644,6 +698,9 @@ mod tests {
                     rows: 180,
                 },
             ],
+            dmabuf: None,
+            vulkan: None,
+            overlay: None,
             timestamp_us: 0,
         };
 

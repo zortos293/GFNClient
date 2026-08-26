@@ -1,133 +1,28 @@
-use std::cell::{RefCell, UnsafeCell};
 use std::fmt;
-use std::sync::Arc;
+use std::os::fd::AsRawFd;
+use std::sync::{Arc, Mutex};
 
 use cros_codecs::backend::vaapi::decoder::VaapiBackend;
 use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
 use cros_codecs::decoder::{DecodedHandle, DecoderEvent};
-use cros_codecs::libva::{self, Display, ExternalBufferDescriptor, MemoryType, Surface, UsageHint};
+use cros_codecs::libva::{self, Display, DrmPrimeSurfaceDescriptor, Surface, UsageHint};
 use cros_codecs::video_frame::{ReadMapping, VideoFrame, WriteMapping};
 use cros_codecs::{Fourcc, Resolution};
 
 use super::VideoDecoder;
 use crate::{
-    ChromaLocation, DecodedVideoFrame, EncodedVideoFrame, Error, FramePlane, PixelFormat, Result,
-    StreamFormat, Subsystem,
+    ChromaLocation, DecodedVideoFrame, DmaBufFrame, DmaBufLayer, DmaBufObject, DmaBufPlane,
+    EncodedVideoFrame, Error, PixelFormat, Result, StreamFormat, Subsystem,
 };
 
 const MAX_DECODE_RETRIES: usize = 16;
 
-struct VaMemory {
-    data: UnsafeCell<Box<[u8]>>,
-}
-
-impl VaMemory {
-    fn new(size: usize) -> Self {
-        Self {
-            data: UnsafeCell::new(vec![0_u8; size].into_boxed_slice()),
-        }
-    }
-
-    fn pointer(&self) -> *mut u8 {
-        unsafe { (&mut *self.data.get()).as_mut_ptr() }
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        unsafe { &*self.data.get() }
-    }
-}
-
-unsafe impl Send for VaMemory {}
-unsafe impl Sync for VaMemory {}
-
-impl fmt::Debug for VaMemory {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("VaMemory")
-            .field("len", &self.as_slice().len())
-            .finish()
-    }
-}
-
-#[derive(Debug)]
-struct VaUserPtrDescriptor {
-    memory: Arc<VaMemory>,
-    width: u32,
-    height: u32,
-    offsets: [u32; 4],
-    pitches: [u32; 4],
-    buffer_address: [usize; 1],
-}
-
-impl VaUserPtrDescriptor {
-    fn new(memory: Arc<VaMemory>, width: u32, height: u32, stride: usize) -> Self {
-        let uv_offset = stride * height as usize;
-        Self {
-            buffer_address: [memory.pointer() as usize],
-            memory,
-            width,
-            height,
-            offsets: [0, uv_offset as u32, 0, 0],
-            pitches: [stride as u32, stride as u32, 0, 0],
-        }
-    }
-}
-
-impl ExternalBufferDescriptor for VaUserPtrDescriptor {
-    const MEMORY_TYPE: MemoryType = MemoryType::UserPtr;
-    type DescriptorAttribute = libva::VASurfaceAttribExternalBuffers;
-
-    fn va_surface_attribute(&mut self) -> Self::DescriptorAttribute {
-        libva::VASurfaceAttribExternalBuffers {
-            pixel_format: libva::VA_FOURCC_NV12,
-            width: self.width,
-            height: self.height,
-            data_size: self.memory.as_slice().len() as u32,
-            num_planes: 2,
-            pitches: self.pitches,
-            offsets: self.offsets,
-            buffers: self.buffer_address.as_mut_ptr().cast(),
-            num_buffers: 1,
-            flags: 0,
-            private_data: std::ptr::null_mut(),
-        }
-    }
-}
-
-struct VaReadMapping<'a> {
-    y: &'a [u8],
-    uv: &'a [u8],
-}
-
-impl<'a> ReadMapping<'a> for VaReadMapping<'a> {
-    fn get(&self) -> Vec<&[u8]> {
-        vec![self.y, self.uv]
-    }
-}
-
-struct VaWriteMapping<'a> {
-    planes: RefCell<Option<Vec<&'a mut [u8]>>>,
-}
-
-impl<'a> WriteMapping<'a> for VaWriteMapping<'a> {
-    fn get(&self) -> Vec<RefCell<&'a mut [u8]>> {
-        self.planes
-            .borrow_mut()
-            .take()
-            .unwrap_or_default()
-            .into_iter()
-            .map(RefCell::new)
-            .collect()
-    }
-}
-
-#[derive(Debug)]
 struct VaFrame {
-    memory: Arc<VaMemory>,
     visible: Resolution,
     coded: Resolution,
     stride: usize,
+    exported: Mutex<Option<Arc<DrmPrimeSurfaceDescriptor>>>,
 }
 
 impl VaFrame {
@@ -135,25 +30,37 @@ impl VaFrame {
         let coded_width = align(coded.width.max(visible.width), 16);
         let coded_height = align(coded.height.max(visible.height), 16);
         let stride = align(coded_width, 64) as usize;
-        let size = stride * coded_height as usize * 3 / 2;
         Self {
-            memory: Arc::new(VaMemory::new(size)),
             visible,
             coded: Resolution::from((coded_width, coded_height)),
             stride,
+            exported: Mutex::new(None),
         }
     }
 
-    fn planes(&self) -> (&[u8], &[u8]) {
-        let data = self.memory.as_slice();
-        let y_len = self.stride * self.coded.height as usize;
-        (&data[..y_len], &data[y_len..])
+    fn exported(&self) -> std::result::Result<Arc<DrmPrimeSurfaceDescriptor>, String> {
+        self.exported
+            .lock()
+            .map_err(|_| "VA-API export state was poisoned".to_owned())?
+            .clone()
+            .ok_or_else(|| "VA-API frame has no exported DRM PRIME surface".to_owned())
+    }
+}
+
+impl fmt::Debug for VaFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VaFrame")
+            .field("visible", &self.visible)
+            .field("coded", &self.coded)
+            .field("stride", &self.stride)
+            .finish_non_exhaustive()
     }
 }
 
 impl VideoFrame for VaFrame {
-    type MemDescriptor = VaUserPtrDescriptor;
-    type NativeHandle = Surface<VaUserPtrDescriptor>;
+    type MemDescriptor = ();
+    type NativeHandle = Surface<()>;
 
     fn fourcc(&self) -> Fourcc {
         Fourcc::from(b"NV12")
@@ -175,40 +82,35 @@ impl VideoFrame for VaFrame {
     }
 
     fn map<'a>(&'a self) -> std::result::Result<Box<dyn ReadMapping<'a> + 'a>, String> {
-        let (y, uv) = self.planes();
-        Ok(Box::new(VaReadMapping { y, uv }))
+        Err("VA-API zero-copy frames are not CPU mappable".to_owned())
     }
 
     fn map_mut<'a>(&'a mut self) -> std::result::Result<Box<dyn WriteMapping<'a> + 'a>, String> {
-        let data = unsafe { &mut *self.memory.data.get() };
-        let y_len = self.stride * self.coded.height as usize;
-        let (y, uv) = data.split_at_mut(y_len);
-        Ok(Box::new(VaWriteMapping {
-            planes: RefCell::new(Some(vec![y, uv])),
-        }))
+        Err("VA-API zero-copy frames are not CPU mappable".to_owned())
     }
 
     fn to_native_handle(
         &self,
         display: &Arc<Display>,
     ) -> std::result::Result<Self::NativeHandle, String> {
-        display
+        let surface = display
             .create_surfaces(
                 libva::VA_RT_FORMAT_YUV420,
                 Some(libva::VA_FOURCC_NV12),
                 self.coded.width,
                 self.coded.height,
-                Some(UsageHint::USAGE_HINT_DECODER),
-                vec![VaUserPtrDescriptor::new(
-                    Arc::clone(&self.memory),
-                    self.coded.width,
-                    self.coded.height,
-                    self.stride,
-                )],
+                Some(UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_EXPORT),
+                vec![()],
             )
             .map_err(|error| error.to_string())?
             .pop()
-            .ok_or_else(|| "VA-API did not create a decode surface".to_owned())
+            .ok_or_else(|| "VA-API did not create a decode surface".to_owned())?;
+        let exported = Arc::new(surface.export_prime().map_err(|error| error.to_string())?);
+        *self
+            .exported
+            .lock()
+            .map_err(|_| "VA-API export state was poisoned".to_owned())? = Some(exported);
+        Ok(surface)
     }
 }
 
@@ -283,7 +185,33 @@ impl VaApiDecoder {
                     let timestamp_us = handle.timestamp();
                     let visible = handle.display_resolution();
                     let frame = handle.video_frame();
-                    let (y, uv) = frame.planes();
+                    let exported = frame
+                        .exported()
+                        .map_err(|error| Error::backend(Subsystem::VaApi, error))?;
+                    let objects = exported
+                        .objects
+                        .iter()
+                        .map(|object| DmaBufObject {
+                            fd: object.fd.as_raw_fd(),
+                            size: object.size as usize,
+                            format_modifier: object.drm_format_modifier,
+                        })
+                        .collect();
+                    let layers = exported
+                        .layers
+                        .iter()
+                        .map(|layer| DmaBufLayer {
+                            format: layer.drm_format,
+                            planes: (0..layer.num_planes.min(4) as usize)
+                                .map(|index| DmaBufPlane {
+                                    object_index: layer.object_index[index] as usize,
+                                    offset: layer.offset[index] as usize,
+                                    pitch: layer.pitch[index] as usize,
+                                })
+                                .collect(),
+                        })
+                        .collect();
+                    let dmabuf = DmaBufFrame::new(objects, layers, frame);
                     let decoded = DecodedVideoFrame {
                         format: StreamFormat {
                             width: visible.width,
@@ -292,18 +220,10 @@ impl VaApiDecoder {
                             chroma_location: ChromaLocation::Left,
                             ..self.requested_format
                         },
-                        planes: vec![
-                            FramePlane {
-                                data: Arc::from(y),
-                                stride: frame.stride,
-                                rows: frame.coded.height as usize,
-                            },
-                            FramePlane {
-                                data: Arc::from(uv),
-                                stride: frame.stride,
-                                rows: frame.coded.height as usize / 2,
-                            },
-                        ],
+                        planes: Vec::new(),
+                        dmabuf: Some(Arc::new(dmabuf)),
+                        vulkan: None,
+                        overlay: None,
                         timestamp_us,
                     };
                     decoded.validate()?;
@@ -344,7 +264,7 @@ fn validate_initial_context(display: &Arc<Display>) -> std::result::Result<(), S
         .map_err(|error| format!("VA-API cannot create the H.264 decoder config: {error}"))?;
     drop(
         display
-            .create_context::<VaUserPtrDescriptor>(&config, 16, 16, None, true)
+            .create_context::<()>(&config, 16, 16, None, true)
             .map_err(|error| {
                 format!("VA-API cannot create the initial H.264 decoder context: {error}")
             })?,

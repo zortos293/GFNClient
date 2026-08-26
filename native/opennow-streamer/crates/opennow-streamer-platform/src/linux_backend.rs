@@ -252,7 +252,11 @@ fn multi_codec_capability(
         backend,
         platform: "linux",
         codecs,
-        zero_copy_modes: Vec::new(),
+        zero_copy_modes: (backend == "vulkan"
+            && available
+            && capabilities.presentation_available(window_system))
+        .then_some(vec!["vulkan-video-same-device-nv12"])
+        .unwrap_or_default(),
         available,
         reason,
     }
@@ -265,7 +269,6 @@ fn h264_capability(
     window_system: &str,
 ) -> VideoBackendCapability {
     let decoder = capabilities.decoder(decoder_name);
-    let _ = window_system;
     let h264_available = decoder.available;
     let h264_reason = if !decoder.available {
         Some(static_reason(decoder.detail))
@@ -292,7 +295,11 @@ fn h264_capability(
                 reason: Some("native backend currently supports H.264 only"),
             },
         ],
-        zero_copy_modes: Vec::new(),
+        zero_copy_modes: (backend == "vaapi"
+            && h264_available
+            && capabilities.presentation_available(window_system))
+        .then_some(vec!["vaapi-drm-prime-dmabuf-vulkan"])
+        .unwrap_or_default(),
         available: h264_available,
         reason: h264_reason,
     }

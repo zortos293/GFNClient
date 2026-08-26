@@ -598,16 +598,14 @@ impl LinuxHardwareOutput {
         } else {
             (rect.width.max(2), rect.height.max(2))
         };
-        if self.presenter.is_none() {
-            self.presenter = Some(create_linux_presenter(&self.window, size.0, size.1)?);
-        } else if self.surface_size != Some(size) {
+        if self.presenter.is_some() && self.surface_size != Some(size) {
             if let Some(presenter) = self.presenter.as_mut() {
                 presenter
                     .reconfigure(size.0, size.1)
                     .map_err(|error| error.to_string())?;
             }
         }
-        self.surface_size = self.presenter.as_ref().map(|presenter| presenter.extent());
+        self.surface_size = Some(size);
         self.visible = true;
         Ok(())
     }
@@ -651,14 +649,12 @@ impl LinuxHardwareOutput {
             let (width, height) = self.window.vulkan_drawable_size();
             let drawable_size = (width.max(2), height.max(2));
             if self.surface_size != Some(drawable_size) {
-                self.presenter
-                    .as_mut()
-                    .ok_or_else(|| {
-                        "Linux Vulkan presenter is not attached to a visible surface".to_owned()
-                    })?
-                    .reconfigure(drawable_size.0, drawable_size.1)
-                    .map_err(|error| error.to_string())?;
-                self.surface_size = self.presenter.as_ref().map(|presenter| presenter.extent());
+                if let Some(presenter) = self.presenter.as_mut() {
+                    presenter
+                        .reconfigure(drawable_size.0, drawable_size.1)
+                        .map_err(|error| error.to_string())?;
+                }
+                self.surface_size = Some(drawable_size);
             }
         }
         self.debug_overlay
@@ -685,6 +681,26 @@ impl LinuxHardwareOutput {
         let mut frame = queued_frame.frame;
         self.stream_size = (frame.format.width.max(1), frame.format.height.max(1));
         self.debug_overlay.composite_linux_frame(&mut frame);
+        if frame.vulkan.as_ref().is_some_and(|vulkan| {
+            self.presenter
+                .as_ref()
+                .is_some_and(|presenter| !presenter.matches_vulkan_video_device(vulkan))
+        }) {
+            // Decoder recovery can replace the FFmpeg Vulkan device. Rebuild
+            // the surface resources on the new device before touching it.
+            self.presenter = None;
+        }
+        if self.presenter.is_none() {
+            let size = self
+                .surface_size
+                .ok_or_else(|| "Linux Vulkan presenter has no visible surface extent".to_owned())?;
+            self.presenter = Some(create_linux_presenter(
+                &self.window,
+                size.0,
+                size.1,
+                frame.vulkan.as_deref(),
+            )?);
+        }
         let presented = self
             .presenter
             .as_mut()
@@ -724,6 +740,7 @@ fn create_linux_presenter(
     window: &sdl2::video::Window,
     width: u32,
     height: u32,
+    vulkan_video: Option<&opennow_streamer_platform_linux::VulkanVideoFrame>,
 ) -> Result<opennow_streamer_platform_linux::VulkanPresenter, String> {
     use std::ffi::c_void;
     use std::num::NonZeroU64;
@@ -764,8 +781,13 @@ fn create_linux_presenter(
             );
         }
     };
-    opennow_streamer_platform_linux::VulkanPresenter::new(&surface, width, height)
-        .map_err(|error| error.to_string())
+    match vulkan_video {
+        Some(frame) => opennow_streamer_platform_linux::VulkanPresenter::new_for_vulkan_video(
+            &surface, width, height, frame,
+        ),
+        None => opennow_streamer_platform_linux::VulkanPresenter::new(&surface, width, height),
+    }
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -2679,6 +2701,9 @@ mod tests {
         let frame = |timestamp_us| LinuxDecodedVideoFrame {
             format: StreamFormat::video_default(2, 2).expect("format"),
             planes: Vec::new(),
+            dmabuf: None,
+            vulkan: None,
+            overlay: None,
             timestamp_us,
         };
         let output = OutputBuffers::new();

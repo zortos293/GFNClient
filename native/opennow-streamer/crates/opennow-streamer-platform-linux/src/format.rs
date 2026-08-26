@@ -1,3 +1,5 @@
+use std::fmt;
+use std::os::fd::RawFd;
 use std::sync::Arc;
 
 use crate::{Error, Result};
@@ -141,6 +143,16 @@ pub struct FramePlane {
     pub rows: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct FrameOverlay {
+    pub origin_x: u32,
+    pub origin_y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub luma: FramePlane,
+    pub chroma: FramePlane,
+}
+
 impl FramePlane {
     pub fn validate(&self, minimum_row_bytes: usize) -> Result<()> {
         if self.stride < minimum_row_bytes {
@@ -163,16 +175,232 @@ impl FramePlane {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaBufObject {
+    pub fd: RawFd,
+    pub size: usize,
+    pub format_modifier: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaBufPlane {
+    pub object_index: usize,
+    pub offset: usize,
+    pub pitch: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DmaBufLayer {
+    pub format: u32,
+    pub planes: Vec<DmaBufPlane>,
+}
+
+/// A decoded hardware frame exported through DRM PRIME. `owner` retains the
+/// FFmpeg/VAAPI frame and therefore the dma-buf file descriptors until the
+/// Vulkan submission that samples them has completed.
+pub struct DmaBufFrame {
+    pub objects: Vec<DmaBufObject>,
+    pub layers: Vec<DmaBufLayer>,
+    owner: Arc<dyn Send + Sync>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VulkanImage {
+    pub image: u64,
+    pub format: i32,
+    pub width: u32,
+    pub height: u32,
+    pub layout: i32,
+    pub access: u64,
+    pub semaphore: u64,
+    pub semaphore_value: u64,
+    pub queue_family: u32,
+}
+
+/// A Vulkan Video output surface on the decoder's own Vulkan device. The
+/// presenter adopts this device and samples these image handles directly.
+pub struct VulkanVideoFrame {
+    pub instance: usize,
+    pub physical_device: usize,
+    pub device: usize,
+    pub queue_families: Vec<u32>,
+    pub image_usage: u32,
+    pub image_flags: u32,
+    pub images: Vec<VulkanImage>,
+    device_context: usize,
+    lock_queue: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32)>,
+    unlock_queue: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32)>,
+    owner: Arc<dyn Send + Sync>,
+}
+
+impl VulkanVideoFrame {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        instance: usize,
+        physical_device: usize,
+        device: usize,
+        queue_families: Vec<u32>,
+        image_usage: u32,
+        image_flags: u32,
+        images: Vec<VulkanImage>,
+        device_context: usize,
+        lock_queue: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32)>,
+        unlock_queue: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32)>,
+        owner: Arc<dyn Send + Sync>,
+    ) -> Self {
+        Self {
+            instance,
+            physical_device,
+            device,
+            queue_families,
+            image_usage,
+            image_flags,
+            images,
+            device_context,
+            lock_queue,
+            unlock_queue,
+            owner,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.instance == 0
+            || self.physical_device == 0
+            || self.device == 0
+            || self.images.is_empty()
+            || self.images.len() > 2
+            || self.queue_families.is_empty()
+            || self.images.iter().any(|image| image.image == 0)
+        {
+            return Err(Error::InvalidFormat(
+                "Vulkan Video frame has invalid device or image handles".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn retain_owner(&self) -> &Arc<dyn Send + Sync> {
+        &self.owner
+    }
+
+    pub(crate) fn lock_presentation_queue(&self, family: u32) {
+        if let Some(lock) = self.lock_queue {
+            unsafe { lock(self.device_context as *mut std::ffi::c_void, family, 0) };
+        }
+    }
+
+    pub(crate) fn unlock_presentation_queue(&self, family: u32) {
+        if let Some(unlock) = self.unlock_queue {
+            unsafe { unlock(self.device_context as *mut std::ffi::c_void, family, 0) };
+        }
+    }
+}
+
+impl fmt::Debug for VulkanVideoFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VulkanVideoFrame")
+            .field("instance", &self.instance)
+            .field("physical_device", &self.physical_device)
+            .field("device", &self.device)
+            .field("queue_families", &self.queue_families)
+            .field("images", &self.images)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DmaBufFrame {
+    pub fn new(
+        objects: Vec<DmaBufObject>,
+        layers: Vec<DmaBufLayer>,
+        owner: Arc<dyn Send + Sync>,
+    ) -> Self {
+        Self {
+            objects,
+            layers,
+            owner,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.objects.is_empty() || self.layers.is_empty() {
+            return Err(Error::InvalidFormat(
+                "DMA-BUF frame has no objects or layers".to_owned(),
+            ));
+        }
+        for object in &self.objects {
+            if object.fd < 0 || object.size == 0 {
+                return Err(Error::InvalidFormat(
+                    "DMA-BUF frame has an invalid object".to_owned(),
+                ));
+            }
+        }
+        for layer in &self.layers {
+            if layer.planes.is_empty()
+                || layer
+                    .planes
+                    .iter()
+                    .any(|plane| plane.object_index >= self.objects.len() || plane.pitch == 0)
+            {
+                return Err(Error::InvalidFormat(
+                    "DMA-BUF frame has an invalid layer".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn retain_owner(&self) -> &Arc<dyn Send + Sync> {
+        &self.owner
+    }
+}
+
+impl fmt::Debug for DmaBufFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DmaBufFrame")
+            .field("objects", &self.objects)
+            .field("layers", &self.layers)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DecodedVideoFrame {
     pub format: StreamFormat,
     pub planes: Vec<FramePlane>,
+    pub dmabuf: Option<Arc<DmaBufFrame>>,
+    pub vulkan: Option<Arc<VulkanVideoFrame>>,
+    pub overlay: Option<FrameOverlay>,
     pub timestamp_us: u64,
 }
 
 impl DecodedVideoFrame {
     pub fn validate(&self) -> Result<()> {
         self.format.validate()?;
+        if let Some(overlay) = &self.overlay {
+            if overlay.width == 0
+                || overlay.height == 0
+                || overlay.width % 2 != 0
+                || overlay.height % 2 != 0
+                || overlay.origin_x.saturating_add(overlay.width) > self.format.width
+                || overlay.origin_y.saturating_add(overlay.height) > self.format.height
+            {
+                return Err(Error::InvalidFormat(
+                    "frame overlay has invalid bounds".to_owned(),
+                ));
+            }
+            overlay.luma.validate(overlay.width as usize)?;
+            overlay.chroma.validate(overlay.width as usize)?;
+        }
+        if let Some(vulkan) = &self.vulkan {
+            vulkan.validate()?;
+            return Ok(());
+        }
+        if let Some(dmabuf) = &self.dmabuf {
+            dmabuf.validate()?;
+            return Ok(());
+        }
         let width = self.format.width as usize;
         let height = self.format.height as usize;
         match self.format.pixel_format {
@@ -246,6 +474,9 @@ mod tests {
                     rows: 2,
                 },
             ],
+            dmabuf: None,
+            vulkan: None,
+            overlay: None,
             timestamp_us: 1,
         };
         frame.validate().unwrap();
@@ -268,6 +499,9 @@ mod tests {
                     rows: 2,
                 },
             ],
+            dmabuf: None,
+            vulkan: None,
+            overlay: None,
             timestamp_us: 1,
         };
         assert!(frame.validate().is_err());

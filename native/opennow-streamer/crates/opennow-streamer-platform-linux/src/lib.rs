@@ -32,8 +32,9 @@ pub use capability::{
 pub use error::{Error, Result, Subsystem};
 #[cfg(target_os = "linux")]
 pub use format::{
-    ChromaLocation, ColorMatrix, ColorRange, DecodedVideoFrame, EncodedVideoFrame, FramePlane,
-    PixelFormat, StreamFormat, VideoCodec,
+    ChromaLocation, ColorMatrix, ColorRange, DecodedVideoFrame, DmaBufFrame, DmaBufLayer,
+    DmaBufObject, DmaBufPlane, EncodedVideoFrame, FrameOverlay, FramePlane, PixelFormat,
+    StreamFormat, VideoCodec, VulkanImage, VulkanVideoFrame,
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use presentation::{NativeSurface, VulkanPresenter};

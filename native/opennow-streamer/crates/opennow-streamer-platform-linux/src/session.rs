@@ -513,7 +513,12 @@ fn run_video_worker(
     }
     emit(&events, BackendEvent::DecoderSelected(backend));
     transition_state(&state, LifecycleState::Running, &events);
-    let mut need_keyframe = false;
+    // Never feed a fresh hardware decoder an inter-frame packet. In
+    // particular, an AV1 stream can deliver its sequence header separately;
+    // treating the following delta frame as startup input caused an avoidable
+    // backend fallback and a large visible hitch.
+    let mut need_keyframe = true;
+    emit(&events, BackendEvent::NeedKeyframe);
 
     let mut active_format = config.stream_format;
     let mut active_generation = 0;
@@ -774,8 +779,8 @@ fn open_fallback_decoder(
 fn decoder_order(preference: DecoderPreference) -> &'static [DecoderBackend] {
     match preference {
         DecoderPreference::Automatic => &[
-            DecoderBackend::Cuda,
             DecoderBackend::Vulkan,
+            DecoderBackend::Cuda,
             DecoderBackend::VaApi,
             DecoderBackend::V4l2,
             DecoderBackend::Ffmpeg,

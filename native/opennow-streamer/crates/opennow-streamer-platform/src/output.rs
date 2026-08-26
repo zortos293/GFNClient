@@ -7,6 +7,8 @@ use std::sync::atomic::AtomicU64;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -55,6 +57,8 @@ pub(crate) struct OutputBuffers {
     software_video_drops: AtomicU64,
     #[cfg(target_os = "linux")]
     hardware_video_drops: AtomicU64,
+    #[cfg(target_os = "linux")]
+    received_video_bytes: AtomicU64,
     audio: Mutex<VecDeque<f32>>,
     audio_capacity: usize,
     captured_input: Arc<CapturedInputQueue>,
@@ -146,6 +150,8 @@ impl OutputBuffers {
             software_video_drops: AtomicU64::new(0),
             #[cfg(target_os = "linux")]
             hardware_video_drops: AtomicU64::new(0),
+            #[cfg(target_os = "linux")]
+            received_video_bytes: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::with_capacity(
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
             )),
@@ -214,6 +220,17 @@ impl OutputBuffers {
         self.hardware_video_drops.load(Ordering::Relaxed)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn record_received_video_bytes(&self, bytes: usize) {
+        self.received_video_bytes
+            .fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn received_video_bytes(&self) -> u64 {
+        self.received_video_bytes.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn push_audio(&self, samples: &[f32]) -> usize {
         let mut audio = self.audio.lock().unwrap_or_else(|error| error.into_inner());
         let overflow = audio
@@ -277,6 +294,8 @@ pub(crate) struct LinuxHardwareOutput {
     surface_size: Option<(u32, u32)>,
     debug_overlay: NativeStatsOverlay,
     presented_frames: u64,
+    frame_interval: Duration,
+    next_present_at: Option<Instant>,
     visible: bool,
     paused: bool,
     _sdl: sdl2::Sdl,
@@ -352,6 +371,8 @@ impl LinuxHardwareOutput {
             surface_size: None,
             debug_overlay: NativeStatsOverlay::new(stream, "LINUX / VULKAN"),
             presented_frames: 0,
+            frame_interval: Duration::from_secs_f64(1.0 / f64::from(stream.fps.max(1))),
+            next_present_at: None,
             visible: false,
             paused: false,
             _sdl: sdl,
@@ -361,6 +382,7 @@ impl LinuxHardwareOutput {
     fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
         self.paused = false;
         self.presented_frames = 0;
+        self.next_present_at = None;
         self.output.clear();
         self.audio.resume();
         if let Some(surface) = surface {
@@ -371,6 +393,7 @@ impl LinuxHardwareOutput {
 
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
+        self.next_present_at = None;
         if paused {
             self.input_capture.release(&self._sdl, &mut self.window);
             self.audio.pause();
@@ -394,6 +417,7 @@ impl LinuxHardwareOutput {
         }
         self.visible = false;
         self.paused = false;
+        self.next_present_at = None;
     }
 
     fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
@@ -474,10 +498,9 @@ impl LinuxHardwareOutput {
                 }
                 self.presenter = None;
                 self.visible = false;
-            } else if handle_linux_stats_shortcut(&mut self.debug_overlay, &event) {
-                continue;
-            } else if self.external_renderer
-                && handle_native_window_shortcut(&mut self.window, &event)
+            } else if handle_linux_stats_shortcut(&mut self.debug_overlay, &event)
+                || (self.external_renderer
+                    && handle_native_window_shortcut(&mut self.window, &event))
             {
                 continue;
             } else {
@@ -511,7 +534,12 @@ impl LinuxHardwareOutput {
             self.presented_frames,
             self.output.hardware_video_drops(),
             self.input_capture.relative_mouse,
+            self.output.received_video_bytes(),
         );
+        let now = Instant::now();
+        if self.next_present_at.is_some_and(|deadline| now < deadline) {
+            return Ok(false);
+        }
         let Some(mut frame) = self.output.take_linux_video() else {
             return Ok(false);
         };
@@ -527,6 +555,11 @@ impl LinuxHardwareOutput {
             .map_err(|error| error.to_string())?;
         if presented {
             self.presented_frames = self.presented_frames.saturating_add(1);
+            self.next_present_at = Some(next_presentation_deadline(
+                self.next_present_at,
+                now,
+                self.frame_interval,
+            ));
         }
         Ok(presented)
     }
@@ -597,6 +630,24 @@ fn create_linux_presenter(
     };
     opennow_streamer_platform_linux::VulkanPresenter::new(&surface, width, height)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn next_presentation_deadline(
+    previous: Option<Instant>,
+    now: Instant,
+    frame_interval: Duration,
+) -> Instant {
+    match previous {
+        // Preserve the cadence through ordinary sub-millisecond scheduler
+        // variance. If presentation was late by a whole frame, re-anchor at
+        // now so a recovered decode/network burst cannot be replayed faster
+        // than the negotiated stream rate.
+        Some(deadline) if now.saturating_duration_since(deadline) <= frame_interval => {
+            deadline + frame_interval
+        }
+        Some(_) | None => now + frame_interval,
+    }
 }
 
 struct StreamAudioCallback {
@@ -822,7 +873,9 @@ impl SdlInputCapture {
                     eprintln!("GFN custom cursor {cursor_id} could not be decoded: {error}");
                 }
             }
-        } else if !self.cursors.contains_key(&cursor_key) {
+        } else if let std::collections::hash_map::Entry::Vacant(entry) =
+            self.cursors.entry(cursor_key)
+        {
             let system_cursor = match cursor_id {
                 2 => sdl2::mouse::SystemCursor::IBeam,
                 3 => sdl2::mouse::SystemCursor::Wait,
@@ -837,7 +890,7 @@ impl SdlInputCapture {
                 _ => sdl2::mouse::SystemCursor::Arrow,
             };
             if let Ok(cursor) = sdl2::mouse::Cursor::from_system(system_cursor) {
-                self.cursors.insert(cursor_key, cursor);
+                entry.insert(cursor);
             }
         }
         if let Some(cursor) = self.cursors.get(&cursor_key) {
@@ -1149,6 +1202,7 @@ impl SoftwareOutput {
                 self.presented_frames,
                 self.output.software_video_drops(),
                 self.input_capture.relative_mouse,
+                self.output.received_video_bytes(),
             );
             self.debug_overlay.composite_rgb24(
                 &mut frame.rgb,
@@ -1202,6 +1256,7 @@ impl SoftwareOutput {
             self.presented_frames,
             self.output.hardware_video_drops(),
             self.input_capture.relative_mouse,
+            self.output.received_video_bytes(),
         );
         self.debug_overlay.composite_linux_frame(&mut frame);
         if self.texture_size != Some((width, height))
@@ -2454,6 +2509,8 @@ mod tests {
             software_video_drops: AtomicU64::new(0),
             #[cfg(target_os = "linux")]
             hardware_video_drops: AtomicU64::new(0),
+            #[cfg(target_os = "linux")]
+            received_video_bytes: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::new()),
             audio_capacity: 4,
             captured_input: Arc::new(CapturedInputQueue::default()),
@@ -2486,6 +2543,27 @@ mod tests {
         assert_eq!(
             aspect_fit(1920, 1080, 1000, 1000),
             Rect::new(0, 218, 1000, 563)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn presentation_deadline_reanchors_instead_of_replaying_a_late_burst() {
+        let interval = Duration::from_millis(8);
+        let origin = Instant::now();
+        let first_deadline = next_presentation_deadline(None, origin, interval);
+        assert_eq!(first_deadline, origin + interval);
+
+        let ordinary_lateness = first_deadline + Duration::from_micros(200);
+        assert_eq!(
+            next_presentation_deadline(Some(first_deadline), ordinary_lateness, interval),
+            first_deadline + interval,
+        );
+
+        let stalled = first_deadline + Duration::from_millis(20);
+        assert_eq!(
+            next_presentation_deadline(Some(first_deadline), stalled, interval),
+            stalled + interval,
         );
     }
 

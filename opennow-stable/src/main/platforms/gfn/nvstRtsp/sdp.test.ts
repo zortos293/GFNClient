@@ -81,8 +81,8 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bitStreamFormat:0/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bllFec\.enable:0/);
   assert.match(sdp, /a=x-nv-aqos\.enableRedundancy:0/);
-  assert.match(sdp, /a=x-nv-video\[0\]\.initialBitrateKbps:25000/);
-  assert.match(sdp, /a=x-nv-video\[0\]\.initialPeakBitrateKbps:25000/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.initialBitrateKbps:100000/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.initialPeakBitrateKbps:100000/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bw\.maximumBitrateKbps:100000/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bw\.minimumBitrateKbps:1000/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.dynamicStreamingMode:0/);
@@ -111,10 +111,10 @@ test("buildAnnounceSdp selects H.265 and AV1 NVST bitstreams", () => {
   assert.doesNotMatch(av1, /a=x-nv-clientSupportHevc:/);
 });
 
-test("buildAnnounceSdp derives the adaptive startup rate from the selected ceiling", () => {
+test("buildAnnounceSdp uses the selected ceiling as the native startup rate", () => {
   const sdp = buildAnnounceSdp({ maxBitrateKbps: 80_000 });
-  assert.match(sdp, /a=x-nv-video\[0\]\.initialBitrateKbps:20000/);
-  assert.match(sdp, /a=x-nv-video\[0\]\.initialPeakBitrateKbps:20000/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.initialBitrateKbps:80000/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.initialPeakBitrateKbps:80000/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bw\.maximumBitrateKbps:80000/);
 });
 

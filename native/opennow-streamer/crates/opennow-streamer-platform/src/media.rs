@@ -254,6 +254,10 @@ impl MediaSink {
     }
 
     fn push_video(&self, frame: EncodedFrame) -> PushOutcome {
+        #[cfg(target_os = "linux")]
+        self.shared
+            .output
+            .record_received_video_bytes(frame.data.len());
         if !frame.keyframe && self.shared.video_desynced.load(Ordering::Acquire) {
             self.mark_video_desynced(&frame.mid, "waiting for a decodable H.264 keyframe");
         } else if !frame.contiguous {

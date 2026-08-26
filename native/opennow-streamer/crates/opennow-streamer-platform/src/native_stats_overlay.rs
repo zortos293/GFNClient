@@ -58,6 +58,8 @@ pub(crate) struct NativeStatsOverlay {
     last_presented: u64,
     last_sample: Instant,
     measured_fps: f32,
+    last_received_video_bytes: u64,
+    measured_bitrate_bps: f32,
     fps_history: VecDeque<f32>,
     dropped_frames: u64,
     relative_mouse: bool,
@@ -73,6 +75,8 @@ impl NativeStatsOverlay {
             last_presented: 0,
             last_sample: Instant::now(),
             measured_fps: 0.0,
+            last_received_video_bytes: 0,
+            measured_bitrate_bps: 0.0,
             fps_history: VecDeque::with_capacity(18),
             dropped_frames: 0,
             relative_mouse: false,
@@ -96,6 +100,7 @@ impl NativeStatsOverlay {
         presented_frames: u64,
         dropped_frames: u64,
         relative_mouse: bool,
+        received_video_bytes: u64,
     ) -> bool {
         self.dropped_frames = dropped_frames;
         self.relative_mouse = relative_mouse;
@@ -106,7 +111,17 @@ impl NativeStatsOverlay {
         }
         self.measured_fps = presented_frames.saturating_sub(self.last_presented) as f32
             / elapsed.as_secs_f32().max(0.001);
+        let bitrate_bps = measured_bitrate_bps(
+            received_video_bytes.saturating_sub(self.last_received_video_bytes),
+            elapsed,
+        );
+        self.measured_bitrate_bps = if self.measured_bitrate_bps <= 0.0 {
+            bitrate_bps
+        } else {
+            self.measured_bitrate_bps * 0.65 + bitrate_bps * 0.35
+        };
         self.last_presented = presented_frames;
+        self.last_received_video_bytes = received_video_bytes;
         self.last_sample = now;
         if self.fps_history.len() == 18 {
             self.fps_history.pop_front();
@@ -343,9 +358,13 @@ impl NativeStatsOverlay {
         canvas.row(
             20,
             411,
-            "BITRATE TARGET",
+            "BITRATE NOW / MAX",
             460,
-            &format!("{:.1} MBPS", self.stream.bitrate_bps as f32 / 1_000_000.0),
+            &format!(
+                "{:.1} / {:.1} MBPS",
+                self.measured_bitrate_bps / 1_000_000.0,
+                self.stream.bitrate_bps as f32 / 1_000_000.0,
+            ),
             TEXT,
         );
         canvas.draw_text(20, 448, 1, MUTED, "F3: MINIMAL  /  FULL  /  OFF");
@@ -365,6 +384,10 @@ impl NativeStatsOverlay {
             );
         }
     }
+}
+
+fn measured_bitrate_bps(bytes: u64, elapsed: Duration) -> f32 {
+    bytes as f32 * 8.0 / elapsed.as_secs_f32().max(0.001)
 }
 
 fn overlay_origin(
@@ -561,6 +584,18 @@ mod tests {
     fn fps_uses_target_until_live_sample_exists() {
         assert_eq!(display_fps(0.0, 120), 120);
         assert_eq!(display_fps(117.4, 120), 117);
+    }
+
+    #[test]
+    fn measured_bitrate_uses_encoded_video_bytes_over_sample_time() {
+        assert_eq!(
+            measured_bitrate_bps(1_000_000, Duration::from_secs(1)),
+            8_000_000.0,
+        );
+        assert_eq!(
+            measured_bitrate_bps(500_000, Duration::from_millis(250)),
+            16_000_000.0,
+        );
     }
 
     #[test]

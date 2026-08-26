@@ -102,7 +102,7 @@ export function buildAnnounceSdp(
     resolution?: string;
     fps?: number;
     codec?: string;
-    /** User-selected bitrate ceiling. Native GFN starts at 25% and adapts up to this value. */
+    /** User-selected bitrate ceiling and initial native encoder target. */
     maxBitrateKbps?: number;
     encryptionKeyHex?: string;
     encryptionKeyId?: number;
@@ -156,7 +156,11 @@ export function buildAnnounceSdp(
     1_000,
     Math.min(150_000, Math.round(options.maxBitrateKbps ?? 100_000)),
   );
-  const initialBitrateKbps = Math.max(1_000, Math.round(maximumBitrateKbps / 4));
+  // This native profile intentionally disables GRC/DRC and dynamic resolution.
+  // Starting at 25% therefore pins the encoder near that low rate instead of
+  // ramping like the WebRTC profile. Start at the selected ceiling; the encoder
+  // remains content-variable and network feedback can still reduce its output.
+  const initialBitrateKbps = maximumBitrateKbps;
   const codec = options.codec?.trim().toUpperCase() ?? "H264";
   const bitStreamFormat = codec === "AV1" ? "2" : codec === "H265" || codec === "HEVC" ? "1" : "0";
 

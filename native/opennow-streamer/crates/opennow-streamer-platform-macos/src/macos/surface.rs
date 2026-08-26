@@ -110,111 +110,107 @@ impl SurfaceOwner {
             requested_visible,
             parent_pid,
             reuse_existing_metal_layer,
-        ) =
-            match target {
-                SurfaceTarget::OwnedOverlay(config) => {
-                    let application = NSApplication::sharedApplication(main_thread);
-                    // A bare executable defaults to NSApplicationActivationPolicyProhibited,
-                    // which makes the window server refuse to show any of its windows.
-                    // Accessory lets the overlay appear without a dock icon or menu bar.
-                    application.setActivationPolicy(
-                        objc2_app_kit::NSApplicationActivationPolicy::Accessory,
-                    );
-                    application.finishLaunching();
-                    config.validate()?;
-                    let parent_pid = unsafe { libc::getppid() };
-                    let frontmost = application_is_frontmost(parent_pid);
-                    let ordered = overlay_should_be_ordered(config.visible, frontmost);
-                    let styles =
-                        NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
-                    // Use AppKit's concrete NSPanel rather than a runtime-defined subclass.
-                    // The helper's application bundle gives WindowServer the process metadata
-                    // it needs to composite this passive cross-process overlay reliably.
-                    let window: Retained<NSPanel> = unsafe {
-                        msg_send![
-                            main_thread.alloc::<NSPanel>(),
-                            initWithContentRect: appkit_screen_frame(config.screen_rect, main_thread)?,
-                            styleMask: styles,
-                            backing: NSBackingStoreType::Buffered,
-                            defer: false
-                        ]
-                    };
-                    unsafe { window.setReleasedWhenClosed(false) };
-                    window.setBecomesKeyOnlyIfNeeded(true);
-                    // The panel belongs to the accessory helper, while Electron remains the
-                    // active application. NSPanel may otherwise hide itself as soon as the
-                    // helper deactivates, leaving a live native surface that is never visible.
-                    window.setHidesOnDeactivate(false);
-                    // Cross-process child windows are not supported by AppKit. Keep this passive
-                    // panel above the Electron content while it is ordered, and explicitly order
-                    // it out whenever the Electron parent is no longer frontmost.
-                    window.setLevel(NSFloatingWindowLevel);
-                    window.setCollectionBehavior(
-                        NSWindowCollectionBehavior::CanJoinAllSpaces
-                            | NSWindowCollectionBehavior::FullScreenAuxiliary
-                            | NSWindowCollectionBehavior::IgnoresCycle,
-                    );
-                    window.setIgnoresMouseEvents(true);
-                    window.setAcceptsMouseMovedEvents(false);
-                    window.setHasShadow(false);
-                    window.setOpaque(true);
-                    window.setBackgroundColor(Some(&NSColor::blackColor()));
-                    let view = window
-                        .contentView()
-                        .ok_or(BackendError::MissingContentView)?;
-                    if ordered {
-                        window.orderFrontRegardless();
-                    } else {
-                        window.orderOut(None);
-                    }
-                    ordered_visible = ordered;
-                    let panel: Retained<NSPanel> = window;
-                    let window: Retained<NSWindow> = panel.into_super();
-                    (
-                        Some(window),
-                        view,
-                        true,
-                        true,
-                        None,
-                        config.visible,
-                        Some(parent_pid),
-                        false,
-                    )
-                }
-                SurfaceTarget::NsView(view) => {
-                    let view = unsafe { Retained::retain(view.as_ptr().as_ptr().cast::<NSView>()) }
-                        .ok_or(BackendError::MissingContentView)?;
-                    let window = view.window();
-                    ordered_visible = true;
-                    (window, view, false, false, None, true, None, true)
-                }
-                SurfaceTarget::NsWindow(config) => {
-                    config.validate()?;
-                    let window = unsafe {
-                        Retained::retain(config.window.as_ptr().as_ptr().cast::<NSWindow>())
-                    }
+        ) = match target {
+            SurfaceTarget::OwnedOverlay(config) => {
+                let application = NSApplication::sharedApplication(main_thread);
+                // A bare executable defaults to NSApplicationActivationPolicyProhibited,
+                // which makes the window server refuse to show any of its windows.
+                // Accessory lets the overlay appear without a dock icon or menu bar.
+                application
+                    .setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
+                application.finishLaunching();
+                config.validate()?;
+                let parent_pid = unsafe { libc::getppid() };
+                let frontmost = application_is_frontmost(parent_pid);
+                let ordered = overlay_should_be_ordered(config.visible, frontmost);
+                let styles = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+                // Use AppKit's concrete NSPanel rather than a runtime-defined subclass.
+                // The helper's application bundle gives WindowServer the process metadata
+                // it needs to composite this passive cross-process overlay reliably.
+                let window: Retained<NSPanel> = unsafe {
+                    msg_send![
+                        main_thread.alloc::<NSPanel>(),
+                        initWithContentRect: appkit_screen_frame(config.screen_rect, main_thread)?,
+                        styleMask: styles,
+                        backing: NSBackingStoreType::Buffered,
+                        defer: false
+                    ]
+                };
+                unsafe { window.setReleasedWhenClosed(false) };
+                window.setBecomesKeyOnlyIfNeeded(true);
+                // The panel belongs to the accessory helper, while Electron remains the
+                // active application. NSPanel may otherwise hide itself as soon as the
+                // helper deactivates, leaving a live native surface that is never visible.
+                window.setHidesOnDeactivate(false);
+                // Cross-process child windows are not supported by AppKit. Keep this passive
+                // panel above the Electron content while it is ordered, and explicitly order
+                // it out whenever the Electron parent is no longer frontmost.
+                window.setLevel(NSFloatingWindowLevel);
+                window.setCollectionBehavior(
+                    NSWindowCollectionBehavior::CanJoinAllSpaces
+                        | NSWindowCollectionBehavior::FullScreenAuxiliary
+                        | NSWindowCollectionBehavior::IgnoresCycle,
+                );
+                window.setIgnoresMouseEvents(true);
+                window.setAcceptsMouseMovedEvents(false);
+                window.setHasShadow(false);
+                window.setOpaque(true);
+                window.setBackgroundColor(Some(&NSColor::blackColor()));
+                let view = window
+                    .contentView()
                     .ok_or(BackendError::MissingContentView)?;
-                    let parent = window
-                        .contentView()
-                        .ok_or(BackendError::MissingContentView)?;
-                    let frame = appkit_frame(&parent, config.bounds);
-                    let child: Retained<PassiveSurfaceView> = unsafe {
-                        msg_send![main_thread.alloc::<PassiveSurfaceView>(), initWithFrame: frame]
-                    };
-                    child.setHidden(!config.visible);
-                    ordered_visible = config.visible;
-                    (
-                        Some(window),
-                        child.into_super(),
-                        false,
-                        false,
-                        Some(parent),
-                        config.visible,
-                        None,
-                        false,
-                    )
+                if ordered {
+                    window.orderFrontRegardless();
+                } else {
+                    window.orderOut(None);
                 }
-            };
+                ordered_visible = ordered;
+                let panel: Retained<NSPanel> = window;
+                let window: Retained<NSWindow> = panel.into_super();
+                (
+                    Some(window),
+                    view,
+                    true,
+                    true,
+                    None,
+                    config.visible,
+                    Some(parent_pid),
+                    false,
+                )
+            }
+            SurfaceTarget::NsView(view) => {
+                let view = unsafe { Retained::retain(view.as_ptr().as_ptr().cast::<NSView>()) }
+                    .ok_or(BackendError::MissingContentView)?;
+                let window = view.window();
+                ordered_visible = true;
+                (window, view, false, false, None, true, None, true)
+            }
+            SurfaceTarget::NsWindow(config) => {
+                config.validate()?;
+                let window =
+                    unsafe { Retained::retain(config.window.as_ptr().as_ptr().cast::<NSWindow>()) }
+                        .ok_or(BackendError::MissingContentView)?;
+                let parent = window
+                    .contentView()
+                    .ok_or(BackendError::MissingContentView)?;
+                let frame = appkit_frame(&parent, config.bounds);
+                let child: Retained<PassiveSurfaceView> = unsafe {
+                    msg_send![main_thread.alloc::<PassiveSurfaceView>(), initWithFrame: frame]
+                };
+                child.setHidden(!config.visible);
+                ordered_visible = config.visible;
+                (
+                    Some(window),
+                    child.into_super(),
+                    false,
+                    false,
+                    Some(parent),
+                    config.visible,
+                    None,
+                    false,
+                )
+            }
+        };
 
         let attachment = if reuse_existing_metal_layer {
             Attachment::ExistingMetal

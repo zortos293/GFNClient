@@ -41,7 +41,9 @@ const AUDIO_CHANNELS: u8 = 2;
 const AUDIO_BUFFER_FRAMES: u16 = 480;
 const MAX_AUDIO_LATENCY_MS: usize = 120;
 #[cfg(target_os = "linux")]
-const LINUX_VIDEO_QUEUE_CAPACITY: usize = 4;
+const LINUX_VIDEO_QUEUE_CAPACITY: usize = 2;
+#[cfg(target_os = "linux")]
+const LINUX_BACKLOG_CATCHUP_FACTOR: f64 = 0.96;
 
 #[derive(Debug)]
 pub(crate) struct DecodedVideoFrame {
@@ -215,6 +217,14 @@ impl OutputBuffers {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .pop_front()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_video_queue_len(&self) -> usize {
+        self.linux_video
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
     }
 
     #[cfg(target_os = "linux")]
@@ -596,10 +606,14 @@ impl LinuxHardwareOutput {
             .map_err(|error| error.to_string())?;
         if presented {
             self.presented_frames = self.presented_frames.saturating_add(1);
+            let presentation_interval = backlog_aware_presentation_interval(
+                self.frame_interval,
+                self.output.linux_video_queue_len(),
+            );
             self.next_present_at = Some(next_presentation_deadline(
                 self.next_present_at,
                 now,
-                self.frame_interval,
+                presentation_interval,
             ));
         }
         Ok(presented)
@@ -688,6 +702,18 @@ fn next_presentation_deadline(
             deadline + frame_interval
         }
         Some(_) | None => now + frame_interval,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn backlog_aware_presentation_interval(frame_interval: Duration, queued_frames: usize) -> Duration {
+    if queued_frames == 0 {
+        frame_interval
+    } else {
+        // A tiny cadence increase drains the single waiting frame without the
+        // visible 140 FPS fast-forward that an unrestricted catch-up causes.
+        // At a 120 FPS target this is capped at 125 FPS.
+        frame_interval.mul_f64(LINUX_BACKLOG_CATCHUP_FACTOR)
     }
 }
 
@@ -2593,7 +2619,7 @@ mod tests {
         for timestamp_us in 0..LINUX_VIDEO_QUEUE_CAPACITY as u64 {
             assert!(!output.queue_linux_video(frame(timestamp_us)));
         }
-        assert!(output.queue_linux_video(frame(4)));
+        assert!(output.queue_linux_video(frame(LINUX_VIDEO_QUEUE_CAPACITY as u64)));
         assert_eq!(output.hardware_video_drops(), 1);
         assert_eq!(
             output
@@ -2608,7 +2634,7 @@ mod tests {
         );
 
         let recovery = OutputBuffers::new();
-        for timestamp_us in 10..13 {
+        for timestamp_us in 10..12 {
             assert!(!recovery.queue_linux_video(frame(timestamp_us)));
         }
         assert_eq!(
@@ -2616,9 +2642,9 @@ mod tests {
                 .take_latest_linux_video()
                 .expect("latest recovery frame")
                 .timestamp_us,
-            12,
+            11,
         );
-        assert_eq!(recovery.hardware_video_drops(), 2);
+        assert_eq!(recovery.hardware_video_drops(), 1);
         assert!(recovery.take_linux_video().is_none());
     }
 
@@ -2648,6 +2674,17 @@ mod tests {
         assert_eq!(
             next_presentation_deadline(Some(first_deadline), stalled, interval),
             stalled + interval,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn presentation_cadence_only_accelerates_while_a_frame_is_waiting() {
+        let interval = Duration::from_millis(10);
+        assert_eq!(backlog_aware_presentation_interval(interval, 0), interval);
+        assert_eq!(
+            backlog_aware_presentation_interval(interval, 1),
+            Duration::from_micros(9_600),
         );
     }
 

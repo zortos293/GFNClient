@@ -1953,8 +1953,6 @@ internal fun activeSessionRecoveryCandidate(
     }
 }
 
-internal fun shouldCreateFreshRecoverySession(activeSessionCount: Int): Boolean = activeSessionCount == 0
-
 internal fun activeSessionLaunchConflict(
     sessions: List<ActiveSessionInfo>,
     launchAppId: Int?,

@@ -835,12 +835,6 @@ class StreamResolutionTest {
     }
 
     @Test
-    fun recoveryCreatesFreshSessionWhenProviderNoLongerListsTheOldOne() {
-        assertEquals(true, shouldCreateFreshRecoverySession(activeSessionCount = 0))
-        assertEquals(false, shouldCreateFreshRecoverySession(activeSessionCount = 1))
-    }
-
-    @Test
     fun activeSessionWithUnknownMonitorModeIsNotReusedForLaunch() {
         val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
         val active = activeSession(

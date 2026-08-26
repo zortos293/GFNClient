@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use openh264::OpenH264API;
 use openh264::decoder::{Decoder as OpenH264Decoder, DecoderConfig};
@@ -112,27 +113,46 @@ pub enum CapturedInput {
 
 const CAPTURED_INPUT_CAPACITY: usize = 256;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedInputSample {
+    pub input: CapturedInput,
+    pub captured_at: Instant,
+}
+
 #[derive(Debug, Default)]
 pub struct CapturedInputQueue {
-    pending: Mutex<VecDeque<CapturedInput>>,
+    pending: Mutex<VecDeque<CapturedInputSample>>,
     overflowed: AtomicBool,
 }
 
 impl CapturedInputQueue {
     pub fn push(&self, input: CapturedInput) {
+        self.push_sample(CapturedInputSample {
+            input,
+            captured_at: Instant::now(),
+        });
+    }
+
+    pub fn push_sample(&self, sample: CapturedInputSample) {
         let mut pending = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(input, CapturedInput::MouseAbsolute { .. })
-            && matches!(pending.back(), Some(CapturedInput::MouseAbsolute { .. }))
+        if matches!(&sample.input, CapturedInput::MouseAbsolute { .. })
+            && matches!(
+                pending.back(),
+                Some(CapturedInputSample {
+                    input: CapturedInput::MouseAbsolute { .. },
+                    ..
+                })
+            )
         {
             pending.pop_back();
         }
         if pending.len() == CAPTURED_INPUT_CAPACITY {
             if let Some(index) = pending.iter().position(|event| {
                 matches!(
-                    event,
+                    &event.input,
                     CapturedInput::MouseMove { .. } | CapturedInput::MouseAbsolute { .. }
                 )
             }) {
@@ -142,10 +162,14 @@ impl CapturedInputQueue {
                 return;
             }
         }
-        pending.push_back(input);
+        pending.push_back(sample);
     }
 
     pub fn take(&self) -> Option<CapturedInput> {
+        self.take_sample().map(|sample| sample.input)
+    }
+
+    pub fn take_sample(&self) -> Option<CapturedInputSample> {
         self.pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

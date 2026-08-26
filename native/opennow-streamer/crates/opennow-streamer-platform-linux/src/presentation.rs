@@ -20,6 +20,10 @@ use crate::{
     Result, Subsystem, VulkanVideoFrame,
 };
 
+// The official Linux client uses FIFO and allows its render worker to wait for
+// swapchain progress; input remains responsive because XInput2 runs on a
+// separate thread. Keep finite timeouts for teardown/reconfiguration failures
+// instead of treating ordinary FIFO back-pressure as a dropped frame.
 const PRESENT_WAIT_NS: u64 = 1_000_000_000;
 const ACQUIRE_WAIT_NS: u64 = 50_000_000;
 const NV12_VERTEX_SHADER: &[u8] = include_bytes!("../shaders/nv12.vert.spv");
@@ -419,11 +423,14 @@ impl VulkanPresenter {
                 "presentation synchronization is invalid; call VulkanPresenter::reconfigure",
             ));
         }
-        unsafe {
+        match unsafe {
             self.device
                 .wait_for_fences(&[self.in_flight], true, PRESENT_WAIT_NS)
+        } {
+            Ok(()) => {}
+            Err(vk::Result::TIMEOUT) | Err(vk::Result::NOT_READY) => return Ok(false),
+            Err(error) => return Err(vk_error("wait for presentation", error)),
         }
-        .map_err(|error| vk_error("wait for presentation", error))?;
         // The previous submission no longer references its decoder surface.
         self.in_flight_dmabuf = None;
         self.in_flight_vulkan = None;

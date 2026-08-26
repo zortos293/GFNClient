@@ -2,6 +2,8 @@
 mod linux_backend;
 #[cfg(target_os = "linux")]
 mod linux_frame_pacing;
+#[cfg(target_os = "linux")]
+mod linux_xinput;
 #[cfg(target_os = "macos")]
 mod macos_backend;
 mod media;
@@ -16,8 +18,8 @@ mod windows_debug_overlay;
 mod windows_raw_input;
 
 pub use media::{
-    CapturedInput, CapturedInputQueue, EncodedFrame, MediaCodec, MediaControl, MediaFeedback,
-    MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome,
+    CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, MediaCodec, MediaControl,
+    MediaFeedback, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome,
 };
 pub use runtime::{MainThreadHost, MediaRuntime, create_runtime};
 

@@ -77,25 +77,28 @@ pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 8] = [
     NvstChannelDefinition {
         sid: 4,
         label: CUSTOM_PARTIAL_LABEL,
-        ordered: true,
+        ordered: false,
         reliability: NvstChannelReliability::Lifetime(PARTIAL_RELIABLE_LIFETIME_MS),
     },
     NvstChannelDefinition {
         sid: 6,
         label: CONTROL_PARTIAL_LABEL,
-        ordered: true,
+        // Mouse motion uses this stream. It must be unordered: with ordered
+        // PR-SCTP, one lost report blocks every newer report until its 300 ms
+        // lifetime expires, producing delayed motion followed by catch-up.
+        ordered: false,
         reliability: NvstChannelReliability::Lifetime(PARTIAL_RELIABLE_LIFETIME_MS),
     },
     NvstChannelDefinition {
         sid: 8,
         label: CONTROL_UNRELIABLE_LABEL,
-        ordered: true,
+        ordered: false,
         reliability: NvstChannelReliability::MaxRetransmits(0),
     },
     NvstChannelDefinition {
         sid: 10,
         label: INPUT_PARTIAL_LABEL,
-        ordered: true,
+        ordered: false,
         reliability: NvstChannelReliability::Lifetime(PARTIAL_RELIABLE_LIFETIME_MS),
     },
     NvstChannelDefinition {
@@ -1011,10 +1014,9 @@ mod tests {
                 RTCP_ON_SCTP_LABEL,
             ]
         );
-        assert!(
-            NVST_CHANNEL_PROFILE
-                .iter()
-                .all(|definition| definition.ordered)
+        assert_eq!(
+            NVST_CHANNEL_PROFILE.map(|definition| definition.ordered),
+            [true, true, false, false, false, false, true, true]
         );
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.reliability),
@@ -1030,7 +1032,10 @@ mod tests {
             ]
         );
         let configs = NVST_CHANNEL_PROFILE.map(channel_config);
-        assert_eq!(configs.clone().map(|config| config.ordered), [true; 8]);
+        assert_eq!(
+            configs.clone().map(|config| config.ordered),
+            [true, true, false, false, false, false, true, true]
+        );
         assert_eq!(
             configs.map(|config| config.reliability),
             [

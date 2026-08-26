@@ -34,6 +34,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 opennow-streamer-platform-linux = { path = "../opennow-streamer-platform-linux" }
 raw-window-handle = "0.6"
 x11-dl = "2.21"

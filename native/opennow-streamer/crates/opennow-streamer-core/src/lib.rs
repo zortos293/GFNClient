@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use opennow_streamer_platform::{
-    CapturedInput, CapturedInputQueue, EncodedFrame, MediaCodec, MediaControl, MediaFeedback,
-    MediaRuntime, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome,
-    supports_audio_decode, supports_audio_output, video_backends,
+    CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, MediaCodec, MediaControl,
+    MediaFeedback, MediaRuntime, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec,
+    PushOutcome, supports_audio_decode, supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
@@ -1238,11 +1238,11 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 // Preserve high-polling-rate RawInput/SDL samples rather than
                 // turning several reports into one uneven movement burst.
                 for _ in 0..32 {
-                    let Some(input) = captured_input.take() else {
+                    let Some(input) = captured_input.take_sample() else {
                         break;
                     };
                     if let Err(error) =
-                        forward_nvst_captured_input(&resources, input, &feedback_state)
+                        forward_nvst_captured_sample(&resources, input, &feedback_state)
                     {
                         let _ = emit_nvst_terminal(
                             output,
@@ -1595,6 +1595,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
     }
 }
 
+#[cfg(test)]
 fn forward_nvst_captured_input<R: NvstSessionResources>(
     resources: &R,
     input: CapturedInput,
@@ -1602,6 +1603,22 @@ fn forward_nvst_captured_input<R: NvstSessionResources>(
 ) -> Result<(), String> {
     let timestamp_us = u64::try_from(state.input_origin.elapsed().as_micros()).unwrap_or(u64::MAX);
     resources.send_captured_input(captured_input_packet(input, timestamp_us))
+}
+
+fn forward_nvst_captured_sample<R: NvstSessionResources>(
+    resources: &R,
+    sample: CapturedInputSample,
+    state: &NvstMediaFeedbackState,
+) -> Result<(), String> {
+    // Bifrost timestamps native input at OS capture, before aggregation and
+    // SCTP sending. Keeping that time prevents a delayed queue drain from
+    // making a group of older reports look newly generated.
+    let captured = sample
+        .captured_at
+        .checked_duration_since(state.input_origin)
+        .unwrap_or_default();
+    let timestamp_us = u64::try_from(captured.as_micros()).unwrap_or(u64::MAX);
+    resources.send_captured_input(captured_input_packet(sample.input, timestamp_us))
 }
 
 fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
@@ -1709,11 +1726,21 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(10);
-    let cloud_gsync = context
+    let requested_cloud_gsync = context
         .settings
         .get("enableCloudGsync")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // `enableCloudGsync` is the resolved client request, but CloudMatch may
+    // explicitly reject it in the finalized profile. Never switch Linux into
+    // unthrottled VRR pacing when the server negotiated the feature off.
+    let negotiated_cloud_gsync = context
+        .session
+        .extra
+        .get("negotiatedStreamProfile")
+        .and_then(|profile| profile.get("enableCloudGsync"))
+        .and_then(Value::as_bool);
+    let cloud_gsync = requested_cloud_gsync && negotiated_cloud_gsync.unwrap_or(true);
     MediaStreamConfig {
         codec,
         width: resolution.0,
@@ -2165,6 +2192,39 @@ mod tests {
     }
 
     #[test]
+    fn captured_input_preserves_the_os_capture_timestamp() {
+        let resources = TestNvstResources::default();
+        let input_origin = Instant::now();
+        let state = NvstMediaFeedbackState {
+            drop_reports: HashMap::new(),
+            recovery_attempts: 0,
+            input_origin,
+            input_available: true,
+        };
+        forward_nvst_captured_sample(
+            &resources,
+            CapturedInputSample {
+                input: CapturedInput::MouseMove {
+                    delta_x: 1,
+                    delta_y: -1,
+                },
+                captured_at: input_origin + Duration::from_micros(4_242),
+            },
+            &state,
+        )
+        .expect("captured input");
+
+        let inputs = resources
+            .captured_inputs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            u64::from_be_bytes(inputs[0][14..22].try_into().unwrap()),
+            4_242
+        );
+    }
+
+    #[test]
     fn queue_drop_reports_do_not_mix_audio_samples_with_video_frames() {
         let expired = Instant::now() - Duration::from_secs(2);
         let mut reports = HashMap::from([
@@ -2391,6 +2451,9 @@ mod tests {
             "maxBitrateMbps": 75,
             "enableCloudGsync": true
         });
+        value["session"]["negotiatedStreamProfile"] = json!({
+            "enableCloudGsync": true
+        });
         let context: SessionContext = serde_json::from_value(value).expect("context");
 
         assert_eq!(
@@ -2424,6 +2487,14 @@ mod tests {
         let high_fps: SessionContext = serde_json::from_value(high_fps).expect("context");
         assert_eq!(media_stream_config(&high_fps).codec, MediaVideoCodec::Av1);
         assert_eq!(media_stream_config(&high_fps).fps, 240);
+
+        let mut rejected_vrr = synthetic_context("rejected-vrr-config", json!([]));
+        rejected_vrr["settings"] = json!({ "enableCloudGsync": true });
+        rejected_vrr["session"]["negotiatedStreamProfile"] = json!({
+            "enableCloudGsync": false
+        });
+        let rejected_vrr: SessionContext = serde_json::from_value(rejected_vrr).expect("context");
+        assert!(!media_stream_config(&rejected_vrr).cloud_gsync);
     }
 
     #[test]

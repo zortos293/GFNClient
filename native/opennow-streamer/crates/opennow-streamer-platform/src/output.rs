@@ -40,6 +40,8 @@ const AUDIO_SAMPLE_RATE: i32 = 48_000;
 const AUDIO_CHANNELS: u8 = 2;
 const AUDIO_BUFFER_FRAMES: u16 = 480;
 const MAX_AUDIO_LATENCY_MS: usize = 120;
+#[cfg(target_os = "linux")]
+const LINUX_VIDEO_QUEUE_CAPACITY: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct DecodedVideoFrame {
@@ -52,7 +54,7 @@ pub(crate) struct DecodedVideoFrame {
 pub(crate) struct OutputBuffers {
     video: Mutex<Option<DecodedVideoFrame>>,
     #[cfg(target_os = "linux")]
-    linux_video: Mutex<Option<LinuxDecodedVideoFrame>>,
+    linux_video: Mutex<VecDeque<LinuxDecodedVideoFrame>>,
     #[cfg(target_os = "linux")]
     software_video_drops: AtomicU64,
     #[cfg(target_os = "linux")]
@@ -145,7 +147,7 @@ impl OutputBuffers {
         Self {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
-            linux_video: Mutex::new(None),
+            linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
             #[cfg(target_os = "linux")]
             software_video_drops: AtomicU64::new(0),
             #[cfg(target_os = "linux")]
@@ -189,13 +191,18 @@ impl OutputBuffers {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn replace_linux_video(&self, frame: LinuxDecodedVideoFrame) -> bool {
-        let dropped = self
+    pub(crate) fn queue_linux_video(&self, frame: LinuxDecodedVideoFrame) -> bool {
+        let mut queue = self
             .linux_video
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .replace(frame)
-            .is_some();
+            .unwrap_or_else(|error| error.into_inner());
+        let dropped = if queue.len() == LINUX_VIDEO_QUEUE_CAPACITY {
+            queue.pop_front();
+            true
+        } else {
+            false
+        };
+        queue.push_back(frame);
         if dropped {
             self.hardware_video_drops.fetch_add(1, Ordering::Relaxed);
         }
@@ -207,7 +214,33 @@ impl OutputBuffers {
         self.linux_video
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .take()
+            .pop_front()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn take_latest_linux_video(&self) -> Option<LinuxDecodedVideoFrame> {
+        let mut queue = self
+            .linux_video
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let frame = queue.pop_back();
+        let dropped = queue.len();
+        queue.clear();
+        if dropped > 0 {
+            self.hardware_video_drops.fetch_add(
+                u64::try_from(dropped).unwrap_or(u64::MAX),
+                Ordering::Relaxed,
+            );
+        }
+        frame
+    }
+
+    #[cfg(target_os = "linux")]
+    fn clear_linux_video(&self) {
+        self.linux_video
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
     }
 
     #[cfg(target_os = "linux")]
@@ -258,7 +291,7 @@ impl OutputBuffers {
         self.take_video();
         #[cfg(target_os = "linux")]
         {
-            self.take_linux_video();
+            self.clear_linux_video();
             self.software_video_drops.store(0, Ordering::Relaxed);
             self.hardware_video_drops.store(0, Ordering::Relaxed);
         }
@@ -513,7 +546,7 @@ impl LinuxHardwareOutput {
             }
         }
         if self.paused || !self.visible {
-            self.output.take_linux_video();
+            self.output.clear_linux_video();
             return Ok(false);
         }
         if self.external_renderer {
@@ -540,7 +573,15 @@ impl LinuxHardwareOutput {
         if self.next_present_at.is_some_and(|deadline| now < deadline) {
             return Ok(false);
         }
-        let Some(mut frame) = self.output.take_linux_video() else {
+        let recovering_from_stall = self
+            .next_present_at
+            .is_none_or(|deadline| now.saturating_duration_since(deadline) > self.frame_interval);
+        let frame = if recovering_from_stall {
+            self.output.take_latest_linux_video()
+        } else {
+            self.output.take_linux_video()
+        };
+        let Some(mut frame) = frame else {
             return Ok(false);
         };
         self.stream_size = (frame.format.width.max(1), frame.format.height.max(1));
@@ -1185,7 +1226,7 @@ impl SoftwareOutput {
         if self.paused || !self.visible {
             self.output.take_video();
             #[cfg(target_os = "linux")]
-            self.output.take_linux_video();
+            self.output.clear_linux_video();
             return Ok(false);
         }
         #[cfg(target_os = "linux")]
@@ -2504,7 +2545,7 @@ mod tests {
         let output = OutputBuffers {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
-            linux_video: Mutex::new(None),
+            linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
             #[cfg(target_os = "linux")]
             software_video_drops: AtomicU64::new(0),
             #[cfg(target_os = "linux")]
@@ -2536,6 +2577,49 @@ mod tests {
             rgb: vec![4; 6],
         }));
         assert_eq!(output.take_video().expect("frame").width, 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_video_queue_smooths_bursts_and_bounds_recovery_latency() {
+        use opennow_streamer_platform_linux::StreamFormat;
+
+        let frame = |timestamp_us| LinuxDecodedVideoFrame {
+            format: StreamFormat::video_default(2, 2).expect("format"),
+            planes: Vec::new(),
+            timestamp_us,
+        };
+        let output = OutputBuffers::new();
+        for timestamp_us in 0..LINUX_VIDEO_QUEUE_CAPACITY as u64 {
+            assert!(!output.queue_linux_video(frame(timestamp_us)));
+        }
+        assert!(output.queue_linux_video(frame(4)));
+        assert_eq!(output.hardware_video_drops(), 1);
+        assert_eq!(
+            output
+                .take_linux_video()
+                .expect("oldest frame")
+                .timestamp_us,
+            1
+        );
+        assert_eq!(
+            output.take_linux_video().expect("next frame").timestamp_us,
+            2
+        );
+
+        let recovery = OutputBuffers::new();
+        for timestamp_us in 10..13 {
+            assert!(!recovery.queue_linux_video(frame(timestamp_us)));
+        }
+        assert_eq!(
+            recovery
+                .take_latest_linux_video()
+                .expect("latest recovery frame")
+                .timestamp_us,
+            12,
+        );
+        assert_eq!(recovery.hardware_video_drops(), 2);
+        assert!(recovery.take_linux_video().is_none());
     }
 
     #[test]

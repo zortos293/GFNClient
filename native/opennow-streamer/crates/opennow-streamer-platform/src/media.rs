@@ -1152,7 +1152,7 @@ fn run_linux_monitor(shared: Arc<SharedPipeline>, host_commands: Sender<HostComm
         };
         if !shared.paused.load(Ordering::Acquire) {
             for frame in frames {
-                if shared.output.replace_linux_video(frame) {
+                if shared.output.queue_linux_video(frame) {
                     let _ = shared.feedback.send(MediaFeedback::QueueDropped {
                         media: "linux-present",
                         count: 1,

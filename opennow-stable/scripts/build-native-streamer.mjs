@@ -1,4 +1,12 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -85,9 +93,25 @@ if (build.status !== 0) process.exit(build.status ?? 1);
 if (!existsSync(builtBinary)) throw new Error(`Native streamer build missing: ${builtBinary}`);
 
 mkdirSync(dirname(platformBinary), { recursive: true });
-copyFileSync(builtBinary, platformBinary);
-if (!platformKey.startsWith("win32-")) {
-  chmodSync(platformBinary, 0o755);
+if (process.platform === "linux" && platformKey.startsWith("linux-")) {
+  // A running ELF cannot be truncated in place (ETXTBSY). Stage the new
+  // executable beside it and atomically replace the directory entry so an
+  // active session can finish on the old inode while the next one uses this
+  // build.
+  const stagedBinary = `${platformBinary}.${process.pid}.tmp`;
+  rmSync(stagedBinary, { force: true });
+  try {
+    copyFileSync(builtBinary, stagedBinary);
+    chmodSync(stagedBinary, 0o755);
+    renameSync(stagedBinary, platformBinary);
+  } finally {
+    rmSync(stagedBinary, { force: true });
+  }
+} else {
+  copyFileSync(builtBinary, platformBinary);
+  if (!platformKey.startsWith("win32-")) {
+    chmodSync(platformBinary, 0o755);
+  }
 }
 
 const hostPlatformKey = `${process.platform}-${process.arch}`;

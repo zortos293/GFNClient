@@ -35,7 +35,10 @@ const ANNOUNCE_ALLOWLIST = {
     "fec.repairMinPercent": "0",
     "fec.repairMaxPercent": "0",
     "bllFec.enable": "0",
-    "grc.enable": "0",
+    // Official native Linux NVST config enables all H.264/H.265 GRC modes.
+    // Keep the user's bitrate as a ceiling while allowing the server to react
+    // to the RTCP loss/jitter feedback emitted by the native receiver.
+    "grc.enable": "7",
     "drc.enable": "0",
     "dfc.adjustResAndFps": "0",
     calculateAvgVideoStreamingBitrate: "1",
@@ -156,10 +159,9 @@ export function buildAnnounceSdp(
     1_000,
     Math.min(150_000, Math.round(options.maxBitrateKbps ?? 100_000)),
   );
-  // This native profile intentionally disables GRC/DRC and dynamic resolution.
-  // Starting at 25% therefore pins the encoder near that low rate instead of
-  // ramping like the WebRTC profile. Start at the selected ceiling; the encoder
-  // remains content-variable and network feedback can still reduce its output.
+  // Start at the selected ceiling. GRC may reduce the encoder output from this
+  // value when the receiver reports congestion, while DRC remains disabled so
+  // resolution and frame rate stay predictable.
   const initialBitrateKbps = maximumBitrateKbps;
   const codec = options.codec?.trim().toUpperCase() ?? "H264";
   const bitStreamFormat = codec === "AV1" ? "2" : codec === "H265" || codec === "HEVC" ? "1" : "0";

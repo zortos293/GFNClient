@@ -80,6 +80,7 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   assert.match(sdp, /a=x-nv-vqos\[0\]\.fec\.enable:0/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bitStreamFormat:0/);
   assert.match(sdp, /a=x-nv-vqos\[0\]\.bllFec\.enable:0/);
+  assert.match(sdp, /a=x-nv-vqos\[0\]\.grc\.enable:7/);
   assert.match(sdp, /a=x-nv-aqos\.enableRedundancy:0/);
   assert.match(sdp, /a=x-nv-video\[0\]\.initialBitrateKbps:100000/);
   assert.match(sdp, /a=x-nv-video\[0\]\.initialPeakBitrateKbps:100000/);

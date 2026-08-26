@@ -41,9 +41,15 @@ const AUDIO_CHANNELS: u8 = 2;
 const AUDIO_BUFFER_FRAMES: u16 = 480;
 const MAX_AUDIO_LATENCY_MS: usize = 120;
 #[cfg(target_os = "linux")]
-const LINUX_VIDEO_QUEUE_CAPACITY: usize = 2;
+const LINUX_VIDEO_QUEUE_CAPACITY: usize = 3;
 #[cfg(target_os = "linux")]
-const LINUX_BACKLOG_CATCHUP_FACTOR: f64 = 0.96;
+const LINUX_ARRIVAL_HISTORY_LENGTH: usize = 120;
+#[cfg(target_os = "linux")]
+const LINUX_QUEUE_HISTORY_LENGTH: usize = 3;
+#[cfg(target_os = "linux")]
+const LINUX_PACING_OUTLIER: Duration = Duration::from_millis(75);
+#[cfg(target_os = "linux")]
+const LINUX_MAX_CATCH_UP_RATE: f64 = 0.10;
 
 #[derive(Debug)]
 pub(crate) struct DecodedVideoFrame {
@@ -52,11 +58,18 @@ pub(crate) struct DecodedVideoFrame {
     pub(crate) rgb: Vec<u8>,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct QueuedLinuxVideoFrame {
+    frame: LinuxDecodedVideoFrame,
+    arrived_at: Instant,
+}
+
 #[derive(Debug)]
 pub(crate) struct OutputBuffers {
     video: Mutex<Option<DecodedVideoFrame>>,
     #[cfg(target_os = "linux")]
-    linux_video: Mutex<VecDeque<LinuxDecodedVideoFrame>>,
+    linux_video: Mutex<VecDeque<QueuedLinuxVideoFrame>>,
     #[cfg(target_os = "linux")]
     software_video_drops: AtomicU64,
     #[cfg(target_os = "linux")]
@@ -204,7 +217,10 @@ impl OutputBuffers {
         } else {
             false
         };
-        queue.push_back(frame);
+        queue.push_back(QueuedLinuxVideoFrame {
+            frame,
+            arrived_at: Instant::now(),
+        });
         if dropped {
             self.hardware_video_drops.fetch_add(1, Ordering::Relaxed);
         }
@@ -212,7 +228,7 @@ impl OutputBuffers {
     }
 
     #[cfg(target_os = "linux")]
-    fn take_linux_video(&self) -> Option<LinuxDecodedVideoFrame> {
+    fn take_linux_video(&self) -> Option<QueuedLinuxVideoFrame> {
         self.linux_video
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -228,7 +244,7 @@ impl OutputBuffers {
     }
 
     #[cfg(target_os = "linux")]
-    fn take_latest_linux_video(&self) -> Option<LinuxDecodedVideoFrame> {
+    fn take_latest_linux_video(&self) -> Option<QueuedLinuxVideoFrame> {
         let mut queue = self
             .linux_video
             .lock()
@@ -320,6 +336,131 @@ impl OutputBuffers {
 }
 
 #[cfg(target_os = "linux")]
+struct LinuxPresentationClock {
+    nominal_interval: Duration,
+    arrival_history: VecDeque<Duration>,
+    queue_history: VecDeque<usize>,
+    last_arrival: Option<Instant>,
+    next_deadline: Option<Instant>,
+    queue_integral: f64,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxPresentationClock {
+    fn new(nominal_interval: Duration) -> Self {
+        Self {
+            nominal_interval,
+            arrival_history: VecDeque::with_capacity(LINUX_ARRIVAL_HISTORY_LENGTH),
+            queue_history: VecDeque::with_capacity(LINUX_QUEUE_HISTORY_LENGTH),
+            last_arrival: None,
+            next_deadline: None,
+            queue_integral: 0.0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.arrival_history.clear();
+        self.queue_history.clear();
+        self.last_arrival = None;
+        self.next_deadline = None;
+        self.queue_integral = 0.0;
+    }
+
+    fn observe_arrival(&mut self, arrived_at: Instant) {
+        if let Some(previous) = self.last_arrival.replace(arrived_at) {
+            let interval = arrived_at.saturating_duration_since(previous);
+            if interval <= LINUX_PACING_OUTLIER {
+                push_linux_pacing_sample(
+                    &mut self.arrival_history,
+                    interval,
+                    LINUX_ARRIVAL_HISTORY_LENGTH,
+                );
+            } else {
+                // Loading/recovery gaps are not representative of the active
+                // stream cadence and must not slow the next history window.
+                self.arrival_history.clear();
+                self.next_deadline = None;
+            }
+        }
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        self.next_deadline.is_none_or(|deadline| now >= deadline)
+    }
+
+    fn is_recovery_stall(&self, now: Instant) -> bool {
+        self.next_deadline
+            .is_some_and(|deadline| now.saturating_duration_since(deadline) > LINUX_PACING_OUTLIER)
+    }
+
+    fn mark_presented(&mut self, now: Instant, queued_frames: usize) {
+        push_linux_pacing_sample(
+            &mut self.queue_history,
+            queued_frames,
+            LINUX_QUEUE_HISTORY_LENGTH,
+        );
+        let queue_average = average_linux_queue_depth(&self.queue_history);
+        self.queue_integral = (self.queue_integral * 0.9 + queue_average).clamp(0.0, 12.0);
+        let interval = self.controlled_interval(queue_average);
+        let next = self
+            .next_deadline
+            .map_or(now + interval, |deadline| deadline + interval);
+        // Preserve phase while frames are waiting so a decoder burst drains at
+        // a bounded rate. Rebase only once the queue is empty; this avoids both
+        // permanent latency and the old high-FPS replay burst.
+        self.next_deadline = Some(if queued_frames == 0 && next <= now {
+            now + interval
+        } else {
+            next
+        });
+    }
+
+    fn controlled_interval(&self, queue_average: f64) -> Duration {
+        let estimated = average_linux_duration(&self.arrival_history)
+            .unwrap_or(self.nominal_interval)
+            .clamp(
+                self.nominal_interval,
+                self.nominal_interval.saturating_mul(2),
+            );
+        let correction = (queue_average * 0.10 + self.queue_integral * 0.004).clamp(0.0, 0.30);
+        let minimum = if queue_average > 0.0 {
+            self.nominal_interval.as_secs_f64() * (1.0 - LINUX_MAX_CATCH_UP_RATE)
+        } else {
+            self.nominal_interval.as_secs_f64()
+        };
+        Duration::from_secs_f64((estimated.as_secs_f64() / (1.0 + correction)).max(minimum))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn push_linux_pacing_sample<T>(values: &mut VecDeque<T>, value: T, capacity: usize) {
+    if values.len() == capacity {
+        values.pop_front();
+    }
+    values.push_back(value);
+}
+
+#[cfg(target_os = "linux")]
+fn average_linux_duration(values: &VecDeque<Duration>) -> Option<Duration> {
+    if values.is_empty() {
+        return None;
+    }
+    let total_ns = values.iter().map(Duration::as_nanos).sum::<u128>();
+    Some(Duration::from_nanos(
+        u64::try_from(total_ns / values.len() as u128).unwrap_or(u64::MAX),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn average_linux_queue_depth(values: &VecDeque<usize>) -> f64 {
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().sum::<usize>() as f64 / values.len() as f64
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) struct LinuxHardwareOutput {
     // These fields own resources derived from the SDL Wayland/X11 display.
     // Rust drops fields in declaration order, so keep the presenter and
@@ -337,8 +478,7 @@ pub(crate) struct LinuxHardwareOutput {
     surface_size: Option<(u32, u32)>,
     debug_overlay: NativeStatsOverlay,
     presented_frames: u64,
-    frame_interval: Duration,
-    next_present_at: Option<Instant>,
+    presentation_clock: LinuxPresentationClock,
     visible: bool,
     paused: bool,
     _sdl: sdl2::Sdl,
@@ -414,8 +554,9 @@ impl LinuxHardwareOutput {
             surface_size: None,
             debug_overlay: NativeStatsOverlay::new(stream, "LINUX / VULKAN"),
             presented_frames: 0,
-            frame_interval: Duration::from_secs_f64(1.0 / f64::from(stream.fps.max(1))),
-            next_present_at: None,
+            presentation_clock: LinuxPresentationClock::new(Duration::from_secs_f64(
+                1.0 / f64::from(stream.fps.max(1)),
+            )),
             visible: false,
             paused: false,
             _sdl: sdl,
@@ -425,7 +566,7 @@ impl LinuxHardwareOutput {
     fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
         self.paused = false;
         self.presented_frames = 0;
-        self.next_present_at = None;
+        self.presentation_clock.reset();
         self.output.clear();
         self.audio.resume();
         if let Some(surface) = surface {
@@ -436,7 +577,7 @@ impl LinuxHardwareOutput {
 
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
-        self.next_present_at = None;
+        self.presentation_clock.reset();
         if paused {
             self.input_capture.release(&self._sdl, &mut self.window);
             self.audio.pause();
@@ -460,7 +601,7 @@ impl LinuxHardwareOutput {
         }
         self.visible = false;
         self.paused = false;
-        self.next_present_at = None;
+        self.presentation_clock.reset();
     }
 
     fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
@@ -580,20 +721,21 @@ impl LinuxHardwareOutput {
             self.output.received_video_bytes(),
         );
         let now = Instant::now();
-        if self.next_present_at.is_some_and(|deadline| now < deadline) {
+        if !self.presentation_clock.is_due(now) {
             return Ok(false);
         }
-        let recovering_from_stall = self
-            .next_present_at
-            .is_none_or(|deadline| now.saturating_duration_since(deadline) > self.frame_interval);
+        let recovering_from_stall = self.presentation_clock.is_recovery_stall(now);
         let frame = if recovering_from_stall {
             self.output.take_latest_linux_video()
         } else {
             self.output.take_linux_video()
         };
-        let Some(mut frame) = frame else {
+        let Some(queued_frame) = frame else {
             return Ok(false);
         };
+        self.presentation_clock
+            .observe_arrival(queued_frame.arrived_at);
+        let mut frame = queued_frame.frame;
         self.stream_size = (frame.format.width.max(1), frame.format.height.max(1));
         self.debug_overlay.composite_linux_frame(&mut frame);
         let presented = self
@@ -606,15 +748,8 @@ impl LinuxHardwareOutput {
             .map_err(|error| error.to_string())?;
         if presented {
             self.presented_frames = self.presented_frames.saturating_add(1);
-            let presentation_interval = backlog_aware_presentation_interval(
-                self.frame_interval,
-                self.output.linux_video_queue_len(),
-            );
-            self.next_present_at = Some(next_presentation_deadline(
-                self.next_present_at,
-                now,
-                presentation_interval,
-            ));
+            self.presentation_clock
+                .mark_presented(now, self.output.linux_video_queue_len());
         }
         Ok(presented)
     }
@@ -685,36 +820,6 @@ fn create_linux_presenter(
     };
     opennow_streamer_platform_linux::VulkanPresenter::new(&surface, width, height)
         .map_err(|error| error.to_string())
-}
-
-#[cfg(target_os = "linux")]
-fn next_presentation_deadline(
-    previous: Option<Instant>,
-    now: Instant,
-    frame_interval: Duration,
-) -> Instant {
-    match previous {
-        // Preserve the cadence through ordinary sub-millisecond scheduler
-        // variance. If presentation was late by a whole frame, re-anchor at
-        // now so a recovered decode/network burst cannot be replayed faster
-        // than the negotiated stream rate.
-        Some(deadline) if now.saturating_duration_since(deadline) <= frame_interval => {
-            deadline + frame_interval
-        }
-        Some(_) | None => now + frame_interval,
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn backlog_aware_presentation_interval(frame_interval: Duration, queued_frames: usize) -> Duration {
-    if queued_frames == 0 {
-        frame_interval
-    } else {
-        // A tiny cadence increase drains the single waiting frame without the
-        // visible 140 FPS fast-forward that an unrestricted catch-up causes.
-        // At a 120 FPS target this is capped at 125 FPS.
-        frame_interval.mul_f64(LINUX_BACKLOG_CATCHUP_FACTOR)
-    }
 }
 
 struct StreamAudioCallback {
@@ -1257,7 +1362,7 @@ impl SoftwareOutput {
         }
         #[cfg(target_os = "linux")]
         if let Some(frame) = self.output.take_linux_video() {
-            return self.present_linux_frame(frame);
+            return self.present_linux_frame(frame.frame);
         }
         let Some(mut frame) = self.output.take_video() else {
             return Ok(false);
@@ -2625,11 +2730,16 @@ mod tests {
             output
                 .take_linux_video()
                 .expect("oldest frame")
+                .frame
                 .timestamp_us,
             1
         );
         assert_eq!(
-            output.take_linux_video().expect("next frame").timestamp_us,
+            output
+                .take_linux_video()
+                .expect("next frame")
+                .frame
+                .timestamp_us,
             2
         );
 
@@ -2641,6 +2751,7 @@ mod tests {
             recovery
                 .take_latest_linux_video()
                 .expect("latest recovery frame")
+                .frame
                 .timestamp_us,
             11,
         );
@@ -2658,34 +2769,29 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn presentation_deadline_reanchors_instead_of_replaying_a_late_burst() {
-        let interval = Duration::from_millis(8);
+    fn linux_presentation_clock_only_flushes_after_a_real_stall() {
+        let interval = Duration::from_millis(10);
         let origin = Instant::now();
-        let first_deadline = next_presentation_deadline(None, origin, interval);
-        assert_eq!(first_deadline, origin + interval);
-
-        let ordinary_lateness = first_deadline + Duration::from_micros(200);
-        assert_eq!(
-            next_presentation_deadline(Some(first_deadline), ordinary_lateness, interval),
-            first_deadline + interval,
-        );
-
-        let stalled = first_deadline + Duration::from_millis(20);
-        assert_eq!(
-            next_presentation_deadline(Some(first_deadline), stalled, interval),
-            stalled + interval,
-        );
+        let mut clock = LinuxPresentationClock::new(interval);
+        clock.mark_presented(origin, 0);
+        let deadline = clock.next_deadline.expect("deadline");
+        assert!(!clock.is_recovery_stall(deadline + Duration::from_millis(20)));
+        assert!(clock.is_recovery_stall(deadline + Duration::from_millis(76)));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn presentation_cadence_only_accelerates_while_a_frame_is_waiting() {
+    fn linux_presentation_clock_bounds_backlog_catch_up() {
         let interval = Duration::from_millis(10);
-        assert_eq!(backlog_aware_presentation_interval(interval, 0), interval);
-        assert_eq!(
-            backlog_aware_presentation_interval(interval, 1),
-            Duration::from_micros(9_600),
-        );
+        let mut clock = LinuxPresentationClock::new(interval);
+        let origin = Instant::now();
+        clock.mark_presented(origin, 2);
+        let deadline = clock.next_deadline.expect("deadline");
+        assert_eq!(deadline, origin + Duration::from_millis(9));
+
+        clock.reset();
+        clock.mark_presented(origin, 0);
+        assert_eq!(clock.next_deadline, Some(origin + interval));
     }
 
     #[test]

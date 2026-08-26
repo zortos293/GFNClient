@@ -1392,15 +1392,20 @@ fn choose_composite_alpha(supported: vk::CompositeAlphaFlagsKHR) -> vk::Composit
     .unwrap_or(vk::CompositeAlphaFlagsKHR::OPAQUE)
 }
 
-/// FIFO blocks `acquire_next_image` on the compositor's presentation cadence
-/// and can fall into half-refresh pacing when conversion misses a vblank.
-/// Mailbox keeps only the newest complete frame without tearing; immediate is
-/// the low-latency fallback on WSI implementations that lack mailbox support.
+/// Match the native GFN Linux renderer: FIFO/VSync gives every submitted frame
+/// a compositor presentation slot. MAILBOX silently replaces queued images and
+/// therefore turns short decode bursts into display-side frame drops that the
+/// application queue cannot measure. FIFO is required by Vulkan and is always
+/// available for a valid surface.
 fn choose_present_mode(supported: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
-    [vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::IMMEDIATE]
-        .into_iter()
-        .find(|mode| supported.contains(mode))
-        .unwrap_or(vk::PresentModeKHR::FIFO)
+    if supported.contains(&vk::PresentModeKHR::FIFO) {
+        vk::PresentModeKHR::FIFO
+    } else {
+        supported
+            .first()
+            .copied()
+            .unwrap_or(vk::PresentModeKHR::FIFO)
+    }
 }
 
 fn find_memory_type(
@@ -1577,14 +1582,14 @@ mod tests {
     }
 
     #[test]
-    fn low_latency_present_mode_avoids_fifo_when_supported() {
+    fn present_mode_uses_fifo_vsync_when_supported() {
         assert_eq!(
             choose_present_mode(&[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX]),
-            vk::PresentModeKHR::MAILBOX
+            vk::PresentModeKHR::FIFO
         );
         assert_eq!(
-            choose_present_mode(&[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::IMMEDIATE]),
-            vk::PresentModeKHR::IMMEDIATE
+            choose_present_mode(&[vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::IMMEDIATE]),
+            vk::PresentModeKHR::MAILBOX
         );
         assert_eq!(
             choose_present_mode(&[vk::PresentModeKHR::FIFO]),

@@ -759,6 +759,18 @@ private fun JsonObject.checkGraphQlErrors(label: String = "GFN GraphQL"): JsonOb
     return this
 }
 
+internal fun isAppStoreEnumSerializationError(error: Throwable): Boolean {
+    var current: Throwable? = error
+    while (current != null) {
+        val message = current.message.orEmpty()
+        if (message.contains("AppStoreEnum") && message.contains("cannot represent value", ignoreCase = true)) {
+            return true
+        }
+        current = current.cause
+    }
+    return false
+}
+
 private suspend fun OkHttpClient.awaitText(request: Request): Pair<Int, String> =
     withContext(Dispatchers.IO) {
         val requestBody = OpenNowHttpDiagnostics.captureRequestBody(request)
@@ -1708,6 +1720,52 @@ internal fun catalogScreenshotUrls(images: JsonObject?): List<String> =
 internal fun catalogGameDescription(app: JsonObject): String? =
     app.string("description") ?: app.string("shortDescription")
 
+internal fun gameStoreFromVariant(variant: JsonObject): String {
+    variant.string("appStore")?.trim()?.takeIf(String::isNotBlank)?.let { return it }
+
+    val storeUrl = variant.string("storeUrl")?.trim().orEmpty()
+    val host = storeUrl.toHttpUrlOrNull()?.host?.lowercase(Locale.US).orEmpty()
+    val shortName = variant.string("shortName")?.lowercase(Locale.US).orEmpty().removeSuffix("_gfn_pc")
+    val publisher = variant.string("publisherName")?.lowercase(Locale.US).orEmpty()
+    return when {
+        host == "store.steampowered.com" -> "STEAM"
+        host == "epicgames.com" || host.endsWith(".epicgames.com") -> "EPIC"
+        host == "gog.com" || host.endsWith(".gog.com") -> "GOG"
+        host == "store.ubi.com" || host == "register.ubisoft.com" -> "UPLAY"
+        host == "xbox.com" || host.endsWith(".xbox.com") -> "XBOX"
+        host == "microsoft.com" || host.endsWith(".microsoft.com") -> "MICROSOFT_STORE"
+        host == "battle.net" || host.endsWith(".battle.net") -> "BATTLENET"
+        host == "ea.com" || host.endsWith(".ea.com") -> "EA"
+        host == "rockstargames.com" || host.endsWith(".rockstargames.com") -> "ROCKSTAR"
+        host == "play.google.com" -> "GOOGLE_PLAY"
+        host == "guildwars2.com" || host.endsWith(".guildwars2.com") ||
+            host == "ncsoft.com" || host.endsWith(".ncsoft.com") ||
+            host == "plaync.com" || host.endsWith(".plaync.com") ||
+            host == "purpleonplay.com" || host.endsWith(".purpleonplay.com") ||
+            publisher.contains("ncsoft") -> "NCSOFT"
+        shortName.endsWith("_steam") -> "STEAM"
+        shortName.endsWith("_epic") || shortName.endsWith("_egs") || shortName.endsWith("_epic_games_store") -> "EPIC"
+        shortName.endsWith("_uplay") || shortName.endsWith("_ubisoft") -> "UPLAY"
+        shortName.endsWith("_gog") -> "GOG"
+        shortName.endsWith("_xbox") || shortName.endsWith("_game_pass") -> "XBOX"
+        shortName.endsWith("_origin") || shortName.endsWith("_ea_app") -> "EA"
+        shortName.endsWith("_battlenet") || shortName.endsWith("_battle_net") -> "BATTLENET"
+        shortName.endsWith("_ncsoft") || shortName.endsWith("_purple") -> "NCSOFT"
+        else -> "Unknown"
+    }
+}
+
+internal fun gfnVariantMetadataFields(includeAppStore: Boolean): String = """
+    id
+    ${if (includeAppStore) "appStore" else ""}
+    shortName
+    storeUrl
+    publisherName
+    supportedControls
+    paymentModels { __typename }
+    gfn { status library { status selected lastPlayedDate } }
+""".trimIndent()
+
 internal data class LibraryBrowseSpec(
     val filterIds: List<String>,
     val sortOrderId: String?,
@@ -2022,7 +2080,6 @@ class GfnCatalogRepository(
         filters: JsonObject,
         maxPages: Int,
     ): CatalogAppsPage {
-        val query = catalogQuery(searchQuery.isNotBlank())
         val collectedApps = mutableListOf<JsonObject>()
         var numberReturned = 0
         var numberSupported = 0
@@ -2031,8 +2088,8 @@ class GfnCatalogRepository(
         var endCursor: String? = null
         var cursor = ""
         for (page in 0 until maxPages.coerceIn(1, MAX_CATALOG_REQUEST_PAGES)) {
-            val payload = postGraphQl(
-                query = query,
+            val payload = postGraphQlWithAppStoreFallback(
+                query = { includeAppStore -> catalogQuery(searchQuery.isNotBlank(), includeAppStore) },
                 variables = buildJsonObject {
                     put("vpcId", vpcId)
                     put("locale", requestLocale())
@@ -2043,7 +2100,7 @@ class GfnCatalogRepository(
                     if (searchQuery.isNotBlank()) put("searchString", searchQuery.trim())
                 },
                 token = token,
-            ).checkGraphQlErrors()
+            )
             val apps = payload.obj("data")?.obj("apps")
             val items = apps?.arr("items")?.mapNotNull { it.asObject() }.orEmpty()
             collectedApps += items
@@ -2122,7 +2179,6 @@ class GfnCatalogRepository(
     ): GameInfo {
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
         val variantId = selectedVariant?.id?.toIntOrNull()
-        val query = if (variantId != null) launchMetadataByVariantQuery() else launchMetadataByAppQuery()
         val variables = buildJsonObject {
             put("vpcId", vpcId)
             put("locale", requestLocale())
@@ -2132,7 +2188,14 @@ class GfnCatalogRepository(
                 putJsonArray("appIds") { add(JsonPrimitive(game.uuid ?: game.id)) }
             }
         }
-        val payload = postGraphQl(query, variables, token).checkGraphQlErrors("Launch metadata")
+        val payload = postGraphQlWithAppStoreFallback(
+            query = { includeAppStore ->
+                if (variantId != null) launchMetadataByVariantQuery(includeAppStore) else launchMetadataByAppQuery(includeAppStore)
+            },
+            variables = variables,
+            token = token,
+            errorLabel = "Launch metadata",
+        )
         val hydrated = payload.obj("data")?.obj("apps")?.arr("items")
             ?.firstNotNullOfOrNull { it.asObject() }
             ?.let(::appToGame)
@@ -2288,7 +2351,7 @@ class GfnCatalogRepository(
             val variantPaymentModels = obj.arr("paymentModels")
             GameVariant(
                 id = obj.string("id") ?: return@mapNotNull null,
-                store = obj.string("appStore") ?: "Unknown",
+                store = gameStoreFromVariant(obj),
                 storeUrl = obj.string("storeUrl"),
                 supportedControls = obj.arr("supportedControls")?.mapNotNull { it.asString() }.orEmpty(),
                 librarySelected = library?.boolean("selected"),
@@ -2428,23 +2491,39 @@ class GfnCatalogRepository(
         return OpenNowJson.parseToJsonElement(text).jsonObject
     }
 
-    private fun launchMetadataByAppQuery(): String = """
+    private suspend fun postGraphQlWithAppStoreFallback(
+        query: (includeAppStore: Boolean) -> String,
+        variables: JsonObject,
+        token: String,
+        errorLabel: String = "GFN GraphQL",
+    ): JsonObject {
+        try {
+            return postGraphQl(query(true), variables, token).checkGraphQlErrors(errorLabel)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            if (!isAppStoreEnumSerializationError(error)) throw error
+        }
+        return postGraphQl(query(false), variables, token).checkGraphQlErrors(errorLabel)
+    }
+
+    private fun launchMetadataByAppQuery(includeAppStore: Boolean): String = """
         query GetLaunchAppData(${'$'}vpcId: String!, ${'$'}locale: String!, ${'$'}appIds: [String]!) {
           apps(vpcId: ${'$'}vpcId, language: ${'$'}locale, appIds: ${'$'}appIds) {
-            items { ${launchMetadataFields()} }
+            items { ${launchMetadataFields(includeAppStore)} }
           }
         }
     """.trimIndent()
 
-    private fun launchMetadataByVariantQuery(): String = """
+    private fun launchMetadataByVariantQuery(includeAppStore: Boolean): String = """
         query GetLaunchVariantData(${'$'}vpcId: String!, ${'$'}locale: String!, ${'$'}variantIds: [Int]!) {
           apps(vpcId: ${'$'}vpcId, language: ${'$'}locale, variantIds: ${'$'}variantIds) {
-            items { ${launchMetadataFields()} }
+            items { ${launchMetadataFields(includeAppStore)} }
           }
         }
     """.trimIndent()
 
-    private fun launchMetadataFields(): String = """
+    private fun launchMetadataFields(includeAppStore: Boolean): String = """
         id
         title
         shortDescription
@@ -2453,17 +2532,12 @@ class GfnCatalogRepository(
         images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
         computedValues { paymentModels { __typename } }
         variants {
-          id
-          appStore
-          storeUrl
-          supportedControls
-          paymentModels { __typename }
-          gfn { status library { status selected lastPlayedDate } }
+          ${gfnVariantMetadataFields(includeAppStore)}
         }
         gfn { playType playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
     """.trimIndent()
 
-    private fun catalogQuery(hasSearch: Boolean): String {
+    private fun catalogQuery(hasSearch: Boolean, includeAppStore: Boolean): String {
         val appFields = """
             numberReturned
             numberSupported
@@ -2476,7 +2550,7 @@ class GfnCatalogRepository(
               publisherName
               images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
               computedValues { paymentModels { __typename } }
-              variants { id appStore storeUrl supportedControls paymentModels { __typename } gfn { status library { status selected lastPlayedDate } } }
+              variants { ${gfnVariantMetadataFields(includeAppStore)} }
               gfn { playType playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
               itemMetadata { campaignIds }
             }

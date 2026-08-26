@@ -517,15 +517,18 @@ impl LinuxHardwareOutput {
         };
         self.stream_size = (frame.format.width.max(1), frame.format.height.max(1));
         self.debug_overlay.composite_linux_frame(&mut frame);
-        self.presenter
+        let presented = self
+            .presenter
             .as_mut()
             .ok_or_else(|| {
                 "Linux Vulkan presenter is not attached to a visible surface".to_owned()
             })?
             .present(&frame)
             .map_err(|error| error.to_string())?;
-        self.presented_frames = self.presented_frames.saturating_add(1);
-        Ok(true)
+        if presented {
+            self.presented_frames = self.presented_frames.saturating_add(1);
+        }
+        Ok(presented)
     }
 
     fn take_captured_input(&mut self) -> Vec<CapturedInput> {

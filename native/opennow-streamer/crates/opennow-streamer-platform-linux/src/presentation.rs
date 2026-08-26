@@ -15,6 +15,7 @@ use raw_window_handle::{
 use crate::{ColorMatrix, ColorRange, DecodedVideoFrame, Error, PixelFormat, Result, Subsystem};
 
 const PRESENT_WAIT_NS: u64 = 1_000_000_000;
+const ACQUIRE_WAIT_NS: u64 = 50_000_000;
 
 pub enum NativeSurface<'a> {
     X11 {
@@ -242,7 +243,11 @@ impl VulkanPresenter {
         Ok(())
     }
 
-    pub fn present(&mut self, frame: &DecodedVideoFrame) -> Result<()> {
+    /// Presents one frame, returning `false` when the compositor temporarily
+    /// has no swapchain image available. A WSI timeout is normal while a
+    /// Wayland/X11 surface is being hidden or rearranged and must not tear
+    /// down the media session.
+    pub fn present(&mut self, frame: &DecodedVideoFrame) -> Result<bool> {
         frame.validate()?;
         if self.needs_reconfigure {
             return Err(Error::backend(
@@ -277,7 +282,7 @@ impl VulkanPresenter {
         let (image_index, acquire_suboptimal) = match unsafe {
             self.swapchain_loader.acquire_next_image(
                 self.swapchain,
-                PRESENT_WAIT_NS,
+                ACQUIRE_WAIT_NS,
                 self.image_available,
                 vk::Fence::null(),
             )
@@ -290,6 +295,7 @@ impl VulkanPresenter {
                     "surface is out of date; call VulkanPresenter::reconfigure",
                 ));
             }
+            Err(vk::Result::TIMEOUT) | Err(vk::Result::NOT_READY) => return Ok(false),
             Err(error) => return Err(vk_error("acquire swapchain image", error)),
         };
         let image_index = image_index as usize;
@@ -428,7 +434,7 @@ impl VulkanPresenter {
                 "surface is suboptimal; call VulkanPresenter::reconfigure",
             ));
         }
-        Ok(())
+        Ok(true)
     }
 
     fn create_swapchain(&mut self, requested_width: u32, requested_height: u32) -> Result<()> {
@@ -451,6 +457,12 @@ impl VulkanPresenter {
                 .get_physical_device_surface_formats(self.physical_device, self.surface)
         }
         .map_err(|error| vk_error("query surface formats", error))?;
+        let present_modes = unsafe {
+            self.surface_loader
+                .get_physical_device_surface_present_modes(self.physical_device, self.surface)
+        }
+        .map_err(|error| vk_error("query surface present modes", error))?;
+        let present_mode = choose_present_mode(&present_modes);
         self.surface_format = choose_surface_format(&formats)?;
         self.extent = choose_extent(capabilities, requested_width, requested_height);
         validate_presentation_extent(self.extent.width, self.extent.height)?;
@@ -471,12 +483,18 @@ impl VulkanPresenter {
             .composite_alpha(choose_composite_alpha(
                 capabilities.supported_composite_alpha,
             ))
-            .present_mode(vk::PresentModeKHR::FIFO)
+            .present_mode(present_mode)
             .clipped(true);
         self.swapchain = unsafe { self.swapchain_loader.create_swapchain(&create, None) }
             .map_err(|error| vk_error("create swapchain", error))?;
         self.images = unsafe { self.swapchain_loader.get_swapchain_images(self.swapchain) }
             .map_err(|error| vk_error("get swapchain images", error))?;
+        eprintln!(
+            "Vulkan presenter configured: mode={present_mode:?} images={} extent={}x{}",
+            self.images.len(),
+            self.extent.width,
+            self.extent.height
+        );
         let semaphore_info = vk::SemaphoreCreateInfo::default();
         let mut render_finished = Vec::with_capacity(self.images.len());
         for _ in &self.images {
@@ -812,6 +830,17 @@ fn choose_composite_alpha(supported: vk::CompositeAlphaFlagsKHR) -> vk::Composit
     .into_iter()
     .find(|mode| supported.contains(*mode))
     .unwrap_or(vk::CompositeAlphaFlagsKHR::OPAQUE)
+}
+
+/// FIFO blocks `acquire_next_image` on the compositor's presentation cadence
+/// and can fall into half-refresh pacing when conversion misses a vblank.
+/// Mailbox keeps only the newest complete frame without tearing; immediate is
+/// the low-latency fallback on WSI implementations that lack mailbox support.
+fn choose_present_mode(supported: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+    [vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::IMMEDIATE]
+        .into_iter()
+        .find(|mode| supported.contains(mode))
+        .unwrap_or(vk::PresentModeKHR::FIFO)
 }
 
 fn find_memory_type(
@@ -1234,6 +1263,22 @@ mod tests {
         assert_eq!(
             aspect_fit_extent(1024, 768, 1920, 1080),
             (240, 0, 1440, 1080)
+        );
+    }
+
+    #[test]
+    fn low_latency_present_mode_avoids_fifo_when_supported() {
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX]),
+            vk::PresentModeKHR::MAILBOX
+        );
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::IMMEDIATE]),
+            vk::PresentModeKHR::IMMEDIATE
+        );
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO]),
+            vk::PresentModeKHR::FIFO
         );
     }
 

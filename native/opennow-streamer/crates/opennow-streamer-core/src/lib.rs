@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -1201,8 +1202,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
     resources: R,
 ) {
     let mut feedback_state = NvstMediaFeedbackState {
-        dropped: 0,
-        last_drop_report: Instant::now(),
+        drop_reports: HashMap::new(),
         recovery_attempts: 0,
         input_origin: Instant::now(),
         input_available: false,
@@ -1496,8 +1496,7 @@ fn emit_nvst_terminal<R: NvstSessionResources>(
 }
 
 struct NvstMediaFeedbackState {
-    dropped: usize,
-    last_drop_report: Instant,
+    drop_reports: HashMap<&'static str, QueueDropReport>,
     recovery_attempts: usize,
     input_origin: Instant,
     input_available: bool,
@@ -1583,17 +1582,14 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::QueueDropped { media, count } => {
-            state.dropped = state.dropped.saturating_add(count);
-            if state.last_drop_report.elapsed() >= Duration::from_secs(1) {
+            if let Some(dropped) = record_queue_drop(&mut state.drop_reports, media, count) {
                 let _ = output.send(event(
                     "log",
                     json!({
                         "level": "debug",
-                        "message": format!("Low-latency {media} queues dropped {} stale samples/frames", state.dropped)
+                        "message": format!("Low-latency {media} queues dropped {dropped} stale samples/frames")
                     }),
                 ));
-                state.dropped = 0;
-                state.last_drop_report = Instant::now();
             }
         }
     }
@@ -1775,8 +1771,7 @@ fn forward_session_events(
     media_feedback: Option<Receiver<MediaFeedback>>,
     transport: TransportControl,
 ) {
-    let mut dropped = 0;
-    let mut last_drop_report = Instant::now();
+    let mut drop_reports = HashMap::new();
     loop {
         if let Some(feedback) = media_feedback.as_ref() {
             while let Ok(feedback) = feedback.try_recv() {
@@ -1786,8 +1781,7 @@ fn forward_session_events(
                     generation,
                     &transport,
                     feedback,
-                    &mut dropped,
-                    &mut last_drop_report,
+                    &mut drop_reports,
                 );
             }
         }
@@ -1811,8 +1805,7 @@ fn forward_media_feedback(
     generation: u64,
     transport: &TransportControl,
     feedback: MediaFeedback,
-    dropped: &mut usize,
-    last_drop_report: &mut Instant,
+    drop_reports: &mut HashMap<&'static str, QueueDropReport>,
 ) {
     if lock_lifecycle(lifecycle).generation != generation {
         return;
@@ -1879,8 +1872,7 @@ fn forward_media_feedback(
             ));
         }
         MediaFeedback::QueueDropped { media, count } => {
-            *dropped = dropped.saturating_add(count);
-            if last_drop_report.elapsed() >= Duration::from_secs(1) {
+            if let Some(dropped) = record_queue_drop(drop_reports, media, count) {
                 let _ = output.send(event(
                     "log",
                     json!({
@@ -1890,11 +1882,32 @@ fn forward_media_feedback(
                         )
                     }),
                 ));
-                *dropped = 0;
-                *last_drop_report = Instant::now();
             }
         }
     }
+}
+
+struct QueueDropReport {
+    dropped: usize,
+    started: Instant,
+}
+
+fn record_queue_drop(
+    reports: &mut HashMap<&'static str, QueueDropReport>,
+    media: &'static str,
+    count: usize,
+) -> Option<usize> {
+    let report = reports.entry(media).or_insert_with(|| QueueDropReport {
+        dropped: 0,
+        started: Instant::now(),
+    });
+    report.dropped = report.dropped.saturating_add(count);
+    if report.started.elapsed() < Duration::from_secs(1) {
+        return None;
+    }
+    let dropped = std::mem::take(&mut report.dropped);
+    report.started = Instant::now();
+    Some(dropped)
 }
 
 #[cfg(test)]
@@ -2008,8 +2021,7 @@ mod tests {
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
         let mut state = NvstMediaFeedbackState {
-            dropped: 0,
-            last_drop_report: Instant::now(),
+            drop_reports: HashMap::new(),
             recovery_attempts: 0,
             input_origin: Instant::now(),
             input_available: true,
@@ -2043,8 +2055,7 @@ mod tests {
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
         let mut state = NvstMediaFeedbackState {
-            dropped: 0,
-            last_drop_report: Instant::now(),
+            drop_reports: HashMap::new(),
             recovery_attempts: 1,
             input_origin: Instant::now(),
             input_available: true,
@@ -2071,8 +2082,7 @@ mod tests {
     fn captured_sdl_input_routes_through_the_nvst_input_codec_packet_shape() {
         let resources = TestNvstResources::default();
         let state = NvstMediaFeedbackState {
-            dropped: 0,
-            last_drop_report: Instant::now(),
+            drop_reports: HashMap::new(),
             recovery_attempts: 0,
             input_origin: Instant::now(),
             input_available: true,
@@ -2146,6 +2156,36 @@ mod tests {
             720
         );
         assert_eq!(inputs[2].len(), 26);
+    }
+
+    #[test]
+    fn queue_drop_reports_do_not_mix_audio_samples_with_video_frames() {
+        let expired = Instant::now() - Duration::from_secs(2);
+        let mut reports = HashMap::from([
+            (
+                "audio-output",
+                QueueDropReport {
+                    dropped: 0,
+                    started: expired,
+                },
+            ),
+            (
+                "linux-present",
+                QueueDropReport {
+                    dropped: 0,
+                    started: expired,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            record_queue_drop(&mut reports, "audio-output", 96_000),
+            Some(96_000)
+        );
+        assert_eq!(
+            record_queue_drop(&mut reports, "linux-present", 47),
+            Some(47)
+        );
     }
 
     #[test]

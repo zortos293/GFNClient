@@ -29,7 +29,9 @@ use crate::windows_debug_overlay::NativeDebugOverlay;
 use crate::windows_raw_input::WindowsRawInputController;
 
 #[cfg(target_os = "linux")]
-use opennow_streamer_platform_linux::DecodedVideoFrame as LinuxDecodedVideoFrame;
+use opennow_streamer_platform_linux::{
+    DecodedVideoFrame as LinuxDecodedVideoFrame, PresentationPolicy,
+};
 #[cfg(target_os = "windows")]
 use opennow_streamer_platform_windows::{
     AudioFormat, BackendConfig, BackendEvent, Bounds, ExistingWindow, OwnedWindow, Subsystem,
@@ -470,12 +472,15 @@ pub(crate) struct LinuxHardwareOutput {
     native_surface: Result<NativeSurface, String>,
     input_capture: SdlInputCapture,
     window: sdl2::video::Window,
+    video: sdl2::VideoSubsystem,
     event_pump: sdl2::EventPump,
     audio: AudioDevice<StreamAudioCallback>,
     output: Arc<OutputBuffers>,
     external_renderer: bool,
     stream_size: (u32, u32),
     surface_size: Option<(u32, u32)>,
+    stream_fps: u32,
+    presentation_policy: PresentationPolicy,
     debug_overlay: NativeStatsOverlay,
     presented_frames: u64,
     presentation_clock: LinuxPresentationClock,
@@ -519,6 +524,13 @@ impl LinuxHardwareOutput {
         let window = window_builder
             .build()
             .map_err(|error| format!("native Vulkan window creation failed: {error}"))?;
+        let display_refresh_hz = linux_display_refresh_hz(&video, &window);
+        let presentation_policy = linux_presentation_policy(stream.fps, display_refresh_hz);
+        eprintln!(
+            "Linux presentation policy: stream={}fps display={} policy={presentation_policy:?}",
+            stream.fps,
+            display_refresh_hz.map_or_else(|| "unknown".to_owned(), |value| format!("{value}Hz")),
+        );
         let native_surface = if external_renderer {
             Err("external Linux output does not use child-window embedding".to_owned())
         } else {
@@ -546,12 +558,15 @@ impl LinuxHardwareOutput {
                 false,
             ),
             window,
+            video,
             event_pump,
             audio,
             output,
             external_renderer,
             stream_size: (stream.width.max(1), stream.height.max(1)),
             surface_size: None,
+            stream_fps: stream.fps.max(1),
+            presentation_policy,
             debug_overlay: NativeStatsOverlay::new(stream, "LINUX / VULKAN"),
             presented_frames: 0,
             presentation_clock: LinuxPresentationClock::new(Duration::from_secs_f64(
@@ -645,6 +660,21 @@ impl LinuxHardwareOutput {
                     surface.device_scale_factor,
                 )?;
         }
+        let display_refresh_hz = linux_display_refresh_hz(&self.video, &self.window);
+        let presentation_policy = linux_presentation_policy(self.stream_fps, display_refresh_hz);
+        if presentation_policy != self.presentation_policy {
+            eprintln!(
+                "Linux presentation policy changed: stream={}fps display={} policy={presentation_policy:?}",
+                self.stream_fps,
+                display_refresh_hz
+                    .map_or_else(|| "unknown".to_owned(), |value| format!("{value}Hz")),
+            );
+            self.presenter = None;
+            self.surface_size = None;
+            self.presentation_policy = presentation_policy;
+            self.presentation_clock.reset();
+            self.output.clear_linux_video();
+        }
         let size = if self.external_renderer {
             let (width, height) = self.window.vulkan_drawable_size();
             (width.max(2), height.max(2))
@@ -652,7 +682,12 @@ impl LinuxHardwareOutput {
             (rect.width.max(2), rect.height.max(2))
         };
         if self.presenter.is_none() {
-            self.presenter = Some(create_linux_presenter(&self.window, size.0, size.1)?);
+            self.presenter = Some(create_linux_presenter(
+                &self.window,
+                size.0,
+                size.1,
+                self.presentation_policy,
+            )?);
         } else if self.surface_size != Some(size) {
             if let Some(presenter) = self.presenter.as_mut() {
                 presenter
@@ -778,6 +813,7 @@ fn create_linux_presenter(
     window: &sdl2::video::Window,
     width: u32,
     height: u32,
+    presentation_policy: PresentationPolicy,
 ) -> Result<opennow_streamer_platform_linux::VulkanPresenter, String> {
     use std::ffi::c_void;
     use std::num::NonZeroU64;
@@ -818,8 +854,35 @@ fn create_linux_presenter(
             );
         }
     };
-    opennow_streamer_platform_linux::VulkanPresenter::new(&surface, width, height)
-        .map_err(|error| error.to_string())
+    opennow_streamer_platform_linux::VulkanPresenter::new_with_policy(
+        &surface,
+        width,
+        height,
+        presentation_policy,
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_display_refresh_hz(
+    video: &sdl2::VideoSubsystem,
+    window: &sdl2::video::Window,
+) -> Option<u32> {
+    let display_index = window.display_index().ok()?;
+    let refresh_rate = video.current_display_mode(display_index).ok()?.refresh_rate;
+    u32::try_from(refresh_rate).ok().filter(|value| *value > 0)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_presentation_policy(
+    stream_fps: u32,
+    display_refresh_hz: Option<u32>,
+) -> PresentationPolicy {
+    if display_refresh_hz.is_some_and(|refresh_hz| stream_fps > refresh_hz) {
+        PresentationPolicy::LatestFrame
+    } else {
+        PresentationPolicy::Synchronized
+    }
 }
 
 struct StreamAudioCallback {
@@ -2792,6 +2855,27 @@ mod tests {
         clock.reset();
         clock.mark_presented(origin, 0);
         assert_eq!(clock.next_deadline, Some(origin + interval));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_presentation_policy_only_replaces_frames_above_display_refresh() {
+        assert_eq!(
+            linux_presentation_policy(240, Some(165)),
+            PresentationPolicy::LatestFrame,
+        );
+        assert_eq!(
+            linux_presentation_policy(165, Some(165)),
+            PresentationPolicy::Synchronized,
+        );
+        assert_eq!(
+            linux_presentation_policy(120, Some(165)),
+            PresentationPolicy::Synchronized,
+        );
+        assert_eq!(
+            linux_presentation_policy(240, None),
+            PresentationPolicy::Synchronized,
+        );
     }
 
     #[test]

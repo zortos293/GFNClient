@@ -52,6 +52,9 @@
   <img src="img.png" alt="OpenNOW application preview" />
 </p>
 
+> [!NOTE]
+> **OpenNOW v1.0.0 is coming soon.** A full rebuild with a new controller-first interface and a new native streaming engine. See the [announcement post](https://x.com/Zortosdev/status/2093023076191440963) for a first look at the new UI.
+
 > [!WARNING]
 > OpenNOW is under active development. Expect occasional bugs, rough edges, and platform-specific issues while the client matures.
 >

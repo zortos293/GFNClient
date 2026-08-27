@@ -182,6 +182,28 @@ class StreamLivenessWatchdogTest {
     }
 
     @Test
+    fun slowButProgressingPlaybackDoesNotRestartTheTransport() {
+        val watchdog = StreamLivenessWatchdog(
+            keyframeAfterMs = 1_000L,
+            keyframeIntervalMs = 500L,
+            restartAfterMs = 3_000L,
+        )
+
+        watchdog.markConnected(0L)
+        repeat(10) { sample ->
+            assertEquals(
+                StreamLivenessAction.None,
+                watchdog.observe(
+                    nowMs = sample * 1_000L,
+                    bytesReceived = (sample + 1) * 1_000L,
+                    framesDecoded = (sample + 1).toLong(),
+                    connected = true,
+                ),
+            )
+        }
+    }
+
+    @Test
     fun incomingBytesDoNotHideDecoderFrameStall() {
         val watchdog = StreamLivenessWatchdog(
             keyframeAfterMs = 1_000L,

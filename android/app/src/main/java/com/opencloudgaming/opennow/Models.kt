@@ -514,8 +514,8 @@ data class AppSettings(
      * the cloud catalogue most of the time wants that fold to survive leaving the Library.
      */
     val localAppsCollapsed: Boolean = false,
-    /** Rotating featured banner above the Library grid, portrait phones only. */
-    val libraryHeroCarousel: Boolean = true,
+    /** The New games added hero in handheld landscape; dismissible from the hero header. */
+    val landscapeNewGamesHero: Boolean = true,
     /** Catalogue presentation is user preference, not disposable screen state. */
     val catalogSortId: String = DEFAULT_CATALOG_SORT_ID,
     /** Lets the old relevance default migrate once without overriding a later explicit choice. */
@@ -556,13 +556,11 @@ data class AppSettings(
     /**
      * Fills the display instead of letterboxing.
      *
-     * On by default. Phones are 19.5:9 or 20:9 and almost every stream is 16:9, so the honest
-     * letterbox left thick bars down both sides and players read that as the picture being cut off.
-     * The trade is a stretch on the mismatched axis only — 1.25x on a 20:9 phone — and never a crop,
-     * so nothing on screen is lost. Off restores exact geometry.
+     * Off by default so streams keep their exact geometry. Enabling this fills a mismatched display
+     * by stretching only the mismatched axis; it never crops the stream.
      */
     @SerialName("stretchStreamToZoom")
-    val stretchStreamToFit: Boolean = true,
+    val stretchStreamToFit: Boolean = false,
     val streamPresentationProfileVersion: Int = 0,
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
@@ -597,25 +595,19 @@ data class AppSettings(
 
 internal const val MIN_GAME_CARD_SCALE = 0.75f
 internal const val MAX_GAME_CARD_SCALE = 1.4f
-internal const val STREAM_PRESENTATION_PROFILE_VERSION = 2
+internal const val STREAM_PRESENTATION_PROFILE_VERSION = 3
 
 /**
  * Re-asserts the stream presentation defaults once per profile version.
  *
- * Version 2 turns [AppSettings.stretchStreamToFit] on. A new default alone would only reach fresh
- * installs, and the complaint it answers — bars down the sides read as a cut-off picture — is
- * loudest for people who already have the app. Installs that had deliberately turned it off are
- * moved too; that is what this mechanism is for, and the toggle is one tap away in Settings > Stream
- * and in the in-stream panel.
- *
- * Android TV is exempt: a TV panel and a 16:9 stream already agree, so there is nothing to fill and
- * the stretch would be a no-op that misreports itself in diagnostics.
+ * Version 3 makes exact geometry the default for new profiles. Existing profiles keep their saved
+ * stretch preference, including the version 2 phone default, so an app update does not silently
+ * override a user's current presentation.
  */
-internal fun AppSettings.withCurrentStreamPresentationDefaults(androidTvProfile: Boolean): AppSettings {
+internal fun AppSettings.withCurrentStreamPresentationDefaults(): AppSettings {
     if (streamPresentationProfileVersion >= STREAM_PRESENTATION_PROFILE_VERSION) return this
     return copy(
         legacyCropStreamToFill = false,
-        stretchStreamToFit = !androidTvProfile,
         streamPresentationProfileVersion = STREAM_PRESENTATION_PROFILE_VERSION,
     )
 }
@@ -1020,7 +1012,7 @@ internal fun StreamSettings.withAndroidSettingsAvailability(): StreamSettings {
 
 /**
  * The old Portal-sized option used the panel's 1376x640 dimensions, but GFN does not expose that
- * 19.5:9 mode. CloudMatch selected 1680x720 and the cloud streamer then cropped it to 1376x590.
+ * low 19.5:9 mode. CloudMatch selected 1680x720 and the cloud streamer then cropped it to 1376x590.
  * Treat the observed 21:9 mode as the user's requested geometry so launch, negotiation, decoding,
  * input mapping, and profile-change reporting all describe the same stream.
  */
@@ -1146,6 +1138,7 @@ internal val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1280x1024", "5:4", "1050"),
     StreamResolutionOption("1376x590", "21:9", "720"),
     StreamResolutionOption("1680x720", "21:9", "720"),
+    StreamResolutionOption("2340x1080", "19.5:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("2560x1080", "21:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("3840x1080", "32:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("2560x1440", "16:9", "1440", StreamResolutionPlan.Priority),
@@ -1165,7 +1158,7 @@ private val PREFERRED_RESOLUTION_BY_TIER_AND_ASPECT = mapOf(
     "834" to mapOf("4:3" to "1112x834"),
     "900" to mapOf("16:9" to "1600x900", "16:10" to "1440x900"),
     "1050" to mapOf("16:10" to "1680x1050", "5:4" to "1280x1024"),
-    "1080" to mapOf("16:9" to "1920x1080", "16:10" to "1920x1200", "4:3" to "1600x1200", "21:9" to "2560x1080", "32:9" to "3840x1080"),
+    "1080" to mapOf("16:9" to "1920x1080", "16:10" to "1920x1200", "4:3" to "1600x1200", "19.5:9" to "2340x1080", "21:9" to "2560x1080", "32:9" to "3840x1080"),
     "1440" to mapOf("16:9" to "2560x1440", "16:10" to "2560x1600", "21:9" to "3440x1440", "24:10" to "3840x1600", "32:9" to "5120x1440"),
     "2160" to mapOf("16:9" to "3840x2160", "16:10" to "3456x2160", "21:9" to "5120x2160"),
     "2880" to mapOf("16:9" to "5120x2880"),

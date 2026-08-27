@@ -332,19 +332,33 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun tvCatalogCardsKeepLowBandwidthArtworkWithoutTextOverlay() {
+    fun tvCatalogCardsUseTheSameArtworkAsMobileAtTvRequestSize() {
         val game = GameInfo(
             id = "game",
             title = "Game",
-            imageUrl = "https://img.nvidiagrid.net/apps/key-art.jpg",
-            tvCardImageUrl = "https://img.nvidiagrid.net/apps/box-art.jpg;f=webp;w=1920",
+            imageUrl = "https://img.nvidiagrid.net/apps/123/ZZ/GAME_BOX_ART_01_example.jpg",
+            tvCardImageUrl = "https://img.nvidiagrid.net/apps/123/ZZ/TV_BANNER_01_example.jpg",
         )
 
         assertEquals(
-            "https://img.nvidiagrid.net/apps/box-art.jpg;f=webp;w=272",
+            "https://img.nvidiagrid.net/apps/123/ZZ/GAME_BOX_ART_01_example.jpg;f=webp;w=272",
             catalogCardImageUrl(game, tvProfile = true),
         )
         assertFalse(shouldOverlayCatalogCardTitle(tvProfile = true))
+    }
+
+    @Test
+    fun tvCatalogCardsRetainDedicatedArtworkAsAMissingPosterFallback() {
+        val game = GameInfo(
+            id = "game",
+            title = "Game",
+            tvCardImageUrl = "https://img.nvidiagrid.net/apps/123/ZZ/TV_BANNER_01_example.jpg",
+        )
+
+        assertEquals(
+            "https://img.nvidiagrid.net/apps/123/ZZ/TV_BANNER_01_example.jpg;f=webp;w=272",
+            catalogCardImageUrl(game, tvProfile = true),
+        )
     }
 
     @Test
@@ -482,12 +496,16 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun gameCardScaleChangesStoreRailDensity() {
-        // The catalog grid now derives its columns from GridCells.Adaptive rather than from a
-        // scaled column count, but posterSizeScale keeps its meaning: larger scale, fewer cards.
-        val smallCards = storeRailVisibleCardCount(900f, 146f, 10f, 0.75f)
-        val largeCards = storeRailVisibleCardCount(900f, 146f, 10f, 1.4f)
-        assertTrue(smallCards > largeCards)
+    fun gameCardScaleChangesStoreRailWidthContinuously() {
+        assertEquals(72f, scaledCatalogCardWidthDp(96f, 0.75f), 0f)
+        assertEquals(96f, scaledCatalogCardWidthDp(96f, 1f), 0f)
+        assertEquals(134.4f, scaledCatalogCardWidthDp(96f, 1.4f), 0.001f)
+    }
+
+    @Test
+    fun storeRailSkeletonIncludesThePartiallyVisibleNextCard() {
+        assertEquals(4, storeRailVisibleCardCount(360f, 96f, 10f))
+        assertEquals(3, storeRailVisibleCardCount(360f, 140f, 10f))
     }
 
     @Test

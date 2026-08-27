@@ -1215,21 +1215,22 @@ private fun MainShell(
                 }
                 state.selectedGame?.takeIf { !inStream && !modalPickerOpen }?.let { game ->
                     ControllerModalDialog(onDismissRequest = viewModel::clearSelectedGame) {
-                        AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
-                            GameDetailsSheet(
-                                game = game,
-                                favorite = game.id in state.settings.favoriteGameIds,
-                                defaultVariantId = state.settings.defaultGameVariantIds[game.id],
-                                fullScreen = tvProfile,
-                                safeAreaPadding = screenEdgePadding,
-                                onPlay = viewModel::play,
-                                onChooseStore = viewModel::chooseStore,
-                                onFavorite = viewModel::updateFavorites,
-                                connectedTvName = state.localTvConnector.connectedTvName,
-                                onPlayOnTv = viewModel::playOnLocalTv,
-                                onDismiss = viewModel::clearSelectedGame,
-                            )
-                        }
+                        // Selection haptics fire on the tap. Present details immediately so the
+                        // tactile response and the surface arrival read as one interaction instead
+                        // of a buzz followed by a separate 200-300 ms entrance animation.
+                        GameDetailsSheet(
+                            game = game,
+                            favorite = game.id in state.settings.favoriteGameIds,
+                            defaultVariantId = state.settings.defaultGameVariantIds[game.id],
+                            fullScreen = tvProfile,
+                            safeAreaPadding = screenEdgePadding,
+                            onPlay = viewModel::play,
+                            onChooseStore = viewModel::chooseStore,
+                            onFavorite = viewModel::updateFavorites,
+                            connectedTvName = state.localTvConnector.connectedTvName,
+                            onPlayOnTv = viewModel::playOnLocalTv,
+                            onDismiss = viewModel::clearSelectedGame,
+                        )
                     }
                 }
                 state.pendingPrintedWasteGame?.let { game ->

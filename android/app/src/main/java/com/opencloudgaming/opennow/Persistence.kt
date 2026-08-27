@@ -384,10 +384,9 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
 
 class SettingsStore(context: Context) {
     private val prefs = ExternalPrefs.get(context, STORE_NAME)
-    private val androidTvProfile = isAndroidTvProfile(context)
     private val _settings = MutableStateFlow(
         load()
-            .withCurrentStreamPresentationDefaults(androidTvProfile)
+            .withCurrentStreamPresentationDefaults()
             .normalizedForAndroid(),
     )
     val settings: StateFlow<AppSettings> = _settings
@@ -423,13 +422,13 @@ class SettingsStore(context: Context) {
 
     fun update(transform: (AppSettings) -> AppSettings) {
         _settings.value = transform(_settings.value)
-            .withCurrentStreamPresentationDefaults(androidTvProfile)
+            .withCurrentStreamPresentationDefaults()
             .normalizedForAndroid()
     }
 
     fun replace(next: AppSettings) {
         _settings.value = next
-            .withCurrentStreamPresentationDefaults(androidTvProfile)
+            .withCurrentStreamPresentationDefaults()
             .normalizedForAndroid()
     }
 

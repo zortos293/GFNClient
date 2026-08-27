@@ -196,6 +196,7 @@ internal fun StreamStatsPill(
     if (metrics.enabledCount() == 0 && !keyboardButtonEnabled) return
     val compact = style == StreamStatsStyle.Compact
     val deviceStatus = rememberCompactStreamDeviceStatus()
+    val absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current
     Surface(
         modifier = modifier
             .padding(OpenNowSpacing.sm)
@@ -204,7 +205,10 @@ internal fun StreamStatsPill(
         // Stays genuinely see-through — this one sits over gameplay by design. The hairline is
         // what keeps its edge readable against a bright frame.
         color = Panel.copy(alpha = 0.52f),
-        border = BorderStroke(1.dp, OpenNowPalette.PanelHairline),
+        border = BorderStroke(
+            width = if (absoluteCinemaEnabled) 3.dp else 1.dp,
+            color = if (absoluteCinemaEnabled) Color.White else OpenNowPalette.PanelHairline,
+        ),
         tonalElevation = 0.dp,
     ) {
         if (compact) {

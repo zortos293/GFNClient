@@ -387,7 +387,7 @@ object SdpTools {
                 add("a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535")
                 add("a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535")
             }
-            add("a=vqos.adjustStreamingFpsDuringOutOfFocus:1")
+            add("a=vqos.adjustStreamingFpsDuringOutOfFocus:0")
             add("a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1")
             add("a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1")
             add("a=vqos.resControl.cpmRtc.featureMask:0")

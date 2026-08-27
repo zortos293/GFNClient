@@ -1010,11 +1010,11 @@ internal fun StreamScreen(
                     },
                     onMaxBitrateChange = { value ->
                         viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = value) }
-                        // Apply to this cloud session too. The client debounces slider movement,
-                        // then creates a legal fresh WebRTC offer/answer transport with the new
-                        // b=AS ceiling; changing a stable local description in place is invalid.
+                        // Preserve the active WSS/ICE transport. The new b=AS ceiling is queued for
+                        // the next legitimate offer because replacing a healthy transport here can
+                        // strand the allocated cloud session on a stale signaling endpoint.
                         client.updateBitrateLimit(value * 1000)
-                        // Optimistic indicator; polling follows the transport-owned value.
+                        // Optimistic indicator for the requested next-offer ceiling.
                         liveBitrateLimitKbps = value * 1000
                     },
                     onTouchScaleChange = { value ->

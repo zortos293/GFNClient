@@ -185,6 +185,8 @@ class SdpToolsTest {
         assertTrue(nvst.contains("a=vqos.dynamicStreamingMode:0"))
         assertTrue(nvst.contains("a=vqos.drc.enable:0"))
         assertTrue(nvst.contains("a=vqos.dfc.adjustResAndFps:0"))
+        assertTrue(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:0"))
+        assertFalse(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:1"))
         assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.enable:0"))
         assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.minResolutionPercent:100"))
         assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999"))

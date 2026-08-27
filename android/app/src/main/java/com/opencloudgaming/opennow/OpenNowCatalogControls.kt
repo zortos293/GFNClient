@@ -1096,6 +1096,7 @@ internal fun UrlImage(
     }
     val loadingTracker = LocalImageLoadingTracker.current
     val loading = imageState == UrlImageState.Loading
+    val imageRequestsPaused = LocalCatalogImageRequestsPaused.current
     DisposableEffect(loadingTracker, loading) {
         if (loading) loadingTracker?.invoke(1)
         onDispose {
@@ -1116,7 +1117,7 @@ internal fun UrlImage(
         }
     }
     Box(modifier.background(OpenNowPalette.ImagePlaceholder), contentAlignment = Alignment.Center) {
-        if (imageData != null) {
+        if (imageData != null && shouldStartCatalogImageRequest(imageRequestsPaused, imageState == UrlImageState.Loaded)) {
             key(activeSource) {
                 AsyncImage(
                     model = imageData,

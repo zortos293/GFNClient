@@ -21,11 +21,12 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.absoluteCinemaEffects)
         assertFalse(settings.absoluteCinemaEverywhere)
         assertFalse(settings.localAppsEnabled)
+        assertFalse(settings.stretchStreamToFit)
         assertTrue(settings.ambientBackgroundEnabled)
         assertTrue(settings.localAppPackageNames.isEmpty())
         // The shelf opens on first sight; folding it is a choice the reader makes and keeps.
         assertFalse(settings.localAppsCollapsed)
-        assertTrue(settings.libraryHeroCarousel)
+        assertTrue(settings.landscapeNewGamesHero)
         // Rumble routing stays automatic until someone's hardware proves it needs forcing.
         assertEquals(HapticsOutputPreference.Auto, settings.hapticsOutput)
         assertEquals(TouchControllerStyle.V1, settings.androidTouch.touchControllerStyle)
@@ -72,7 +73,9 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.absoluteCinemaEffects)
         assertFalse(settings.absoluteCinemaEverywhere)
         assertFalse(settings.localAppsEnabled)
+        assertFalse(settings.stretchStreamToFit)
         assertTrue(settings.localAppPackageNames.isEmpty())
+        assertTrue(settings.landscapeNewGamesHero)
         // Developer options are a hidden gesture, never a shipped or migrated-in default.
         assertFalse(settings.developerOptionsUnlocked)
         assertTrue(settings.showSessionReportAfterStream)
@@ -177,6 +180,15 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
+    fun retiredLibraryHeroPreferenceDoesNotInvalidateSavedSettings() {
+        val settings = OpenNowJson.decodeFromString<AppSettings>(
+            """{"libraryHeroCarousel":false,"landscapeNewGamesHero":false}""",
+        )
+
+        assertFalse(settings.landscapeNewGamesHero)
+    }
+
+    @Test
     fun defaultsUseRecommendedProfileAndKeepOptionalMusicOff() {
         val settings = AppSettings()
 
@@ -228,31 +240,31 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
-    fun phonePresentationFillsTheDisplayByDefaultAndRunsOnce() {
-        val migrated = AppSettings().withCurrentStreamPresentationDefaults(androidTvProfile = false)
+    fun phonePresentationKeepsExactGeometryByDefaultAndRunsOnce() {
+        val migrated = AppSettings().withCurrentStreamPresentationDefaults()
 
-        // Filling is a stretch on one axis, never a crop, so no part of the picture is lost.
-        assertTrue(migrated.stretchStreamToFit)
+        assertFalse(migrated.stretchStreamToFit)
         assertFalse(migrated.legacyCropStreamToFill)
         assertEquals(STREAM_PRESENTATION_PROFILE_VERSION, migrated.streamPresentationProfileVersion)
 
-        // Already migrated: a later opt-out is the user's, and must survive every launch after it.
-        val optedOut = migrated.copy(stretchStreamToFit = false)
-        assertEquals(optedOut, optedOut.withCurrentStreamPresentationDefaults(androidTvProfile = false))
+        // Already migrated: a later opt-in is the user's, and must survive every launch after it.
+        val optedIn = migrated.copy(stretchStreamToFit = true)
+        assertEquals(optedIn, optedIn.withCurrentStreamPresentationDefaults())
     }
 
     @Test
-    fun anExistingInstallIsMovedOntoTheFillingDefault() {
-        // A profile written by the previous release: migrated to version 1, letterboxed.
-        val existing = AppSettings(stretchStreamToFit = false, streamPresentationProfileVersion = 1)
+    fun existingInstallKeepsItsSavedStretchPreference() {
+        val optedIn = AppSettings(stretchStreamToFit = true, streamPresentationProfileVersion = 2)
+        val optedOut = AppSettings(stretchStreamToFit = false, streamPresentationProfileVersion = 2)
 
-        assertTrue(existing.withCurrentStreamPresentationDefaults(androidTvProfile = false).stretchStreamToFit)
+        assertTrue(optedIn.withCurrentStreamPresentationDefaults().stretchStreamToFit)
+        assertFalse(optedOut.withCurrentStreamPresentationDefaults().stretchStreamToFit)
     }
 
     @Test
     fun tvPresentationKeepsExactGeometry() {
         // A TV panel and a 16:9 stream already agree; filling would be a no-op that misreports.
-        val migrated = AppSettings().withCurrentStreamPresentationDefaults(androidTvProfile = true)
+        val migrated = AppSettings().withCurrentStreamPresentationDefaults()
 
         assertFalse(migrated.legacyCropStreamToFill)
         assertFalse(migrated.stretchStreamToFit)

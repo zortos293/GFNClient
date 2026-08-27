@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -7,10 +8,20 @@ import org.junit.Test
 
 class StoreRailTest {
     @Test
-    fun storeHeroIsLimitedToPortraitPhones() {
+    fun phoneLandscapeHeroDoesNotStackScreenPaddingBelowTopBar() {
+        assertEquals(0.dp, storeScreenTopPadding(controlsInTopBar = true, phoneLandscapeHero = true))
+        assertEquals(4.dp, storeScreenTopPadding(controlsInTopBar = true, phoneLandscapeHero = false))
+        assertEquals(12.dp, storeScreenTopPadding(controlsInTopBar = false, phoneLandscapeHero = true))
+    }
+
+    @Test
+    fun storeHeroUsesEveryDeviceLayoutAndHonorsHandheldLandscapeOptOut() {
         assertTrue(shouldShowStoreHero(tvProfile = false, landscape = false))
-        assertFalse(shouldShowStoreHero(tvProfile = false, landscape = true))
-        assertFalse(shouldShowStoreHero(tvProfile = true, landscape = false))
+        assertTrue(shouldShowStoreHero(tvProfile = false, landscape = true))
+        assertFalse(shouldShowStoreHero(tvProfile = false, landscape = true, landscapeEnabled = false))
+        assertTrue(shouldShowStoreHero(tvProfile = true, landscape = false))
+        assertTrue(shouldShowStoreHero(tvProfile = true, landscape = true))
+        assertTrue(shouldShowStoreHero(tvProfile = true, landscape = true, landscapeEnabled = false))
     }
 
     @Test
@@ -52,6 +63,21 @@ class StoreRailTest {
         val games = (1..7).map { index -> GameInfo(id = "game-$index", title = "Game $index") }
 
         assertEquals((1..6).map { "game-$it" }, newlyAddedStoreHeroGames(games).map(GameInfo::id))
+    }
+
+    @Test
+    fun catalogImageRequestsWaitDuringScrollUnlessTheImageIsAlreadyVisible() {
+        assertFalse(shouldStartCatalogImageRequest(requestsPaused = true, imageAlreadyLoaded = false))
+        assertTrue(shouldStartCatalogImageRequest(requestsPaused = true, imageAlreadyLoaded = true))
+        assertTrue(shouldStartCatalogImageRequest(requestsPaused = false, imageAlreadyLoaded = false))
+    }
+
+    @Test
+    fun storeHeroAnimationStopsWhileTheStoreIsMoving() {
+        assertTrue(shouldAnimateStoreHero(pageCount = 6, focused = false, reduceMotion = false, storeScrolling = false))
+        assertFalse(shouldAnimateStoreHero(pageCount = 6, focused = false, reduceMotion = false, storeScrolling = true))
+        assertFalse(shouldAnimateStoreHero(pageCount = 6, focused = true, reduceMotion = false, storeScrolling = false))
+        assertFalse(shouldAnimateStoreHero(pageCount = 6, focused = false, reduceMotion = true, storeScrolling = false))
     }
 
     @Test
@@ -98,9 +124,9 @@ class StoreRailTest {
     }
 
     @Test
-    fun storeCacheWindowScalesWithTheDisplayRefreshRate() {
+    fun storeCacheWindowGetsLeanerAsTheFrameDeadlineShrinks() {
         assertEquals(0.33f to 0.17f, catalogCacheWindowFractions(60f))
-        assertEquals(0.67f to 0.33f, catalogCacheWindowFractions(90f))
-        assertEquals(1f to 0.5f, catalogCacheWindowFractions(120f))
+        assertEquals(0.4f to 0.17f, catalogCacheWindowFractions(90f))
+        assertEquals(0.25f to 0.08f, catalogCacheWindowFractions(120f))
     }
 }

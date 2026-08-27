@@ -407,6 +407,17 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun streamResolutionPixelsMaps1080pTierToNineteenPointFiveByNinePhoneMode() {
+        val settings = StreamSettings(resolution = "1920x1080", aspectRatio = "19.5:9")
+
+        assertEquals(2340 to 1080, streamResolutionPixels(settings))
+        assertEquals(
+            "2340x1080",
+            normalizeStreamResolutionForAspect("1920x1080", "19.5:9"),
+        )
+    }
+
+    @Test
     fun persistedUnsupportedAspectFallsBackToSupportedSixteenByNineMode() {
         val adjusted = StreamSettings(resolution = "1600x720", aspectRatio = "20:9")
             .withResolutionAllowed(SubscriptionInfo(membershipTier = "FREE"), null)
@@ -519,7 +530,7 @@ class StreamResolutionTest {
         )
         assertEquals(listOf("1024x768", "1112x834", "1600x1200"), streamResolutionOptionsForAspect("4:3"))
         assertEquals(listOf("1280x1024"), streamResolutionOptionsForAspect("5:4"))
-        assertEquals(emptyList<String>(), streamResolutionOptionsForAspect("19.5:9"))
+        assertEquals(listOf("2340x1080"), streamResolutionOptionsForAspect("19.5:9"))
         assertEquals(emptyList<String>(), streamResolutionOptionsForAspect("20:9"))
         assertEquals(listOf("1376x590", "1680x720", "2560x1080", "3440x1440", "5120x2160"), streamResolutionOptionsForAspect("21:9"))
         assertEquals(listOf("3840x1080", "5120x1440"), streamResolutionOptionsForAspect("32:9"))
@@ -538,6 +549,7 @@ class StreamResolutionTest {
         val prioritySubscription = SubscriptionInfo(membershipTier = "PRIORITY")
         val ultimateSubscription = SubscriptionInfo(membershipTier = "ULTIMATE")
         val fhd = streamResolutionChoicesForAspect("16:9").first { it.value == "1920x1080" }
+        val phoneFhd = streamResolutionChoicesForAspect("19.5:9").single()
         val lowUltrawide = streamResolutionChoicesForAspect("21:9").first { it.value == "1376x590" }
         val whd = streamResolutionChoicesForAspect("21:9").first { it.value == "1680x720" }
         val wfhd = streamResolutionChoicesForAspect("21:9").first { it.value == "2560x1080" }
@@ -546,11 +558,13 @@ class StreamResolutionTest {
         val fiveK = streamResolutionChoicesForAspect("16:9").first { it.value == "5120x2880" }
 
         assertEquals(true, fhd.isAvailableFor(freeSubscription, null))
+        assertEquals(false, phoneFhd.isAvailableFor(freeSubscription, null))
         assertEquals(true, lowUltrawide.isAvailableFor(freeSubscription, null))
         assertEquals(true, whd.isAvailableFor(freeSubscription, null))
         assertEquals(false, wfhd.isAvailableFor(freeSubscription, null))
         assertEquals(false, qhd.isAvailableFor(freeSubscription, null))
         assertEquals(true, fhd.isAvailableFor(prioritySubscription, null))
+        assertEquals(true, phoneFhd.isAvailableFor(prioritySubscription, null))
         assertEquals(true, lowUltrawide.isAvailableFor(prioritySubscription, null))
         assertEquals(true, whd.isAvailableFor(prioritySubscription, null))
         assertEquals(true, wfhd.isAvailableFor(prioritySubscription, null))
@@ -784,6 +798,37 @@ class StreamResolutionTest {
                 settings = safeFallback,
             )?.sessionId,
         )
+    }
+
+    @Test
+    fun recoveryReconstructsKnownFreshSessionWithoutCachedActiveGeometry() {
+        val settings = StreamSettings(
+            resolution = "1376x590",
+            aspectRatio = "21:9",
+            fps = 60,
+            maxBitrateMbps = 7,
+        )
+        val running = SessionInfo(
+            sessionId = "running-session",
+            status = 2,
+            streamingBaseUrl = "https://alliance.example",
+            serverIp = "streamer.example",
+            signalingServer = "streamer.example:443",
+            signalingUrl = "wss://streamer.example:443/nvst/",
+        )
+
+        val candidate = knownSessionRecoveryCandidate(
+            session = running,
+            appId = 101808711,
+            fallbackActive = null,
+            settings = settings,
+        )
+
+        assertEquals("running-session", candidate?.sessionId)
+        assertEquals("1376x590", candidate?.resolution)
+        assertEquals(60, candidate?.fps)
+        assertEquals(streamSettingsSessionSignature(settings), candidate?.settingsSignature)
+        assertTrue(candidate?.matchesStreamGeometry(settings) == true)
     }
 
     @Test

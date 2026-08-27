@@ -1399,12 +1399,13 @@ private fun SettingsContent(
                 }
                 CatalogBackgroundSettings(settings = settings, viewModel = viewModel)
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_library_navigation), "interface", "launch page", "default page", "store", "library", "compact", "cards", "titles", "favorites", "favourites", "save", "icon", "game card size", "server selector", "hero", "banner", "featured") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_library_navigation), "interface", "launch page", "default page", "store", "library", "compact", "cards", "titles", "favorites", "favourites", "save", "icon", "game card size", "server selector", "hero", "banner", "featured", "landscape", "new games") {
                 SettingSwitch(
-                    label = stringResource(R.string.settings_library_hero),
-                    checked = settings.libraryHeroCarousel,
+                    label = stringResource(R.string.settings_landscape_new_games),
+                    checked = settings.landscapeNewGamesHero,
+                    description = stringResource(R.string.settings_landscape_new_games_desc),
                 ) { enabled ->
-                    viewModel.updateSettings(settings.copy(libraryHeroCarousel = enabled))
+                    viewModel.updateSettings(settings.copy(landscapeNewGamesHero = enabled))
                 }
                 val launchPageOptions = AppLaunchPage.entries.map { page -> page to appLaunchPageLabel(page) }
                 ChoiceRow(
@@ -1425,7 +1426,14 @@ private fun SettingsContent(
                 ) { enabled ->
                     viewModel.updateSettings(settings.copy(showFavoriteIconOnGameCards = enabled))
                 }
-                NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 0.05f) { value ->
+                NumberSlider(
+                    label = stringResource(R.string.settings_card_size),
+                    value = settings.posterSizeScale,
+                    min = MIN_GAME_CARD_SCALE,
+                    max = MAX_GAME_CARD_SCALE,
+                    step = 0.05f,
+                    description = stringResource(R.string.settings_card_size_desc),
+                ) { value ->
                     viewModel.updateSettings(settings.copy(posterSizeScale = value))
                 }
                 SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }

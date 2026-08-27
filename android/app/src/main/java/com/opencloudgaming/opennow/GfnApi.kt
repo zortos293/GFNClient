@@ -3048,6 +3048,7 @@ class GfnSessionRepository(
         clientId: String?,
         deviceId: String?,
         settings: StreamSettings,
+        diagnosticOperation: String = "session.poll",
     ): SessionInfo {
         val cid = clientId ?: UUID.randomUUID().toString()
         val did = deviceId ?: authStore.stableDeviceId()
@@ -3059,7 +3060,7 @@ class GfnSessionRepository(
             .headers(cloudMatchHeaders(token, cid, did, includeOrigin = false, streamingBaseUrl = base, isAndroidTv = isAndroidTv))
             .build()
         val (code, text) = requestHttp.awaitText(request)
-        recordDiagnosticResponse("session.poll", request, code, text)
+        recordDiagnosticResponse(diagnosticOperation, request, code, text)
         val payload = OpenNowJson.parseToJsonElement(text).jsonObject
         val realServer = streamingServerIp(payload)
         if (isZoneHostname(host) && realServer != null && !isZoneHostname(realServer) && READY_SESSION_STATUSES.contains(payload.obj("session")?.int("status"))) {
@@ -3069,7 +3070,7 @@ class GfnSessionRepository(
                 .headers(cloudMatchHeaders(token, cid, did, includeOrigin = false, streamingBaseUrl = directBase, isAndroidTv = isAndroidTv))
                 .build()
             val (code, directText) = http.awaitText(directRequest)
-            recordDiagnosticResponse("session.poll.direct", directRequest, code, directText)
+            recordDiagnosticResponse("$diagnosticOperation.direct", directRequest, code, directText)
             if (code in 200..299) {
                 val directPayload = OpenNowJson.parseToJsonElement(directText).jsonObject
                 if (directPayload.obj("requestStatus")?.int("statusCode") == 1) {

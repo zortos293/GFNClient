@@ -69,6 +69,14 @@ class StreamSignalingFailureTest {
     }
 
     @Test
+    fun bitrateChangesAreNormalizedBeforeBeingQueuedForTheNextOffer() {
+        assertEquals(1_000, normalizedLiveBitrateKbps(0))
+        assertEquals(1_000, normalizedLiveBitrateKbps(1_499))
+        assertEquals(2_000, normalizedLiveBitrateKbps(1_500))
+        assertEquals(75_000, normalizedLiveBitrateKbps(75_000))
+    }
+
+    @Test
     fun serverHeartbeatGetsImmediateProtocolReply() {
         assertEquals(
             """{"hb":1}""",

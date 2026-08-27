@@ -45,4 +45,53 @@ class StreamSessionRecoveryTrackerTest {
         assertTrue(isTerminalSessionStatus(5))
         assertTrue(isTerminalSessionStatus(7))
     }
+
+    @Test
+    fun exactSessionProbePreservesProviderTerminationCodesInDebugEvents() {
+        val summary = recoverySessionProbeDebugSummary(
+            GfnSessionDiagnosticResponse(
+                operation = "session.recovery.probe",
+                method = "GET",
+                url = "https://streamer.example/v2/session/1234567890abcdef",
+                statusCode = 200,
+                requestBody = "",
+                responseBody = """
+                    {
+                      "session": { "status": 7, "errorCode": 42 },
+                      "requestStatus": {
+                        "statusCode": 1,
+                        "statusDescription": "SUCCESS_STATUS",
+                        "unifiedErrorCode": -1970536448
+                      }
+                    }
+                """.trimIndent(),
+            ),
+        )
+
+        assertEquals(
+            "Old session GET session=123456...cdef source=session.recovery.probe http=200 requestStatus=1 " +
+                "description=SUCCESS_STATUS unifiedError=-1970536448 sessionStatus=7 sessionError=42",
+            summary,
+        )
+    }
+
+    @Test
+    fun exactSessionProbeStillRecordsAnHttpFailureWithoutJson() {
+        val summary = recoverySessionProbeDebugSummary(
+            GfnSessionDiagnosticResponse(
+                operation = "session.recovery.probe",
+                method = "GET",
+                url = "https://streamer.example/v2/session/session-a",
+                statusCode = 404,
+                requestBody = "",
+                responseBody = "Not Found",
+            ),
+        )
+
+        assertEquals(
+            "Old session GET session=session-a source=session.recovery.probe http=404 requestStatus=unknown description=unknown " +
+                "unifiedError=unknown sessionStatus=unknown sessionError=unknown",
+            summary,
+        )
+    }
 }

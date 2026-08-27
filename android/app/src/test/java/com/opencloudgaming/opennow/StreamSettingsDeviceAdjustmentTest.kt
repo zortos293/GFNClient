@@ -960,6 +960,29 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun phoneFullHdGeometryPreservesHardwareH265() {
+        val report = codecReport(
+            codec = VideoCodec.H265,
+            hardwareDecoder = true,
+            realtimeSafe = true,
+            webRtcDecoderAvailable = true,
+            webRtcHardwareDecoderAvailable = true,
+            maxSupportedWidth = 1920,
+            maxSupportedHeight = 1080,
+        )
+        val adjusted = StreamSettings(
+            resolution = "2340x1080",
+            aspectRatio = "19.5:9",
+            fps = 60,
+            codec = VideoCodec.H265,
+        ).adjustedForDevice(report)
+
+        assertEquals("2340x1080", adjusted.resolution)
+        assertEquals("19.5:9", adjusted.aspectRatio)
+        assertEquals(VideoCodec.H265, adjusted.codec)
+    }
+
+    @Test
     fun preserves1440pByUsingAnotherHardwareCodecBeforeReducingResolution() {
         val report = RuntimeCodecReport(
             capabilities = listOf(

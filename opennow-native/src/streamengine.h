@@ -34,6 +34,7 @@ public:
     static constexpr int ProtocolVersion = 4;
 
     explicit StreamEngine(QObject *parent = nullptr);
+    ~StreamEngine() override;
 
     QString phase() const { return m_phase; }
     QString statusText() const { return m_statusText; }

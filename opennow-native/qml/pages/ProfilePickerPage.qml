@@ -124,7 +124,6 @@ FocusScope {
                     onActiveFocusChanged: { if (activeFocus) page.currentIndex = index }
                     Keys.onLeftPressed: page.currentIndex = (index + page.profiles.length - 1) % page.profiles.length
                     Keys.onRightPressed: page.currentIndex = (index + 1) % page.profiles.length
-                    Keys.onReturnPressed: page.activate(index)
                     contentItem: Item {
                         Rectangle {
                             visible: modelData.badge.length > 0
@@ -133,7 +132,15 @@ FocusScope {
                             color: index === 0 ? Theme.accent : "#273029"
                             Text { id: badgeText; anchors.centerIn: parent; text: modelData.badge; color: index === 0 ? Theme.accentInk : Theme.inkSoft; font.family: Theme.monoFont.family; font.pixelSize: 9; font.weight: Font.Bold }
                         }
+                        DitherAvatar {
+                            visible: modelData.kind === "profile"
+                            anchors.centerIn: parent
+                            width: 144
+                            height: 144
+                            name: modelData.name
+                        }
                         Text {
+                            visible: modelData.kind !== "profile"
                             anchors.centerIn: parent
                             text: modelData.initial
                             color: index === 1 ? Theme.inkSoft : Theme.ink

@@ -1,19 +1,27 @@
 #include "authengine.h"
 
+#include <QCryptographicHash>
 #include <QDesktopServices>
+#include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRandomGenerator>
+#include <QTcpSocket>
 #include <QUrlQuery>
 #include <QUuid>
 
 #include <algorithm>
+#include <array>
 #include <limits>
+#include <memory>
 
 using namespace OpenNow::Auth;
 
 namespace {
+
+constexpr std::array<quint16, 5> BrowserRedirectPorts{2259, 6460, 7119, 8870, 9096};
 
 struct HttpResult
 {
@@ -31,7 +39,8 @@ HttpResult readReply(QNetworkReply *reply)
     result.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     result.networkSucceeded = reply->error() == QNetworkReply::NoError;
     QJsonParseError error;
-    const auto document = QJsonDocument::fromJson(reply->readAll(), &error);
+    const auto responseBody = reply->isOpen() ? reply->readAll() : QByteArray{};
+    const auto document = QJsonDocument::fromJson(responseBody, &error);
     result.jsonValid = error.error == QJsonParseError::NoError && document.isObject();
     if (result.jsonValid) {
         result.payload = document.object();
@@ -74,6 +83,21 @@ void abortReply(QPointer<QNetworkReply> &reply)
     }
 }
 
+QByteArray randomBytes(qsizetype size)
+{
+    QByteArray bytes(size, Qt::Uninitialized);
+    for (qsizetype index = 0; index < size; ++index) {
+        bytes[index] = static_cast<char>(QRandomGenerator::system()->generate() & 0xff);
+    }
+    return bytes;
+}
+
+QString base64Url(const QByteArray &bytes)
+{
+    return QString::fromLatin1(bytes.toBase64(QByteArray::Base64UrlEncoding
+                                               | QByteArray::OmitTrailingEquals));
+}
+
 } // namespace
 
 AuthEngine::AuthEngine(QObject *parent)
@@ -83,8 +107,17 @@ AuthEngine::AuthEngine(QObject *parent)
     m_providers.append(providerMap(m_selectedProvider));
     m_pollTimer.setSingleShot(true);
     m_refreshTimer.setSingleShot(true);
+    m_oauthTimeout.setSingleShot(true);
     connect(&m_pollTimer, &QTimer::timeout, this, &AuthEngine::pollToken);
     connect(&m_refreshTimer, &QTimer::timeout, this, &AuthEngine::ensureValidSession);
+    connect(&m_oauthServer, &QTcpServer::newConnection, this, &AuthEngine::acceptBrowserLoginCallback);
+    connect(&m_oauthTimeout, &QTimer::timeout, this, [this] {
+        if (!m_oauthServer.isListening()) {
+            return;
+        }
+        clearChallenge(true);
+        setAuthenticationError(QStringLiteral("Browser sign-in timed out"));
+    });
 
     restoreState();
     QTimer::singleShot(0, this, [this] {
@@ -309,6 +342,7 @@ void AuthEngine::abortChallengeRequests()
     abortReply(m_pollReply);
     abortReply(m_userInfoReply);
     abortReply(m_loginClientTokenReply);
+    abortReply(m_oauthTokenReply);
 }
 
 void AuthEngine::abortSessionRequests()
@@ -320,13 +354,17 @@ void AuthEngine::abortSessionRequests()
 void AuthEngine::clearChallenge(bool invalidateAttempt)
 {
     m_pollTimer.stop();
+    m_oauthTimeout.stop();
+    m_oauthServer.close();
     if (invalidateAttempt) {
         ++m_attempt;
     }
     abortChallengeRequests();
     wipe(m_deviceCode);
     wipe(m_userCode);
+    wipe(m_pkceVerifier);
     m_verificationUrl.clear();
+    m_oauthPort = 0;
     m_challengeExpiresAt = 0;
     m_challengeProvider = {};
     emit challengeChanged();
@@ -451,6 +489,166 @@ void AuthEngine::startLogin()
         QDesktopServices::openUrl(QUrl(m_verificationUrl));
         m_pollTimer.start(m_pollIntervalMs);
     });
+}
+
+void AuthEngine::startBrowserLogin()
+{
+    if (m_oauthServer.isListening() || m_oauthTokenReply) {
+        setStatus(QStringLiteral("Complete sign-in in your browser"), true);
+        return;
+    }
+    clearChallenge(true);
+    const auto attempt = m_attempt;
+    m_challengeProvider = selectedProvider();
+    m_selectedProvider = m_challengeProvider;
+    persistState();
+    setStatus(QStringLiteral("Opening secure NVIDIA sign-in"), true);
+
+    for (const auto port : BrowserRedirectPorts) {
+        if (m_oauthServer.listen(QHostAddress::LocalHost, port)) {
+            m_oauthPort = port;
+            break;
+        }
+    }
+    if (!m_oauthServer.isListening()) {
+        clearChallenge(true);
+        setAuthenticationError(QStringLiteral("Could not open a local browser sign-in callback"));
+        return;
+    }
+
+    m_pkceVerifier = base64Url(randomBytes(64));
+    const auto challenge = base64Url(
+        QCryptographicHash::hash(m_pkceVerifier.toUtf8(), QCryptographicHash::Sha256));
+    const auto deviceId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto redirectUri = QStringLiteral("http://localhost:%1").arg(m_oauthPort);
+
+    QUrl authorizationUrl(QString::fromLatin1(AuthorizeEndpoint));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("response_type"), QStringLiteral("code"));
+    query.addQueryItem(QStringLiteral("device_id"), deviceId);
+    query.addQueryItem(QStringLiteral("scope"), QString::fromLatin1(Scopes));
+    query.addQueryItem(QStringLiteral("client_id"), QString::fromLatin1(BrowserClientId));
+    query.addQueryItem(QStringLiteral("redirect_uri"), redirectUri);
+    query.addQueryItem(QStringLiteral("ui_locales"), QStringLiteral("en_US"));
+    query.addQueryItem(QStringLiteral("nonce"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+    query.addQueryItem(QStringLiteral("prompt"), QStringLiteral("select_account"));
+    query.addQueryItem(QStringLiteral("code_challenge"), challenge);
+    query.addQueryItem(QStringLiteral("code_challenge_method"), QStringLiteral("S256"));
+    query.addQueryItem(QStringLiteral("idp_id"), m_challengeProvider.idpId);
+    authorizationUrl.setQuery(query);
+
+    m_verificationUrl = authorizationUrl.toString(QUrl::FullyEncoded);
+    emit challengeChanged();
+    m_oauthTimeout.start(120000);
+    if (!QDesktopServices::openUrl(authorizationUrl)) {
+        if (attempt == m_attempt) {
+            clearChallenge(true);
+            setAuthenticationError(QStringLiteral("Could not open the system browser"));
+        }
+        return;
+    }
+    setStatus(QStringLiteral("Complete sign-in in your browser"), true);
+}
+
+void AuthEngine::acceptBrowserLoginCallback()
+{
+    const auto attempt = m_attempt;
+    while (m_oauthServer.hasPendingConnections()) {
+        auto *socket = m_oauthServer.nextPendingConnection();
+        if (!socket) {
+            continue;
+        }
+        auto requestBuffer = std::make_shared<QByteArray>();
+        connect(socket, &QTcpSocket::readyRead, this, [this, socket, requestBuffer, attempt] {
+            requestBuffer->append(socket->readAll());
+            if (!requestBuffer->contains("\r\n\r\n")) {
+                return;
+            }
+
+            const auto firstLine = requestBuffer->left(requestBuffer->indexOf("\r\n"));
+            const auto parts = firstLine.split(' ');
+            const auto target = parts.size() >= 2 ? QString::fromUtf8(parts.at(1)) : QString{};
+            const QUrl callbackUrl(QStringLiteral("http://localhost:%1%2").arg(m_oauthPort).arg(target));
+            const QUrlQuery query(callbackUrl);
+            const auto code = query.queryItemValue(QStringLiteral("code"));
+            const auto oauthError = query.queryItemValue(QStringLiteral("error_description"));
+            const bool valid = attempt == m_attempt && m_oauthServer.isListening() && !code.isEmpty();
+            const auto title = valid ? QStringLiteral("OpenNOW sign-in complete")
+                                     : QStringLiteral("OpenNOW sign-in failed");
+            const auto body = valid
+                                  ? QStringLiteral("You can close this tab and return to OpenNOW.")
+                                  : QStringLiteral("Return to OpenNOW and try signing in again.");
+            const auto html = QStringLiteral(
+                                  "<!doctype html><meta charset=utf-8><title>%1</title>"
+                                  "<style>body{margin:0;background:#070a08;color:#e8f2ea;font:16px system-ui;"
+                                  "display:grid;place-items:center;height:100vh}main{max-width:560px;padding:48px;"
+                                  "border:1px solid #1c231e;background:#0e120f}h1{color:#4ce87f}</style>"
+                                  "<main><h1>%1</h1><p>%2</p></main>")
+                                  .arg(title.toHtmlEscaped(), body.toHtmlEscaped())
+                                  .toUtf8();
+            const auto response = QByteArrayLiteral("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                                                     "Cache-Control: no-store\r\nConnection: close\r\nContent-Length: ")
+                                  + QByteArray::number(html.size()) + QByteArrayLiteral("\r\n\r\n") + html;
+            socket->write(response);
+            socket->disconnectFromHost();
+
+            if (attempt != m_attempt || !m_oauthServer.isListening()) {
+                return;
+            }
+            if (code.isEmpty()) {
+                const auto fallback = query.queryItemValue(QStringLiteral("error"));
+                clearChallenge(true);
+                setAuthenticationError(oauthError.isEmpty()
+                                           ? safeErrorText(fallback, QStringLiteral("Browser sign-in was cancelled"))
+                                           : oauthError);
+                return;
+            }
+            m_oauthServer.close();
+            m_oauthTimeout.stop();
+            exchangeBrowserAuthorizationCode(code, attempt);
+        });
+    }
+}
+
+void AuthEngine::exchangeBrowserAuthorizationCode(const QString &code, quint64 attempt)
+{
+    const auto verifier = m_pkceVerifier;
+    wipe(m_pkceVerifier);
+    const auto provider = m_challengeProvider;
+    const auto redirectUri = QStringLiteral("http://localhost:%1").arg(m_oauthPort);
+    QUrlQuery body;
+    body.addQueryItem(QStringLiteral("grant_type"), QStringLiteral("authorization_code"));
+    body.addQueryItem(QStringLiteral("code"), code);
+    body.addQueryItem(QStringLiteral("redirect_uri"), redirectUri);
+    body.addQueryItem(QStringLiteral("code_verifier"), verifier);
+    body.addQueryItem(QStringLiteral("client_id"), QString::fromLatin1(BrowserClientId));
+
+    QNetworkRequest request(QUrl(QString::fromLatin1(TokenEndpoint)));
+    applyAuthHeaders(request, QStringLiteral("application/x-www-form-urlencoded; charset=UTF-8"));
+    m_oauthTokenReply = m_network.post(request, body.query(QUrl::FullyEncoded).toUtf8());
+    connect(m_oauthTokenReply, &QNetworkReply::finished, this,
+            [this, reply = m_oauthTokenReply, provider, attempt] {
+                if (!reply) {
+                    return;
+                }
+                const auto result = readReply(reply);
+                reply->deleteLater();
+                if (m_oauthTokenReply == reply) {
+                    m_oauthTokenReply.clear();
+                }
+                if (attempt != m_attempt) {
+                    return;
+                }
+                auto tokens = tokensFromPayload(result.payload);
+                if (!result.ok() || !tokens) {
+                    clearChallenge(true);
+                    setAuthenticationError(responseError(
+                        result, QStringLiteral("Could not finish browser sign-in")));
+                    return;
+                }
+                tokens->authClientId = QString::fromLatin1(BrowserClientId);
+                completeDeviceAuthorization(*tokens, provider, attempt);
+            });
 }
 
 void AuthEngine::pollToken()
@@ -716,7 +914,10 @@ void AuthEngine::refreshWithRefreshToken(quint64 generation)
     QUrlQuery body;
     body.addQueryItem(QStringLiteral("grant_type"), QStringLiteral("refresh_token"));
     body.addQueryItem(QStringLiteral("refresh_token"), m_session->tokens.refreshToken);
-    body.addQueryItem(QStringLiteral("client_id"), QString::fromLatin1(SteamDeckClientId));
+    const auto clientId = m_session->tokens.authClientId.isEmpty()
+                              ? QString::fromLatin1(SteamDeckClientId)
+                              : m_session->tokens.authClientId;
+    body.addQueryItem(QStringLiteral("client_id"), clientId);
     QNetworkRequest request(QUrl(QString::fromLatin1(TokenEndpoint)));
     applyAuthHeaders(request, QStringLiteral("application/x-www-form-urlencoded; charset=UTF-8"));
     m_refreshReply = m_network.post(request, body.query(QUrl::FullyEncoded).toUtf8());
@@ -755,7 +956,10 @@ void AuthEngine::refreshWithClientToken(quint64 generation, const QString &previ
     body.addQueryItem(QStringLiteral("grant_type"),
                       QStringLiteral("urn:ietf:params:oauth:grant-type:client_token"));
     body.addQueryItem(QStringLiteral("client_token"), m_session->tokens.clientToken);
-    body.addQueryItem(QStringLiteral("client_id"), QString::fromLatin1(SteamDeckClientId));
+    const auto clientId = m_session->tokens.authClientId.isEmpty()
+                              ? QString::fromLatin1(SteamDeckClientId)
+                              : m_session->tokens.authClientId;
+    body.addQueryItem(QStringLiteral("client_id"), clientId);
     body.addQueryItem(QStringLiteral("sub"), m_session->user.userId);
     QNetworkRequest request(QUrl(QString::fromLatin1(TokenEndpoint)));
     applyAuthHeaders(request, QStringLiteral("application/x-www-form-urlencoded; charset=UTF-8"));

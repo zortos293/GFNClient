@@ -3,6 +3,15 @@ import QtQuick
 
 QtObject {
     id: theme
+    property FontLoader spaceGroteskLoader: FontLoader {
+        source: "qrc:/OpenNOW/fonts/SpaceGrotesk-Variable.ttf"
+    }
+    property FontLoader interLoader: FontLoader {
+        source: "qrc:/OpenNOW/fonts/Inter-Variable.ttf"
+    }
+    property FontLoader jetBrainsMonoLoader: FontLoader {
+        source: "qrc:/OpenNOW/fonts/JetBrainsMono-Variable.ttf"
+    }
     property int settingsRevision: 0
     readonly property string themeName: {
         settingsRevision
@@ -35,9 +44,15 @@ QtObject {
     readonly property int motionFast: 120
     readonly property int motion: 220
 
-    readonly property font displayFont: Qt.font({ family: "Inter Display", weight: Font.DemiBold })
-    readonly property font bodyFont: Qt.font({ family: "Inter", weight: Font.Normal })
-    readonly property font monoFont: Qt.font({ family: "GeistMono Nerd Font", weight: Font.Medium })
+    readonly property string displayFamily: spaceGroteskLoader.status === FontLoader.Ready
+                                            ? spaceGroteskLoader.name : "Space Grotesk"
+    readonly property string bodyFamily: interLoader.status === FontLoader.Ready
+                                         ? interLoader.name : "Inter"
+    readonly property string monoFamily: jetBrainsMonoLoader.status === FontLoader.Ready
+                                         ? jetBrainsMonoLoader.name : "JetBrains Mono"
+    readonly property font displayFont: Qt.font({ family: displayFamily, weight: Font.Bold })
+    readonly property font bodyFont: Qt.font({ family: bodyFamily, weight: Font.Normal })
+    readonly property font monoFont: Qt.font({ family: monoFamily, weight: Font.Medium })
 
     property Connections preferenceConnection: Connections {
         target: appState

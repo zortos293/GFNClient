@@ -31,7 +31,7 @@ FocusScope {
     }
 
     function signInWithBrowser() {
-        authEngine.startLogin()
+        authEngine.startBrowserLogin()
     }
 
     function verificationHost() {
@@ -129,7 +129,6 @@ FocusScope {
             focusPolicy: Qt.StrongFocus
             onClicked: providerPopup.open()
             KeyNavigation.down: browserButton
-            Keys.onReturnPressed: providerPopup.open()
 
             contentItem: RowLayout {
                 anchors.fill: parent
@@ -160,6 +159,10 @@ FocusScope {
 
             Popup {
                 id: providerPopup
+                parent: providerButton
+                z: 1000
+                scale: page.Window.window ? page.Window.window.presentationScale : 1
+                transformOrigin: Item.TopLeft
                 x: 0
                 y: providerButton.height + 8
                 width: providerButton.width
@@ -302,7 +305,6 @@ FocusScope {
             focus: page.visible
             KeyNavigation.up: providerButton
             onClicked: page.signInWithBrowser()
-            Keys.onReturnPressed: page.signInWithBrowser()
         }
 
         Item { width: 1; height: 24 }

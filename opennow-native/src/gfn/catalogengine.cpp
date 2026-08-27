@@ -6,9 +6,11 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QNetworkReply>
+#include <QTcpSocket>
+#include <QElapsedTimer>
+#include <QTimer>
 #include <QNetworkRequest>
 #include <QRegularExpression>
-#include <QTimer>
 #include <QUrlQuery>
 
 #include <algorithm>
@@ -47,7 +49,8 @@ numberReturned
 numberSupported
 pageInfo { hasNextPage endCursor totalCount }
 items {
-  id title shortName longDescription developerName publisherName genres supportedControls nvidiaTech
+  id title shortName longDescription developerName publisherName genres supportedControls
+  nvidiaTech { PHOTO_MODE FREESTYLE HIGHLIGHTS }
   maxLocalPlayers maxOnlinePlayers
   images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }
   variants {
@@ -135,6 +138,12 @@ QStringList jsonStrings(const QJsonValue &value)
                 text = object.value(QLatin1String(key)).toString().trimmed();
                 if (!text.isEmpty())
                     break;
+            }
+            if (text.isEmpty()) {
+                for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+                    if (it.value().toBool() && !result.contains(it.key()))
+                        result.append(it.key());
+                }
             }
         }
         if (!text.isEmpty() && !result.contains(text))
@@ -660,7 +669,10 @@ bool CatalogEngine::setProviderStreamingUrl(const QString &url)
     m_streamingBaseUrl = trusted;
     m_vpcId.clear();
     m_regions.clear();
+    ++m_probeGeneration;
+    m_regionPings.clear();
     emit serverInfoChanged();
+    emit regionProbeChanged();
     return true;
 }
 
@@ -685,6 +697,11 @@ void CatalogEngine::clear()
     m_errorString.clear();
     m_vpcId.clear();
     m_regions.clear();
+    ++m_probeGeneration;
+    ++m_testGeneration;
+    m_probingRegions = false;
+    m_regionPings.clear();
+    m_networkTest.clear();
     m_subscription.clear();
     m_library.clear();
     m_catalog.clear();
@@ -693,6 +710,8 @@ void CatalogEngine::clear()
     m_states.clear();
     emit errorStringChanged();
     emit serverInfoChanged();
+    emit regionProbeChanged();
+    emit networkTestChanged();
     emit subscriptionChanged();
     emit libraryChanged();
     emit catalogChanged();
@@ -821,7 +840,7 @@ void CatalogEngine::sendRequest(const QString &operation,
         const bool timedOut = reply->property("catalogTimedOut").toBool();
         NetworkResult result;
         result.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        result.body = reply->readAll();
+        result.body = reply->isOpen() ? reply->readAll() : QByteArray{};
         if (timedOut)
             result.error = QStringLiteral("Request timed out");
         else if (reply->error() != QNetworkReply::NoError && result.status == 0)
@@ -974,6 +993,128 @@ void CatalogEngine::refreshAll()
 }
 
 void CatalogEngine::refreshServerInfo() { loadServerInfo(beginGeneration()); }
+
+void CatalogEngine::measureTcpLatency(const QUrl &url, const std::function<void(int)> &completion)
+{
+    if (!url.isValid() || url.host().isEmpty()) {
+        completion(-1);
+        return;
+    }
+
+    auto *socket = new QTcpSocket(this);
+    auto *timeout = new QTimer(socket);
+    timeout->setSingleShot(true);
+    auto elapsed = std::make_shared<QElapsedTimer>();
+    auto finished = std::make_shared<bool>(false);
+    const auto finish = [socket, timeout, elapsed, finished, completion](int latency) {
+        if (*finished)
+            return;
+        *finished = true;
+        timeout->stop();
+        socket->abort();
+        socket->deleteLater();
+        completion(latency);
+    };
+    connect(socket, &QTcpSocket::connected, socket, [elapsed, finish] {
+        finish(qMax(1, static_cast<int>(elapsed->elapsed())));
+    });
+    connect(socket, &QTcpSocket::errorOccurred, socket,
+            [finish](QAbstractSocket::SocketError) { finish(-1); });
+    connect(timeout, &QTimer::timeout, socket, [finish] { finish(-1); });
+    elapsed->start();
+    timeout->start(3000);
+    socket->connectToHost(url.host(), url.port(url.scheme() == QStringLiteral("https") ? 443 : 80));
+}
+
+void CatalogEngine::probeRegions()
+{
+    const quint64 generation = ++m_probeGeneration;
+    m_regionPings.clear();
+    m_probingRegions = !m_regions.isEmpty();
+    emit regionProbeChanged();
+    if (m_regions.isEmpty())
+        return;
+
+    auto remaining = std::make_shared<int>(m_regions.size());
+    for (const QVariant &value : std::as_const(m_regions)) {
+        const QVariantMap region = value.toMap();
+        const QString regionUrl = region.value(QStringLiteral("url")).toString();
+        measureTcpLatency(QUrl(regionUrl), [this, generation, remaining, regionUrl](int latency) {
+            if (generation != m_probeGeneration)
+                return;
+            m_regionPings.insert(regionUrl, latency);
+            --*remaining;
+            if (*remaining == 0)
+                m_probingRegions = false;
+            emit regionProbeChanged();
+        });
+    }
+}
+
+void CatalogEngine::testConnection(const QString &regionUrl)
+{
+    QString target = regionUrl.trimmed();
+    if (target.isEmpty() && !m_regions.isEmpty())
+        target = m_regions.first().toMap().value(QStringLiteral("url")).toString();
+    if (target.isEmpty()) {
+        m_networkTest = {{QStringLiteral("status"), QStringLiteral("failed")},
+                         {QStringLiteral("message"), QStringLiteral("No GeForce NOW region is available")}};
+        emit networkTestChanged();
+        return;
+    }
+
+    const quint64 generation = ++m_testGeneration;
+    m_networkTest = {{QStringLiteral("status"), QStringLiteral("testing")},
+                     {QStringLiteral("testedUrl"), target}};
+    emit networkTestChanged();
+
+    auto samples = std::make_shared<QList<int>>();
+    auto attempts = std::make_shared<int>(0);
+    auto next = std::make_shared<std::function<void()>>();
+    *next = [this, generation, target, samples, attempts, next] {
+        if (generation != m_testGeneration) {
+            *next = {};
+            return;
+        }
+        if (*attempts >= 4) {
+            const int successful = samples->size();
+            int latency = -1;
+            int jitter = 0;
+            if (successful > 0) {
+                int total = 0;
+                for (int sample : std::as_const(*samples)) total += sample;
+                latency = qRound(static_cast<double>(total) / successful);
+                if (successful > 1) {
+                    int variation = 0;
+                    for (int index = 1; index < successful; ++index)
+                        variation += qAbs(samples->at(index) - samples->at(index - 1));
+                    jitter = qRound(static_cast<double>(variation) / (successful - 1));
+                }
+            }
+            const int loss = qRound((4 - successful) * 25.0);
+            const bool passed = successful >= 3 && latency >= 0 && latency < 120 && jitter < 40;
+            m_networkTest = {{QStringLiteral("status"), passed ? QStringLiteral("pass") : QStringLiteral("check")},
+                             {QStringLiteral("latencyMs"), latency},
+                             {QStringLiteral("jitterMs"), jitter},
+                             {QStringLiteral("packetLoss"), loss},
+                             {QStringLiteral("samples"), successful},
+                             {QStringLiteral("testedUrl"), target}};
+            emit networkTestChanged();
+            *next = {};
+            return;
+        }
+        ++*attempts;
+        measureTcpLatency(QUrl(target), [this, generation, samples, next](int latency) {
+            if (generation != m_testGeneration)
+                return;
+            if (latency >= 0)
+                samples->append(latency);
+            QTimer::singleShot(80, this, [next] { if (*next) (*next)(); });
+        });
+    };
+    (*next)();
+}
+
 void CatalogEngine::refreshSubscription() { loadSubscription(beginGeneration()); }
 void CatalogEngine::refreshLibrary() { loadLibrary(beginGeneration()); }
 void CatalogEngine::browseCatalog(const QString &searchQuery, const QString &sortId,
@@ -1009,7 +1150,10 @@ void CatalogEngine::loadServerInfo(quint64 generation, Completion completion)
             else {
                 m_vpcId = vpc;
                 m_regions = parsed.value(QStringLiteral("regions")).toList();
+                ++m_probeGeneration;
+                m_regionPings.clear();
                 emit serverInfoChanged();
+                emit regionProbeChanged();
             }
         }
         finishOperation(operation, error);

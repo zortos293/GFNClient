@@ -6,33 +6,82 @@ import OpenNOW
 FocusScope {
     id: dialog
     required property var game
-    signal launch(string serverId)
+    required property var regions
+    required property var regionPings
+    signal launch(string serverId, string serverUrl)
     signal cancelled()
     property int selectedIndex: 0
-    readonly property var servers: [
+    property real revealProgress: visible ? 1 : 0
+    readonly property var fallbackServers: [
         { id: "EU-NORTHWEST-01", region: "EUROPE", ping: 24, queue: 12, wait: "~4 min", badge: "AUTO" },
         { id: "EU-WEST-02", region: "EUROPE", ping: 18, queue: 41, wait: "~15 min", badge: "NEAREST" },
         { id: "EU-SOUTHEAST-03", region: "EUROPE", ping: 46, queue: 7, wait: "~3 min", badge: "" },
         { id: "NP-SJC6-01", region: "NORTH AMERICA", ping: 132, queue: 5, wait: "~2 min", badge: "" },
         { id: "NP-CHI-03", region: "NORTH AMERICA", ping: 151, queue: 23, wait: "~9 min", badge: "" }
     ]
+    readonly property var servers: regions && regions.length > 0
+                                           ? regions.map(function(region, index) {
+                                               var measured = regionPings[String(region.url)]
+                                               return {
+                                                   id: String(region.name || "Region " + (index + 1)),
+                                                   url: String(region.url || ""),
+                                                   region: "GEFORCE NOW",
+                                                   ping: measured === undefined ? -1 : Number(measured),
+                                                   queue: -1,
+                                                   wait: "Live",
+                                                   badge: ""
+                                               }
+                                           }).sort(function(a, b) {
+                                               if (a.ping < 0) return 1
+                                               if (b.ping < 0) return -1
+                                               return a.ping - b.ping
+                                           }).map(function(server, index) {
+                                               server.badge = index === 0 ? "BEST" : ""
+                                               return server
+                                           })
+                                           : fallbackServers
+    readonly property var recommendations: servers.slice(0, Math.min(2, servers.length)).map(function(server, index) {
+        return {
+            label: index === 0 ? "AUTO SELECTED" : "ALTERNATE REGION",
+            note: index === 0 ? "GeForce NOW recommended endpoint" : "Choose this region manually",
+            server: server.id,
+            ping: server.ping >= 0 ? server.ping + " ms" : (catalogEngine.probingRegions ? "Testing…" : "Unavailable"),
+            queue: server.queue >= 0 ? "Queue " + server.queue : "Queue live",
+            wait: server.wait
+        }
+    })
 
     function confirmLaunch() {
         var server = servers[selectedIndex]
-        appState.selectServer(server.id, server.region === "EUROPE" ? "EU-WEST" : "US", server.ping)
-        launch(server.id)
+        appState.selectServer(server.id, server.region, server.ping)
+        appState.setPreference("network.regionMode", server.url ? "manual" : "automatic")
+        appState.setPreference("network.serverName", server.id)
+        appState.setPreference("network.serverUrl", server.url || "")
+        launch(server.id, server.url || "")
     }
 
     Keys.onEscapePressed: cancelled()
     Component.onCompleted: serverList.forceActiveFocus()
+    onVisibleChanged: {
+        if (visible) {
+            selectedIndex = 0
+            if (regions && regions.length > 0)
+                catalogEngine.probeRegions()
+            Qt.callLater(function() { serverList.forceActiveFocus() })
+        }
+    }
+    opacity: revealProgress
+    Behavior on revealProgress { NumberAnimation { duration: Theme.motion; easing.type: Easing.OutCubic } }
 
     Rectangle { anchors.fill: parent; color: "#b8050907" }
 
     Rectangle {
         anchors.centerIn: parent
-        width: 860
-        height: 756
-        radius: 18
+        width: 980
+        height: 860
+        radius: 20
+        scale: dialog.revealProgress > 0 ? 1 : 0.96
+        Behavior on scale { NumberAnimation { duration: Theme.motion; easing.type: Easing.OutBack } }
         color: "#0d120f"
         border.color: "#273129"
 
@@ -60,20 +109,17 @@ FocusScope {
             }
 
             Item {
-                width: parent.width; height: 590
+                width: parent.width; height: 694
                 Text { x: 25; y: 18; text: "RECOMMENDED"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 9; font.weight: Font.Bold; font.letterSpacing: 1.4 }
                 Row {
                     x: 25; y: 42; spacing: 12
                     Repeater {
-                        model: [
-                            { label: "AUTO SELECTED", note: "Best ping + queue balance", server: "EU-NORTHWEST-01", ping: "24 ms", queue: "Queue 12", wait: "~4 min" },
-                            { label: "CLOSEST SERVER", note: "Fastest route from your network", server: "EU-WEST-02", ping: "18 ms", queue: "Queue 41", wait: "~15 min" }
-                        ]
+                        model: dialog.recommendations
                         Button {
                             id: recommendation
                             required property var modelData
                             required property int index
-                            width: 394; height: 144
+                            width: 448; height: 144
                             onClicked: { dialog.selectedIndex = index; serverList.currentIndex = index }
                             contentItem: Column {
                                 anchors.fill: parent; anchors.margins: 16; spacing: 9
@@ -93,15 +139,15 @@ FocusScope {
                 }
 
                 Row {
-                    x: 25; y: 214; width: 810
-                    Text { width: 600; text: "ALL SERVERS"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 9; font.weight: Font.Bold; font.letterSpacing: 1.4 }
+                    x: 25; y: 214; width: 930
+                    Text { width: 720; text: "ALL SERVERS"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 9; font.weight: Font.Bold; font.letterSpacing: 1.4 }
                     Text { width: 78; text: "PING"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 1.2 }
                     Text { width: 82; text: "QUEUE"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 1.2 }
                     Text { text: "WAIT"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 1.2 }
                 }
                 ListView {
                     id: serverList
-                    x: 25; y: 240; width: 810; height: 322
+                    x: 25; y: 240; width: 930; height: 426
                     model: dialog.servers
                     currentIndex: dialog.selectedIndex
                     spacing: 6
@@ -122,8 +168,8 @@ FocusScope {
                                 Text { text: modelData.id; color: Theme.inkSoft; font.family: Theme.monoFont.family; font.pixelSize: 11; font.weight: Font.Bold }
                                 Rectangle { visible: modelData.badge.length > 0; width: badge.implicitWidth + 12; height: 20; radius: 4; color: "#163322"; Text { id: badge; anchors.centerIn: parent; text: modelData.badge; color: Theme.accent; font.family: Theme.monoFont.family; font.pixelSize: 8; font.weight: Font.Bold } }
                                 Item { Layout.fillWidth: true }
-                                Text { Layout.preferredWidth: 74; text: modelData.ping + " ms"; color: modelData.ping < 50 ? Theme.accent : (modelData.ping < 145 ? Theme.warning : Theme.error); font.family: Theme.monoFont.family; font.pixelSize: 11; font.weight: Font.Bold }
-                                Text { Layout.preferredWidth: 70; text: "Q:" + modelData.queue; color: modelData.queue < 20 ? Theme.accent : Theme.warning; font.family: Theme.monoFont.family; font.pixelSize: 11; font.weight: Font.Bold }
+                                Text { Layout.preferredWidth: 74; text: modelData.ping >= 0 ? modelData.ping + " ms" : "—"; color: modelData.ping >= 50 ? Theme.warning : modelData.ping >= 0 ? Theme.accent : Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 11; font.weight: Font.Bold }
+                                Text { Layout.preferredWidth: 70; text: modelData.queue >= 0 ? "Q:" + modelData.queue : "Q:—"; color: modelData.queue >= 20 ? Theme.warning : modelData.queue >= 0 ? Theme.accent : Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 11; font.weight: Font.Bold }
                                 Text { text: modelData.wait; color: Theme.inkSoft; font.family: Theme.monoFont.family; font.pixelSize: 10 }
                             }
                             background: Rectangle { radius: 8; color: index === dialog.selectedIndex ? "#132219" : Theme.surfaceRaised; border.width: index === dialog.selectedIndex ? 1 : 1; border.color: index === dialog.selectedIndex ? Theme.accent : "#263029" }
@@ -137,7 +183,7 @@ FocusScope {
                 Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 1; color: Theme.divider }
                 Column {
                     anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; anchors.leftMargin: 25; spacing: 4
-                    Text { text: "Live queue data refreshes every 2 minutes"; color: Theme.inkMuted; font.family: Theme.bodyFont.family; font.pixelSize: 10 }
+                    Text { text: catalogEngine.probingRegions ? "Measuring GFN routes…" : "Route latency is measured live · queue is disclosed at launch"; color: Theme.inkMuted; font.family: Theme.bodyFont.family; font.pixelSize: 10 }
                     Text { text: "POWERED BY PRINTEDWASTE"; color: "#3f4842"; font.family: Theme.monoFont.family; font.pixelSize: 8; font.letterSpacing: 1.1 }
                 }
                 Row {

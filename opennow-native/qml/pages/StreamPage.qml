@@ -60,6 +60,9 @@ FocusScope {
     property string toastIcon: "✓"
     property string toastAction: ""
     property bool toastVisible: false
+    property bool controllerStatusVisible: false
+    property bool controllerStatusConnected: controllerInput.connected
+    property string controllerStatusName: controllerInput.connected ? controllerInput.controllerName : "DualSense"
     property string exportStatus: ""
 
     readonly property bool liveSurfaceVisible: lifecycle === "live"
@@ -107,15 +110,12 @@ FocusScope {
     }
 
     function qualityLabel() {
-        if (qualityId === "4k60")
-            return "3840x2160@60"
-        if (qualityId === "1440p120")
-            return "2560x1440@120"
-        if (qualityId === "1080p120")
-            return "1920x1080@120"
-        if (qualityId === "1080p60")
-            return "1920x1080@60"
-        return "1280x720@60"
+        var profile = StreamFormat.resolveProfile(
+                    catalogEngine.subscription.entitledResolutions || [],
+                    String(appState.preference("streaming.resolution", "1440p (QHD)")),
+                    String(appState.preference("streaming.aspect", "16:9 Standard")),
+                    Number(appState.preference("streaming.frameRate", "120")))
+        return profile.width + "x" + profile.height + "@" + profile.fps
     }
 
     function showToast(title, detail, tone, icon, action) {
@@ -301,6 +301,12 @@ FocusScope {
     }
 
     Timer {
+        id: controllerStatusTimer
+        interval: 3600
+        onTriggered: page.controllerStatusVisible = false
+    }
+
+    Timer {
         id: bitrateApplyTimer
         interval: 350
         onTriggered: page.applyBitrateCap(page.bitrateCapMbps)
@@ -418,11 +424,11 @@ FocusScope {
         function onConnectedChanged() {
             if (!page.visible)
                 return
-            if (controllerInput.connected) {
-                page.showToast("Controller connected", controllerInput.controllerName + " · Player 1", "success", "⌁", "")
-            } else if (page.previousControllerConnected) {
-                page.showToast("Controller disconnected", "Input paused — reconnect a controller to continue", "warning", "!", "")
-            }
+            if (controllerInput.connected)
+                page.controllerStatusName = controllerInput.controllerName
+            page.controllerStatusConnected = controllerInput.connected
+            page.controllerStatusVisible = true
+            controllerStatusTimer.restart()
             page.previousControllerConnected = controllerInput.connected
         }
     }
@@ -443,6 +449,7 @@ FocusScope {
     GameArtwork {
         anchors.fill: parent
         variant: Number(page.game.variant || 0)
+        game: page.game
         opacity: page.liveSurfaceVisible ? 0.14 : 0.08
     }
 
@@ -955,6 +962,23 @@ FocusScope {
                 }
             }
         }
+    }
+
+    ControllerStatusBanner {
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: 28
+        shown: page.controllerStatusVisible
+               && page.lifecycle !== "report"
+               && page.lifecycle !== "end-confirm"
+               && page.lifecycle !== "recovery"
+        connected: page.controllerStatusConnected
+        controllerName: page.controllerStatusName
+        batteryPercent: controllerInput.batteryPercent
+        batteryStatus: controllerInput.batteryStatus
+        batteryCharging: controllerInput.batteryCharging
+        z: 41
+        onDismissed: page.controllerStatusVisible = false
     }
 
     Rectangle {

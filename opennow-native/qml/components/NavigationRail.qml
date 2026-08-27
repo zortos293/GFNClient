@@ -69,13 +69,12 @@ Rectangle {
         width: 44
         height: 44
         onClicked: rail.profileRequested()
-        contentItem: Text {
-            anchors.centerIn: parent
-            text: appState.profileInitial
-            color: Theme.ink
-            font.family: Theme.bodyFont.family
-            font.pixelSize: 14
-            font.weight: Font.Bold
+        contentItem: Item {
+            DitherAvatar {
+                anchors.fill: parent
+                anchors.margins: 6
+                name: authEngine.accountName.length > 0 ? authEngine.accountName : appState.profileName
+            }
         }
         background: Rectangle {
             radius: 22

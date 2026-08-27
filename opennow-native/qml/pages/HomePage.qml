@@ -10,6 +10,69 @@ FocusScope {
     signal startGame(var game)
     signal chooseServer()
     readonly property var primaryGame: games.length > 0 ? games[0] : ({})
+    property int settingsRevision: 0
+    readonly property var activeRoute: {
+        settingsRevision
+        var regions = catalogEngine.regions || []
+        var pings = catalogEngine.regionPings || ({})
+        var mode = String(appState.preference("network.regionMode", "automatic"))
+        var requestedUrl = String(appState.preference("network.serverUrl", ""))
+        var requestedName = String(appState.preference("network.serverName", ""))
+        if (mode === "manual") {
+            for (var manualIndex = 0; manualIndex < regions.length; ++manualIndex) {
+                if (String(regions[manualIndex].url) === requestedUrl || String(regions[manualIndex].name) === requestedName)
+                    return regions[manualIndex]
+            }
+        }
+        var best = null
+        var bestPing = Number.MAX_VALUE
+        for (var i = 0; i < regions.length; ++i) {
+            var latency = Number(pings[String(regions[i].url)])
+            if (isFinite(latency) && latency >= 0 && latency < bestPing) {
+                bestPing = latency
+                best = regions[i]
+            }
+        }
+        return best
+    }
+    readonly property int activeRoutePing: activeRoute && catalogEngine.regionPings[String(activeRoute.url)] !== undefined
+                                           ? Number(catalogEngine.regionPings[String(activeRoute.url)]) : -1
+
+    function streamFormatText() {
+        settingsRevision
+        var resolution = String(appState.preference("streaming.resolution", "1440p (QHD)"))
+        var aspect = String(appState.preference("streaming.aspect", "16:9 Standard"))
+        var profile = StreamFormat.resolveProfile(
+                    catalogEngine.subscription.entitledResolutions || [], resolution, aspect,
+                    Number(appState.preference("streaming.frameRate", "120")))
+        return profile.width + "×" + profile.height + " · " + profile.fps + " FPS"
+    }
+
+    Connections {
+        target: appState
+        function onPreferenceChanged(key, value) {
+            if (key === "network.regionMode" || key === "network.serverUrl" || key === "network.serverName"
+                    || key === "streaming.resolution" || key === "streaming.aspect"
+                    || key === "streaming.frameRate")
+                page.settingsRevision += 1
+        }
+        function onPreferencesReset() { page.settingsRevision += 1 }
+    }
+
+    Connections {
+        target: catalogEngine
+        function onSubscriptionChanged() { page.settingsRevision += 1 }
+        function onServerInfoChanged() {
+            if (page.visible && catalogEngine.regions.length > 0 && !catalogEngine.probingRegions)
+                catalogEngine.probeRegions()
+        }
+    }
+
+    onVisibleChanged: {
+        if (visible && catalogEngine.regions.length > 0
+                && Object.keys(catalogEngine.regionPings).length === 0 && !catalogEngine.probingRegions)
+            catalogEngine.probeRegions()
+    }
 
     function browseRows(delta) {
         if (delta > 0)
@@ -46,7 +109,7 @@ FocusScope {
         anchors.top: parent.top
         anchors.rightMargin: Theme.pageMargin
         anchors.topMargin: 46
-        width: 374
+        width: 500
         height: 58
         radius: 16
         color: "#0d120f"
@@ -54,12 +117,15 @@ FocusScope {
         border.color: "#202a24"
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 24
-            anchors.rightMargin: 24
+            anchors.leftMargin: 18
+            anchors.rightMargin: 18
+            spacing: 12
             Rectangle { width: 8; height: 8; radius: 4; color: Theme.accent }
-            Text { text: "REGION AUTO"; color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold }
+            Text { Layout.preferredWidth: 142; text: page.activeRoute ? String(page.activeRoute.name).toUpperCase() : (catalogEngine.probingRegions ? "MEASURING" : "REGION AUTO"); color: Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.Bold; elide: Text.ElideRight }
             Rectangle { width: 1; height: 24; color: Theme.divider }
-            Text { text: catalogEngine.subscription.membershipName || "GeForce NOW"; color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 12 }
+            Text { Layout.fillWidth: true; text: page.streamFormatText(); color: Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; elide: Text.ElideRight }
+            Rectangle { width: 1; height: 24; color: Theme.divider }
+            Text { Layout.preferredWidth: 50; text: page.activeRoutePing >= 0 ? page.activeRoutePing + " ms" : "— ms"; color: page.activeRoutePing >= 0 ? Theme.accent : Theme.inkMuted; font.family: Theme.monoFont.family; font.pixelSize: 12; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignRight }
         }
         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: page.chooseServer() }
     }
@@ -77,12 +143,14 @@ FocusScope {
         clip: true
         visible: page.games.length > 0
 
-        Rectangle {
+        GameArtwork {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
             height: 190
-            color: Theme.surfaceBright
+            radius: 24
+            game: page.primaryGame
+            source: page.primaryGame.heroImageUrl || page.primaryGame.imageUrl || ""
         }
 
         Column {
@@ -129,7 +197,6 @@ FocusScope {
                 primary: true
                 focus: page.visible
                 onClicked: page.startGame(page.primaryGame)
-                Keys.onReturnPressed: page.startGame(page.primaryGame)
                 KeyNavigation.right: detailsButton
                 KeyNavigation.down: libraryRow
             }
@@ -210,10 +277,11 @@ FocusScope {
                 width: 320
                 height: parent.height
                 title: modelData.title
-                subtitle: modelData.subtitle
-                badge: modelData.badge
-                variant: modelData.variant
+                subtitle: modelData.subtitle || ((modelData.availableStores || []).join(" · "))
+                badge: modelData.badge || ""
+                variant: modelData.variant === undefined ? index % 6 : Number(modelData.variant)
                 imageSource: modelData.imageUrl || ""
+                game: modelData
                 selected: index === libraryRow.currentIndex
                 onClicked: page.openGame(modelData)
             }

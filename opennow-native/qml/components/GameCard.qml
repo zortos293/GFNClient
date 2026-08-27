@@ -9,11 +9,15 @@ FocusCard {
     property string badge: ""
     property int variant: 0
     property url imageSource: ""
+    property var game: null
     property real progress: 0
     property bool selected: false
 
     implicitWidth: 260
     implicitHeight: 248
+    scale: down ? 0.98 : 1
+    z: hovered || activeFocus || selected ? 2 : 0
+    Behavior on scale { NumberAnimation { duration: Theme.motionFast; easing.type: Easing.OutCubic } }
 
     background: Rectangle { color: "transparent" }
 
@@ -29,6 +33,7 @@ FocusCard {
             variant: card.variant
             kicker: card.badge
             source: card.imageSource
+            game: card.game
         }
 
         Rectangle {

@@ -7,16 +7,21 @@ ApplicationWindow {
     id: window
     width: 1920
     height: 1080
-    minimumWidth: 1000
-    minimumHeight: 650
+    minimumWidth: 640
+    minimumHeight: 360
     visible: true
     visibility: Window.FullScreen
     color: Theme.canvas
     title: "OpenNOW"
 
+    readonly property int designWidth: 1920
+    readonly property int designHeight: 1080
+    readonly property real presentationScale: Math.min(width / designWidth, height / designHeight)
+
     property int currentPage: 0
     property var selectedGame: games.length > 0 ? games[0] : ({})
     property string pendingQuality: "720p60"
+    property string pendingStreamingBaseUrl: ""
     property bool showingDetails: false
     property bool showingStream: false
     property bool showingProfilePicker: false
@@ -26,6 +31,9 @@ ApplicationWindow {
     property string toastMessage: ""
     property string toastDetail: ""
     property string toastTone: "success"
+    property bool controllerStatusVisible: false
+    property bool controllerStatusConnected: controllerInput.connected
+    property string controllerStatusName: controllerInput.connected ? controllerInput.controllerName : "DualSense"
     readonly property bool demoMode: Qt.application.arguments.indexOf("--demo-signed-in") >= 0
     property bool signedIn: demoMode || authEngine.signedIn
     readonly property var demoGames: [
@@ -75,6 +83,20 @@ ApplicationWindow {
         return "720p60"
     }
 
+    function configuredResolution() {
+        return StreamFormat.dimensions(
+                    String(appState.preference("streaming.resolution", "1440p (QHD)")),
+                    String(appState.preference("streaming.aspect", "16:9 Standard")),
+                    catalogEngine.subscription.entitledResolutions || [],
+                    Number(appState.preference("streaming.frameRate", "120")))
+    }
+
+    function configuredStreamingBaseUrl() {
+        if (String(appState.preference("network.regionMode", "automatic")) !== "manual")
+            return ""
+        return String(appState.preference("network.serverUrl", ""))
+    }
+
     function requestLaunch(game, quality) {
         if (!game || !game.launchAppId && !demoMode) {
             showToast("This game cannot be launched", "GeForce NOW did not return a launchable app variant", "error")
@@ -83,22 +105,27 @@ ApplicationWindow {
         selectedGame = game
         var requestedQuality = quality || configuredQuality()
         pendingQuality = requestedQuality
+        pendingStreamingBaseUrl = configuredStreamingBaseUrl()
         showingDetails = false
         if (demoMode && appState.preference("account.console.profilePicker", true)) {
             launchAfterProfile = true
             showingProfilePicker = true
-        } else if (demoMode) {
-            showingServerSelector = true
         } else {
-            confirmLaunch()
+            showingServerSelector = true
         }
     }
 
     function launchSettings() {
         var quality = pendingQuality
-        var width = quality === "4k60" ? 3840 : (quality === "1440p120" ? 2560 : (quality.indexOf("1080p") === 0 ? 1920 : 1280))
-        var height = quality === "4k60" ? 2160 : (quality === "1440p120" ? 1440 : (quality.indexOf("1080p") === 0 ? 1080 : 720))
-        var fps = quality.indexOf("120") >= 0 ? 120 : 60
+        var requestedFps = Math.max(30, Math.min(240, Number(appState.preference("streaming.frameRate", "120"))))
+        var profile = StreamFormat.resolveProfile(
+                    catalogEngine.subscription.entitledResolutions || [],
+                    String(appState.preference("streaming.resolution", "1440p (QHD)")),
+                    String(appState.preference("streaming.aspect", "16:9 Standard")),
+                    requestedFps)
+        var width = profile.width
+        var height = profile.height
+        var fps = profile.fps
         var codec = String(appState.preference("streaming.codec", "H264")).toUpperCase()
         if (codec === "AUTO")
             codec = "H264"
@@ -127,7 +154,8 @@ ApplicationWindow {
             startStream(pendingQuality)
             return
         }
-        sessionEngine.launchGame("", String(selectedGame.launchAppId || ""),
+        sessionEngine.launchGame("", pendingStreamingBaseUrl,
+                                 String(selectedGame.launchAppId || ""),
                                  String(selectedGame.title || ""), launchSettings(),
                                  Boolean(selectedGame.isInLibrary), false, false)
     }
@@ -177,7 +205,8 @@ ApplicationWindow {
 
     Component.onCompleted: {
         var appArgs = Qt.application.arguments
-        if (!Boolean(appState.preference("video.fullscreenOnLaunch", true)))
+        if (!Boolean(appState.preference("video.fullscreenOnLaunch", true))
+                || appArgs.indexOf("--windowed") >= 0)
             visibility = Window.Windowed
         if (appArgs.indexOf("--demo-profile-picker") >= 0) {
             signedIn = true
@@ -188,6 +217,13 @@ ApplicationWindow {
             showingServerSelector = true
         }
         for (var i = 0; i < appArgs.length; ++i) {
+            if (appArgs[i].indexOf("--size=") === 0) {
+                var requestedSize = appArgs[i].substring(7).split("x")
+                if (requestedSize.length === 2) {
+                    width = Math.max(minimumWidth, Number(requestedSize[0]))
+                    height = Math.max(minimumHeight, Number(requestedSize[1]))
+                }
+            }
             if (appArgs[i].indexOf("--demo-page=") !== 0)
                 continue
             signedIn = true
@@ -214,9 +250,12 @@ ApplicationWindow {
         target: controllerInput
         function onConnectedChanged() {
             if (controllerInput.connected)
-                window.showToast(controllerInput.controllerName + " connected", "Player 1 · Controller mode", "success")
-            else
-                window.showToast("Controller disconnected", "Keyboard controls remain active", "warning")
+                window.controllerStatusName = controllerInput.controllerName
+            window.controllerStatusConnected = controllerInput.connected
+            if (!window.showingStream) {
+                window.controllerStatusVisible = true
+                controllerStatusTimer.restart()
+            }
         }
         function onSectionRequested(delta) {
             if (window.showingProfilePicker || window.showingServerSelector || window.showingDetails || window.showingStream)
@@ -254,6 +293,7 @@ ApplicationWindow {
         }
     }
     Timer { id: toastTimer; interval: 4200; onTriggered: window.toastMessage = "" }
+    Timer { id: controllerStatusTimer; interval: 3600; onTriggered: window.controllerStatusVisible = false }
     Connections {
         target: authEngine
         function onAuthorized() {
@@ -288,6 +328,14 @@ ApplicationWindow {
     Rectangle {
         anchors.fill: parent
         color: Theme.canvas
+
+        Item {
+            id: designSurface
+            width: window.designWidth
+            height: window.designHeight
+            anchors.centerIn: parent
+            scale: window.presentationScale
+            transformOrigin: Item.Center
 
         SignInPage {
             id: signInPage
@@ -331,12 +379,14 @@ ApplicationWindow {
                 id: homePage
                 anchors.fill: parent
                 visible: window.currentPage === 0 && !window.showingDetails && !window.showingStream
+                opacity: visible ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: window.reducedMotion ? 0 : Theme.motion; easing.type: Easing.OutCubic } }
                 focus: visible
                 games: window.games
                 onOpenGame: function(game) { window.openGame(game) }
                 onStartGame: function(game) { window.requestLaunch(game, window.configuredQuality()) }
                 onChooseServer: {
-                    if (window.demoMode && window.games.length > 0) {
+                    if (window.games.length > 0) {
                         window.selectedGame = window.games[0]
                         window.showingServerSelector = true
                     }
@@ -346,8 +396,10 @@ ApplicationWindow {
                 id: libraryPage
                 anchors.fill: parent
                 visible: window.currentPage === 1 && !window.showingDetails && !window.showingStream
+                opacity: visible ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: window.reducedMotion ? 0 : Theme.motion; easing.type: Easing.OutCubic } }
                 focus: visible
-                games: window.searchGames
+                games: window.games
                 onOpenGame: function(game) { window.openGame(game) }
                 onStartGame: function(game) { window.requestLaunch(game, window.configuredQuality()) }
             }
@@ -356,19 +408,23 @@ ApplicationWindow {
                 anchors.fill: parent
                 visible: window.currentPage === 2 && !window.showingDetails && !window.showingStream
                 focus: visible
-                games: window.games
+                games: window.searchGames
                 onOpenGame: function(game) { window.openGame(game) }
             }
             SessionsPage {
                 id: sessionsPage
                 anchors.fill: parent
                 visible: window.currentPage === 3 && !window.showingDetails && !window.showingStream
+                opacity: visible ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: window.reducedMotion ? 0 : Theme.motion; easing.type: Easing.OutCubic } }
                 focus: visible
             }
             SettingsPage {
                 id: settingsPage
                 anchors.fill: parent
                 visible: window.currentPage === 4 && !window.showingDetails && !window.showingStream
+                opacity: visible ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: window.reducedMotion ? 0 : Theme.motion; easing.type: Easing.OutCubic } }
                 focus: visible
                 reducedMotion: window.reducedMotion
                 onReducedMotionChangedByUser: function(value) { window.reducedMotion = value }
@@ -434,7 +490,10 @@ ApplicationWindow {
             focus: visible
             z: 90
             game: window.selectedGame
-            onLaunch: function(serverId) {
+            regions: catalogEngine.regions
+            regionPings: catalogEngine.regionPings
+            onLaunch: function(serverId, serverUrl) {
+                window.pendingStreamingBaseUrl = serverUrl
                 window.confirmLaunch()
             }
             onCancelled: window.showingServerSelector = false
@@ -449,6 +508,21 @@ ApplicationWindow {
             tone: window.toastTone
             z: 120
             onDismissed: window.toastMessage = ""
+        }
+
+        ControllerStatusBanner {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.top
+            anchors.topMargin: 28
+            shown: window.controllerStatusVisible && !window.showingStream
+            connected: window.controllerStatusConnected
+            controllerName: window.controllerStatusName
+            batteryPercent: controllerInput.batteryPercent
+            batteryStatus: controllerInput.batteryStatus
+            batteryCharging: controllerInput.batteryCharging
+            z: 121
+            onDismissed: window.controllerStatusVisible = false
+        }
         }
         }
     }

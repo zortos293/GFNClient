@@ -1,6 +1,7 @@
 #include "controllerinput.h"
 
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -107,21 +108,27 @@ void ControllerInput::refreshController()
         SDL_CloseGamepad(gamepad);
     }
     m_gamepads.clear();
+    m_primaryGamepadId = 0;
     int count = 0;
     SDL_JoystickID *gamepads = SDL_GetGamepads(&count);
     for (int index = 0; index < count; ++index) {
         if (auto *gamepad = SDL_OpenGamepad(gamepads[index])) {
             m_gamepads.insert(gamepads[index], gamepad);
+            if (m_primaryGamepadId == 0) {
+                m_primaryGamepadId = gamepads[index];
+            }
         }
     }
     count = m_gamepads.size();
     const bool connected = count > 0;
     QString name = QStringLiteral("Keyboard");
     if (connected) {
-        const char *rawName = SDL_GetGamepadNameForID(gamepads[0]);
+        const char *rawName = SDL_GetGamepadNameForID(m_primaryGamepadId);
         name = rawName ? QString::fromUtf8(rawName) : QStringLiteral("Gamepad");
     }
     SDL_free(gamepads);
+
+    refreshBattery();
 
     if (connected != m_connected || name != m_controllerName || count != m_controllerCount) {
         m_connected = connected;
@@ -129,6 +136,85 @@ void ControllerInput::refreshController()
         m_controllerName = name;
         emit connectedChanged();
     }
+}
+
+void ControllerInput::refreshBattery()
+{
+    int percent = -1;
+    SDL_PowerState powerState = SDL_POWERSTATE_UNKNOWN;
+    SDL_JoystickConnectionState connectionState = SDL_JOYSTICK_CONNECTION_UNKNOWN;
+    if (m_primaryGamepadId != 0) {
+        if (auto *gamepad = m_gamepads.value(m_primaryGamepadId, nullptr)) {
+            powerState = SDL_GetGamepadPowerInfo(gamepad, &percent);
+            connectionState = SDL_GetGamepadConnectionState(gamepad);
+#ifdef Q_OS_LINUX
+            if (connectionState == SDL_JOYSTICK_CONNECTION_UNKNOWN) {
+                const char *rawPath = SDL_GetGamepadPath(gamepad);
+                const QString eventName = rawPath
+                                              ? QFileInfo(QString::fromUtf8(rawPath)).fileName()
+                                              : QString();
+                const QString devicePath = eventName.isEmpty()
+                                               ? QString()
+                                               : QFileInfo(QStringLiteral("/sys/class/input/")
+                                                           + eventName
+                                                           + QStringLiteral("/device"))
+                                                     .canonicalFilePath();
+                if (devicePath.contains(QStringLiteral("/usb"), Qt::CaseInsensitive)) {
+                    connectionState = SDL_JOYSTICK_CONNECTION_WIRED;
+                } else if (devicePath.contains(QStringLiteral("/bluetooth"), Qt::CaseInsensitive)) {
+                    connectionState = SDL_JOYSTICK_CONNECTION_WIRELESS;
+                }
+            }
+#endif
+        }
+    }
+
+    percent = percent >= 0 ? std::clamp(percent, 0, 100) : -1;
+    const bool available = percent >= 0;
+    const bool charging = powerState == SDL_POWERSTATE_CHARGING;
+    QString status;
+    switch (powerState) {
+    case SDL_POWERSTATE_ON_BATTERY:
+        status = percent >= 0 && percent <= 20 ? QStringLiteral("Low battery")
+                                               : QStringLiteral("Wireless");
+        break;
+    case SDL_POWERSTATE_CHARGING:
+        status = QStringLiteral("Charging");
+        break;
+    case SDL_POWERSTATE_CHARGED:
+        status = QStringLiteral("Charged");
+        break;
+    case SDL_POWERSTATE_NO_BATTERY:
+        status = QStringLiteral("Wired");
+        break;
+    case SDL_POWERSTATE_ERROR:
+        status = connectionState == SDL_JOYSTICK_CONNECTION_WIRED
+                     ? QStringLiteral("Wired")
+                     : QStringLiteral("Unavailable");
+        break;
+    case SDL_POWERSTATE_UNKNOWN:
+    default:
+        if (available) {
+            status = QStringLiteral("Battery");
+        } else if (connectionState == SDL_JOYSTICK_CONNECTION_WIRED) {
+            status = QStringLiteral("Wired");
+        } else if (connectionState == SDL_JOYSTICK_CONNECTION_WIRELESS) {
+            status = QStringLiteral("Wireless");
+        } else {
+            status = QStringLiteral("Unavailable");
+        }
+        break;
+    }
+
+    if (percent == m_batteryPercent && available == m_batteryAvailable
+        && charging == m_batteryCharging && status == m_batteryStatus) {
+        return;
+    }
+    m_batteryPercent = percent;
+    m_batteryAvailable = available;
+    m_batteryCharging = charging;
+    m_batteryStatus = status;
+    emit batteryChanged();
 }
 
 void ControllerInput::setStreaming(bool streaming, int protocolVersion)
@@ -261,6 +347,20 @@ void ControllerInput::sendMouseWheelEvent(QWheelEvent *event)
 
 bool ControllerInput::eventFilter(QObject *watched, QEvent *event)
 {
+    // SDL navigation events are posted as non-spontaneous Qt key events. Only
+    // spontaneous desktop input should switch the shell back to mouse/keyboard.
+    if (event->spontaneous()) {
+        switch (event->type()) {
+        case QEvent::KeyPress:
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseMove:
+        case QEvent::Wheel:
+            setControllerActive(false);
+            break;
+        default:
+            break;
+        }
+    }
     if (m_streaming && m_inputClock.isValid()) {
         switch (event->type()) {
         case QEvent::KeyPress: sendKeyboardEvent(static_cast<QKeyEvent *>(event), true); break;
@@ -273,6 +373,14 @@ bool ControllerInput::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QObject::eventFilter(watched, event);
+}
+
+void ControllerInput::setControllerActive(bool active)
+{
+    if (m_controllerActive == active)
+        return;
+    m_controllerActive = active;
+    emit inputModeChanged();
 }
 
 void ControllerInput::sendGamepadStates()
@@ -356,6 +464,10 @@ void ControllerInput::pollEvents()
             refreshController();
             continue;
         }
+        if (event.type == SDL_EVENT_JOYSTICK_BATTERY_UPDATED) {
+            refreshBattery();
+            continue;
+        }
         if (m_streaming) {
             continue;
         }
@@ -364,6 +476,7 @@ void ControllerInput::pollEvents()
             if (event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX) {
                 const int direction = event.gaxis.value > Deadzone ? 1 : (event.gaxis.value < -Deadzone ? -1 : 0);
                 if (direction != 0 && direction != m_axisXDirection) {
+                    setControllerActive(true);
                     postKey(direction > 0 ? Qt::Key_Right : Qt::Key_Left, true);
                     postKey(direction > 0 ? Qt::Key_Right : Qt::Key_Left, false);
                 }
@@ -371,6 +484,7 @@ void ControllerInput::pollEvents()
             } else if (event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) {
                 const int direction = event.gaxis.value > Deadzone ? 1 : (event.gaxis.value < -Deadzone ? -1 : 0);
                 if (direction != 0 && direction != m_axisYDirection) {
+                    setControllerActive(true);
                     postKey(direction > 0 ? Qt::Key_Down : Qt::Key_Up, true);
                     postKey(direction > 0 ? Qt::Key_Down : Qt::Key_Up, false);
                 }
@@ -384,6 +498,8 @@ void ControllerInput::pollEvents()
         }
 
         const bool pressed = event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        if (pressed)
+            setControllerActive(true);
         switch (event.gbutton.button) {
         case SDL_GAMEPAD_BUTTON_DPAD_UP:
             postKey(Qt::Key_Up, pressed);

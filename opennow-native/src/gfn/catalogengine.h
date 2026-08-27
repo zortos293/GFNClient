@@ -41,6 +41,9 @@ class CatalogEngine final : public QObject
     Q_PROPERTY(QString errorString READ errorString NOTIFY errorStringChanged)
     Q_PROPERTY(QString vpcId READ vpcId NOTIFY serverInfoChanged)
     Q_PROPERTY(QVariantList regions READ regions NOTIFY serverInfoChanged)
+    Q_PROPERTY(bool probingRegions READ probingRegions NOTIFY regionProbeChanged)
+    Q_PROPERTY(QVariantMap regionPings READ regionPings NOTIFY regionProbeChanged)
+    Q_PROPERTY(QVariantMap networkTest READ networkTest NOTIFY networkTestChanged)
     Q_PROPERTY(QVariantMap subscription READ subscription NOTIFY subscriptionChanged)
     Q_PROPERTY(QVariantList library READ library NOTIFY libraryChanged)
     Q_PROPERTY(QVariantMap catalog READ catalog NOTIFY catalogChanged)
@@ -58,6 +61,9 @@ public:
     QString errorString() const;
     QString vpcId() const;
     QVariantList regions() const;
+    bool probingRegions() const { return m_probingRegions; }
+    QVariantMap regionPings() const { return m_regionPings; }
+    QVariantMap networkTest() const { return m_networkTest; }
     QVariantMap subscription() const;
     QVariantList library() const;
     QVariantMap catalog() const;
@@ -73,6 +79,8 @@ public:
 
     Q_INVOKABLE void refreshAll();
     Q_INVOKABLE void refreshServerInfo();
+    Q_INVOKABLE void probeRegions();
+    Q_INVOKABLE void testConnection(const QString &regionUrl = QString());
     Q_INVOKABLE void refreshSubscription();
     Q_INVOKABLE void refreshLibrary();
     Q_INVOKABLE void browseCatalog(const QString &searchQuery = QString(),
@@ -87,6 +95,8 @@ signals:
     void loadingChanged();
     void errorStringChanged();
     void serverInfoChanged();
+    void regionProbeChanged();
+    void networkTestChanged();
     void subscriptionChanged();
     void libraryChanged();
     void catalogChanged();
@@ -148,6 +158,7 @@ private:
     QString graphQlError(const QJsonObject &payload, const QString &context) const;
     QVariantList gamesFromApps(const QJsonArray &apps) const;
     QVariantList dedupeGames(const QVariantList &games) const;
+    void measureTcpLatency(const QUrl &url, const std::function<void(int)> &completion);
 
     QNetworkAccessManager *m_network = nullptr;
     quint64 m_generation = 0;
@@ -163,6 +174,11 @@ private:
     QString m_errorString;
     QString m_vpcId;
     QVariantList m_regions;
+    bool m_probingRegions = false;
+    QVariantMap m_regionPings;
+    QVariantMap m_networkTest;
+    quint64 m_probeGeneration = 0;
+    quint64 m_testGeneration = 0;
     QVariantMap m_subscription;
     QVariantList m_library;
     QVariantMap m_catalog;

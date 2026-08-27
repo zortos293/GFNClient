@@ -193,11 +193,11 @@ FocusScope {
         x: Theme.pageMargin
         y: 168
         width: parent.width - Theme.pageMargin * 2
-        height: parent.height - y - 112
+        height: Math.max(cellHeight, Math.floor((parent.height - y - 112) / cellHeight) * cellHeight)
         clip: true
         model: page.visibleGames
         cellWidth: width / 5
-        cellHeight: 236
+        cellHeight: 250
         keyNavigationWraps: false
         focus: page.visible && !page.sortOpen
         onCountChanged: {
@@ -230,13 +230,14 @@ FocusScope {
             GameCard {
                 anchors.fill: parent
                 anchors.rightMargin: index % 5 === 4 ? 0 : 20
-                anchors.bottomMargin: 20
+                anchors.bottomMargin: 12
                 title: modelData.title
                 subtitle: modelData.subtitle || ((modelData.availableStores || []).join(" · "))
                 badge: modelData.badge || ""
-                variant: modelData.variant
+                variant: modelData.variant === undefined ? index % 6 : Number(modelData.variant)
                 imageSource: modelData.imageUrl || ""
-                progress: modelData.progress
+                game: modelData
+                progress: modelData.progress === undefined ? 0 : Number(modelData.progress)
                 selected: index === grid.currentIndex
                 onClicked: {
                     grid.currentIndex = index

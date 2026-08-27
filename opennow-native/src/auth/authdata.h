@@ -12,9 +12,11 @@
 namespace OpenNow::Auth {
 
 inline constexpr auto SteamDeckClientId = "q61ddeJrVt7O90Nl-P-N7I36yctih4Ml6FyXLrb6j-U";
+inline constexpr auto BrowserClientId = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ";
 inline constexpr auto DefaultIdpId = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
 inline constexpr auto Scopes = "openid consent email tk_client age";
 inline constexpr auto ServiceUrlsEndpoint = "https://pcs.geforcenow.com/v1/serviceUrls";
+inline constexpr auto AuthorizeEndpoint = "https://login.nvidia.com/authorize";
 inline constexpr auto DeviceAuthorizeEndpoint = "https://login.nvidia.com/device/authorize";
 inline constexpr auto TokenEndpoint = "https://login.nvidia.com/token";
 inline constexpr auto ClientTokenEndpoint = "https://login.nvidia.com/client_token";
@@ -191,7 +193,9 @@ inline std::optional<Tokens> tokensFromPayload(const QJsonObject &payload, const
         }
     }
     tokens.expiresAt = expiresAtFrom(payload, 86400, now);
-    tokens.authClientId = QString::fromLatin1(SteamDeckClientId);
+    if (tokens.authClientId.isEmpty()) {
+        tokens.authClientId = QString::fromLatin1(SteamDeckClientId);
+    }
     return tokens;
 }
 
@@ -228,11 +232,12 @@ inline QJsonObject tokensToJson(const Tokens &tokens)
 
 inline Tokens tokensFromJson(const QJsonObject &object)
 {
+    const auto storedClientId = object.value(QStringLiteral("authClientId")).toString();
     return {object.value(QStringLiteral("accessToken")).toString(),
             object.value(QStringLiteral("refreshToken")).toString(),
             object.value(QStringLiteral("idToken")).toString(),
             object.value(QStringLiteral("clientToken")).toString(),
-            QString::fromLatin1(SteamDeckClientId),
+            storedClientId.isEmpty() ? QString::fromLatin1(SteamDeckClientId) : storedClientId,
             static_cast<qint64>(object.value(QStringLiteral("expiresAt")).toDouble()),
             static_cast<qint64>(object.value(QStringLiteral("clientTokenExpiresAt")).toDouble()),
             static_cast<qint64>(object.value(QStringLiteral("clientTokenLifetimeMs")).toDouble())};

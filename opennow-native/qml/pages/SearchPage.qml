@@ -8,7 +8,8 @@ FocusScope {
     required property var games
     signal openGame(var game)
     property string query: ""
-    property bool keyboardVisible: true
+    property bool keyboardVisible: false
+    property real revealProgress: visible ? 1 : 0
     property int selectedRow: 3
     property int selectedColumn: 2
     readonly property var keyRows: [
@@ -72,11 +73,32 @@ FocusScope {
         }
     }
 
+    function openControllerKeyboard() {
+        if (!controllerInput.controllerActive)
+            return
+        page.keyboardVisible = true
+        Qt.callLater(function() { keyboard.forceActiveFocus() })
+    }
+
     onVisibleChanged: {
         if (visible) {
             catalogEngine.browseCatalog(page.query)
-            keyboardVisible = true
-            Qt.callLater(function() { keyboard.forceActiveFocus() })
+            keyboardVisible = false
+            Qt.callLater(function() { searchInput.forceActiveFocus() })
+        }
+    }
+
+    opacity: revealProgress
+    transform: Translate { y: (1 - page.revealProgress) * 12 }
+    Behavior on revealProgress { NumberAnimation { duration: Theme.motion; easing.type: Easing.OutCubic } }
+
+    Connections {
+        target: controllerInput
+        function onInputModeChanged() {
+            if (!controllerInput.controllerActive && page.keyboardVisible) {
+                page.keyboardVisible = false
+                searchInput.forceActiveFocus()
+            }
         }
     }
 
@@ -125,13 +147,14 @@ FocusScope {
                 searchDelay.restart()
             }
             onAccepted: {
-                page.keyboardVisible = false
-                if (results.count > 0)
+                if (controllerInput.controllerActive)
+                    page.openControllerKeyboard()
+                else if (results.count > 0)
                     results.forceActiveFocus()
             }
             Keys.onDownPressed: {
-                page.keyboardVisible = true
-                keyboard.forceActiveFocus()
+                if (results.count > 0)
+                    results.forceActiveFocus()
             }
         }
 
@@ -152,11 +175,12 @@ FocusScope {
         x: Theme.pageMargin
         y: 132
         width: parent.width - Theme.pageMargin * 2
-        height: 236
+        height: page.keyboardVisible ? cellHeight
+                                     : Math.max(cellHeight, Math.floor((parent.height - y - 112) / cellHeight) * cellHeight)
         clip: true
         model: page.filteredGames
         cellWidth: width / 5
-        cellHeight: 230
+        cellHeight: 250
         onCountChanged: {
             if (count === 0)
                 currentIndex = -1
@@ -168,10 +192,6 @@ FocusScope {
             if (currentIndex >= 0)
                 page.openGame(page.filteredGames[currentIndex])
         }
-        Keys.onDownPressed: {
-            page.keyboardVisible = true
-            keyboard.forceActiveFocus()
-        }
         Keys.onUpPressed: searchInput.forceActiveFocus()
 
         delegate: Item {
@@ -182,12 +202,13 @@ FocusScope {
             GameCard {
                 anchors.fill: parent
                 anchors.rightMargin: index % 5 === 4 ? 0 : 20
-                anchors.bottomMargin: 14
+                anchors.bottomMargin: 12
                 title: modelData.title
                 subtitle: modelData.subtitle || ((modelData.availableStores || []).join(" · "))
                 badge: modelData.badge || ""
-                variant: modelData.variant
+                variant: modelData.variant === undefined ? index % 6 : Number(modelData.variant)
                 imageSource: modelData.imageUrl || ""
+                game: modelData
                 selected: index === results.currentIndex
                 onClicked: {
                     results.currentIndex = index
@@ -199,12 +220,18 @@ FocusScope {
 
     FocusScope {
         id: keyboard
-        visible: page.keyboardVisible
-        width: 676
-        height: 342
+        visible: opacity > 0.01
+        enabled: page.keyboardVisible && controllerInput.controllerActive
+        opacity: enabled ? 1 : 0
+        width: 770
+        height: 388
         anchors.horizontalCenter: parent.horizontalCenter
-        y: 584
-        focus: visible
+        y: enabled ? 420 : 438
+        focus: enabled
+        scale: enabled ? 1 : 0.985
+        Behavior on opacity { NumberAnimation { duration: Theme.motion; easing.type: Easing.OutCubic } }
+        Behavior on y { NumberAnimation { duration: Theme.motion; easing.type: Easing.OutCubic } }
+        Behavior on scale { NumberAnimation { duration: Theme.motion; easing.type: Easing.OutCubic } }
         Keys.onLeftPressed: page.moveHorizontal(-1)
         Keys.onRightPressed: page.moveHorizontal(1)
         Keys.onUpPressed: page.moveVertical(-1)
@@ -226,14 +253,14 @@ FocusScope {
 
         Rectangle {
             anchors.fill: parent
-            radius: 16
-            color: "#0c110e"
+            radius: 20
+            color: "#0e120f"
             border.color: Theme.divider
         }
 
         Column {
             anchors.fill: parent
-            anchors.margins: 24
+            anchors.margins: 28
             spacing: 10
 
             Repeater {

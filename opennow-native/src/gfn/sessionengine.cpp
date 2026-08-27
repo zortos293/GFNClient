@@ -117,6 +117,7 @@ void SessionEngine::clearCredentials()
 }
 
 void SessionEngine::launchGame(const QString &zone,
+                               const QString &streamingBaseUrl,
                                const QString &appId,
                                const QString &internalTitle,
                                const QVariantMap &settings,
@@ -125,7 +126,7 @@ void SessionEngine::launchGame(const QString &zone,
                                bool supportsInGameSettingsPersistence)
 {
     createSession(m_token,
-                  m_streamingBaseUrl,
+                  streamingBaseUrl.trimmed().isEmpty() ? m_streamingBaseUrl : streamingBaseUrl,
                   zone,
                   appId,
                   internalTitle,
@@ -776,7 +777,7 @@ void SessionEngine::requestJson(const QString &method,
     connect(reply, &QNetworkReply::finished, this, [=, this] {
         timeout->stop();
         m_replies.removeAll(reply);
-        const auto data = reply->readAll();
+        const auto data = reply->isOpen() ? reply->readAll() : QByteArray{};
         const auto networkError = reply->error();
         const auto networkMessage = reply->errorString();
         const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();

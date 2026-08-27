@@ -171,6 +171,26 @@ QString StreamEngine::demoRuntimePath() const
     });
 }
 
+StreamEngine::~StreamEngine()
+{
+    // waitForFinished() runs a nested Qt event loop. Disconnect first so a
+    // late QProcess error/finished signal cannot re-enter failPendingCommands
+    // while the application and this engine are being torn down.
+    QObject::disconnect(&m_process, nullptr, this, nullptr);
+    m_pendingCommands.clear();
+    m_queuedCommands.clear();
+    m_helloRequestId.clear();
+    if (m_process.state() == QProcess::NotRunning) {
+        return;
+    }
+    m_process.closeWriteChannel();
+    m_process.terminate();
+    if (!m_process.waitForFinished(1000)) {
+        m_process.kill();
+        m_process.waitForFinished(1000);
+    }
+}
+
 bool StreamEngine::ensureStarted(RuntimeMode mode)
 {
     if (m_process.state() != QProcess::NotRunning && m_runtimeMode == mode) {

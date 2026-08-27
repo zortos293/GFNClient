@@ -87,6 +87,11 @@ void CatalogEngineParserTest::mapsSelectedOwnedVariantAndImages()
     const auto game = GfnCatalog::parseGame(QJsonObject{
         {QStringLiteral("id"), QStringLiteral("app-uuid")},
         {QStringLiteral("title"), QStringLiteral("Example Game")},
+        {QStringLiteral("nvidiaTech"), QJsonObject{
+             {QStringLiteral("PHOTO_MODE"), true},
+             {QStringLiteral("FREESTYLE"), false},
+             {QStringLiteral("HIGHLIGHTS"), true},
+         }},
         {QStringLiteral("images"), QJsonObject{
              {QStringLiteral("HERO_IMAGE"), QStringLiteral("https://img.nvidiagrid.net/example")},
              {QStringLiteral("SCREENSHOTS"), QJsonArray{QStringLiteral("https://cdn.example/one.jpg")}},
@@ -111,6 +116,8 @@ void CatalogEngineParserTest::mapsSelectedOwnedVariantAndImages()
              QStringLiteral("https://img.nvidiagrid.net/example;f=webp;w=1200"));
     QCOMPARE(game.value(QStringLiteral("screenshotUrls")).toStringList(),
              QStringList{QStringLiteral("https://cdn.example/one.jpg")});
+    QCOMPARE(game.value(QStringLiteral("nvidiaTech")).toStringList(),
+             (QStringList{QStringLiteral("HIGHLIGHTS"), QStringLiteral("PHOTO_MODE")}));
 }
 
 void CatalogEngineParserTest::parsesOnlyEntitledSubscriptionResolutions()

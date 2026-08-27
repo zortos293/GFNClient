@@ -6,6 +6,7 @@
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QPointer>
+#include <QTcpServer>
 #include <QTimer>
 #include <QVariantList>
 
@@ -49,6 +50,7 @@ public:
     bool hasUsableSession() const;
 
     Q_INVOKABLE void startLogin();
+    Q_INVOKABLE void startBrowserLogin();
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void selectProvider(int index);
     Q_INVOKABLE void signOut();
@@ -70,6 +72,8 @@ signals:
 private:
     void discoverProviders();
     void pollToken();
+    void acceptBrowserLoginCallback();
+    void exchangeBrowserAuthorizationCode(const QString &code, quint64 attempt);
     void completeDeviceAuthorization(const OpenNow::Auth::Tokens &tokens,
                                      const OpenNow::Auth::Provider &provider, quint64 attempt);
     void fetchLoginUser(OpenNow::Auth::Session session, quint64 attempt);
@@ -106,6 +110,8 @@ private:
     QNetworkAccessManager m_network;
     QTimer m_pollTimer;
     QTimer m_refreshTimer;
+    QTimer m_oauthTimeout;
+    QTcpServer m_oauthServer;
     OpenNow::Auth::SessionStore m_store;
     std::optional<OpenNow::Auth::Session> m_session;
     OpenNow::Auth::Provider m_selectedProvider;
@@ -122,6 +128,9 @@ private:
     QPointer<QNetworkReply> m_loginClientTokenReply;
     QPointer<QNetworkReply> m_clientTokenReply;
     QPointer<QNetworkReply> m_refreshReply;
+    QPointer<QNetworkReply> m_oauthTokenReply;
+    QString m_pkceVerifier;
+    quint16 m_oauthPort = 0;
     qint64 m_challengeExpiresAt = 0;
     quint64 m_attempt = 0;
     quint64 m_sessionGeneration = 0;

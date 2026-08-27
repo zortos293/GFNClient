@@ -29,8 +29,9 @@ int main(int argc, char *argv[])
     SignalingClient signalingClient;
     AppState appState;
     QQuickWindow *streamWindow = nullptr;
+    bool streamSurfaceActive = false;
     const auto updateStreamSurface = [&] {
-        if (!streamWindow) {
+        if (!streamWindow || !streamSurfaceActive) {
             return;
         }
         streamEngine.updateSurface({
@@ -59,8 +60,8 @@ int main(int argc, char *argv[])
         catalogEngine.refreshAll();
     };
     QObject::connect(&authEngine, &AuthEngine::authorized, &app, configureAuthenticatedEngines);
-    QObject::connect(&authEngine, &AuthEngine::sessionReady, &app, configureAuthenticatedEngines);
     QObject::connect(&authEngine, &AuthEngine::sessionInvalidated, &app, [&](const QString &) {
+        streamSurfaceActive = false;
         catalogEngine.clear();
         sessionEngine.clearCredentials();
         sessionEngine.cancel();
@@ -74,6 +75,7 @@ int main(int argc, char *argv[])
             sessionEngine.stopSession();
             return;
         }
+        streamSurfaceActive = true;
         streamEngine.startRemoteSession(context);
         updateStreamSurface();
         signalingClient.connectToServer(sessionEngine.signalingServer(),
@@ -99,12 +101,14 @@ int main(int argc, char *argv[])
                          streamEngine.sendInput(payload, partiallyReliable);
                      });
     QObject::connect(&sessionEngine, &SessionEngine::sessionStopped, &app, [&] {
+        streamSurfaceActive = false;
         signalingClient.disconnectFromServer();
         controllerInput.setStreaming(false);
         streamEngine.stop(QStringLiteral("session ended"));
     });
     QObject::connect(&streamEngine, &StreamEngine::streamerError, &app,
                      [&](const QString &, const QString &) {
+                         streamSurfaceActive = false;
                          signalingClient.disconnectFromServer();
                          controllerInput.setStreaming(false);
                          sessionEngine.stopSession();

@@ -55,7 +55,7 @@ void AuthDataTest::persistsOwnerOnlySessionState()
     const Session session{provider,
                           Tokens{QStringLiteral("access"), QStringLiteral("refresh"),
                                  QStringLiteral("id"), QStringLiteral("client"),
-                                 QString::fromLatin1(SteamDeckClientId), 100, 200, 100},
+                                 QString::fromLatin1(BrowserClientId), 100, 200, 100},
                           User{QStringLiteral("user"), QStringLiteral("Player"), {}, {},
                                QStringLiteral("FREE")}};
     const SessionStore store(path);
@@ -64,6 +64,7 @@ void AuthDataTest::persistsOwnerOnlySessionState()
     QVERIFY(loaded.has_value());
     QVERIFY(loaded->session.has_value());
     QCOMPARE(loaded->session->tokens.refreshToken, QStringLiteral("refresh"));
+    QCOMPARE(loaded->session->tokens.authClientId, QString::fromLatin1(BrowserClientId));
     const auto permissions = QFileInfo(path).permissions();
     QVERIFY(permissions.testFlag(QFileDevice::ReadOwner));
     QVERIFY(permissions.testFlag(QFileDevice::WriteOwner));

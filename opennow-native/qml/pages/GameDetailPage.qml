@@ -15,6 +15,7 @@ FocusScope {
     property bool favorite: false
     property bool settingsOpen: false
     property bool reportOpen: false
+    property real revealProgress: visible ? 1 : 0
     property string selectedQuality: "1440p120"
     property int settingsIndex: 2
     readonly property var qualityOptions: [
@@ -73,6 +74,9 @@ FocusScope {
             reportOpen = false
         }
     }
+    opacity: revealProgress
+    transform: Translate { y: (1 - page.revealProgress) * 14 }
+    Behavior on revealProgress { NumberAnimation { duration: Theme.motion; easing.type: Easing.OutCubic } }
 
     Shortcut {
         sequence: "Y"
@@ -103,6 +107,7 @@ FocusScope {
             height: 260
             variant: page.field("variant", 1)
             source: page.field("heroImageUrl", page.field("imageUrl", ""))
+            game: page.game
         }
 
         Rectangle {
@@ -223,43 +228,61 @@ FocusScope {
             }
         }
 
-        Text {
+        ScrollView {
+            id: aboutScroll
             x: 52
-            y: 600
-            text: "About"
-            color: Theme.ink
-            font.family: Theme.bodyFont.family
-            font.pixelSize: 18
-            font.weight: Font.Bold
-        }
+            y: 596
+            width: canvas.width - activityCard.width - 52 - 52 - 28
+            height: canvas.height - y - 78 - 18
+            clip: true
+            contentWidth: availableWidth
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            ScrollBar.vertical.policy: contentHeight > height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
 
-        Text {
-            x: 52
-            y: 642
-            width: canvas.width * 0.61
-            text: page.field("longDescription", page.field("description", "No description is available."))
-            color: Theme.inkSoft
-            font.family: Theme.bodyFont.family
-            font.pixelSize: 15
-            lineHeight: 1.5
-            wrapMode: Text.WordWrap
-        }
+            Column {
+                id: aboutContent
+                width: aboutScroll.availableWidth - 18
+                spacing: 16
 
-        Row {
-            x: 52
-            y: 716
-            spacing: 10
-            Repeater {
-                model: page.game.featureLabels || []
-                Rectangle {
-                    required property string modelData
-                    width: capabilityText.implicitWidth + 24
-                    height: 34
-                    radius: 8
-                    color: "transparent"
-                    border.color: Theme.divider
-                    Text { id: capabilityText; anchors.centerIn: parent; text: modelData; color: Theme.inkMuted; font.pixelSize: 12 }
+                Text {
+                    width: parent.width
+                    text: "About"
+                    color: Theme.ink
+                    font.family: Theme.bodyFont.family
+                    font.pixelSize: 18
+                    font.weight: Font.Bold
                 }
+
+                Text {
+                    width: parent.width
+                    text: page.field("longDescription", page.field("description", "No description is available."))
+                    color: Theme.inkSoft
+                    font.family: Theme.bodyFont.family
+                    font.pixelSize: 17
+                    lineHeightMode: Text.FixedHeight
+                    lineHeight: 28
+                    wrapMode: Text.WordWrap
+                }
+
+                Flow {
+                    width: parent.width
+                    height: childrenRect.height
+                    spacing: 10
+                    Repeater {
+                        model: page.game.featureLabels || []
+                        Rectangle {
+                            required property string modelData
+                            width: capabilityText.implicitWidth + 24
+                            height: 34
+                            radius: 8
+                            color: "transparent"
+                            border.color: Theme.divider
+                            Text { id: capabilityText; anchors.centerIn: parent; text: modelData; color: Theme.inkMuted; font.pixelSize: 12 }
+                        }
+                    }
+                }
+
+                Item { width: 1; height: 8 }
             }
         }
 
@@ -292,7 +315,7 @@ FocusScope {
                         width: parent.width
                         Text { text: modelData.label; color: Theme.inkMuted; font.pixelSize: 13 }
                         Item { Layout.fillWidth: true }
-                        Text { text: modelData.value; color: modelData.accent ? Theme.accent : Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 13; font.weight: Font.Bold }
+                        Text { Layout.preferredWidth: parent.width * 0.58; text: modelData.value; horizontalAlignment: Text.AlignRight; elide: Text.ElideRight; color: modelData.accent ? Theme.accent : Theme.ink; font.family: Theme.monoFont.family; font.pixelSize: 13; font.weight: Font.Bold }
                     }
                 }
             }

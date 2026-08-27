@@ -40,6 +40,7 @@ public:
     void clearCredentials();
 
     Q_INVOKABLE void launchGame(const QString &zone,
+                                const QString &streamingBaseUrl,
                                 const QString &appId,
                                 const QString &internalTitle,
                                 const QVariantMap &settings,

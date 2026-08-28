@@ -7,92 +7,130 @@ FocusScope {
     default property alias contentData: contentHost.data
     property string route: "home"
     property string title: qsTr("Home")
-    property string subtitle: qsTr("3 friends online")
+    property string subtitle: qsTr("Your library")
     property bool searchVisible: route !== "settings" && route.indexOf("settings-") !== 0 && route !== "friends"
     property string searchText: ""
-    property bool railCollapsed: false
+    readonly property bool railCollapsed: ShellStore.settings.desktopRailCollapsed !== false
+    readonly property int contentInset: DesktopTokens.railCollapsedWidth
     signal routeRequested(string route)
     signal consoleModeRequested()
     signal commandPaletteRequested()
 
-    width: 1440
-    height: 900
+    anchors.fill: parent
     focus: true
+
+    function persistRailCollapsed(collapsed) {
+        ShellStore.applySetting("desktopRailCollapsed", collapsed)
+        ShellStore.setSetting("desktopRailCollapsed", collapsed)
+    }
+
+    function regionStatusText() {
+        const selected = String(ShellStore.settings.region || "")
+        if (selected === "")
+            return qsTr("AUTO REGION")
+        const regions = ShellStore.regions || []
+        for (let i = 0; i < regions.length; ++i) {
+            if (regions[i].name === selected || regions[i].url === selected) {
+                const ping = ShellStore.regionPingResults ? ShellStore.regionPingResults[regions[i].url] : undefined
+                const name = String(regions[i].name || selected)
+                if (ping === undefined || ping === null || ping === "")
+                    return name.toUpperCase()
+                return name.toUpperCase() + " · " + ping + " ms"
+            }
+        }
+        return selected.toUpperCase()
+    }
 
     DesktopBackdrop { anchors.fill: parent }
 
-    DesktopSidebar {
-        id: sidebar
-        currentRoute: root.route
-        collapsed: root.railCollapsed
-        onRouteRequested: route => root.routeRequested(route)
-        onConsoleModeRequested: root.consoleModeRequested()
-        onCollapseRequested: collapsed => root.railCollapsed = collapsed
-    }
-
     Item {
         id: main
-        x: root.railCollapsed ? 72 : 232
-        width: root.width - x
+        x: root.contentInset
+        width: root.width - root.contentInset
         height: root.height
-        Behavior on x { NumberAnimation { duration: DesktopTokens.motionDuration; easing.type: Easing.OutCubic } }
-        Behavior on width { NumberAnimation { duration: DesktopTokens.motionDuration; easing.type: Easing.OutCubic } }
 
         Rectangle {
-            width: parent.width; height: 60
+            width: parent.width; height: DesktopTokens.topBarHeight
             color: DesktopTokens.topBar
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: DesktopTokens.seam }
             Row {
-                x: 24; anchors.verticalCenter: parent.verticalCenter; spacing: 10
-                Text { text: root.title; color: DesktopTokens.text; font.family: DesktopTokens.displayFont; font.pixelSize: 22; font.weight: Font.Black; font.letterSpacing: -0.4 }
-                Text { anchors.baseline: parent.children[0].baseline; text: root.subtitle; color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.45 }
+                x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(10)
+                Text { text: root.title; color: DesktopTokens.text; font.family: DesktopTokens.displayFont; font.pixelSize: DesktopTokens.titleSize; font.weight: Font.Black; font.letterSpacing: -0.4 }
+                Text { anchors.baseline: parent.children[0].baseline; text: root.subtitle; color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.DemiBold; font.letterSpacing: 0.45 }
             }
             TextField {
                 id: search
                 visible: root.searchVisible
                 anchors.right: parent.right
-                anchors.rightMargin: 24
+                anchors.rightMargin: DesktopTokens.px(24)
                 anchors.verticalCenter: parent.verticalCenter
-                width: 300; height: 34
-                leftPadding: 34; rightPadding: 34; topPadding: 0; bottomPadding: 0
+                width: DesktopTokens.px(300); height: DesktopTokens.controlHeight
+                leftPadding: DesktopTokens.px(34); rightPadding: DesktopTokens.px(34); topPadding: 0; bottomPadding: 0
                 color: DesktopTokens.textBody
-                placeholderText: qsTr("Search your library")
+                placeholderText: root.route === "friends" ? qsTr("Search friends") : root.route === "store" ? qsTr("Search the store") : qsTr("Search your library")
                 placeholderTextColor: "#66FFFFFF"
-                font.family: DesktopTokens.bodyFont; font.pixelSize: 13; font.weight: Font.DemiBold
+                font.family: DesktopTokens.bodyFont; font.pixelSize: DesktopTokens.bodySize; font.weight: Font.DemiBold
                 text: root.searchText
                 selectByMouse: true
-                background: Rectangle { radius: 10; color: "#59000000"; border.width: 1; border.color: DesktopTokens.seam }
+                background: Rectangle { radius: DesktopTokens.px(10); color: "#59000000"; border.width: 1; border.color: DesktopTokens.seam }
                 onTextChanged: root.searchText = text
-                Text { x: 11; anchors.verticalCenter: parent.verticalCenter; text: "⌕"; color: "#8AFFFFFF"; font.pixelSize: 18 }
-                Rectangle { anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; width: 20; height: 20; radius: 6; color: "#1AFFFFFF"; border.width: 1; border.color: DesktopTokens.seam; Text { anchors.centerIn: parent; text: "/"; color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: 10 } }
+                DesktopGlyph { x: DesktopTokens.px(11); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(14); height: DesktopTokens.px(14); icon: "desktop-search.svg" }
+                Rectangle { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(8); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(20); height: DesktopTokens.px(20); radius: DesktopTokens.px(6); color: "#1AFFFFFF"; border.width: 1; border.color: DesktopTokens.seam; Text { anchors.centerIn: parent; text: "/"; color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.monoSize } }
             }
         }
 
         Item {
             id: contentHost
-            x: 0; y: 60
-            width: parent.width; height: 804
+            x: 0; y: DesktopTokens.topBarHeight
+            width: parent.width
+            height: parent.height - DesktopTokens.topBarHeight - DesktopTokens.statusBarHeight
             clip: true
         }
 
         Rectangle {
-            y: 864; width: parent.width; height: 36
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: DesktopTokens.statusBarHeight
             color: DesktopTokens.statusBar
             Rectangle { width: parent.width; height: 1; color: DesktopTokens.seam }
-            Row { x: 24; anchors.verticalCenter: parent.verticalCenter; spacing: 16
+            Row { x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(16)
                 DesktopKeyHint { keyText: qsTr("Arrows"); label: qsTr("Move") }
                 DesktopKeyHint { keyText: qsTr("Enter"); label: qsTr("Play") }
                 DesktopKeyHint { keyText: "/"; label: qsTr("Search") }
                 DesktopKeyHint { keyText: qsTr("Ctrl K"); label: qsTr("Commands") }
                 DesktopKeyHint { keyText: "?"; label: qsTr("All shortcuts") }
             }
-            Row { anchors.right: parent.right; anchors.rightMargin: 24; anchors.verticalCenter: parent.verticalCenter; spacing: 10
-                Rectangle { width: 6; height: 6; radius: 3; color: DesktopTokens.green }
-                Text { text: qsTr("EU-WEST · 9 ms"); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
-                Rectangle { width: 1; height: 14; color: DesktopTokens.seam }
-                Text { text: String(ShellStore.settings.themePack || "AURORA").toUpperCase() + qsTr(" THEME"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+            Row { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(10)
+                Rectangle { width: 8; height: 8; radius: 4; color: DesktopTokens.green }
+                Text { text: root.regionStatusText(); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.monoSize; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+                Rectangle { width: 1; height: DesktopTokens.px(16); color: DesktopTokens.seam }
+                Text { text: String(ShellStore.settings.themePack || "nocturne").toUpperCase() + qsTr(" THEME"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.monoSize; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
             }
         }
+    }
+
+    Rectangle {
+        id: railScrim
+        x: root.contentInset
+        width: root.width - root.contentInset
+        height: root.height
+        z: 20
+        color: "#99060912"
+        opacity: sidebar.overlayOpen ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: DesktopTokens.motionDuration; easing.type: Easing.OutCubic } }
+        TapHandler { onTapped: sidebar.closeOverlay() }
+    }
+
+    DesktopSidebar {
+        id: sidebar
+        x: 0
+        z: sidebar.overlayOpen ? 40 : 3
+        currentRoute: root.route
+        collapsed: root.railCollapsed
+        onRouteRequested: route => root.routeRequested(route)
+        onConsoleModeRequested: root.consoleModeRequested()
+        onCollapseRequested: collapsed => root.persistRailCollapsed(collapsed)
     }
 
     Keys.onPressed: event => {
@@ -100,7 +138,7 @@ FocusScope {
             root.commandPaletteRequested()
             event.accepted = true
         } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_B) {
-            root.railCollapsed = !root.railCollapsed
+            root.persistRailCollapsed(!root.railCollapsed)
             event.accepted = true
         } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_Comma) {
             root.routeRequested("settings")

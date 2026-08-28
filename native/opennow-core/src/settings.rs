@@ -561,7 +561,9 @@ fn defaults() -> Map<String, Value> {
         "showTileLabels":true,
         "controllerMode":true, "controllerModePromptDismissed":false,
         "reducedMotion":false,
-        "launchInConsoleMode":true, "consoleProfilePickerOnLaunch":true,
+        "launchInConsoleMode":false, "consoleProfilePickerOnLaunch":true,
+        "desktopRailCollapsed":true,
+        "switchToConsoleOnPad":true, "leaveConsoleOnPointer":true,
         "autoFullScreen":false, "favoriteGameIds":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
         "showSessionReport":true, "showSessionTimeRemainingInStatsOverlay":false,
         "sessionClockShowEveryMinutes":60, "sessionClockShowDurationSeconds":30,
@@ -592,6 +594,10 @@ mod tests {
             .as_nanos();
         let directory = env::temp_dir().join(format!("opennow-core-settings-{unique}"));
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["launchInConsoleMode"], json!(false));
+        assert_eq!(store.all()["desktopRailCollapsed"], json!(true));
+        assert_eq!(store.all()["switchToConsoleOnPad"], json!(true));
+        assert_eq!(store.all()["leaveConsoleOnPointer"], json!(true));
         assert_eq!(store.set("fps", json!(999)).unwrap(), json!(240));
         assert_eq!(
             store.set("launchInConsoleMode", json!(false)).unwrap(),

@@ -1,222 +1,610 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 import OpenNOW
 
 FocusScope {
     id: root
     property string currentRoute: "home"
-    property bool collapsed: false
+    property bool collapsed: true
     property bool hoverExpanded: false
-    readonly property bool compact: collapsed && !hoverExpanded
+    readonly property bool overlayOpen: !collapsed || hoverExpanded
+    readonly property bool compact: !overlayOpen
+    readonly property bool consoleModeOn: {
+        const win = Window.window
+        if (win)
+            return Boolean(win.forceConsole || win.desktopSurfaceActive === false)
+        return ShellStore.settings.launchInConsoleMode === true
+    }
     signal routeRequested(string route)
     signal consoleModeRequested()
     signal collapseRequested(bool collapsed)
 
-    width: compact ? 72 : (hoverExpanded ? 248 : 232)
-    height: 900
-    z: hoverExpanded ? 30 : 3
+    x: 0
+    width: compact ? DesktopTokens.railCollapsedWidth : DesktopTokens.railWidth
+    height: parent ? parent.height : 900
+    z: overlayOpen ? 40 : 3
+
+    function closeOverlay() {
+        hoverExpanded = false
+        if (!collapsed)
+            collapseRequested(true)
+    }
 
     Behavior on width {
         NumberAnimation { duration: DesktopTokens.motionDuration; easing.type: Easing.OutCubic }
     }
 
+    readonly property var navItems: [
+        { route: "home", icon: "desktop-nav-home.svg", name: qsTr("Home") },
+        { route: "library", icon: "desktop-nav-library.svg", name: qsTr("Library") },
+        { route: "store", icon: "desktop-nav-store.svg", name: qsTr("Store") },
+        { route: "friends", icon: "desktop-nav-friends.svg", name: qsTr("Friends") },
+        { route: "settings", icon: "desktop-nav-settings.svg", name: qsTr("Settings") }
+    ]
+
+    readonly property var collections: [
+        { icon: "desktop-star.svg", name: qsTr("Favourites"), count: String(root.favoriteCount()), filter: "favorites" },
+        { icon: "desktop-clock.svg", name: qsTr("Recently played"), count: String(root.recentCount()), filter: "recent" },
+        { icon: "desktop-coop.svg", name: qsTr("Co-op with friends"), count: String(root.readyCount()), filter: "ready" },
+        { icon: "desktop-rtx.svg", name: qsTr("RTX ready"), count: String(root.rtxCount()), filter: "rtx" }
+    ]
+
+    function favoriteCount() {
+        const games = ShellStore.catalogGames || []
+        let count = 0
+        for (let i = 0; i < games.length; ++i) {
+            if (ShellStore.isFavorite(games[i]))
+                count += 1
+        }
+        return count
+    }
+    function recentCount() {
+        const games = ShellStore.catalogGames || []
+        let count = 0
+        for (let i = 0; i < games.length; ++i) {
+            if (games[i].lastPlayed)
+                count += 1
+        }
+        return count
+    }
+    function readyCount() {
+        const games = ShellStore.catalogGames || []
+        let count = 0
+        for (let i = 0; i < games.length; ++i) {
+            if (games[i].isInLibrary || games[i].isAvailable)
+                count += 1
+        }
+        return count
+    }
+    function rtxCount() {
+        const games = ShellStore.catalogGames || []
+        let count = 0
+        for (let i = 0; i < games.length; ++i) {
+            const tags = (games[i].genres || []).join(" ").toLowerCase()
+            const title = String(games[i].title || "").toLowerCase()
+            if (tags.indexOf("rtx") >= 0 || title.indexOf("rtx") >= 0)
+                count += 1
+        }
+        return count
+    }
+
+    function routeSelected(route) {
+        if (route === "settings")
+            return root.currentRoute.indexOf("settings") === 0
+        if (route === "library")
+            return root.currentRoute === "library" || root.currentRoute === "game-detail"
+        return root.currentRoute === route
+    }
+
     Rectangle {
         anchors.fill: parent
         color: DesktopTokens.rail
-        border.width: 0
-        Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: DesktopTokens.seamSoft }
-    }
-
-    HoverHandler {
-        id: railHover
-        acceptedDevices: PointerDevice.Mouse
-        onHoveredChanged: {
-            if (root.collapsed)
-                root.hoverExpanded = hovered
+        Rectangle {
+            anchors.right: parent.right
+            width: 1
+            height: parent.height
+            color: root.overlayOpen ? "#29FFFFFF" : DesktopTokens.seamSoft
         }
     }
 
     Rectangle {
-        x: root.compact ? 23 : 22
-        y: 28
-        width: root.compact ? 26 : 22
-        height: root.compact ? 14 : 12
-        radius: 7
-        color: "#68E341"
-        layer.enabled: true
-        Text { anchors.centerIn: parent; text: "☁"; color: "#11320C"; font.pixelSize: 10; font.weight: Font.Black }
-    }
-    Text {
-        x: 76; y: 27
-        visible: !root.compact
-        text: "OpenNOW"
-        color: DesktopTokens.text
-        font.family: DesktopTokens.displayFont
-        font.pixelSize: 16
-        font.weight: Font.Black
-        font.letterSpacing: -0.3
-    }
-    ToolButton {
-        id: collapseButton
-        x: root.compact ? 16 : root.width - 41
-        y: root.compact ? 56 : 20
-        width: root.compact ? 40 : 28
-        height: 28
-        focusPolicy: Qt.StrongFocus
-        background: Rectangle {
-            radius: 9
-            color: collapseButton.hovered || collapseButton.activeFocus ? "#17FFFFFF" : "#0FFFFFFF"
-            border.width: 1
-            border.color: DesktopTokens.seamSoft
-        }
-        contentItem: Text {
-            text: root.collapsed ? "›" : "‹"
-            color: DesktopTokens.textBody
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            font.pixelSize: 18
-        }
-        onClicked: {
-            root.hoverExpanded = false
-            root.collapseRequested(!root.collapsed)
+        visible: root.overlayOpen
+        x: root.width
+        width: DesktopTokens.px(40)
+        height: parent.height
+        gradient: Gradient {
+            orientation: Gradient.Horizontal
+            GradientStop { position: 0; color: "#A8000000" }
+            GradientStop { position: 1; color: "#00000000" }
         }
     }
 
-    Column {
-        id: navigation
-        x: root.compact ? 14 : 12
-        y: root.compact ? 108 : 70
-        width: root.compact ? 44 : root.width - 25
-        spacing: root.compact ? 3 : 3
-
-        Repeater {
-            model: [
-                { route: "home", icon: "⌂", name: qsTr("Home") },
-                { route: "library", icon: "▦", name: qsTr("Library") },
-                { route: "store", icon: "▣", name: qsTr("Store") },
-                { route: "friends", icon: "♧", name: qsTr("Friends") },
-                { route: "settings", icon: "☷", name: qsTr("Settings") }
-            ]
-            delegate: ItemDelegate {
-                id: navButton
-                required property var modelData
-                width: navigation.width
-                height: root.compact ? 44 : 38
-                padding: 0
-                readonly property bool selected: root.currentRoute === modelData.route
-                    || (modelData.route === "settings" && root.currentRoute.indexOf("settings") === 0)
-                    || (modelData.route === "library" && root.currentRoute === "game-detail")
-                Accessible.name: modelData.name
-                background: Rectangle {
-                    radius: 10
-                    color: navButton.selected ? "#14FFFFFF"
-                        : (navButton.hovered || navButton.activeFocus ? "#0CFFFFFF" : "transparent")
-                }
-                contentItem: Item {
-                    Text {
-                        x: root.compact ? 0 : 10
-                        width: root.compact ? parent.width : 18
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: navButton.modelData.icon
-                        color: navButton.selected ? DesktopTokens.focus : "#8AFFFFFF"
-                        horizontalAlignment: root.compact ? Text.AlignHCenter : Text.AlignLeft
-                        font.family: DesktopTokens.bodyFont
-                        font.pixelSize: 18
-                        font.weight: Font.Bold
-                    }
-                    Text {
-                        x: 39
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: !root.compact
-                        text: navButton.modelData.name
-                        color: navButton.selected ? DesktopTokens.text : DesktopTokens.textBody
-                        font.family: DesktopTokens.bodyFont
-                        font.pixelSize: 14
-                        font.weight: navButton.selected ? Font.Bold : Font.DemiBold
-                    }
-                    Row {
-                        anchors.right: parent.right
-                        anchors.rightMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: navButton.modelData.route === "friends"
-                        spacing: 8
-                        Text { visible: !root.compact; text: "3"; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 10 }
-                        Rectangle { width: 6; height: 6; radius: 3; color: "#1DB954" }
-                    }
-                    Rectangle {
-                        anchors.right: parent.right
-                        anchors.rightMargin: root.compact ? 0 : 9
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: navButton.selected
-                        width: 4; height: 16; radius: 2; color: DesktopTokens.focus
-                    }
-                }
-                onClicked: root.routeRequested(modelData.route)
-            }
-        }
+    HoverHandler {
+        acceptedDevices: PointerDevice.Mouse
+        onHoveredChanged: root.hoverExpanded = root.collapsed && hovered
     }
 
     Item {
-        x: 12; y: 294
-        width: root.width - 25; height: 180
-        visible: !root.compact
-        Rectangle { width: parent.width; height: 1; color: DesktopTokens.seamSoft }
-        Text { x: 10; y: 27; text: qsTr("COLLECTIONS"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold; font.letterSpacing: 0.9 }
-        Text { anchors.right: parent.right; anchors.rightMargin: 8; y: 20; text: "+"; color: DesktopTokens.textMuted; font.pixelSize: 16 }
+        anchors.fill: parent
+        anchors.topMargin: root.compact ? 16 : 20
+        anchors.leftMargin: root.compact ? 14 : 12
+        anchors.rightMargin: root.compact ? 14 : 12
+        anchors.bottomMargin: 12
+
+        Flickable {
+            id: railFlick
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: dock.top
+            anchors.bottomMargin: 8
+            clip: true
+            contentWidth: width
+            contentHeight: topColumn.implicitHeight
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+
+            Column {
+                id: topColumn
+                width: railFlick.width
+                spacing: root.compact ? 10 : 22
+
+        Item {
+            width: parent.width
+            height: 28
+
+            Image {
+                id: brandMark
+                width: root.compact ? 40 : 22
+                height: root.compact ? 22 : 12
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.horizontalCenter: root.compact ? parent.horizontalCenter : undefined
+                anchors.left: root.compact ? undefined : parent.left
+                anchors.leftMargin: root.compact ? 0 : 10
+                source: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
+                fillMode: Image.PreserveAspectFit
+                smooth: false
+                sourceSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio), Math.ceil(height * Screen.devicePixelRatio))
+            }
+
+            Text {
+                visible: !root.compact
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.left: brandMark.right
+                anchors.leftMargin: 10
+                text: "OpenNOW"
+                color: DesktopTokens.text
+                font.family: DesktopTokens.displayFont
+                font.pixelSize: DesktopTokens.headingSize
+                font.weight: Font.Black
+                font.letterSpacing: -0.32
+            }
+
+            Rectangle {
+                id: collapseButton
+                visible: !root.compact
+                width: 28
+                height: 28
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.right: parent.right
+                radius: 9
+                color: collapseHover.hovered || collapseButton.activeFocus ? "#17FFFFFF" : "#0FFFFFFF"
+                border.width: 1
+                border.color: "#17FFFFFF"
+                Accessible.role: Accessible.Button
+                Accessible.name: qsTr("Collapse sidebar")
+                Accessible.onPressAction: {
+                    root.hoverExpanded = false
+                    root.collapseRequested(true)
+                }
+
+                DesktopGlyph {
+                    anchors.centerIn: parent
+                    width: 13
+                    height: 13
+                    icon: "desktop-collapse.svg"
+                }
+                HoverHandler { id: collapseHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler {
+                    onTapped: {
+                        root.hoverExpanded = false
+                        root.collapseRequested(true)
+                    }
+                }
+            }
+        }
+
+        Item {
+            visible: root.compact
+            width: parent.width
+            height: 28
+            Rectangle {
+                id: expandButton
+                width: 40
+                height: 28
+                anchors.horizontalCenter: parent.horizontalCenter
+                radius: 9
+                color: expandHover.hovered || expandButton.activeFocus ? "#17FFFFFF" : "#0FFFFFFF"
+                border.width: 1
+                border.color: "#17FFFFFF"
+                Accessible.role: Accessible.Button
+                Accessible.name: qsTr("Expand sidebar")
+                Accessible.onPressAction: {
+                    root.hoverExpanded = false
+                    root.collapseRequested(false)
+                }
+
+                DesktopGlyph {
+                    anchors.centerIn: parent
+                    width: 13
+                    height: 13
+                    icon: "desktop-expand.svg"
+                }
+                HoverHandler { id: expandHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler {
+                    onTapped: {
+                        root.hoverExpanded = false
+                        root.collapseRequested(false)
+                    }
+                }
+            }
+        }
+
+        Item {
+            visible: root.compact
+            width: parent.width
+            height: 1
+            Rectangle {
+                width: 28
+                height: 1
+                anchors.horizontalCenter: parent.horizontalCenter
+                color: DesktopTokens.seamSoft
+            }
+        }
+
         Column {
-            y: 48; width: parent.width; spacing: 0
+            width: parent.width
+            spacing: 3
+
             Repeater {
-                model: [
-                    {icon:"☆", name:qsTr("Favourites"), count:"14"},
-                    {icon:"◷", name:qsTr("Recently played"), count:"9"},
-                    {icon:"∞", name:qsTr("Co-op with friends"), count:"21"},
-                    {icon:"ϟ", name:qsTr("RTX ready"), count:"63"}
-                ]
+                model: root.navItems
+                delegate: ItemDelegate {
+                    id: navButton
+                    required property var modelData
+                    width: parent.width
+                    height: root.compact ? 44 : 38
+                    padding: 0
+                    readonly property bool selected: root.routeSelected(modelData.route)
+                    Accessible.name: modelData.name
+                    background: Rectangle {
+                        radius: 10
+                        color: navButton.selected ? "#14FFFFFF"
+                            : (navButton.hovered || navButton.activeFocus ? "#0CFFFFFF" : "transparent")
+                    }
+                    contentItem: Item {
+                        DesktopGlyph {
+                            x: root.compact ? (parent.width - 18) / 2 : 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 18
+                            height: 18
+                            icon: navButton.modelData.icon
+                            active: navButton.selected
+                        }
+                        Text {
+                            x: 39
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !root.compact
+                            text: navButton.modelData.name
+                            color: navButton.selected ? DesktopTokens.text : "#B8FFFFFF"
+                            font.family: DesktopTokens.bodyFont
+                            font.pixelSize: DesktopTokens.px(14)
+                            font.weight: navButton.selected ? Font.ExtraBold : Font.DemiBold
+                        }
+                        Row {
+                            anchors.right: parent.right
+                            anchors.rightMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: navButton.modelData.route === "friends" && !navButton.selected
+                            spacing: 8
+                            Text {
+                                visible: !root.compact
+                                text: "3"
+                                color: "#66FFFFFF"
+                                font.family: DesktopTokens.monoFont
+                                font.pixelSize: 10
+                                font.weight: Font.DemiBold
+                                font.letterSpacing: 0.4
+                            }
+                            Rectangle {
+                                width: 6
+                                height: 6
+                                radius: 3
+                                color: DesktopTokens.green
+                            }
+                        }
+                        Rectangle {
+                            anchors.right: parent.right
+                            anchors.rightMargin: root.compact ? (parent.width - 4) / 2 : 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: navButton.selected
+                            width: 4
+                            height: 16
+                            radius: 999
+                            color: DesktopTokens.focus
+                        }
+                    }
+                    onClicked: root.routeRequested(modelData.route)
+                }
+            }
+        }
+
+        Column {
+            width: parent.width
+            visible: !root.compact
+            spacing: 1
+
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: DesktopTokens.seamSoft
+            }
+
+            Item {
+                width: parent.width
+                height: 20
+            }
+
+            Item {
+                width: parent.width
+                height: 26
+                Text {
+                    x: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("COLLECTIONS")
+                    color: DesktopTokens.textFaint
+                    font.family: DesktopTokens.monoFont
+                    font.pixelSize: 9
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 0.9
+                }
+                DesktopGlyph {
+                    anchors.right: parent.right
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 11
+                    height: 11
+                    icon: "desktop-plus.svg"
+                }
+            }
+
+            Repeater {
+                model: root.collections
                 delegate: Item {
                     required property var modelData
-                    width: parent.width; height: 32
-                    Text { x: 10; anchors.verticalCenter: parent.verticalCenter; text: modelData.icon; color: "#66FFFFFF"; font.pixelSize: 14 }
-                    Text { x: 35; anchors.verticalCenter: parent.verticalCenter; text: modelData.name; color: "#A3FFFFFF"; font.family: DesktopTokens.bodyFont; font.pixelSize: 13; font.weight: Font.DemiBold }
-                    Text { anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; text: modelData.count; color: "#4DFFFFFF"; font.family: DesktopTokens.monoFont; font.pixelSize: 10 }
+                    width: parent.width
+                    height: 32
+                    DesktopGlyph {
+                        x: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 14
+                        height: 14
+                        icon: modelData.icon
+                    }
+                    Text {
+                        x: 34
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.name
+                        color: collectionHover.hovered ? "#E0FFFFFF" : "#A3FFFFFF"
+                        font.family: DesktopTokens.bodyFont
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.count
+                        color: "#4DFFFFFF"
+                        font.family: DesktopTokens.monoFont
+                        font.pixelSize: 10
+                        font.weight: Font.DemiBold
+                    }
+                    HoverHandler { id: collectionHover; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: root.routeRequested("library") }
                 }
             }
         }
-    }
 
-    Column {
-        x: root.compact ? 14 : 12
-        y: root.compact ? 795 : 781
-        width: root.compact ? 44 : root.width - 25
-        spacing: 4
-        Rectangle { width: parent.width; height: 1; color: DesktopTokens.seamSoft }
-        ItemDelegate {
-            id: consoleModeButton
-            width: parent.width; height: root.compact ? 44 : 54; padding: 0
-            background: Rectangle { radius: 11; color: consoleModeButton.hovered || consoleModeButton.activeFocus ? "#0CFFFFFF" : "transparent" }
-            contentItem: Item {
-                Text { x: root.compact ? 0 : 10; width: root.compact ? parent.width : 17; anchors.verticalCenter: parent.verticalCenter; text: "🎮"; horizontalAlignment: root.compact ? Text.AlignHCenter : Text.AlignLeft; color: "#8AFFFFFF"; font.pixelSize: 14 }
-                Column { x: 38; anchors.verticalCenter: parent.verticalCenter; visible: !root.compact; spacing: 2
-                    Text { text: qsTr("Console mode"); color: DesktopTokens.textHigh; font.family: DesktopTokens.bodyFont; font.pixelSize: 13; font.weight: Font.Bold }
-                    Row { spacing: 5; Rectangle { width: 5; height: 5; radius: 3; color: DesktopTokens.amber } Text { text: qsTr("GAMEPAD READY"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold; font.letterSpacing: 0.4 } }
-                }
-                Rectangle { anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; visible: !root.compact; width: 32; height: 19; radius: 10; color: "#1FFFFFFF"; border.width: 1; border.color: "#1AFFFFFF"; Rectangle { x: 3; y: 3; width: 13; height: 13; radius: 7; color: "#CCFFFFFF" } }
-                Rectangle { anchors.right: parent.right; anchors.top: parent.top; width: 7; height: 7; radius: 4; visible: root.compact; color: DesktopTokens.amber }
+        Item {
+            visible: root.compact
+            width: parent.width
+            height: 1
+            Rectangle {
+                width: 28
+                height: 1
+                anchors.horizontalCenter: parent.horizontalCenter
+                color: DesktopTokens.seamSoft
             }
-            onClicked: root.consoleModeRequested()
         }
-        ItemDelegate {
-            id: profileButton
-            width: parent.width; height: 44; padding: 0
-            background: Rectangle { radius: 11; color: profileButton.hovered || profileButton.activeFocus ? "#0CFFFFFF" : "transparent" }
-            contentItem: Item {
-                Rectangle { x: root.compact ? 4 : 10; anchors.verticalCenter: parent.verticalCenter; width: root.compact ? 36 : 28; height: root.compact ? 36 : 28; radius: 20; color: "#17FFFFFF"; border.width: 1; border.color: "#29FFFFFF"; Text { anchors.centerIn: parent; text: ShellStore.signedIn && ShellStore.authSession.user ? String(ShellStore.authSession.user.displayName || "Z").charAt(0).toUpperCase() : "Z"; color: DesktopTokens.textHigh; font.family: DesktopTokens.bodyFont; font.pixelSize: 12; font.weight: Font.Black } }
-                Column { x: 48; anchors.verticalCenter: parent.verticalCenter; visible: !root.compact; spacing: 2
-                    Text { text: ShellStore.signedIn && ShellStore.authSession.user ? ShellStore.authSession.user.displayName : qsTr("Guest"); color: DesktopTokens.textHigh; font.family: DesktopTokens.bodyFont; font.pixelSize: 13; font.weight: Font.Bold }
-                    Text { text: ShellStore.signedIn ? String((ShellStore.authSession.user.membershipTier || "MEMBER") + " · 82%").toUpperCase() : qsTr("NOT SIGNED IN"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
-                }
-                Text { anchors.right: parent.right; anchors.rightMargin: 11; anchors.verticalCenter: parent.verticalCenter; visible: !root.compact; text: "⌃"; color: DesktopTokens.textFaint; font.pixelSize: 12 }
+
+        Item {
+            visible: root.compact
+            width: parent.width
+            height: 44
+            DesktopGlyph {
+                anchors.centerIn: parent
+                width: 18
+                height: 18
+                icon: "desktop-star.svg"
             }
-            onClicked: root.routeRequested("settings-account")
+        }
+            }
+        }
+
+        Column {
+            id: dock
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            spacing: 4
+
+            Rectangle {
+                visible: !root.compact
+                width: parent.width
+                height: 1
+                color: DesktopTokens.seamSoft
+            }
+
+            ItemDelegate {
+                id: consoleModeButton
+                width: parent.width
+                height: 44
+                padding: 0
+                Accessible.name: qsTr("Console mode")
+                background: Rectangle {
+                    radius: 11
+                    color: consoleModeButton.hovered || consoleModeButton.activeFocus ? "#0CFFFFFF" : "transparent"
+                }
+                contentItem: Item {
+                    DesktopGlyph {
+                        x: root.compact ? (parent.width - 17) / 2 : 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 17
+                        height: 17
+                        icon: "desktop-gamepad.svg"
+                    }
+                    Column {
+                        x: 37
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !root.compact
+                        spacing: 2
+                        Text {
+                            text: qsTr("Console mode")
+                            color: DesktopTokens.textHigh
+                            font.family: DesktopTokens.bodyFont
+                            font.pixelSize: 13
+                            font.weight: Font.Bold
+                        }
+                        Row {
+                            spacing: 5
+                            Rectangle {
+                                width: 5
+                                height: 5
+                                radius: 3
+                                color: root.consoleModeOn ? DesktopTokens.mint : DesktopTokens.ledAmber
+                            }
+                            Text {
+                                text: root.consoleModeOn ? qsTr("CONSOLE ON") : qsTr("GAMEPAD READY")
+                                color: DesktopTokens.textMuted
+                                font.family: DesktopTokens.monoFont
+                                font.pixelSize: 9
+                                font.weight: Font.DemiBold
+                                font.letterSpacing: 0.36
+                            }
+                        }
+                    }
+                    Rectangle {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !root.compact
+                        width: 32
+                        height: 19
+                        radius: 999
+                        color: root.consoleModeOn ? "#2E6EE7B7" : "#1FFFFFFF"
+                        border.width: 1
+                        border.color: root.consoleModeOn ? "#526EE7B7" : "#1AFFFFFF"
+                        Rectangle {
+                            x: root.consoleModeOn ? 17 : 2
+                            y: 2
+                            width: 13
+                            height: 13
+                            radius: 999
+                            color: root.consoleModeOn ? DesktopTokens.focus : "#CCFFFFFF"
+                        }
+                    }
+                    Rectangle {
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        width: 7
+                        height: 7
+                        radius: 4
+                        visible: root.compact
+                        color: DesktopTokens.ledAmber
+                    }
+                }
+                onClicked: root.consoleModeRequested()
+            }
+
+            ItemDelegate {
+                id: profileButton
+                width: parent.width
+                height: 44
+                padding: 0
+                Accessible.name: qsTr("Profile")
+                background: Rectangle {
+                    radius: 11
+                    color: profileButton.hovered || profileButton.activeFocus ? "#0CFFFFFF" : "transparent"
+                }
+                contentItem: Item {
+                    Rectangle {
+                        x: root.compact ? (parent.width - (root.compact ? 36 : 28)) / 2 : 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: root.compact ? 36 : 28
+                        height: root.compact ? 36 : 28
+                        radius: 999
+                        color: "#17FFFFFF"
+                        border.width: 1
+                        border.color: "#29FFFFFF"
+                        Text {
+                            anchors.centerIn: parent
+                            text: ShellStore.signedIn && ShellStore.authSession.user
+                                ? String(ShellStore.authSession.user.displayName || "Z").charAt(0).toUpperCase()
+                                : "Z"
+                            color: DesktopTokens.textHigh
+                            font.family: DesktopTokens.bodyFont
+                            font.pixelSize: 12
+                            font.weight: Font.Black
+                        }
+                    }
+                    Column {
+                        x: 48
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !root.compact
+                        spacing: 2
+                        Text {
+                            text: ShellStore.signedIn && ShellStore.authSession.user
+                                ? ShellStore.authSession.user.displayName
+                                : qsTr("Guest")
+                            color: DesktopTokens.textHigh
+                            font.family: DesktopTokens.bodyFont
+                            font.pixelSize: 13
+                            font.weight: Font.Bold
+                        }
+                        Text {
+                            text: ShellStore.signedIn
+                                ? String(ShellStore.authSession.user.membershipTier || qsTr("Member")).toUpperCase()
+                                : qsTr("NOT SIGNED IN")
+                            color: DesktopTokens.textFaint
+                            font.family: DesktopTokens.monoFont
+                            font.pixelSize: 9
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 0.36
+                        }
+                    }
+                    DesktopGlyph {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !root.compact
+                        width: 10
+                        height: 10
+                        icon: "desktop-chevron-up.svg"
+                    }
+                }
+                onClicked: root.routeRequested("settings-account")
+            }
         }
     }
 }

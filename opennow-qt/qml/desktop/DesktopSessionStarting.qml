@@ -15,10 +15,7 @@ FocusScope {
 
     signal cancelRequested()
 
-    readonly property var game: ShellStore.selectedGame || ({
-        title: "Cyberpunk 2077",
-        heroImageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/27G0GQ44XWDM79Z64SSA5Z89F6.jpg"
-    })
+    readonly property var game: ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
     readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
     readonly property string phase: String(ShellStore.streamState || "preparing")
@@ -30,19 +27,38 @@ FocusScope {
         : phase === "requesting" ? 0.34
         : phase === "resuming" ? 0.48
         : phase === "ready" || phase === "streaming" ? 1.0 : 0.665
-    readonly property string region: String(session.regionName || session.region || session.serverRegionId || "EU-WEST").toUpperCase()
-    readonly property int latency: Math.max(1, Number(session.latencyMs || session.pingMs || 9))
-    readonly property int widthPx: Number(profile.width || ShellStore.settings.resolutionWidth || 3840)
-    readonly property int heightPx: Number(profile.height || ShellStore.settings.resolutionHeight || 2160)
-    readonly property int fps: Number(profile.fps || profile.frameRate || ShellStore.settings.frameRate || 120)
-    readonly property string codec: String(profile.codec || ShellStore.settings.codec || "AV1").toUpperCase()
-    readonly property int bitrate: Math.round(Number(profile.bitrateMbps || ShellStore.settings.maxBitrate || 75))
+    readonly property string region: String(session.regionName || session.region || session.serverRegionId || ShellStore.settings.region || "").toUpperCase()
+    readonly property int latency: Math.max(0, Number(session.latencyMs || session.pingMs || 0))
+    readonly property int widthPx: Number(profile.width || ShellStore.settings.resolutionWidth || 0)
+    readonly property int heightPx: Number(profile.height || ShellStore.settings.resolutionHeight || 0)
+    readonly property int fps: Number(profile.fps || profile.frameRate || ShellStore.settings.fps || ShellStore.settings.frameRate || 0)
+    readonly property string codec: String(profile.codec || ShellStore.settings.codec || "").toUpperCase()
+    readonly property int bitrate: Math.round(Number(profile.bitrateMbps || ShellStore.settings.maxBitrate || 0))
 
     function resolutionLabel() {
         if (heightPx >= 2160) return "2160P"
         if (heightPx >= 1440) return "1440P"
         if (heightPx >= 1080) return "1080P"
-        return heightPx + "P"
+        if (heightPx > 0) return heightPx + "P"
+        return ""
+    }
+
+    function streamChips() {
+        const chips = []
+        if (root.region)
+            chips.push(root.latency > 0 ? root.region + " · " + root.latency + " MS" : root.region)
+        const res = root.resolutionLabel()
+        if (res && root.fps > 0)
+            chips.push(res + " · " + root.fps + " FPS")
+        else if (res)
+            chips.push(res)
+        else if (root.fps > 0)
+            chips.push(root.fps + " FPS")
+        if (root.codec && root.bitrate > 0)
+            chips.push(root.codec + " · " + root.bitrate + " MBPS")
+        else if (root.codec)
+            chips.push(root.codec)
+        return chips
     }
 
     Rectangle { anchors.fill: parent; color: "#04060A" }
@@ -75,13 +91,13 @@ FocusScope {
         x: 32
         y: 28
         spacing: 10
-        Rectangle {
+        Image {
             anchors.verticalCenter: parent.verticalCenter
-            width: 25
-            height: 14
-            radius: 7
-            color: "#68E341"
-            Text { anchors.centerIn: parent; text: "☁"; color: "#11320C"; font.pixelSize: 10; font.weight: Font.Black }
+            width: 22
+            height: 12
+            source: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
+            fillMode: Image.PreserveAspectFit
+            smooth: true
         }
         Text {
             text: "OpenNOW"
@@ -193,10 +209,10 @@ FocusScope {
                 spacing: 0
                 Repeater {
                     model: [
-                        { label: qsTr("Reserved an RTX 5080 in %1").arg(root.region), meta: "0.8 s" },
-                        { label: qsTr("Restored your cloud save and Steam link"), meta: "1.4 s" },
-                        { label: qsTr("Warming up shaders and applying your overrides"), meta: qsTr("RUNNING") },
-                        { label: qsTr("Opening the NVST stream transport"), meta: qsTr("QUEUED") }
+                        { label: root.region ? qsTr("Requesting a machine in %1").arg(root.region) : qsTr("Requesting a machine"), meta: qsTr("LIVE") },
+                        { label: qsTr("Preparing your library session"), meta: qsTr("LIVE") },
+                        { label: qsTr("Applying stream settings"), meta: qsTr("RUNNING") },
+                        { label: qsTr("Opening the stream transport"), meta: qsTr("QUEUED") }
                     ]
                     delegate: Item {
                         id: stepRow
@@ -216,12 +232,20 @@ FocusScope {
                             color: stepRow.done ? "#2856E6A5" : stepRow.active ? "#237FD4FF" : "#0FFFFFFF"
                             border.width: 1
                             border.color: stepRow.done ? DesktopTokens.green : stepRow.active ? DesktopTokens.focus : "#29FFFFFF"
-                            Text {
+                            DesktopGlyph {
+                                visible: stepRow.done
                                 anchors.centerIn: parent
-                                text: stepRow.done ? "✓" : stepRow.active ? "•" : ""
-                                color: stepRow.done ? DesktopTokens.green : DesktopTokens.focus
-                                font.pixelSize: stepRow.active ? 18 : 11
-                                font.weight: Font.Bold
+                                width: 10
+                                height: 8
+                                icon: "desktop-check-mint.svg"
+                            }
+                            Rectangle {
+                                visible: stepRow.active && !stepRow.done
+                                anchors.centerIn: parent
+                                width: 6
+                                height: 6
+                                radius: 3
+                                color: DesktopTokens.focus
                             }
                         }
                         Text {
@@ -257,12 +281,7 @@ FocusScope {
             width: parent.width
             spacing: 8
             Repeater {
-                model: [
-                    root.region + " · " + root.latency + " MS",
-                    root.resolutionLabel() + " · " + root.fps + " FPS",
-                    root.codec + " · " + root.bitrate + " MBPS",
-                    "RT OVERDRIVE"
-                ]
+                model: root.streamChips()
                 delegate: Rectangle {
                     id: metaChip
                     required property string modelData

@@ -22,10 +22,7 @@ FocusScope {
     property int pendingAction: -1
     property bool closing: false
     property double nowMs: Date.now()
-    readonly property var game: ShellStore.selectedGame || ({
-        title: "Elden Ring",
-        imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/0SVG3SN59REC38313F48EY0YSE.jpg"
-    })
+    readonly property var game: ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
     readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
     readonly property var live: ShellStore.streamer || ({})
@@ -185,11 +182,11 @@ FocusScope {
                 spacing: 8
                 Repeater {
                     model: [
-                        { title: qsTr("Back to game"), detail: qsTr("RESUME"), icon: "↩", primary: true, danger: false },
-                        { title: qsTr("Stream quality"), detail: root.resolution + " · " + Number(root.profile.fps || 120), icon: "◇", primary: false, danger: false },
-                        { title: qsTr("Invite a friend"), detail: qsTr("3 ONLINE"), icon: "+", primary: false, danger: false },
-                        { title: qsTr("Switch to console mode"), detail: qsTr("GAMEPAD ON"), icon: "▣", primary: false, danger: false },
-                        { title: qsTr("End session"), detail: qsTr("SAVES FIRST"), icon: "×", primary: false, danger: true }
+                        { title: qsTr("Back to game"), detail: qsTr("Esc"), icon: "desktop-play.svg", primary: true, danger: false },
+                        { title: qsTr("Stream quality"), detail: root.resolution + " · " + Number(root.profile.fps || 120), icon: "desktop-sliders.svg", primary: false, danger: false },
+                        { title: qsTr("Invite a friend"), detail: qsTr("UNAVAILABLE"), icon: "desktop-user-plus.svg", primary: false, danger: false },
+                        { title: qsTr("Switch to console mode"), detail: qsTr("GAMEPAD ON"), icon: "desktop-gamepad.svg", primary: false, danger: false },
+                        { title: qsTr("End session"), detail: qsTr("SAVES FIRST"), icon: "desktop-logout.svg", primary: false, danger: true }
                     ]
                     delegate: Rectangle {
                         id: actionButton
@@ -223,14 +220,11 @@ FocusScope {
                             radius: 7
                             color: actionButton.modelData.primary ? "#160B0F1A"
                                 : actionButton.modelData.danger ? "#1FFF8A80" : "#12FFFFFF"
-                            Text {
+                            DesktopGlyph {
                                 anchors.centerIn: parent
-                                text: actionButton.modelData.icon
-                                color: actionButton.modelData.primary ? DesktopTokens.shell
-                                    : actionButton.modelData.danger ? "#FFB4AE" : DesktopTokens.textBody
-                                font.family: DesktopTokens.bodyFont
-                                font.pixelSize: 14
-                                font.weight: Font.Bold
+                                width: 16
+                                height: 16
+                                icon: actionButton.modelData.icon
                             }
                         }
                         Text {

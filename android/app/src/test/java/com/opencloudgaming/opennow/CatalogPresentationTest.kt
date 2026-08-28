@@ -49,16 +49,18 @@ class CatalogPresentationTest {
     }
 
     @Test
-    fun mobileTouchFilterScansTheCompleteCatalogWithoutExpandingNormalOrTvLoads() {
+    fun scopedTvQueriesMatchTheNormalMobilePageBudget() {
         assertEquals(3, catalogPageLimit(androidTvProfile = false, filterIds = emptyList()))
         assertEquals(
             MAX_CATALOG_REQUEST_PAGES,
             catalogPageLimit(androidTvProfile = false, filterIds = listOf(CATALOG_FILTER_TOUCHSCREEN)),
         )
         assertEquals(
-            1,
+            3,
             catalogPageLimit(androidTvProfile = true, filterIds = listOf(CATALOG_FILTER_TOUCHSCREEN)),
         )
+        assertEquals(3, catalogPageLimit(androidTvProfile = true, filterIds = emptyList(), searchQuery = "halo"))
+        assertEquals(1, catalogPageLimit(androidTvProfile = true, filterIds = emptyList()))
     }
 
     @Test

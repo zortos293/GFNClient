@@ -587,7 +587,7 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun appIconGlideRequiresAProbedUnconstrainedDeviceAndMotionPermission() {
+    fun appIconGlideHonorsMotionPermissionAndKeepsTvChromeAlive() {
         val capableReport = RuntimeCodecReport(
             capabilities = emptyList(),
             nativeRuntimeSummary = "",
@@ -599,6 +599,22 @@ class AndroidTvUiBehaviorTest {
         assertFalse(shouldAnimateOpenNowAppIcon(null, reduceMotion = false, absoluteCinemaEnabled = true))
         assertFalse(shouldAnimateOpenNowAppIcon(capableReport, reduceMotion = true, absoluteCinemaEnabled = true))
         assertFalse(shouldAnimateOpenNowAppIcon(capableReport, reduceMotion = false, absoluteCinemaEnabled = false))
+        assertTrue(
+            shouldAnimateOpenNowAppIcon(
+                codecReport = null,
+                reduceMotion = false,
+                absoluteCinemaEnabled = false,
+                androidTvProfile = true,
+            ),
+        )
+        assertFalse(
+            shouldAnimateOpenNowAppIcon(
+                codecReport = null,
+                reduceMotion = true,
+                absoluteCinemaEnabled = true,
+                androidTvProfile = true,
+            ),
+        )
         assertFalse(
             shouldAnimateOpenNowAppIcon(
                 capableReport.copy(lowPowerGpuProfile = true),
@@ -616,6 +632,56 @@ class AndroidTvUiBehaviorTest {
         assertTrue(shouldAnimateControllerFocusFrame(absoluteCinemaEnabled = true, reduceMotion = false))
         assertFalse(shouldAnimateControllerFocusFrame(absoluteCinemaEnabled = false, reduceMotion = false))
         assertFalse(shouldAnimateControllerFocusFrame(absoluteCinemaEnabled = true, reduceMotion = true))
+    }
+
+    @Test
+    fun tvKeepsTopChromeAndRefreshAvailableOutsideTheStream() {
+        assertTrue(
+            shouldShowTopStatusBar(
+                inStream = false,
+                portraitChrome = false,
+                phoneLandscapeChrome = false,
+                phoneLandscapeScrollChromeHidden = false,
+                tvProfile = true,
+            ),
+        )
+        assertFalse(
+            shouldShowTopStatusBar(
+                inStream = true,
+                portraitChrome = false,
+                phoneLandscapeChrome = false,
+                phoneLandscapeScrollChromeHidden = false,
+                tvProfile = true,
+            ),
+        )
+        assertTrue(shouldShowTvRefreshAction(tvProfile = true, inStream = false))
+        assertFalse(shouldShowTvRefreshAction(tvProfile = true, inStream = true))
+        assertFalse(shouldShowTvRefreshAction(tvProfile = false, inStream = false))
+    }
+
+    @Test
+    fun tvControllerShortcutsRequireAPhysicalController() {
+        assertTrue(
+            catalogControllerActionMode(
+                tvProfile = true,
+                landscapeLayout = true,
+                physicalControllerConnected = true,
+            ),
+        )
+        assertFalse(
+            catalogControllerActionMode(
+                tvProfile = true,
+                landscapeLayout = true,
+                physicalControllerConnected = false,
+            ),
+        )
+        assertFalse(
+            catalogControllerActionMode(
+                tvProfile = false,
+                landscapeLayout = false,
+                physicalControllerConnected = true,
+            ),
+        )
     }
 
     @Test

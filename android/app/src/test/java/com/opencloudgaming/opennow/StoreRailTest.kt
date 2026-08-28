@@ -59,6 +59,19 @@ class StoreRailTest {
     }
 
     @Test
+    fun storeHeroFallsBackToProviderOrderWhenEveryNewGameIsPersonal() {
+        val newest = GameInfo(id = "newest", title = "Newest")
+        val next = GameInfo(id = "next", title = "Next")
+
+        val result = newlyAddedStoreHeroGames(
+            games = listOf(newest, next),
+            excludedGames = listOf(newest, next),
+        )
+
+        assertEquals(listOf("newest", "next"), result.map(GameInfo::id))
+    }
+
+    @Test
     fun storeHeroShowsSixWeeklyGames() {
         val games = (1..7).map { index -> GameInfo(id = "game-$index", title = "Game $index") }
 

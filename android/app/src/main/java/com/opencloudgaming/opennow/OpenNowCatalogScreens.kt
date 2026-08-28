@@ -1066,8 +1066,8 @@ private fun GameGridSkeleton(
 ) {
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
-    val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = tvProfile || landscapeLayout)
+    val controllerActionMode = catalogControllerActionMode(tvProfile, landscapeLayout, physicalControllerConnected)
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(
         tvProfile = tvProfile,
         controllerActionMode = controllerActionMode,
@@ -1378,8 +1378,8 @@ private fun GameGrid(
     }
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
-    val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = tvProfile || landscapeLayout)
+    val controllerActionMode = catalogControllerActionMode(tvProfile, landscapeLayout, physicalControllerConnected)
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
     val imageLoadingAnimationsEnabled by remember(gridState) {
         derivedStateOf { !gridState.isScrollInProgress }
@@ -1490,8 +1490,8 @@ private fun StoreGameGrid(
     }
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
-    val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = tvProfile || landscapeLayout)
+    val controllerActionMode = catalogControllerActionMode(tvProfile, landscapeLayout, physicalControllerConnected)
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
     val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank()
     val showDiscoverySections = shouldShowStoreDiscoverySections(
@@ -1960,7 +1960,7 @@ private fun StoreComingNextCarousel(
                                     page = (page + 1) % games.size
                                     true
                                 }
-                                !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                                controllerActionMode && handleCatalogControllerAction(
                                     event = event,
                                     onFavorite = { onFavorite(featured.id) },
                                     onPlay = { onPlay(featured) },
@@ -2285,7 +2285,7 @@ private fun StoreRailGameCard(
                 )
                 .onPreviewKeyEvent { event ->
                     when {
-                        !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                        controllerActionMode && handleCatalogControllerAction(
                             event = event,
                             onFavorite = { onFavorite(game.id) },
                             onPlay = { onPlay(game) },
@@ -2394,10 +2394,11 @@ internal fun newlyAddedStoreHeroGames(
     games: List<GameInfo>,
     excludedGames: List<GameInfo> = emptyList(),
 ): List<GameInfo> {
+    val distinctGames = distinctStoreGames(games)
     val excludedKeys = excludedGames.mapTo(mutableSetOf(), ::storeRailGameKey)
-    return distinctStoreGames(games)
+    val nonRepeatingGames = distinctGames
         .filterNot { storeRailGameKey(it) in excludedKeys }
-        .take(HERO_CAROUSEL_PAGE_LIMIT)
+    return nonRepeatingGames.ifEmpty { distinctGames }.take(HERO_CAROUSEL_PAGE_LIMIT)
 }
 
 /** The hero identifies the game without repeating its storefront availability. */
@@ -2791,7 +2792,7 @@ private fun GameCard(
                     )
                     .onPreviewKeyEvent { event ->
                         when {
-                            !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                            controllerActionMode && handleCatalogControllerAction(
                                 event = event,
                                 onFavorite = { onFavorite(game.id) },
                                 onPlay = { onPlay(game) },
@@ -2900,6 +2901,12 @@ internal fun shouldOverlayCatalogCardTitle(tvProfile: Boolean): Boolean = false
 
 internal fun shouldUseArtworkOnlyCatalogCards(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
     tvProfile || controllerActionMode
+
+internal fun catalogControllerActionMode(
+    tvProfile: Boolean,
+    landscapeLayout: Boolean,
+    physicalControllerConnected: Boolean,
+): Boolean = physicalControllerConnected && (tvProfile || landscapeLayout)
 
 internal fun shouldShowCatalogFavoriteIcon(settings: AppSettings): Boolean =
     settings.showFavoriteIconOnGameCards

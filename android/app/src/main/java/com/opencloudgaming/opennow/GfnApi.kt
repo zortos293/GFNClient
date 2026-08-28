@@ -3430,6 +3430,7 @@ class GfnSessionRepository(
             seatSetupStep = session.obj("seatSetupInfo")?.int("seatSetupStep"),
             adState = extractAdState(session),
             zone = payload.obj("requestStatus")?.string("serverId")?.takeIf { it.isNotBlank() } ?: zone,
+            assignedZone = assignedSessionZoneFromControlHost(session.obj("sessionControlInfo")?.string("ip")),
             streamingBaseUrl = base,
             serverIp = signaling?.serverIp.orEmpty(),
             signalingServer = signaling?.signalingServer.orEmpty(),

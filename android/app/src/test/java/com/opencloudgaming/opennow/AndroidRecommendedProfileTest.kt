@@ -108,7 +108,7 @@ class AndroidRecommendedProfileTest {
 
         assertEquals("3840x2160", recommendation.stream.resolution)
         assertEquals(VideoCodec.H265, recommendation.stream.codec)
-        assertEquals(35, recommendation.stream.maxBitrateMbps)
+        assertEquals(75, recommendation.stream.maxBitrateMbps)
     }
 
     @Test

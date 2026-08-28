@@ -7,6 +7,11 @@ internal data class StreamPacketDelta(
     val received: Long,
 )
 
+/** Drops delayed WebRTC stats callbacks before they can rewind cumulative counters or windows. */
+internal fun isNewerStreamStatsSample(currentTimestampMs: Double, previousTimestampMs: Double?): Boolean =
+    currentTimestampMs.isFinite() &&
+        (previousTimestampMs == null || currentTimestampMs > previousTimestampMs)
+
 /**
  * Returns a usable delta only while WebRTC is reporting the same monotonically increasing packet
  * counters. Counter resets happen during SSRC/transport changes and must not be presented as loss.

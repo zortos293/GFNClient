@@ -198,7 +198,7 @@ class StreamResolutionTest {
         assertEquals("3840x2160", status?.requestedResolution)
         assertEquals("3840x2160", status?.displayedResolution)
         assertEquals(
-            listOf("Codec", "FPS", "Bitrate", "Color"),
+            listOf("Codec", "FPS", "Color"),
             status?.let(::activeStreamModeDisplayChanges)?.map { it.label },
         )
         assertEquals(

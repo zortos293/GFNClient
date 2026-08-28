@@ -37,8 +37,9 @@ internal fun mergeQueueSessionState(
     next: SessionInfo,
     preserveMissingAdState: Boolean = true,
 ): SessionInfo {
-    if (next.isReadyForStream()) return next
-    return next.copy(
+    val merged = next.copy(assignedZone = next.assignedZone ?: previous.assignedZone)
+    if (merged.isReadyForStream()) return merged
+    return merged.copy(
         adState = mergeQueueAdState(previous.adState, next.adState, preserveMissingAdState),
         mediaConnectionInfo = next.mediaConnectionInfo ?: previous.mediaConnectionInfo,
     )

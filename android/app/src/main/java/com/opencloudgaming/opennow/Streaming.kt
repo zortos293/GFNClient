@@ -298,6 +298,7 @@ class NativeStreamClient(
     var liveBitrateLimitKbps: Int? = null
     private var videoSafeFallbackApplied = false
     private var stableMediaStallRestarts = 0
+    private var runtimeQualityFallbackApplied = false
     private var transportHasStableMedia = false
     private var consecutiveTransportProgressSamples = 0
     private var sessionRecoveryRequested = false
@@ -372,6 +373,7 @@ class NativeStreamClient(
     private val packetLossWindow = StreamPacketLossWindow()
     private var androidTvProfile = initialAndroidTvProfile
     private var livenessWatchdog = newStreamLivenessWatchdog(androidTvProfile)
+    private val runtimeQualityWatchdog = RuntimeQualityRecoveryWatchdog()
     private var firstVideoFrameWatchdog = FirstVideoFrameWatchdog(
         timeoutMs = firstVideoFrameRecoveryTimeoutMs(androidTvProfile),
     )
@@ -530,6 +532,7 @@ class NativeStreamClient(
                             // Accept the decoder's new size and give the existing transport a fresh
                             // liveness window instead of interpreting the change as a stream crash.
                             livenessWatchdog.markConnected(SystemClock.elapsedRealtime())
+                            runtimeQualityWatchdog.reset()
                             firstVideoFrameWatchdog.markRendered()
                             recordStreamDiagnostic(
                                 "decoded resolution change accepted from=${transition.previousWidth}x${transition.previousHeight} " +
@@ -809,6 +812,7 @@ class NativeStreamClient(
         transientSignalingFailures = 0
         videoSafeFallbackApplied = false
         stableMediaStallRestarts = 0
+        runtimeQualityFallbackApplied = false
         sessionRecoveryRequested = false
         bitrateUpdateJob?.cancel()
         bitrateUpdateJob = null
@@ -818,6 +822,7 @@ class NativeStreamClient(
         ProcessCpuDiagnostics.beginStream()
         packetLossWindow.reset()
         livenessWatchdog.reset()
+        runtimeQualityWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         onStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
@@ -839,11 +844,13 @@ class NativeStreamClient(
         reconnectAttempts = 0
         transientSignalingFailures = 0
         stableMediaStallRestarts = 0
+        runtimeQualityFallbackApplied = false
         sessionRecoveryRequested = false
         bitrateUpdateJob?.cancel()
         bitrateUpdateJob = null
         liveBitrateLimitKbps = null
         livenessWatchdog.reset()
+        runtimeQualityWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         closeTransport(clearInputState = true)
         emitState("Stopped")
@@ -1781,6 +1788,7 @@ class NativeStreamClient(
         packetLossWindow.reset()
         transportHasStableMedia = false
         consecutiveTransportProgressSamples = 0
+        runtimeQualityWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         emitStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
@@ -1827,6 +1835,7 @@ class NativeStreamClient(
         packetLossWindow.reset()
         lastIceState = null
         livenessWatchdog.reset()
+        runtimeQualityWatchdog.reset()
         val closingSignaling = signaling
         val closingRenderer = renderer
         val closingRendererSinkAttached = rendererSinkLifecycle.requestDetach()
@@ -2835,7 +2844,7 @@ class NativeStreamClient(
                     timestampMs = report.timestampUs / 1000.0,
                     stats = report.statsMap.values,
                     cpuSample = cpuSample,
-                )
+                ) ?: return@RTCStatsCollectorCallback
                 scope.launch {
                     if (generation != transportGeneration) return@launch
                     handleMediaLiveness(snapshot)
@@ -2845,11 +2854,16 @@ class NativeStreamClient(
         }
     }
 
+    @Synchronized
     private fun buildRuntimeStatsSnapshot(
         timestampMs: Double,
         stats: Collection<RTCStats>,
         cpuSample: ProcessCpuUsageSample?,
-    ): RuntimeStatsSnapshot {
+    ): RuntimeStatsSnapshot? {
+        if (!isNewerStreamStatsSample(timestampMs, lastStatsSample?.atMs)) {
+            recordStreamDiagnostic("stale runtime stats ignored timestampMs=$timestampMs previousMs=${lastStatsSample?.atMs}")
+            return null
+        }
         val inboundVideo = stats.firstOrNull { stat ->
             val members = stat.members
             stat.type == "inbound-rtp" &&
@@ -2991,6 +3005,17 @@ class NativeStreamClient(
             connected,
         )
         updateTransportRecoveryProgress(livenessWatchdog.latestObservationProgressed)
+        val qualityRecovery = runtimeQualityWatchdog.observe(
+            stats = snapshot.stats,
+            requestedFps = settings.fps,
+            recoveryEligible = connected &&
+                transportHasStableMedia &&
+                iceRecoveryJob?.isActive != true &&
+                !sessionRecoveryRequested,
+        )
+        if (qualityRecovery != null && requestRuntimeQualityFallback(qualityRecovery, snapshot.stats)) {
+            return
+        }
         if (
             rendererSinkLifecycle.isAttachRequested() &&
             firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)
@@ -3080,6 +3105,91 @@ class NativeStreamClient(
         }
         transportHasStableMedia = true
         reconnectAttempts = 0
+    }
+
+    private fun requestRuntimeQualityFallback(
+        reason: RuntimeQualityRecoveryReason,
+        stats: StreamRuntimeStats,
+    ): Boolean {
+        if (runtimeQualityFallbackApplied) return false
+        val currentSettings = settings
+        val fallback = currentSettings.runtimeQualityRecoveryProfile(reason)
+        if (fallback == currentSettings) {
+            runtimeQualityFallbackApplied = true
+            recordStreamDiagnostic("runtime quality already at stable profile; transport unchanged reason=$reason")
+            return false
+        }
+
+        runtimeQualityFallbackApplied = true
+        liveBitrateLimitKbps = fallback.maxBitrateMbps * 1_000
+        val diagnosticReason = when (reason) {
+            RuntimeQualityRecoveryReason.NetworkDegraded -> "sustained raw packet loss"
+            RuntimeQualityRecoveryReason.DecoderOverloaded -> "sustained decoder overload"
+        }
+        NativeInputDiagnostics.add(
+            "$diagnosticReason recovery displayedLoss=${stats.packetLossPct} " +
+                "rawLost=${stats.packetsLostDelta} rawReceived=${stats.packetsReceivedDelta} " +
+                "ping=${stats.pingMs} receivedFps=${stats.receivedFps} decodedFps=${stats.decodedFps} " +
+                "decodeMs=${stats.decodeMs} codec=${fallback.codec} resolution=${fallback.resolution} " +
+                "fps=${fallback.fps} bitrate=${fallback.maxBitrateMbps}",
+        )
+        val message = when (reason) {
+            RuntimeQualityRecoveryReason.NetworkDegraded ->
+                "Packet loss stayed high; reconnecting at 30 FPS with a lower bitrate"
+            RuntimeQualityRecoveryReason.DecoderOverloaded ->
+                "The decoder could not keep up; reconnecting with a 30 FPS H264 profile"
+        }
+        val restarted = restartTransportWithProfile(
+            updatedSettings = fallback,
+            diagnosticReason = diagnosticReason,
+            stateMessage = "Reconnecting stream with stable profile",
+        )
+        if (restarted) {
+            if (fallback.codec == VideoCodec.H264) videoSafeFallbackApplied = true
+            emitVideoTransportFallbackApplied(message, fallback)
+        }
+        return restarted
+    }
+
+    /** Replaces a stable transport once with a measured recovery profile, keeping the cloud session. */
+    private fun restartTransportWithProfile(
+        updatedSettings: StreamSettings,
+        diagnosticReason: String,
+        stateMessage: String,
+    ): Boolean {
+        val currentSession = session ?: return false
+        val previousSettings = settings
+        if (updatedSettings == previousSettings) return false
+        if (sessionRecoveryRequested || iceRecoveryJob?.isActive == true) {
+            settings = updatedSettings
+            recordStreamDiagnostic("quality profile queued for active recovery reason=$diagnosticReason")
+            return false
+        }
+
+        val hadStableMedia = transportHasStableMedia
+        settings = updatedSettings
+        transportGeneration += 1
+        val generation = transportGeneration
+        recordStreamDiagnostic(
+            "transport quality restart reason=$diagnosticReason generation=$generation " +
+                "from=${previousSettings.resolution}/${previousSettings.fps}/${previousSettings.codec}/${previousSettings.maxBitrateMbps}Mbps " +
+                "to=${updatedSettings.resolution}/${updatedSettings.fps}/${updatedSettings.codec}/${updatedSettings.maxBitrateMbps}Mbps",
+        )
+        emitState(stateMessage)
+        closeTransport(clearInputState = false)
+        firstVideoFrameWatchdog.reset()
+        val settleDelayMs = advancedCodecRestartSettleDelayMs(previousSettings.codec, hadStableMedia)
+        if (settleDelayMs == 0L) {
+            startTransport(currentSession, updatedSettings, generation)
+        } else {
+            iceRecoveryJob = scope.launch {
+                delay(settleDelayMs)
+                if (generation != transportGeneration || session?.sessionId != currentSession.sessionId) return@launch
+                iceRecoveryJob = null
+                startTransport(currentSession, updatedSettings, generation)
+            }
+        }
+        return true
     }
 
     private fun requestSafeVideoFallback(

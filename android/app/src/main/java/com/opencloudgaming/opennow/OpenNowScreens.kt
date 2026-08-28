@@ -133,6 +133,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -836,7 +837,7 @@ private fun MainShell(
         state.pendingStoreChoiceGame != null ||
         state.pendingMembershipNotice != null
     val tvProfile = state.androidTvProfile
-    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !tvProfile)
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !inStream)
     val navAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     var visibleSearchTarget by remember { mutableStateOf<SearchTarget?>(null) }
     var settingsSearchQuery by remember { mutableStateOf("") }
@@ -1030,7 +1031,7 @@ private fun MainShell(
                                 horizontalChrome = horizontalChrome,
                                 detailRouteOpen = settingsDetailRouteOpen,
                             ),
-                            showCatalogControllerActions = false,
+                            showCatalogControllerActions = physicalControllerConnected && scrollChromePage,
                             onNavigate = { page ->
                                 navigateFromAppChrome(page)
                             },
@@ -1045,17 +1046,20 @@ private fun MainShell(
                             .fillMaxHeight(),
                     ) {
                         AnimatedVisibility(
-                            visible =
-                                portraitChrome ||
-                                    (phoneLandscapeChrome && !phoneLandscapeScrollChromeHidden) ||
-                                    tvCatalogChrome,
+                            visible = shouldShowTopStatusBar(
+                                inStream = inStream,
+                                portraitChrome = portraitChrome,
+                                phoneLandscapeChrome = phoneLandscapeChrome,
+                                phoneLandscapeScrollChromeHidden = phoneLandscapeScrollChromeHidden,
+                                tvProfile = tvProfile,
+                            ),
                         ) {
                             if (!inStream) {
                                 TopStatusBar(
                                     state = state,
                                     profileFocusRequester = topBarProfileFocusRequester,
                                     catalogControlFocusRequester = catalogFilterFocusRequester.takeIf {
-                                        !tvProfile && (storeControlsInTopBar || libraryControlsInTopBar)
+                                        storeControlsInTopBar || libraryControlsInTopBar
                                     },
                                     onResumeActiveSession = viewModel::resumeActiveSession,
                                     onOpenSettings = { navigateFromAppChrome(AppPage.Settings) },
@@ -1065,35 +1069,38 @@ private fun MainShell(
                                     },
                                     onOpenStreamSettings = viewModel::openStreamSettings,
                                     musicControl = musicControl,
+                                    showRefreshAction = shouldShowTvRefreshAction(tvProfile, inStream),
+                                    refreshing = when (state.page) {
+                                        AppPage.Settings -> state.settingsRefreshing
+                                        AppPage.Home, AppPage.Library -> state.loadingGames
+                                        AppPage.Stream -> false
+                                    },
+                                    onRefresh = {
+                                        when (state.page) {
+                                            AppPage.Settings -> viewModel.refreshSettings()
+                                            AppPage.Home, AppPage.Library -> viewModel.refreshGames()
+                                            AppPage.Stream -> Unit
+                                        }
+                                    },
                                     showChromeScrim = portraitChrome,
                                 ) {
                                     if (storeControlsInTopBar) {
-                                        if (tvProfile) {
-                                            StoreCatalogToolbar(
-                                                state = state,
-                                                onSortChange = viewModel::setCatalogSort,
-                                                onFilterToggle = viewModel::toggleCatalogFilter,
-                                                modifier = Modifier.widthIn(max = 220.dp),
-                                                compact = true,
-                                            )
-                                        } else {
-                                            Spacer(Modifier.weight(1f))
-                                            val filterOptions = rememberCatalogFilterOptions(
-                                                remember(state.catalogResult.filterGroups) {
-                                                    catalogVisibleFilterGroups(state.catalogResult.filterGroups)
-                                                },
-                                            )
-                                            CatalogSortFilterMenu(
-                                                sortOptions = state.catalogResult.sortOptions,
-                                                selectedSortId = state.catalogSortId,
-                                                filterOptions = filterOptions,
-                                                selectedFilterIds = state.catalogFilterIds,
-                                                onSortChange = viewModel::setCatalogSort,
-                                                onFilterToggle = viewModel::toggleCatalogFilter,
-                                                focusRequester = catalogFilterFocusRequester,
-                                                leadingFocusRequester = topBarProfileFocusRequester,
-                                            )
-                                        }
+                                        Spacer(Modifier.weight(1f))
+                                        val filterOptions = rememberCatalogFilterOptions(
+                                            remember(state.catalogResult.filterGroups) {
+                                                catalogVisibleFilterGroups(state.catalogResult.filterGroups)
+                                            },
+                                        )
+                                        CatalogSortFilterMenu(
+                                            sortOptions = state.catalogResult.sortOptions,
+                                            selectedSortId = state.catalogSortId,
+                                            filterOptions = filterOptions,
+                                            selectedFilterIds = state.catalogFilterIds,
+                                            onSortChange = viewModel::setCatalogSort,
+                                            onFilterToggle = viewModel::toggleCatalogFilter,
+                                            focusRequester = catalogFilterFocusRequester,
+                                            leadingFocusRequester = topBarProfileFocusRequester,
+                                        )
                                     } else if (libraryControlsInTopBar) {
                                         val orderedLibraryGames = remember(
                                             state.libraryGames,
@@ -1105,41 +1112,21 @@ private fun MainShell(
                                                 state.librarySortId,
                                             )
                                         }
-                                        val visibleLibraryGames = remember(orderedLibraryGames, state.librarySearch, state.libraryFilterIds) {
-                                            val searchTerms = searchTermsFor(state.librarySearch)
-                                            orderedLibraryGames.filter { game ->
-                                                gameMatchesSearch(game, searchTerms) &&
-                                                    gameMatchesLibraryFilters(game, state.libraryFilterIds)
-                                            }
-                                        }
                                         val touchFilterLabel = stringResource(R.string.catalog_filter_touch_controls)
                                         val libraryFilterOptions = remember(orderedLibraryGames, touchFilterLabel) {
                                             libraryStoreFilterOptions(orderedLibraryGames, touchFilterLabel)
                                         }
-                                        if (tvProfile) {
-                                            LibraryFilterControls(
-                                                gameCount = visibleLibraryGames.size,
-                                                totalCount = state.libraryGames.size,
-                                                options = libraryFilterOptions,
-                                                selectedIds = state.libraryFilterIds,
-                                                onToggle = viewModel::toggleLibraryFilter,
-                                                modifier = Modifier.widthIn(max = 190.dp),
-                                                compact = true,
-                                                showSelectedChips = false,
-                                            )
-                                        } else {
-                                            Spacer(Modifier.weight(1f))
-                                            CatalogSortFilterMenu(
-                                                sortOptions = librarySortOptions(),
-                                                selectedSortId = state.librarySortId,
-                                                filterOptions = libraryFilterOptions,
-                                                selectedFilterIds = state.libraryFilterIds,
-                                                onSortChange = viewModel::setLibrarySort,
-                                                onFilterToggle = viewModel::toggleLibraryFilter,
-                                                focusRequester = catalogFilterFocusRequester,
-                                                leadingFocusRequester = topBarProfileFocusRequester,
-                                            )
-                                        }
+                                        Spacer(Modifier.weight(1f))
+                                        CatalogSortFilterMenu(
+                                            sortOptions = librarySortOptions(),
+                                            selectedSortId = state.librarySortId,
+                                            filterOptions = libraryFilterOptions,
+                                            selectedFilterIds = state.libraryFilterIds,
+                                            onSortChange = viewModel::setLibrarySort,
+                                            onFilterToggle = viewModel::toggleLibraryFilter,
+                                            focusRequester = catalogFilterFocusRequester,
+                                            leadingFocusRequester = topBarProfileFocusRequester,
+                                        )
                                     }
                                 }
                             }
@@ -1158,7 +1145,7 @@ private fun MainShell(
                                         hideChromeWhenScrolled = phoneLandscapeChrome,
                                         controlsInTopBar = storeControlsInTopBar,
                                         topBarFocusRequester = catalogFilterFocusRequester.takeIf {
-                                            storeControlsInTopBar && !tvProfile
+                                            storeControlsInTopBar
                                         },
                                         searchRequested = visibleSearchTarget == SearchTarget.Store,
                                         onSearchDismissed = {
@@ -1173,7 +1160,7 @@ private fun MainShell(
                                         hideChromeWhenScrolled = phoneLandscapeChrome,
                                         controlsInTopBar = libraryControlsInTopBar,
                                         topBarFocusRequester = catalogFilterFocusRequester.takeIf {
-                                            libraryControlsInTopBar && !tvProfile
+                                            libraryControlsInTopBar
                                         },
                                         searchRequested = visibleSearchTarget == SearchTarget.Library,
                                         onSearchDismissed = {
@@ -1423,12 +1410,29 @@ internal fun shouldAnimateOpenNowAppIcon(
     codecReport: RuntimeCodecReport?,
     reduceMotion: Boolean,
     absoluteCinemaEnabled: Boolean,
+    androidTvProfile: Boolean = false,
+): Boolean {
+    if (reduceMotion) return false
+    if (androidTvProfile) return true
+    return absoluteCinemaEnabled &&
+        codecReport?.let { !it.lowPowerGpuProfile && !it.constrainedRuntimeProfile } == true
+}
+
+internal fun shouldShowTopStatusBar(
+    inStream: Boolean,
+    portraitChrome: Boolean,
+    phoneLandscapeChrome: Boolean,
+    phoneLandscapeScrollChromeHidden: Boolean,
+    tvProfile: Boolean,
 ): Boolean =
-    absoluteCinemaEnabled &&
-        !reduceMotion &&
-        codecReport != null &&
-        !codecReport.lowPowerGpuProfile &&
-        !codecReport.constrainedRuntimeProfile
+    !inStream && (
+        tvProfile ||
+            portraitChrome ||
+            (phoneLandscapeChrome && !phoneLandscapeScrollChromeHidden)
+        )
+
+internal fun shouldShowTvRefreshAction(tvProfile: Boolean, inStream: Boolean): Boolean =
+    tvProfile && !inStream
 
 internal fun shouldShowSettingsBackRail(
     tvProfile: Boolean,
@@ -1584,6 +1588,9 @@ private fun TopStatusBar(
     onOpenLocalApps: () -> Unit,
     onOpenStreamSettings: () -> Unit,
     musicControl: TopBarMusicControl,
+    showRefreshAction: Boolean = false,
+    refreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     showChromeScrim: Boolean = true,
     content: @Composable RowScope.() -> Unit = {},
 ) {
@@ -1626,6 +1633,10 @@ private fun TopStatusBar(
                 Spacer(Modifier.width(6.dp))
                 TopBarMusicButton(musicControl)
             }
+            if (showRefreshAction) {
+                Spacer(Modifier.width(6.dp))
+                TopBarRefreshButton(refreshing = refreshing, onRefresh = onRefresh)
+            }
             if (state.activeSession != null) {
                 Spacer(Modifier.width(6.dp))
                 ElevatedButton(
@@ -1636,6 +1647,50 @@ private fun TopStatusBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TopBarRefreshButton(
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(14.dp)
+    Box {
+        Surface(
+            shape = shape,
+            color = Color.White.copy(alpha = 0.1f),
+            tonalElevation = 0.dp,
+        ) {
+            IconButton(
+                onClick = onRefresh,
+                enabled = !refreshing,
+                modifier = Modifier
+                    .size(40.dp)
+                    .onFocusChanged { focused = it.isFocused },
+            ) {
+                if (refreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = TextPrimary,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = stringResource(R.string.action_refresh),
+                        tint = TextPrimary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
+        }
+        InteractionFocusFrame(
+            visible = focused,
+            cornerRadius = 14.dp,
+            cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
+        )
     }
 }
 
@@ -1695,6 +1750,7 @@ private fun TopBarProfileMenu(
                     codecReport = state.codecReport,
                     reduceMotion = LocalReduceMotion.current,
                     absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current,
+                    androidTvProfile = state.androidTvProfile,
                 ),
             )
             ControllerFocusFrame(

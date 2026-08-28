@@ -6,6 +6,14 @@ import org.junit.Test
 
 class StreamPacketLossTest {
     @Test
+    fun delayedStatsCallbacksAreRejected() {
+        assertEquals(true, isNewerStreamStatsSample(currentTimestampMs = 2_000.0, previousTimestampMs = 1_000.0))
+        assertEquals(false, isNewerStreamStatsSample(currentTimestampMs = 1_000.0, previousTimestampMs = 1_000.0))
+        assertEquals(false, isNewerStreamStatsSample(currentTimestampMs = 999.0, previousTimestampMs = 1_000.0))
+        assertEquals(false, isNewerStreamStatsSample(currentTimestampMs = Double.NaN, previousTimestampMs = 1_000.0))
+    }
+
+    @Test
     fun counterResetDoesNotBecomeAFalseLossSample() {
         assertNull(
             streamPacketDelta(

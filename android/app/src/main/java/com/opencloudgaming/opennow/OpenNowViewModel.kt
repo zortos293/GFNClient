@@ -396,14 +396,21 @@ internal fun OpenNowUiState.isNativeStreamReady(): Boolean =
 
 /**
  * Native-touch capability is a local catalogue filter, so mobile must inspect every server page
- * before applying it. Other mobile browsing remains bounded, and TV retains its smaller startup
- * budget even if a saved mobile filter is restored there.
+ * before applying it. Other mobile browsing remains bounded. TV keeps the smallest startup request,
+ * then uses the normal bounded budget for an explicit search or filter so scoped results are complete.
  */
-internal fun catalogPageLimit(androidTvProfile: Boolean, filterIds: List<String>): Int = when {
-    androidTvProfile -> 1
+internal fun catalogPageLimit(
+    androidTvProfile: Boolean,
+    filterIds: List<String>,
+    searchQuery: String = "",
+): Int = when {
+    androidTvProfile && searchQuery.isBlank() && filterIds.isEmpty() -> 1
+    androidTvProfile -> TV_SCOPED_CATALOG_REQUEST_PAGES
     CATALOG_FILTER_TOUCHSCREEN in filterIds -> MAX_CATALOG_REQUEST_PAGES
     else -> 3
 }
+
+private const val TV_SCOPED_CATALOG_REQUEST_PAGES = 3
 
 private fun List<GameInfo>.withHydratedGameDetails(details: GameInfo): List<GameInfo> {
     val detailsKey = gameTrackingKey(details)
@@ -732,7 +739,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             sortId = key.sortId,
                             filterIds = key.filterIds,
                         ),
-                        newlyAdded = if (androidTvProfile) null else catalogCacheStore.loadCatalog(
+                        newlyAdded = catalogCacheStore.loadCatalog(
                             userId = key.userId,
                             providerStreamingBaseUrl = key.baseUrl,
                             searchQuery = "",
@@ -3806,18 +3813,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         } else {
             officialCachedCatalog
         }
-        val cachedNewlyAdded = if (androidTvProfile) {
-            null
-        } else {
-            primed?.newlyAdded ?: withContext(Dispatchers.IO) {
-                catalogCacheStore.loadCatalog(
-                    userId = session.user.userId,
-                    providerStreamingBaseUrl = baseUrl,
-                    searchQuery = "",
-                    sortId = NEWLY_ADDED_CATALOG_SORT_ID,
-                    filterIds = emptyList(),
-                )
-            }
+        val cachedNewlyAdded = primed?.newlyAdded ?: withContext(Dispatchers.IO) {
+            catalogCacheStore.loadCatalog(
+                userId = session.user.userId,
+                providerStreamingBaseUrl = baseUrl,
+                searchQuery = "",
+                sortId = NEWLY_ADDED_CATALOG_SORT_ID,
+                filterIds = emptyList(),
+            )
         }
         val hasScopedCatalogQuery =
             isScopedCatalogQuery(initialCatalogSearch, initialCatalogSortId, initialCatalogFilterIds)
@@ -3909,6 +3912,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             maxPages = catalogPageLimit(
                                 androidTvProfile = androidTvProfile,
                                 filterIds = initialCatalogFilterIds,
+                                searchQuery = initialCatalogSearch,
                             ),
                             includeSupplementalPublicVariants = includeSupplementalPublicVariants,
                         ).also { catalog ->
@@ -3970,7 +3974,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         gfnThursdayGames.isNotEmpty() ->
                             catalogResultWithGfnThursdayGames(providerCatalog, gfnThursdayGames)
                         initialNewlyAddedQuery -> providerCatalog
-                        androidTvProfile -> null
                         else -> try {
                             withContext(Dispatchers.IO) {
                                 catalogRepository.browseCatalog(
@@ -4150,6 +4153,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                                 maxPages = catalogPageLimit(
                                     androidTvProfile = androidTvProfile,
                                     filterIds = filterIds,
+                                    searchQuery = searchQuery,
                                 ),
                                 includeSupplementalPublicVariants = !androidTvProfile,
                             )

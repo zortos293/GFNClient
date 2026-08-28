@@ -16,9 +16,23 @@ ApplicationWindow {
     property string activeRoute: AppController.route
     property bool geometryRestored: false
     readonly property bool settingsLoaded: Object.keys(ShellStore.settings || {}).length > 0
+    property bool consoleHeldByPad: false
+    property bool pointerRecentlyActive: false
+    property bool forceConsole: false
+    readonly property bool switchToConsoleOnPad: !settingsLoaded
+        || ShellStore.settings.switchToConsoleOnPad !== false
+    readonly property bool leaveConsoleOnPointer: !settingsLoaded
+        || ShellStore.settings.leaveConsoleOnPointer !== false
+    readonly property bool pointerHoldsDesktop: leaveConsoleOnPointer && pointerRecentlyActive
+        && LaunchModeOverride !== "console"
+        && !forceConsole
+    readonly property bool consolePreferred: LaunchModeOverride === "console"
+        || forceConsole
+        || (!pointerHoldsDesktop && (
+            (settingsLoaded && ShellStore.settings.launchInConsoleMode === true)
+            || (consoleHeldByPad && switchToConsoleOnPad)))
     readonly property bool desktopRequested: LaunchModeOverride === "desktop"
-        || (LaunchModeOverride !== "console" && settingsLoaded
-            && ShellStore.settings.launchInConsoleMode === false)
+        || (LaunchModeOverride !== "console" && !consolePreferred)
     readonly property bool desktopEligibleRoute: ["joining", "stream",
         "accounts", "profile-pin", "game-accounts", "persistent-storage", "media",
         "diagnostics", "updates", "feedback", "theme-store", "components"].indexOf(activeRoute) < 0
@@ -96,16 +110,53 @@ ApplicationWindow {
         if (AppController.route === "stream")
             ShellStore.setStreamInputPaused(shellOwnsInput)
     }
+    Timer {
+        id: pointerGrace
+        interval: 30000
+        repeat: false
+        onTriggered: window.pointerRecentlyActive = false
+    }
+
+    function requestConsoleSurface(enabled) {
+        window.pointerRecentlyActive = false
+        window.forceConsole = enabled
+        ShellStore.applySetting("launchInConsoleMode", enabled)
+        ShellStore.setSetting("launchInConsoleMode", enabled)
+        if (!enabled)
+            window.consoleHeldByPad = false
+        if (modeInitialized && window.desktopSurfaceActive !== window.targetDesktopSurface)
+            modeTransition.restart()
+    }
+
+    function notePointerInput() {
+        window.pointerRecentlyActive = true
+        pointerGrace.restart()
+        if (window.leaveConsoleOnPointer && LaunchModeOverride !== "console" && !window.forceConsole)
+            window.consoleHeldByPad = false
+    }
+
+    function syncPadHold() {
+        if (AppController.controllerCount > 0
+                && window.switchToConsoleOnPad
+                && !window.pointerRecentlyActive)
+            window.consoleHeldByPad = true
+    }
+
     Component.onCompleted: {
-        desktopSurfaceActive = targetDesktopSurface
+        syncPadHold()
         modeInitialized = true
+        if (window.desktopSurfaceActive !== window.targetDesktopSurface)
+            modeTransition.restart()
         syncInputOwnership()
         updateStreamSurface()
     }
 
     HoverHandler {
         acceptedDevices: PointerDevice.Mouse
-        onPointChanged: AppController.inputMode = "pointer"
+        onPointChanged: {
+            AppController.inputMode = "pointer"
+            window.notePointerInput()
+        }
     }
 
     function componentForRoute(route) {
@@ -167,11 +218,11 @@ ApplicationWindow {
     }
 
     FocusScope {
-        x: Math.round((window.width - width * scale) / 2)
-        y: Math.round((window.height - height * scale) / 2)
-        width: window.designWidth
-        height: window.designHeight
-        scale: window.designScale
+        x: window.desktopSurfaceActive ? 0 : Math.round((window.width - width * scale) / 2)
+        y: window.desktopSurfaceActive ? 0 : Math.round((window.height - height * scale) / 2)
+        width: window.desktopSurfaceActive ? window.width : window.designWidth
+        height: window.desktopSurfaceActive ? window.height : window.designHeight
+        scale: window.desktopSurfaceActive ? 1 : window.designScale
         transformOrigin: Item.TopLeft
         focus: true
 
@@ -245,7 +296,7 @@ ApplicationWindow {
 
         Keys.onPressed: event => {
             if (event.key === Qt.Key_F10) {
-                ShellStore.setSetting("launchInConsoleMode", window.desktopSurfaceActive)
+                window.requestConsoleSurface(window.desktopSurfaceActive)
                 event.accepted = true
             } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
                 event.accepted = AppController.goBack()
@@ -402,9 +453,14 @@ ApplicationWindow {
                     : qsTr("%1 overlay opened").arg(accessibilityAnnouncer.routeName(AppController.overlay)))
             }
             function onControllerCountChanged() {
+                window.syncPadHold()
                 accessibilityAnnouncer.announce(AppController.controllerCount === 0
                     ? qsTr("All controllers disconnected")
                     : qsTr("%1 controllers connected").arg(AppController.controllerCount))
+            }
+            function onInputModeChanged() {
+                if (AppController.inputMode === "pointer" || AppController.inputMode === "keyboard")
+                    window.notePointerInput()
             }
         }
         Connections {

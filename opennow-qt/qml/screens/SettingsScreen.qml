@@ -401,14 +401,13 @@ FocusScope {
             const regionValues = [""]
             const regionLabels = ["Automatic"]
             for (let index = 0; index < ShellStore.regions.length; ++index) {
-                regionValues.push(ShellStore.regions[index].name)
+                regionValues.push(ShellStore.regions[index].url)
                 const measured = ShellStore.regionPingResults[ShellStore.regions[index].url]
                 regionLabels.push(ShellStore.regions[index].name
                     + (measured === null || measured === undefined ? "" : " · " + measured + " ms"))
             }
             return [
                 choice("Region", ShellStore.regions.length ? qsTr("%1 streaming regions discovered").arg(ShellStore.regions.length) : "Sign in to discover available regions", "region", regionValues, regionLabels),
-                {t:"Connection test", d:ShellStore.regionPingMessage || "Bandwidth, latency, packet loss and jitter", v:ShellStore.regionPingRequestId === "" ? "Run test" : "Measuring…", action:"ping-regions"},
                 choice("Transport", "WebRTC is lowest latency; NVST uses the classic native protocol", "transportMode", ["webrtc","nvst"], ["WebRTC","Native NVST"], "segments"),
                 {t:"Proxy address", d:"HTTP(S), SOCKS4 or SOCKS5; credentials stay in the protected local settings file", v:root.proxyDisplay(settings.sessionProxyUrl), action:"proxy-url"},
                 toggle("Session proxy", "Use the configured community session proxy", "sessionProxyEnabled"),

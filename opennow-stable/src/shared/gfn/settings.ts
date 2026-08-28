@@ -124,6 +124,10 @@ export interface Settings {
   controllerModePromptDismissed: boolean;
   /** Request GeForce NOW's gamepad-friendly app launch mode for new sessions */
   launchInConsoleMode: boolean;
+  /** Switch the Qt shell to console when a pad is hot-plugged */
+  switchToConsoleOnPad: boolean;
+  /** Leave console shell on recent keyboard or mouse input */
+  leaveConsoleOnPointer: boolean;
   /** Show the "Who's playing?" profile picker when console mode starts */
   consoleProfilePickerOnLaunch: boolean;
   autoFullScreen: boolean;
@@ -319,6 +323,8 @@ export function createDefaultSettings(platform: string): Settings {
     controllerMode: false,
     controllerModePromptDismissed: false,
     launchInConsoleMode: false,
+    switchToConsoleOnPad: true,
+    leaveConsoleOnPointer: true,
     consoleProfilePickerOnLaunch: true,
     autoFullScreen: false,
     favoriteGameIds: [],

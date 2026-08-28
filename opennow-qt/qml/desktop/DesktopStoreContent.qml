@@ -5,8 +5,7 @@ import OpenNOW
 FocusScope {
     id: root
 
-    width: 1208
-    height: 804
+    anchors.fill: parent
     focus: true
     clip: true
 
@@ -27,108 +26,138 @@ FocusScope {
     signal searchRequested()
     signal messageRequested(string message)
 
-    readonly property var fallbackCatalog: [
-        { title:"Helldivers II", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/03HVWW89V2FPMAP5G1DJ7TM1CG.jpg" },
-        { title:"Elden Ring", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/0SVG3SN59REC38313F48EY0YSE.jpg" },
-        { title:"Palworld", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/1PAQY26TGSP3BSWZ941DS22P0Z.jpg" },
-        { title:"Satisfactory", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/230KEWXQY0V7X2PV75YSKMG0A2.jpg" },
-        { title:"Diablo IV", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/2MY41CFE0NMVNWR28TFW8CVFJ3.jpg" },
-        { title:"Marvel Rivals", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/7CKD11KP1QKR2J9MWTT588ZXPX.jpg" },
-        { title:"Baldur's Gate 3", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/0KQRAJ13TA66P3QHJXS3BQ4YEM.jpg" },
-        { title:"Doom Eternal", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/3MPF7BT46FVAMKRYXPCNW1E0QH.jpg" },
-        { title:"Hogwarts Legacy", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/1CTYH6TE5K9SMM9KTTRP80P1M1.jpg" },
-        { title:"Control", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/62SFJEAVHQ410MNWZCNPVDYT09.jpg" },
-        { title:"The Witcher 3", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/2M5WFA3P0KMAJMS1YP35REP6PX.jpg" },
-        { title:"Sea of Thieves", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/0B9HCRMKXGDM796X71PBBVH5CP.jpg" },
-        { title:"Celeste", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/3WP7HBET5XXSSH82CTDX01A9PB.jpg" },
-        { title:"Destiny 2", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/01KAKZH3C60FT0JRJF41ARWASW.jpg" },
-        { title:"Dead Cells", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/3WB7N0FW4DXSDM88CJXYC9BNM3.jpg" },
-        { title:"Hades II", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/18ZXXEK97VYSTZ0HZ2J4P87QKX.jpg" },
-        { title:"Stardew Valley", imageUrl:"https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/5QYBWM86X6VPW3YYM1HJHMXS80.jpg" }
-    ]
-
-    readonly property var newDescriptors: [
-        {title:"Helldivers II", storePrice:"€39.99", storeCategories:["new", "rtx"]},
-        {title:"Elden Ring", storePrice:"€29.99", storeDiscount:"-50%", storeCategories:["rtx"]},
-        {title:"Palworld", storePrice:"€26.99", storeCategories:["new"]},
-        {title:"Satisfactory", storePrice:"€34.99", storeCategories:["new"]},
-        {title:"Diablo IV", storePrice:"€41.99", storeDiscount:"-40%", storeCategories:["rtx"]},
-        {title:"Marvel Rivals", storeFree:true, storeCategories:["free"]},
-        {title:"Baldur's Gate 3", storeOwned:true},
-        {title:"Doom Eternal", storePrice:"€11.99", storeDiscount:"-70%"}
-    ]
-    readonly property var popularDescriptors: [
-        {title:"Hogwarts Legacy", storePrice:"€49.99"},
-        {title:"Control", storePrice:"€19.99"},
-        {title:"The Witcher 3", storePrice:"€9.99"},
-        {title:"Sea of Thieves", storePrice:"€39.99"},
-        {title:"Celeste", storePrice:"€8.99"},
-        {title:"Destiny 2", storeFree:true, storeCategories:["free"]},
-        {title:"Dead Cells", storePrice:"€24.99"},
-        {title:"Hades II", storePrice:"€29.99", storeCategories:["coming"]}
-    ]
-    readonly property var heroDescriptors: [
-        {title:"Dead Cells"}, {title:"Celeste"}, {title:"Stardew Valley"}, {title:"Sea of Thieves"}
-    ]
-    readonly property var heroGames: gamesFor(heroDescriptors, false)
-    readonly property var newGames: gamesFor(newDescriptors, true)
-    readonly property var popularGames: gamesFor(popularDescriptors, true)
-    readonly property var categories: [
-        {id:"featured", label:qsTr("Featured")},
-        {id:"new", label:qsTr("New releases")},
-        {id:"free", label:qsTr("Free to play")},
-        {id:"rtx", label:qsTr("RTX")},
-        {id:"coming", label:qsTr("Coming soon")}
-    ]
-    readonly property var genreOptions: optionsFor("genre")
-    readonly property var storeOptions: optionsFor("store")
+    readonly property int railInnerWidth: Math.max(200, content.width - 48)
+    readonly property int railCount: Math.max(1, Math.floor((root.railInnerWidth + 14) / (132 + 14)))
+    readonly property var filteredCatalog: root.buildFiltered(root.catalogGames, root.searchText, root.activeGenre, root.activeStore, root.activeCategoryId)
+    readonly property var heroGames: root.buildHero(root.filteredCatalog)
+    readonly property var newGames: root.buildNew(root.filteredCatalog, root.heroGames)
+    readonly property var popularGames: root.buildPopular(root.filteredCatalog, root.heroGames, root.newGames)
+    readonly property var categories: root.buildCategories(root.catalogGames)
+    readonly property var genreOptions: root.optionsFor("genre", root.catalogGames)
+    readonly property var storeOptions: root.optionsFor("store", root.catalogGames)
     readonly property var currentMenuOptions: openMenu === "genre" ? genreOptions : storeOptions
+    readonly property int catalogCount: Number(ShellStore.catalogTotalCount || (root.catalogGames || []).length)
+    readonly property string catalogState: ShellStore.catalogState
+    readonly property string catalogError: ShellStore.lastError
 
-    function fallbackByTitle(title) {
-        const key = String(title || "").toLowerCase()
-        for (let index = 0; index < fallbackCatalog.length; ++index) {
-            if (String(fallbackCatalog[index].title).toLowerCase() === key)
-                return fallbackCatalog[index]
+    function catalogList() {
+        return root.catalogGames || []
+    }
+
+    function isOwned(game) {
+        if (Boolean(game && (game.storeOwned || game.isInLibrary)))
+            return true
+        const variants = game && game.variants || []
+        for (let index = 0; index < variants.length; ++index) {
+            if (Boolean(variants[index].inLibrary))
+                return true
         }
-        return {title:title, imageUrl:""}
+        return false
     }
 
-    function catalogByTitle(title) {
-        const key = String(title || "").toLowerCase()
-        for (let index = 0; index < catalogGames.length; ++index) {
-            const candidate = catalogGames[index]
-            const candidateTitle = String(candidate && candidate.title || "").toLowerCase()
-            if (candidateTitle === key || candidateTitle.indexOf(key) >= 0 || key.indexOf(candidateTitle) >= 0)
-                return candidate
+    function looksFree(game) {
+        return Boolean(game && (game.storeFree === true || game.freeToPlay === true || game.isFree === true))
+    }
+
+    function catalogHasFreeFlag(games) {
+        const source = games || []
+        for (let index = 0; index < source.length; ++index) {
+            if (root.looksFree(source[index]))
+                return true
         }
-        return null
+        return false
     }
 
-    function decorate(descriptor) {
-        const fallback = fallbackByTitle(descriptor.title)
-        const catalog = catalogByTitle(descriptor.title)
-        return Object.assign({}, fallback, catalog || {}, descriptor)
+    function isRtx(game) {
+        const tags = game && game.storeCategories || []
+        for (let index = 0; index < tags.length; ++index) {
+            if (String(tags[index]).toLowerCase() === "rtx")
+                return true
+        }
+        const title = String(game && game.title || "").toLowerCase()
+        if (title.indexOf("rtx") >= 0)
+            return true
+        const genres = game && game.genres || []
+        for (let index = 0; index < genres.length; ++index) {
+            if (String(genres[index]).toLowerCase().indexOf("rtx") >= 0)
+                return true
+        }
+        const tech = game && game.nvidiaTech || []
+        for (let index = 0; index < tech.length; ++index) {
+            if (String(tech[index]).toLowerCase().indexOf("rtx") >= 0)
+                return true
+        }
+        return false
     }
 
-    function gamesFor(descriptors, applyFilters) {
+    function looksNew(game) {
+        const tags = game && game.storeCategories || []
+        for (let index = 0; index < tags.length; ++index) {
+            if (String(tags[index]).toLowerCase() === "new")
+                return true
+        }
+        return String(game && game.lastPlayed || "").length === 0
+    }
+
+    function looksComing(game) {
+        const tags = game && game.storeCategories || []
+        for (let index = 0; index < tags.length; ++index) {
+            if (String(tags[index]).toLowerCase() === "coming")
+                return true
+        }
+        const state = String(game && game.playabilityState || "").toLowerCase()
+        return state.indexOf("coming") >= 0 || state.indexOf("soon") >= 0 || state.indexOf("unreleased") >= 0
+    }
+
+    function catalogPrice(game) {
+        if (game && game.storePrice !== undefined && game.storePrice !== null && String(game.storePrice).length)
+            return String(game.storePrice)
+        if (game && game.price !== undefined && game.price !== null && String(game.price).length)
+            return String(game.price)
+        return qsTr("Available")
+    }
+
+    function catalogDiscount(game) {
+        if (game && game.storeDiscount !== undefined && game.storeDiscount !== null)
+            return String(game.storeDiscount)
+        if (game && game.discount !== undefined && game.discount !== null)
+            return String(game.discount)
+        return ""
+    }
+
+    function categoriesFor(game) {
+        const values = []
+        const tags = game && game.storeCategories || []
+        for (let index = 0; index < tags.length; ++index)
+            values.push(String(tags[index]))
+        if (root.isRtx(game) && values.indexOf("rtx") < 0)
+            values.push("rtx")
+        if (root.looksFree(game) && values.indexOf("free") < 0)
+            values.push("free")
+        if (root.looksNew(game) && values.indexOf("new") < 0)
+            values.push("new")
+        if (root.looksComing(game) && values.indexOf("coming") < 0)
+            values.push("coming")
+        return values
+    }
+
+    function decorate(game) {
+        if (!game)
+            return game
+        return Object.assign({}, game, {
+            storePrice: root.catalogPrice(game),
+            storeDiscount: root.catalogDiscount(game),
+            storeFree: root.looksFree(game),
+            storeOwned: root.isOwned(game),
+            storeCategories: root.categoriesFor(game)
+        })
+    }
+
+    function decorateList(games) {
         const result = []
-        for (let index = 0; index < descriptors.length; ++index) {
-            const game = decorate(descriptors[index])
-            if (!applyFilters || matchesFilters(game))
-                result.push(game)
-        }
-
-        if (applyFilters && filtersAreActive() && result.length < 8) {
-            for (let index = 0; index < catalogGames.length && result.length < 8; ++index) {
-                const candidate = catalogGames[index]
-                if (!matchesFilters(candidate) || containsIdentity(result, candidate))
-                    continue
-                result.push(Object.assign({}, candidate, {
-                    storePrice: qsTr("Available"),
-                    storeOwned: isOwned(candidate)
-                }))
-            }
-        }
+        const source = games || []
+        for (let index = 0; index < source.length; ++index)
+            result.push(root.decorate(source[index]))
         return result
     }
 
@@ -136,15 +165,6 @@ FocusScope {
         const identity = String(candidate && (candidate.uuid || candidate.id || candidate.title) || "")
         for (let index = 0; index < games.length; ++index) {
             if (String(games[index] && (games[index].uuid || games[index].id || games[index].title) || "") === identity)
-                return true
-        }
-        return false
-    }
-
-    function isOwned(game) {
-        const variants = game && game.variants || []
-        for (let index = 0; index < variants.length; ++index) {
-            if (Boolean(variants[index].inLibrary))
                 return true
         }
         return false
@@ -164,46 +184,133 @@ FocusScope {
         return values
     }
 
-    function matchesFilters(game) {
-        const query = searchText.trim().toLowerCase()
+    function matchesSearchAndFacets(game, query, genre, store) {
         if (query.length && String(game && game.title || "").toLowerCase().indexOf(query) < 0)
             return false
-        if (activeGenre !== qsTr("All")) {
+        if (genre !== qsTr("All")) {
             const genres = game && game.genres || []
             let genreFound = false
             for (let index = 0; index < genres.length; ++index)
-                genreFound = genreFound || String(genres[index]).toLowerCase() === activeGenre.toLowerCase()
+                genreFound = genreFound || String(genres[index]).toLowerCase() === genre.toLowerCase()
             if (!genreFound)
                 return false
         }
-        if (activeStore !== qsTr("All")) {
-            const stores = storesFor(game)
+        if (store !== qsTr("All")) {
+            const stores = root.storesFor(game)
             let storeFound = false
             for (let index = 0; index < stores.length; ++index)
-                storeFound = storeFound || stores[index].toLowerCase() === activeStore.toLowerCase()
+                storeFound = storeFound || stores[index].toLowerCase() === store.toLowerCase()
             if (!storeFound)
-                return false
-        }
-        if (activeCategoryId === "free" && !Boolean(game && game.storeFree))
-            return false
-        if (activeCategoryId !== "featured" && activeCategoryId !== "free") {
-            const tags = game && game.storeCategories || []
-            if (tags.length > 0 && tags.indexOf(activeCategoryId) < 0)
                 return false
         }
         return true
     }
 
-    function filtersAreActive() {
-        return searchText.trim().length > 0 || activeCategoryId !== "featured"
-                || activeGenre !== qsTr("All") || activeStore !== qsTr("All")
+    function matchesCategory(game, categoryId) {
+        if (categoryId === "featured")
+            return true
+        if (categoryId === "rtx")
+            return root.isRtx(game)
+        if (categoryId === "free")
+            return root.looksFree(game)
+        if (categoryId === "new")
+            return root.looksNew(game)
+        if (categoryId === "coming")
+            return root.looksComing(game)
+        return true
     }
 
-    function optionsFor(kind) {
+    function buildFiltered(games, searchText, genre, store, categoryId) {
+        const query = String(searchText || "").trim().toLowerCase()
+        const source = games || []
+        const result = []
+        for (let index = 0; index < source.length; ++index) {
+            const game = source[index]
+            if (!root.matchesSearchAndFacets(game, query, genre, store))
+                continue
+            if (!root.matchesCategory(game, categoryId))
+                continue
+            result.push(game)
+        }
+        return result
+    }
+
+    function takeSlice(source, start, count) {
+        const result = []
+        const list = source || []
+        for (let index = start; index < list.length && result.length < count; ++index)
+            result.push(list[index])
+        return result
+    }
+
+    function takeWithout(source, excluded, count) {
+        const result = []
+        const list = source || []
+        for (let index = 0; index < list.length && result.length < count; ++index) {
+            if (root.containsIdentity(excluded, list[index]))
+                continue
+            result.push(list[index])
+        }
+        return result
+    }
+
+    function buildHero(filtered) {
+        return root.decorateList(root.takeSlice(filtered, 0, 4))
+    }
+
+    function buildNew(filtered, heroGames) {
+        const unplayed = []
+        const list = filtered || []
+        for (let index = 0; index < list.length; ++index) {
+            if (String(list[index] && list[index].lastPlayed || "").length === 0)
+                unplayed.push(list[index])
+        }
+        const lastAdded = root.takeSlice(list, Math.max(0, list.length - root.railCount), root.railCount)
+        const pool = unplayed.length ? unplayed : lastAdded
+        let result = root.takeWithout(pool, heroGames, root.railCount)
+        if (!result.length)
+            result = root.takeSlice(list, 4, root.railCount)
+        if (!result.length)
+            result = root.takeSlice(list, 0, root.railCount)
+        return root.decorateList(result)
+    }
+
+    function buildPopular(filtered, heroGames, newGames) {
+        const excluded = (heroGames || []).concat(newGames || [])
+        const played = []
+        const list = filtered || []
+        for (let index = 0; index < list.length; ++index) {
+            if (String(list[index] && list[index].lastPlayed || "").length > 0)
+                played.push(list[index])
+        }
+        let result = root.takeWithout(played.length ? played : list, excluded, root.railCount)
+        if (!result.length)
+            result = root.takeSlice(list, 4 + root.railCount, root.railCount)
+        if (!result.length)
+            result = root.takeWithout(list, excluded, root.railCount)
+        if (!result.length)
+            result = root.takeSlice(list, 0, root.railCount)
+        return root.decorateList(result)
+    }
+
+    function buildCategories(games) {
+        const list = [
+            {id: "featured", label: qsTr("Featured")},
+            {id: "new", label: qsTr("New releases")}
+        ]
+        if (root.catalogHasFreeFlag(games))
+            list.push({id: "free", label: qsTr("Free to play")})
+        list.push({id: "rtx", label: qsTr("RTX")})
+        list.push({id: "coming", label: qsTr("Coming soon")})
+        return list
+    }
+
+    function optionsFor(kind, games) {
         const values = [qsTr("All")]
-        for (let gameIndex = 0; gameIndex < catalogGames.length; ++gameIndex) {
-            const game = catalogGames[gameIndex]
-            const candidates = kind === "genre" ? (game.genres || []) : storesFor(game)
+        const source = games || []
+        for (let gameIndex = 0; gameIndex < source.length; ++gameIndex) {
+            const game = source[gameIndex]
+            const candidates = kind === "genre" ? (game.genres || []) : root.storesFor(game)
             for (let index = 0; index < candidates.length; ++index) {
                 const value = String(candidates[index]).trim()
                 if (value.length && values.indexOf(value) < 0)
@@ -254,6 +361,13 @@ FocusScope {
             gameSelected(games[Math.min(focusIndex, games.length - 1)])
     }
 
+    function syncFreeCategory() {
+        if (root.activeCategoryId === "free" && !root.catalogHasFreeFlag(root.catalogGames)) {
+            root.activeCategoryId = "featured"
+            root.activeCategory = qsTr("Featured")
+        }
+    }
+
     Keys.onPressed: event => {
         if (root.openMenu.length && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
             const option = root.currentMenuOptions[Math.min(root.menuIndex, Math.max(0, root.currentMenuOptions.length - 1))]
@@ -298,7 +412,7 @@ FocusScope {
         id: content
         anchors.fill: parent
         contentWidth: width
-        contentHeight: 882
+        contentHeight: Math.max(height, popularShelf.y + popularShelf.height + 24)
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
@@ -307,6 +421,7 @@ FocusScope {
             id: hero
             x: 24
             y: 18
+            width: root.railInnerWidth
             games: root.heroGames
             selectedAction: root.focusZone === "hero" ? root.focusIndex : -1
             onActionPointed: index => root.selectZone("hero", index)
@@ -318,6 +433,7 @@ FocusScope {
             id: chips
             x: 24
             y: 258
+            width: root.railInnerWidth
             height: 30
             spacing: 8
 
@@ -346,6 +462,7 @@ FocusScope {
             }
 
             DesktopStoreChip {
+                id: genreChip
                 text: root.activeGenre === qsTr("All") ? qsTr("Genres") : root.activeGenre
                 hasMenu: true
                 selected: root.openMenu === "genre"
@@ -358,6 +475,7 @@ FocusScope {
             }
 
             DesktopStoreChip {
+                id: storeChip
                 text: root.activeStore === qsTr("All") ? qsTr("Stores") : root.activeStore
                 hasMenu: true
                 selected: root.openMenu === "store"
@@ -374,7 +492,9 @@ FocusScope {
             anchors.right: parent.right
             anchors.rightMargin: 24
             y: 267
-            text: qsTr("PRICES FROM LINKED STORES")
+            text: root.catalogCount > 0 ? qsTr("%1 games in catalog").arg(root.catalogCount)
+                                        : (root.catalogState === "error" ? qsTr("Catalog unavailable")
+                                                                        : qsTr("Live catalog"))
             color: Qt.rgba(1, 1, 1, 0.32)
             font.family: Theme.monoFont
             font.pixelSize: 10
@@ -386,8 +506,9 @@ FocusScope {
             id: newShelf
             x: 24
             y: 304
-            title: qsTr("New this week")
-            seeAllText: qsTr("See all 24")
+            width: root.railInnerWidth
+            title: qsTr("Recently added")
+            seeAllText: root.filteredCatalog.length ? qsTr("See all %1").arg(root.filteredCatalog.length) : qsTr("See all")
             games: root.newGames
             active: root.focusZone === "new"
             selectedIndex: root.focusIndex
@@ -399,9 +520,9 @@ FocusScope {
         DesktopStoreShelf {
             id: popularShelf
             x: 24
-            y: 601
-            title: qsTr("Popular in the cloud")
-            eyebrow: qsTr("LAST 7 DAYS")
+            y: newShelf.y + newShelf.height + 16
+            width: root.railInnerWidth
+            title: qsTr("More from the catalog")
             games: root.popularGames
             active: root.focusZone === "popular"
             selectedIndex: root.focusIndex
@@ -416,8 +537,8 @@ FocusScope {
         z: 400
         visible: true
         enabled: root.openMenu.length > 0
-        x: root.openMenu === "genre" ? 481 : 574
-        y: 294 - content.contentY
+        x: chips.x + (root.openMenu === "genre" ? genreChip.x : storeChip.x)
+        y: chips.y + chips.height + 6 - content.contentY
         width: 178
         height: menuColumn.height + 12
         radius: 11
@@ -484,7 +605,9 @@ FocusScope {
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: qsTr("No games match these filters")
+            text: root.catalogList().length === 0
+                  ? (root.catalogState === "error" ? qsTr("Catalog unavailable") : qsTr("Loading the live catalog…"))
+                  : qsTr("No games match these filters")
             color: "#FFFFFF"
             font.family: Theme.displayFont
             font.pixelSize: 22
@@ -492,7 +615,9 @@ FocusScope {
         }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: qsTr("Try another category, genre, store, or search.")
+            text: root.catalogList().length === 0
+                  ? (root.catalogState === "error" ? (root.catalogError || qsTr("Try again in a moment.")) : qsTr("NVIDIA’s public list is loading."))
+                  : qsTr("Try another category, genre, store, or search.")
             color: Qt.rgba(1, 1, 1, 0.58)
             font.family: Theme.bodyFont
             font.pixelSize: 13
@@ -506,5 +631,9 @@ FocusScope {
         easing.type: Easing.OutCubic
     }
 
-    Component.onCompleted: forceActiveFocus()
+    onCatalogGamesChanged: root.syncFreeCategory()
+    Component.onCompleted: {
+        root.syncFreeCategory()
+        root.forceActiveFocus()
+    }
 }

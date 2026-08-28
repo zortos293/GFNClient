@@ -8,7 +8,9 @@ FocusScope {
     id: root
 
     readonly property string pageTitle: qsTr("Home")
-    readonly property string pageSubtitle: qsTr("3 friends online")
+    readonly property string pageSubtitle: ShellStore.catalogTotalCount
+        ? qsTr("%1 games").arg(ShellStore.catalogTotalCount)
+        : qsTr("Your library")
     property int focusZone: 0
     property int focusIndex: 0
     property bool active: true
@@ -16,105 +18,79 @@ FocusScope {
     signal routeRequested(string route)
     signal gameRequested(var game)
 
-    width: 1208
-    height: 804
+    anchors.fill: parent
     focus: active
     clip: true
     Accessible.role: Accessible.Pane
     Accessible.name: pageTitle
 
-    readonly property var fallbackGames: [
-        { id: "desktop-cyberpunk", title: "Cyberpunk 2077", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/62SFJEAVHQ410MNWZCNPVDYT09.jpg", heroImageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/27G0GQ44XWDM79Z64SSA5Z89F6.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-elden-ring", title: "Elden Ring", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/0SVG3SN59REC38313F48EY0YSE.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-control", title: "Control Ultimate Edition", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/62SFJEAVHQ410MNWZCNPVDYT09.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-helldivers", title: "HELLDIVERS 2", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/03HVWW89V2FPMAP5G1DJ7TM1CG.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-baldurs-gate", title: "Baldur's Gate 3", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/0KQRAJ13TA66P3QHJXS3BQ4YEM.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-doom-eternal", title: "DOOM Eternal", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/3MPF7BT46FVAMKRYXPCNW1E0QH.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-sea-of-thieves", title: "Sea of Thieves", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/0B9HCRMKXGDM796X71PBBVH5CP.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-dead-cells", title: "Dead Cells", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/3WB7N0FW4DXSDM88CJXYC9BNM3.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-destiny", title: "Destiny 2", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/01KAKZH3C60FT0JRJF41ARWASW.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-hogwarts", title: "Hogwarts Legacy", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/1CTYH6TE5K9SMM9KTTRP80P1M1.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-satisfactory", title: "Satisfactory", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/230KEWXQY0V7X2PV75YSKMG0A2.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-marvel-rivals", title: "Marvel Rivals", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/7CKD11KP1QKR2J9MWTT588ZXPX.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-palworld", title: "Palworld", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/1PAQY26TGSP3BSWZ941DS22P0Z.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-diablo", title: "Diablo IV", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/2MY41CFE0NMVNWR28TFW8CVFJ3.jpg", availableStores: ["BATTLE.NET"] },
-        { id: "desktop-terraria", title: "Terraria", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/5F1KTMMEZ8W4V5ED1XY9HV12CY.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-hollow-knight", title: "Hollow Knight", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/5VY2YWMSRW97346Y25TAQT9CCE.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-celeste", title: "Celeste", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/3WP7HBET5XXSSH82CTDX01A9PB.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-stardew", title: "Stardew Valley", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/5QYBWM86X6VPW3YYM1HJHMXS80.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-new-2", title: "No Man's Sky", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/040Q987G519SZNRQAA3FC1J1JQ.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-new-3", title: "The Witcher 3", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/2M5WFA3P0KMAJMS1YP35REP6PX.jpg", availableStores: ["STEAM"] },
-        { id: "desktop-new-4", title: "Warframe", imageUrl: "https://app.paper.design/file-assets/01M11SPTRPMYQB9S9AX948A6WH/18ZXXEK97VYSTZ0HZ2J4P87QKX.jpg", availableStores: ["STEAM"] }
-    ]
-
-    readonly property var games: ShellStore.catalogGames && ShellStore.catalogGames.length > 0
-        ? ShellStore.catalogGames : fallbackGames
-    readonly property var heroGame: findGame("Cyberpunk 2077", 0)
-    readonly property var jumpGames: preferredGames([
-        "Elden Ring", "Control", "HELLDIVERS 2", "Baldur's Gate 3", "DOOM Eternal",
-        "Sea of Thieves", "Dead Cells", "Destiny 2", "Hogwarts Legacy"
-    ], 1)
-    readonly property var friendsGames: preferredGames([
-        "HELLDIVERS 2", "Elden Ring", "Satisfactory", "Marvel Rivals", "Palworld",
-        "Diablo IV", "Terraria", "Hollow Knight", "Celeste"
-    ], 3)
-    readonly property var newGames: preferredGames([
-        "Stardew Valley", "No Man's Sky", "The Witcher 3", "Warframe", "Sea of Thieves",
-        "DOOM", "Baldur's Gate 3", "Dead Cells", "Hogwarts Legacy"
-    ], 17)
-    readonly property var friends: [
-        { initial: "M", name: "Mika", status: "In Elden Ring · 1 h", action: "Join" },
-        { initial: "S", name: "Sam", status: "In party · idle", action: "Invite" },
-        { initial: "N", name: "Nova", status: "In Helldivers II · 22 m", action: "Join" }
-    ]
-
-    function findGame(title, fallbackIndex) {
-        const wanted = String(title || "").toLocaleLowerCase()
-        for (let index = 0; index < root.games.length; ++index) {
-            const candidate = root.games[index]
-            const candidateTitle = String(candidate.title || "").toLocaleLowerCase()
-            if (candidateTitle === wanted || candidateTitle.indexOf(wanted) >= 0)
-                return candidate
+    readonly property var games: ShellStore.catalogGames || []
+    readonly property var sortedRecent: {
+        const list = (root.games || []).slice()
+        list.sort((left, right) => String(right.lastPlayed || "").localeCompare(String(left.lastPlayed || "")))
+        return list
+    }
+    readonly property var heroGame: root.sortedRecent.length ? root.sortedRecent[0] : null
+    readonly property var jumpGames: root.takeGames(root.sortedRecent, 1, 12)
+    readonly property var favoriteGames: {
+        const list = []
+        for (let i = 0; i < root.games.length; ++i) {
+            if (ShellStore.isFavorite(root.games[i]))
+                list.push(root.games[i])
         }
-        return root.games.length > 0 ? root.games[fallbackIndex % root.games.length] : null
+        return list.length ? list : root.takeGames(root.games, 0, 12)
+    }
+    readonly property var newGames: root.takeGames(root.games, Math.max(0, root.games.length - 12), 12)
+    readonly property bool friendsAvailable: Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
+    readonly property int railGap: 14
+    readonly property int railInnerWidth: Math.max(200, contentFlick.width - 48)
+    readonly property int homeTileCount: {
+        const fit = Math.max(5, Math.floor((root.railInnerWidth + root.railGap) / (112 + root.railGap)))
+        return Math.max(1, Math.min(fit, 10))
+    }
+    readonly property int homeTileWidth: Math.max(112, Math.floor((root.railInnerWidth - root.railGap * (root.homeTileCount - 1)) / root.homeTileCount))
+    readonly property int homeTileHeight: Math.round(root.homeTileWidth * 168 / 112)
+
+    function takeGames(source, start, limit) {
+        const list = source || []
+        const result = []
+        for (let index = start; index < list.length && result.length < limit; ++index)
+            result.push(list[index])
+        return result
     }
 
-    function preferredGames(titles, fallbackOffset) {
-        const result = []
-        const identities = []
-        for (let titleIndex = 0; titleIndex < titles.length; ++titleIndex) {
-            const game = root.findGame(titles[titleIndex], fallbackOffset + titleIndex)
-            if (!game)
-                continue
-            const identity = ShellStore.gameIdentity(game) || String(game.title || titleIndex)
-            if (identities.indexOf(identity) >= 0) {
-                const replacement = root.games[(fallbackOffset + titleIndex) % root.games.length]
-                const replacementIdentity = ShellStore.gameIdentity(replacement) || String(replacement.title || titleIndex)
-                if (identities.indexOf(replacementIdentity) < 0) {
-                    result.push(replacement)
-                    identities.push(replacementIdentity)
-                }
-            } else {
-                result.push(game)
-                identities.push(identity)
-            }
-        }
-        let scanIndex = 0
-        while (result.length < 9 && result.length < root.games.length && scanIndex < root.games.length) {
-            const candidate = root.games[(fallbackOffset + scanIndex) % root.games.length]
-            const identity = ShellStore.gameIdentity(candidate) || String(candidate.title || result.length)
-            if (identities.indexOf(identity) < 0) {
-                result.push(candidate)
-                identities.push(identity)
-            }
-            ++scanIndex
-        }
-        return result
+    function heroMeta() {
+        const game = root.heroGame
+        if (!game)
+            return qsTr("Sign in and sync your library to continue a game.")
+        const last = String(game.lastPlayed || "")
+        const hours = game.hoursPlayed ? qsTr("%1 h played").arg(game.hoursPlayed) : ""
+        if (last !== "" && hours !== "")
+            return last + " · " + hours
+        if (last !== "")
+            return last
+        if (hours !== "")
+            return hours
+        return qsTr("Ready to stream from your library")
+    }
+
+    function streamChip() {
+        const res = String(ShellStore.settings.resolution || "")
+        const fps = Number(ShellStore.settings.fps || 0)
+        const codec = String(ShellStore.settings.codec || "auto").toUpperCase()
+        const parts = []
+        if (res.indexOf("x") > 0)
+            parts.push(res.split("x")[1] + "p")
+        if (fps > 0)
+            parts.push(fps + " fps")
+        if (codec !== "")
+            parts.push(codec)
+        return parts.length ? parts.join(" · ") : qsTr("Stream ready")
     }
 
     function zoneGames(zone) {
         if (zone === 1) return root.jumpGames
-        if (zone === 2) return root.friendsGames
+        if (zone === 2) return root.favoriteGames
         return root.newGames
     }
 
@@ -131,8 +107,10 @@ FocusScope {
                 contentFlick.contentY = 0
             return
         }
-        const zoneTop = root.focusZone === 2 ? 510 : 724
-        const zoneBottom = zoneTop + 198
+        const zoneTop = root.focusZone === 2
+            ? (heroRow.height + 18 + jumpRail.height + 18)
+            : (heroRow.height + 18 + jumpRail.height + 18 + playingRail.height + 18)
+        const zoneBottom = zoneTop + 30 + root.homeTileHeight
         if (zoneBottom > contentFlick.contentY + contentFlick.height - 12)
             contentFlick.contentY = Math.min(contentFlick.contentHeight - contentFlick.height,
                                              zoneBottom - contentFlick.height + 12)
@@ -216,7 +194,7 @@ FocusScope {
         id: contentFlick
         anchors.fill: parent
         contentWidth: width
-        contentHeight: 922
+        contentHeight: Math.max(height, homeColumn.implicitHeight + 28)
         clip: true
         interactive: true
         boundsBehavior: Flickable.StopAtBounds
@@ -224,16 +202,16 @@ FocusScope {
         maximumFlickVelocity: 2200
         Accessible.role: Accessible.Pane
 
-        Item {
-            id: content
-            width: contentFlick.width
-            height: contentFlick.contentHeight
+        Column {
+            id: homeColumn
+            x: 24
+            y: 18
+            width: contentFlick.width - 48
+            spacing: 18
 
             Item {
                 id: heroRow
-                x: 24
-                y: 18
-                width: 1160
+                width: parent.width
                 height: 262
 
                 Rectangle {
@@ -247,9 +225,10 @@ FocusScope {
 
                 Item {
                     id: heroCard
-                    x: 0
-                    y: 0
-                    width: 826
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.right: friendsPanel.left
+                    anchors.rightMargin: 16
                     height: 262
                     layer.enabled: true
                     layer.smooth: true
@@ -267,8 +246,7 @@ FocusScope {
                     Rectangle { anchors.fill: parent; color: "#171B27" }
                     Image {
                         anchors.fill: parent
-                        source: root.heroGame
-                            ? String(root.heroGame.heroImageUrl || root.heroGame.imageUrl || "") : ""
+                        source: DesktopTokens.artworkUrl(root.heroGame, true)
                         fillMode: Image.PreserveAspectCrop
                         sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
                         asynchronous: true
@@ -309,7 +287,7 @@ FocusScope {
                         Column {
                             spacing: 6
                             Text {
-                                text: root.heroGame ? String(root.heroGame.title || qsTr("Cyberpunk 2077")) : qsTr("Cyberpunk 2077")
+                                text: root.heroGame ? String(root.heroGame.title || qsTr("Game")) : qsTr("No games yet")
                                 color: "#FFFFFF"
                                 font.family: Theme.displayFont
                                 font.pixelSize: 34
@@ -317,7 +295,7 @@ FocusScope {
                                 font.letterSpacing: -1
                             }
                             Text {
-                                text: qsTr("Left off 2 hours ago · 14 h played · Phantom Liberty")
+                                text: root.heroMeta()
                                 color: "#B8FFFFFF"
                                 font.family: Theme.bodyFont
                                 font.pixelSize: 13
@@ -340,7 +318,7 @@ FocusScope {
                                 Row {
                                     anchors.centerIn: parent
                                     spacing: 8
-                                    Text { text: "▶"; color: "#0B0F1A"; font.pixelSize: 11 }
+                                    DesktopGlyph { width: 10; height: 12; icon: "desktop-play.svg" }
                                     Text { text: qsTr("Resume"); color: "#0B0F1A"; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.ExtraBold }
                                     Rectangle {
                                         width: 41; height: 19; radius: 5; color: "#1A0B0F1A"
@@ -376,7 +354,7 @@ FocusScope {
                                     anchors.centerIn: parent
                                     spacing: 8
                                     Rectangle { width: 6; height: 6; radius: 3; color: "#1DB954" }
-                                    Text { text: qsTr("RTX 5080 · 1440p · AV1"); color: "#CCFFFFFF"; font.family: Theme.monoFont; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+                                    Text { text: root.streamChip(); color: "#CCFFFFFF"; font.family: Theme.monoFont; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
                                 }
                             }
                         }
@@ -385,9 +363,9 @@ FocusScope {
 
                 Rectangle {
                     id: friendsPanel
-                    x: 842
+                    anchors.right: parent.right
                     y: 0
-                    width: 318
+                    width: Math.max(260, Math.min(318, parent.width * 0.28))
                     height: 262
                     radius: 16
                     color: "#C70B0F1A"
@@ -404,7 +382,7 @@ FocusScope {
                     }
                     Text {
                         anchors.right: parent.right; anchors.rightMargin: 16; y: 17
-                        text: qsTr("3 ONLINE")
+                        text: root.friendsAvailable ? qsTr("LIVE") : qsTr("UNAVAILABLE")
                         color: "#80FFFFFF"
                         font.family: Theme.monoFont
                         font.pixelSize: 10
@@ -412,66 +390,34 @@ FocusScope {
                         font.letterSpacing: 0.4
                     }
 
-                    Repeater {
-                        model: root.friends
-                        Item {
-                            id: friendRow
-                            required property var modelData
-                            required property int index
-                            x: 16
-                            y: 44 + index * 54
-                            width: 286
-                            height: 44
-
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: 11
-                                color: friendRow.index === 0 ? "#0FFFFFFF" : "transparent"
-                                border.width: root.focusZone === 0 && root.focusIndex === friendRow.index + 2 && AppController.inputMode !== "pointer" ? 2 : 0
-                                border.color: "#FFFFFF"
-                            }
-                            Rectangle {
-                                x: 10; anchors.verticalCenter: parent.verticalCenter
-                                width: 28; height: 28; radius: 14
-                                color: friendRow.index === 0 ? "#1FFFFFFF" : "#14FFFFFF"
-                                border.width: 1
-                                border.color: friendRow.index === 0 ? "#29FFFFFF" : "#1FFFFFFF"
-                                Text { anchors.centerIn: parent; text: friendRow.modelData.initial; color: friendRow.index === 0 ? "#E0FFFFFF" : "#B8FFFFFF"; font.family: Theme.displayFont; font.pixelSize: 12; font.weight: Font.Black }
-                            }
-                            Column {
-                                x: 48; anchors.verticalCenter: parent.verticalCenter; spacing: 1
-                                Text { text: friendRow.modelData.name; color: friendRow.index === 0 ? "#E0FFFFFF" : "#CCFFFFFF"; font.family: Theme.bodyFont; font.pixelSize: 13; font.weight: Font.Bold }
-                                Text { text: friendRow.modelData.status; color: "#80FFFFFF"; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Medium }
-                            }
-                            Rectangle {
-                                anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
-                                width: friendRow.modelData.action === "Invite" ? 51 : 44
-                                height: 26
-                                radius: 8
-                                color: friendHover.hovered ? "#26FFFFFF" : (friendRow.index === 0 ? "#1FFFFFFF" : "#14FFFFFF")
-                                border.width: friendRow.index === 0 ? 1 : 0
-                                border.color: "#2EFFFFFF"
-                                Text { anchors.centerIn: parent; text: friendRow.modelData.action; color: friendRow.index === 0 ? "#FFFFFF" : "#B8FFFFFF"; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: friendRow.index === 0 ? Font.Bold : Font.DemiBold }
-                            }
-                            HoverHandler { id: friendHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, friendRow.index + 2) }
-                            TapHandler { onTapped: root.openFriends() }
-                        }
+                    Text {
+                        x: 16
+                        y: 52
+                        width: parent.width - 32
+                        wrapMode: Text.WordWrap
+                        text: root.friendsAvailable
+                            ? qsTr("Your provider friends list is ready.")
+                            : (ShellStore.socialCapabilities.reason || qsTr("GeForce NOW does not expose a friends API OpenNOW can use."))
+                        color: "#99FFFFFF"
+                        font.family: Theme.bodyFont
+                        font.pixelSize: 12
+                        lineHeight: 1.4
                     }
 
                     Rectangle {
                         id: partyButton
                         x: 16; y: 216
-                        width: 286; height: 34; radius: 10
+                        width: parent.width - 32; height: 34; radius: 10
                         color: partyHover.hovered ? "#17FFFFFF" : "#0FFFFFFF"
                         border.width: root.focusZone === 0 && root.focusIndex === 5 && AppController.inputMode !== "pointer" ? 2 : 1
                         border.color: root.focusZone === 0 && root.focusIndex === 5 && AppController.inputMode !== "pointer" ? "#FFFFFF" : "#1FFFFFFF"
-                        Row {
-                            anchors.centerIn: parent; spacing: 8
-                            Text { text: qsTr("Start a co-op party"); color: "#CCFFFFFF"; font.family: Theme.bodyFont; font.pixelSize: 12; font.weight: Font.Bold }
-                            Rectangle {
-                                width: 43; height: 18; radius: 5; color: "#17FFFFFF"
-                                Text { anchors.centerIn: parent; text: qsTr("Ctrl P"); color: "#99FFFFFF"; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold }
-                            }
+                        Text {
+                            anchors.centerIn: parent
+                            text: qsTr("Open friends")
+                            color: "#CCFFFFFF"
+                            font.family: Theme.bodyFont
+                            font.pixelSize: 12
+                            font.weight: Font.Bold
                         }
                         HoverHandler { id: partyHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, 5) }
                         TapHandler { onTapped: root.openFriends() }
@@ -482,24 +428,27 @@ FocusScope {
 
             Item {
                 id: jumpRail
-                x: 24; y: 296; width: 1160; height: 198
+                width: parent.width
+                height: 30 + root.homeTileHeight
                 Text { text: qsTr("Jump back in"); color: "#FFFFFF"; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black; font.letterSpacing: -0.2 }
                 Text {
                     anchors.right: parent.right; y: 1
-                    text: qsTr("See all 9  ›")
+                    text: qsTr("See all %1  ›").arg(root.games.length)
                     color: seeJump.hovered ? "#B8FFFFFF" : "#80FFFFFF"
                     font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
                     HoverHandler { id: seeJump; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: { root.routeRequested("library"); AppController.navigate("library") } }
                 }
                 Row {
-                    y: 30; spacing: 14
+                    y: 30; width: parent.width; spacing: root.railGap
                     Repeater {
-                        model: root.jumpGames
+                        model: root.takeGames(root.jumpGames, 0, root.homeTileCount)
                         DesktopHomePoster {
                             required property var modelData
                             required property int index
                             game: modelData
+                            tileWidth: root.homeTileWidth
+                            tileHeight: root.homeTileHeight
                             current: root.focusZone === 1 && root.focusIndex === index
                             onPointed: root.setSelection(1, index)
                             onActivated: root.openGame(modelData)
@@ -510,28 +459,27 @@ FocusScope {
 
             Item {
                 id: playingRail
-                x: 24; y: 510; width: 1160; height: 198
-                Row {
-                    spacing: 9
-                    Text { text: qsTr("Friends are playing"); color: "#FFFFFF"; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black; font.letterSpacing: -0.2 }
-                    Text { anchors.baseline: parent.children[0].baseline; text: qsTr("CO-OP READY"); color: "#66FFFFFF"; font.family: Theme.monoFont; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
-                }
+                width: parent.width
+                height: 30 + root.homeTileHeight
+                Text { text: qsTr("Favourites"); color: "#FFFFFF"; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black; font.letterSpacing: -0.2 }
                 Text {
                     anchors.right: parent.right; y: 1
                     text: qsTr("See all  ›")
                     color: seeFriends.hovered ? "#B8FFFFFF" : "#80FFFFFF"
                     font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
                     HoverHandler { id: seeFriends; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: root.openFriends() }
+                    TapHandler { onTapped: { root.routeRequested("library"); AppController.navigate("library") } }
                 }
                 Row {
-                    y: 30; spacing: 14
+                    y: 30; width: parent.width; spacing: root.railGap
                     Repeater {
-                        model: root.friendsGames
+                        model: root.takeGames(root.favoriteGames, 0, root.homeTileCount)
                         DesktopHomePoster {
                             required property var modelData
                             required property int index
                             game: modelData
+                            tileWidth: root.homeTileWidth
+                            tileHeight: root.homeTileHeight
                             current: root.focusZone === 2 && root.focusIndex === index
                             onPointed: root.setSelection(2, index)
                             onActivated: root.openGame(modelData)
@@ -542,7 +490,8 @@ FocusScope {
 
             Item {
                 id: newRail
-                x: 24; y: 724; width: 1160; height: 198
+                width: parent.width
+                height: 30 + root.homeTileHeight
                 Text { text: qsTr("New in your library"); color: "#FFFFFF"; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black; font.letterSpacing: -0.2 }
                 Text {
                     anchors.right: parent.right; y: 1
@@ -553,13 +502,15 @@ FocusScope {
                     TapHandler { onTapped: { root.routeRequested("library"); AppController.navigate("library") } }
                 }
                 Row {
-                    y: 30; spacing: 14
+                    y: 30; width: parent.width; spacing: root.railGap
                     Repeater {
-                        model: root.newGames
+                        model: root.takeGames(root.newGames, 0, root.homeTileCount)
                         DesktopHomePoster {
                             required property var modelData
                             required property int index
                             game: modelData
+                            tileWidth: root.homeTileWidth
+                            tileHeight: root.homeTileHeight
                             current: root.focusZone === 3 && root.focusIndex === index
                             onPointed: root.setSelection(3, index)
                             onActivated: root.openGame(modelData)

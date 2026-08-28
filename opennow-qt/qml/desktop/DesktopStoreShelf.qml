@@ -15,8 +15,12 @@ Item {
     signal gamePointed(int index)
     signal seeAllRequested()
 
-    width: 1160
-    height: 281
+    readonly property int railGap: 14
+    readonly property int tileCount: Math.max(1, Math.min(root.games.length || 1, Math.floor((width + railGap) / (132 + railGap))))
+    readonly property int tileWidth: Math.max(132, Math.floor((width - railGap * (Math.max(1, tileCount) - 1)) / Math.max(1, tileCount)))
+    readonly property int tileHeight: Math.round(tileWidth * 250 / 132)
+
+    height: 31 + tileHeight
 
     Row {
         x: 0
@@ -72,24 +76,30 @@ Item {
         TapHandler { onTapped: root.seeAllRequested() }
     }
 
-    Repeater {
-        model: Math.min(8, root.games.length)
+    Row {
+        y: 31
+        width: parent.width
+        spacing: root.railGap
 
-        DesktopStoreCard {
-            required property int index
-            readonly property var itemGame: root.games[index]
+        Repeater {
+            model: Math.min(root.games.length, root.tileCount)
 
-            x: index * 146
-            y: 31
-            game: itemGame
-            selected: root.active && root.selectedIndex === index
-            price: String(itemGame && itemGame.storePrice || qsTr("Available"))
-            discount: String(itemGame && itemGame.storeDiscount || "")
-            owned: Boolean(itemGame && itemGame.storeOwned)
-            freeToPlay: Boolean(itemGame && itemGame.storeFree)
-            fallbackColor: root.fallbackFor(itemGame, index)
-            onPointed: root.gamePointed(index)
-            onActivated: game => root.gameActivated(game)
+            DesktopStoreCard {
+                required property int index
+                readonly property var itemGame: root.games[index]
+
+                tileWidth: root.tileWidth
+                tileHeight: root.tileHeight
+                game: itemGame
+                selected: root.active && root.selectedIndex === index
+                price: String(itemGame && itemGame.storePrice || qsTr("Available"))
+                discount: String(itemGame && itemGame.storeDiscount || "")
+                owned: Boolean(itemGame && itemGame.storeOwned)
+                freeToPlay: Boolean(itemGame && itemGame.storeFree)
+                fallbackColor: root.fallbackFor(itemGame, index)
+                onPointed: root.gamePointed(index)
+                onActivated: game => root.gameActivated(game)
+            }
         }
     }
 

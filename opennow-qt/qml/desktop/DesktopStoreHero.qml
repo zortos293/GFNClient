@@ -205,7 +205,7 @@ Item {
 
                 RoundedArtwork {
                     anchors.fill: parent
-                    artwork: String(parent.itemGame && (parent.itemGame.imageUrl || parent.itemGame.heroImageUrl) || "")
+                    artwork: DesktopTokens.artworkUrl(parent.itemGame, false)
                     fallbackColor: index % 2 ? Theme.cartSteam : Theme.glassStrong
                     cornerRadius: 11
                     scrimStart: 1

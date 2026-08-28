@@ -64,8 +64,8 @@ FocusScope {
         return result
     }
     readonly property var games: filteredGames()
-    readonly property int libraryColumns: Math.max(4, Math.min(5, Math.floor((grid.width + 16) / 210)))
-    readonly property int libraryCellW: Math.max(188, Math.floor(grid.width / libraryColumns))
+    readonly property int libraryColumns: Math.max(6, Math.floor((grid.width + 10) / 156))
+    readonly property int libraryCellW: Math.max(146, Math.floor(grid.width / libraryColumns))
     readonly property int libraryCellH: Math.round(libraryCellW * 214 / 146)
 
     Row {

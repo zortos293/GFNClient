@@ -13,7 +13,7 @@ ItemDelegate {
     readonly property int artGutter: 6
     readonly property int artWidth: Math.max(1, tileWidth - artGutter * 2)
     readonly property int artHeight: Math.round(artWidth * 198 / 132)
-    readonly property bool highlighted: hovered || activeFocus
+    readonly property bool cardLifted: hovered || activeFocus
     signal contextRequested(real sceneX, real sceneY)
     // Keep focus geometry inside the delegate so GridView clipping never cuts
     // off the top/left ring while the tile scales up.
@@ -22,9 +22,9 @@ ItemDelegate {
     padding: 0
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
-    scale: down ? 0.985 : (highlighted ? DesktopTokens.cardHoverScale : 1)
+    scale: down ? 0.985 : (cardLifted ? DesktopTokens.cardHoverScale : 1)
     transformOrigin: Item.Center
-    z: highlighted ? 20 : 1
+    z: cardLifted ? 20 : 1
     Behavior on scale {
         NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic }
     }
@@ -35,7 +35,7 @@ ItemDelegate {
             x: root.artGutter; y: root.artGutter; width: root.artWidth; height: root.artHeight
             artwork: DesktopTokens.artworkUrl(root.game, false)
             cornerRadius: 12
-            scrimStart: root.highlighted || root.showPlay ? 0.48 : 1
+            scrimStart: root.cardLifted || root.showPlay ? 0.48 : 1
             fallbackColor: "#1A2232"
         }
         Rectangle {
@@ -45,8 +45,8 @@ ItemDelegate {
             height: art.height + DesktopTokens.cardOutlinePad * 2
             radius: 14
             color: "transparent"
-            border.width: root.highlighted ? 2 : 1
-            border.color: root.highlighted ? DesktopTokens.focus : DesktopTokens.cardOutlineIdle
+            border.width: root.cardLifted ? 2 : 1
+            border.color: root.cardLifted ? DesktopTokens.focus : DesktopTokens.cardOutlineIdle
             Behavior on border.color {
                 ColorAnimation { duration: Theme.focusDuration }
             }
@@ -57,7 +57,7 @@ ItemDelegate {
             anchors.bottomMargin: 12
             width: root.artWidth - 18
             spacing: 7
-            visible: root.highlighted && !root.showTitle
+            visible: root.cardLifted && !root.showTitle
             Text { width: parent.width; text: root.game ? String(root.game.title || qsTr("Game")) : qsTr("Game"); color: DesktopTokens.text; elide: Text.ElideRight; font.family: DesktopTokens.bodyFont; font.pixelSize: 12; font.weight: Font.Bold }
             Rectangle {
                 width: parent.width; height: 26; radius: 8; color: "#F2FFFFFF"

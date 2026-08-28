@@ -1245,6 +1245,16 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertLessThan(NativeStreamInputBridge.curvedStickAxis(-1, deadZone: 0.12), 0)
     }
 
+    func testPhysicalMouseYUsesHostScreenCoordinates() {
+        let upward = NativeStreamMouseCoordinatePolicy.hostDelta(deltaX: 4, deltaY: 9)
+        XCTAssertEqual(upward.x, 4)
+        XCTAssertEqual(upward.y, -9)
+
+        let downward = NativeStreamMouseCoordinatePolicy.hostDelta(deltaX: -3, deltaY: -7)
+        XCTAssertEqual(downward.x, -3)
+        XCTAssertEqual(downward.y, 7)
+    }
+
     func testQueueReadyChimeAnnouncesOncePerSession() {
         QueueReadyAlert.reset()
         QueueReadyAlert.announceIfNeeded(sessionId: "a", isReady: true, enabled: true)
@@ -1393,6 +1403,29 @@ final class OpenNOWiOSParityTests: XCTestCase {
             }
         )
         XCTAssertThrowsError(try BugReportClient.buildRequest(tooManyFiles))
+    }
+
+    func testBugReportRequestCarriesTheRedactedDebugFile() throws {
+        let submission = BugReportSubmission(
+            title: "First session has no game audio",
+            description: "I launched a game for the first time and video started normally, but no sound played from the phone speakers.",
+            versionName: "1.1",
+            versionCode: "103",
+            reporterId: BugReportReporter.reporterId(stableDeviceId: "device")!,
+            metadata: "{}",
+            attachments: [
+                BugReportAttachment(
+                    fileName: "opennow-ios-logs-20260827-120000.txt",
+                    contentType: "text/plain; charset=utf-8",
+                    data: Data("strictRedaction=true\nlastError=none\n".utf8)
+                )
+            ]
+        )
+
+        let request = try BugReportClient.buildRequest(submission)
+        let body = String(decoding: try XCTUnwrap(request.httpBody), as: UTF8.self)
+        XCTAssertTrue(body.contains("filename=\"opennow-ios-logs-20260827-120000.txt\""))
+        XCTAssertTrue(body.contains("strictRedaction=true"))
     }
 
     func testBugReportMetadataCarriesTheKnownIssueDecision() throws {

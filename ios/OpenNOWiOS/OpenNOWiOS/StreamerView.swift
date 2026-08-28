@@ -2340,6 +2340,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var autoRetryScheduled = false
     private var webRTCAudioSessionConfigured = false
     private var mutedAudioDevice: NativeStreamMutedAudioDevice?
+    private var audioTrack: RTCAudioTrack?
+    private var audioSessionObservers: [NSObjectProtocol] = []
     private var latestScenePhase: ScenePhase = .active
     private var backgroundPictureInPictureStartPending = false
     private var needsForegroundReconnect = false
@@ -2489,6 +2491,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         }
 
         startNetworkMonitoring()
+        startAudioSessionObservation()
         configureWebRTCAudioSession()
         inputBridge.attach()
         setIdleTimerDisabled(true)
@@ -3096,6 +3099,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         stopNetworkMonitoring()
         inputBridge.detach()
         setIdleTimerDisabled(false)
+        stopAudioSessionObservation()
+        audioTrack?.isEnabled = false
+        audioTrack = nil
         teardownWebRTCAudioSession()
         offerTimeoutWorkItem?.cancel()
         offerTimeoutWorkItem = nil
@@ -3150,6 +3156,16 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         videoTrack = track
         attachCurrentVideoSinkIfNeeded()
         updateStatus("Video track attached", detail: "Waiting for rendered frames")
+    }
+
+    private func setAudioTrack(_ track: RTCAudioTrack) {
+        audioTrack = track
+        // The remote track can arrive after the one-time startup configuration. Re-arming here
+        // closes the first-session race where WebRTC creates its audio unit after iOS has already
+        // accepted the app's playback category, but never starts playout for that first track.
+        configureWebRTCAudioSession()
+        track.isEnabled = shouldPlayAudio
+        log("Native audio track attached enabled=\(track.isEnabled)")
     }
 
     private func attachCurrentVideoSinkIfNeeded() {
@@ -4467,12 +4483,57 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         }
 
         guard shouldPlayAudio else {
+            audioTrack?.isEnabled = false
             teardownWebRTCAudioSession()
             log("WebRTC audio held disabled")
             return
         }
 
         configureWebRTCAudioSession()
+        audioTrack?.isEnabled = true
+    }
+
+    private func startAudioSessionObservation() {
+        guard audioSessionObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [
+            AVAudioSession.routeChangeNotification,
+            AVAudioSession.interruptionNotification,
+            AVAudioSession.mediaServicesWereResetNotification
+        ]
+        audioSessionObservers = names.map { name in
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                Task { @MainActor [weak self] in
+                    self?.handleAudioSessionNotification(notification)
+                }
+            }
+        }
+    }
+
+    private func stopAudioSessionObservation() {
+        let center = NotificationCenter.default
+        audioSessionObservers.forEach(center.removeObserver)
+        audioSessionObservers.removeAll(keepingCapacity: false)
+    }
+
+    private func handleAudioSessionNotification(_ notification: Notification) {
+        guard !stopped else { return }
+        if notification.name == AVAudioSession.interruptionNotification,
+           let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+           AVAudioSession.InterruptionType(rawValue: rawType) == .began {
+            log("Audio session interrupted")
+            return
+        }
+
+        let reason: String
+        switch notification.name {
+        case AVAudioSession.routeChangeNotification: reason = "route changed"
+        case AVAudioSession.mediaServicesWereResetNotification: reason = "media services reset"
+        default: reason = "interruption ended"
+        }
+        configureWebRTCAudioSession()
+        audioTrack?.isEnabled = shouldPlayAudio
+        log("Audio session recovered after \(reason)")
     }
 
     private func configureAudioCategory(_ audioSession: RTCAudioSession, enableMic: Bool) {
@@ -4586,6 +4647,9 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
             if let track = stream.videoTracks.first {
                 self.setVideoTrack(track)
             }
+            if let track = stream.audioTracks.first {
+                self.setAudioTrack(track)
+            }
         }
     }
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
@@ -4655,6 +4719,8 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
         Task { @MainActor in
             if let track = receiver.track as? RTCVideoTrack {
                 self.setVideoTrack(track)
+            } else if let track = receiver.track as? RTCAudioTrack {
+                self.setAudioTrack(track)
             }
         }
     }

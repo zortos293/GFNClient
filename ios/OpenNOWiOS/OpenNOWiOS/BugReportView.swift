@@ -16,6 +16,7 @@ struct BugReportView: View {
     @State private var draft = BugReportDraft()
     @State private var descriptionTouched = false
     @State private var isSubmitting = false
+    @State private var isConfirmingSubmission = false
     @State private var failure: String?
     @State private var acceptedReference: String?
     @FocusState private var focusedField: Field?
@@ -42,6 +43,16 @@ struct BugReportView: View {
                         .disabled(isSubmitting)
                 }
             }
+        }
+        .confirmationDialog(
+            "Send report with diagnostics?",
+            isPresented: $isConfirmingSubmission,
+            titleVisibility: .visible
+        ) {
+            Button("Send Report") { submitConfirmed() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("OpenNOW will attach a redacted debugging file with recent app, API, queue, and stream logs. Account credentials, email addresses, device IDs, session IDs, and network addresses are removed.")
         }
     }
 
@@ -100,7 +111,7 @@ struct BugReportView: View {
 
             Section {
                 Button {
-                    submit()
+                    requestSubmission()
                 } label: {
                     HStack {
                         if isSubmitting { ProgressView().padding(.trailing, 6) }
@@ -176,7 +187,13 @@ struct BugReportView: View {
         return nil
     }
 
-    private func submit() {
+    private func requestSubmission() {
+        guard blockingReason == nil else { return }
+        focusedField = nil
+        isConfirmingSubmission = true
+    }
+
+    private func submitConfirmed() {
         guard blockingReason == nil else { return }
         isSubmitting = true
         failure = nil

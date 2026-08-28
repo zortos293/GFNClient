@@ -226,7 +226,9 @@ struct OscillatingQueueProgressView: View {
                 Capsule(style: .continuous)
                     .fill(Color.secondary.opacity(0.28))
 
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+                // This is a layer transform, so follow the display's native cadence instead of
+                // making a 120 Hz screen present a deliberately 30 Hz progress indicator.
+                TimelineView(.animation(paused: reduceMotion)) { context in
                     Capsule(style: .continuous)
                         .fill(
                             LinearGradient(

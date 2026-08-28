@@ -16,7 +16,9 @@ struct SkeletonShimmerModifier: ViewModifier {
             .overlay {
                 if !reduceMotion {
                     GeometryReader { proxy in
-                        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+                        // Let the display choose its native cadence. Hard-capping this at 30 Hz
+                        // made a lightweight layer transform look visibly stepped on ProMotion.
+                        TimelineView(.animation(paused: reduceMotion)) { context in
                             let phase = context.date.timeIntervalSinceReferenceDate
                                 .truncatingRemainder(dividingBy: period) / period
                             LinearGradient(

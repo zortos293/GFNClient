@@ -7661,6 +7661,11 @@ final class OpenNOWStore: ObservableObject {
         items.append(BugReportPreflightItem(label: "Decoders", value: codecSummary))
 
         items.append(BugReportPreflightItem(
+            label: "Debug log",
+            value: "Redacted diagnostics attached"
+        ))
+
+        items.append(BugReportPreflightItem(
             label: "Membership",
             value: subscription?.membershipTier ?? user?.membershipTier ?? "Unknown"
         ))
@@ -7703,6 +7708,12 @@ final class OpenNOWStore: ObservableObject {
         guard let reporterId = BugReportReporter.reporterId(stableDeviceId: persistentDeviceId()) else {
             return .failure(BugReportError.invalid("This installation has no reporting ID yet. Restart OpenNOW and try again."))
         }
+        let diagnostics = await makeDiagnosticsExport()
+        let diagnosticsAttachment = BugReportAttachment(
+            fileName: "\(diagnosticsExportFileName).txt",
+            contentType: "text/plain; charset=utf-8",
+            data: Data(diagnostics.utf8)
+        )
         let submission = BugReportSubmission(
             title: draft.title,
             description: draft.description,
@@ -7710,7 +7721,7 @@ final class OpenNOWStore: ObservableObject {
             versionCode: Self.appVersionCode,
             reporterId: reporterId,
             metadata: BugReportMetadata.build(deck: deck, overridesKnownIssue: draft.overridesKnownIssue),
-            attachments: []
+            attachments: [diagnosticsAttachment]
         )
         do {
             let reference = try await BugReportClient.upload(submission)

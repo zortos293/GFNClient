@@ -48,6 +48,15 @@ struct NativeStreamVirtualGamepadState: Equatable {
     var rightStickActive = false
 }
 
+enum NativeStreamMouseCoordinatePolicy {
+    /// GameController reports relative mouse Y in Cartesian coordinates (up is positive), while
+    /// the host input protocol uses screen coordinates (down is positive). Touch deltas already
+    /// arrive in screen coordinates, so the conversion belongs only at the physical-mouse edge.
+    static func hostDelta(deltaX: Float, deltaY: Float) -> CGPoint {
+        CGPoint(x: CGFloat(deltaX), y: CGFloat(-deltaY))
+    }
+}
+
 enum NativeStreamGamepadMixer {
     static func merging(
         physical: NativeStreamGamepadState,
@@ -1012,7 +1021,11 @@ final class NativeStreamInputBridge {
         for mouse in mice {
             guard let input = mouse.mouseInput else { continue }
             input.mouseMovedHandler = { [weak self] _, deltaX, deltaY in
-                self?.coalesceMouse(dx: CGFloat(deltaX), dy: CGFloat(deltaY))
+                let delta = NativeStreamMouseCoordinatePolicy.hostDelta(
+                    deltaX: deltaX,
+                    deltaY: deltaY
+                )
+                self?.coalesceMouse(dx: delta.x, dy: delta.y)
             }
             input.leftButton.pressedChangedHandler = { [weak self] _, _, pressed in
                 self?.sendMouseButton(1, pressed: pressed)

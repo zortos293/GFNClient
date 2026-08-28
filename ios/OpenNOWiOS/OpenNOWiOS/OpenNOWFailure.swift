@@ -85,7 +85,14 @@ struct OpenNOWFailure: Identifiable, Equatable {
 
         // HTTP status carried through the app's own error domains.
         switch nsError.code {
-        case 401, 403 where raw.localizedCaseInsensitiveContains("token"):
+        case 401:
+            return OpenNOWFailure(
+                kind: .authExpired,
+                message: "Your session expired. Sign in again.",
+                recovery: .signIn,
+                code: nil
+            )
+        case 403 where raw.localizedCaseInsensitiveContains("token"):
             return OpenNOWFailure(
                 kind: .authExpired,
                 message: "Your session expired. Sign in again.",

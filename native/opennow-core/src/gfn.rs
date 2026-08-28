@@ -495,12 +495,20 @@ impl GfnService {
             .ok_or_else(|| ServiceError::invalid("QR login has not been authorized yet"))?;
         state.session = Some(session.clone());
         drop(state);
-        let persistence = match self.vault.save(&session) {
-            Ok(()) => "os-credential-store",
-            Err(error) => {
-                eprintln!("auth: session remains memory-only: {error}");
-                "memory-only"
+        let persist = params
+            .get("staySignedIn")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let persistence = if persist {
+            match self.vault.save(&session) {
+                Ok(()) => "os-credential-store",
+                Err(error) => {
+                    eprintln!("auth: session remains memory-only: {error}");
+                    "memory-only"
+                }
             }
+        } else {
+            "none"
         };
         self.state
             .lock()
@@ -593,13 +601,23 @@ impl GfnService {
                         json!({"attempted":true,"outcome":"failed","message":"Refresh failed; using the unexpired saved token."}),
                     )
                 }
-                Err(error) => {
-                    eprintln!("auth: expired session could not refresh: {}", error.message);
+                Err(error) if is_definitive_auth_revocation(&error) => {
+                    eprintln!("auth: saved session was revoked: {}", error.message);
                     let _ = self.vault.remove(&current.user.user_id);
                     self.state.lock().expect("GFN state poisoned").session = None;
                     (
                         None,
-                        json!({"attempted":true,"outcome":"failed","message":"Saved session expired. Sign in again."}),
+                        json!({"attempted":true,"outcome":"revoked","message":"Saved session is no longer valid. Sign in again."}),
+                    )
+                }
+                Err(error) => {
+                    eprintln!(
+                        "auth: expired session could not refresh: {}",
+                        error.message
+                    );
+                    (
+                        None,
+                        json!({"attempted":true,"outcome":"expired","message":"Saved session expired. Sign in again if this continues."}),
                     )
                 }
             }
@@ -1463,13 +1481,24 @@ impl GfnService {
     }
 
     fn store_refreshed_session(&self, session: AuthSession) -> Result<AuthSession, ServiceError> {
-        self.vault.save(&session).map_err(|message| ServiceError {
-            code: "credential_store_error",
-            message,
-        })?;
+        let persist = {
+            let state = self.state.lock().expect("GFN state poisoned");
+            state.persistence_state != "none"
+        };
+        let persistence = if persist {
+            match self.vault.save(&session) {
+                Ok(()) => "os-credential-store",
+                Err(error) => {
+                    eprintln!("auth: refreshed session remains memory-only: {error}");
+                    "memory-only"
+                }
+            }
+        } else {
+            "none"
+        };
         let mut state = self.state.lock().expect("GFN state poisoned");
         state.session = Some(session.clone());
-        state.persistence_state = "os-credential-store".to_owned();
+        state.persistence_state = persistence.to_owned();
         Ok(session)
     }
 
@@ -1481,6 +1510,14 @@ impl GfnService {
             .attempts
             .retain(|_, attempt| attempt.expires_at > now);
     }
+}
+
+fn is_definitive_auth_revocation(error: &ServiceError) -> bool {
+    let message = error.message.to_ascii_lowercase();
+    message.contains("invalid_grant")
+        || message.contains("invalid_token")
+        || message.contains("token_revoked")
+        || message.contains("revoked")
 }
 
 fn parse_providers(payload: &Value) -> Vec<LoginProvider> {
@@ -1717,7 +1754,7 @@ fn image_values(value: &Value, width: u32) -> Vec<String> {
             if trimmed.is_empty() {
                 None
             } else if trimmed.contains("img.nvidiagrid.net") {
-                Some(format!("{trimmed};f=webp;w={width}"))
+                Some(format!("{trimmed};f=jpg;w={width}"))
             } else {
                 Some(trimmed.to_owned())
             }
@@ -2009,7 +2046,7 @@ mod tests {
             game["imageUrl"]
                 .as_str()
                 .unwrap()
-                .ends_with(";f=webp;w=900")
+                .ends_with(";f=jpg;w=900")
         );
         assert!(game["searchText"].as_str().unwrap().contains("valve"));
         assert!(!gfn_feature_enabled(
@@ -2060,5 +2097,22 @@ mod tests {
         assert_eq!(user.display_name, "Player");
         assert_eq!(user.membership_tier, "ULTIMATE");
         assert!(user.avatar_url.unwrap().contains("gravatar.com/avatar/"));
+    }
+
+    #[test]
+    fn refresh_revocation_is_detected_from_oauth_errors() {
+        assert!(is_definitive_auth_revocation(&ServiceError {
+            code: "upstream_error",
+            message: "Refresh-token exchange failed (400): {\"error\":\"invalid_grant\"}"
+                .to_owned(),
+        }));
+        assert!(is_definitive_auth_revocation(&ServiceError {
+            code: "upstream_error",
+            message: "token has been revoked by the user".to_owned(),
+        }));
+        assert!(!is_definitive_auth_revocation(&ServiceError {
+            code: "network_error",
+            message: "Refresh-token exchange failed: connection reset".to_owned(),
+        }));
     }
 }

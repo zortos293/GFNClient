@@ -125,10 +125,29 @@ impl CredentialVault {
 
     pub fn load_active(&self) -> Result<Option<AuthSession>, String> {
         let metadata = self.read_metadata();
-        let Some(user_id) = metadata.active_user_id else {
+        let candidates = candidate_user_ids(&metadata);
+        if candidates.is_empty() {
             return Ok(None);
-        };
-        self.load(&user_id)
+        }
+        let mut last_error = None;
+        for user_id in &candidates {
+            match self.load(user_id) {
+                Ok(Some(session)) => {
+                    if metadata.active_user_id.as_deref() != Some(user_id.as_str()) {
+                        if let Err(error) = self.set_active(user_id) {
+                            eprintln!("auth: recovered account could not be marked active: {error}");
+                        }
+                    }
+                    return Ok(Some(session));
+                }
+                Ok(None) => {}
+                Err(error) => last_error = Some(error),
+            }
+        }
+        match last_error {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
     }
 
     pub fn load(&self, user_id: &str) -> Result<Option<AuthSession>, String> {
@@ -223,6 +242,26 @@ impl CredentialVault {
     }
 }
 
+fn candidate_user_ids(metadata: &Metadata) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(active) = metadata
+        .active_user_id
+        .as_deref()
+        .filter(|user_id| !user_id.is_empty())
+    {
+        ids.push(active.to_owned());
+    }
+    for account in &metadata.accounts {
+        if account.user_id.is_empty() {
+            continue;
+        }
+        if !ids.iter().any(|id| id == &account.user_id) {
+            ids.push(account.user_id.clone());
+        }
+    }
+    ids
+}
+
 fn parse_legacy_auth_state(bytes: &[u8]) -> Result<LegacyAuthState, String> {
     let mut legacy = serde_json::from_slice::<LegacyAuthState>(bytes)
         .map_err(|error| format!("Electron account state is invalid: {error}"))?;
@@ -272,11 +311,50 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn sample_identity(user_id: &str) -> SavedIdentity {
+        SavedIdentity {
+            user_id: user_id.to_owned(),
+            display_name: user_id.to_owned(),
+            email: None,
+            avatar_url: None,
+            membership_tier: "FREE".to_owned(),
+            provider_code: "NVIDIA".to_owned(),
+        }
+    }
+
     #[test]
     fn missing_metadata_has_no_active_session() {
         let path = std::env::temp_dir().join(format!("opennow-vault-{}", std::process::id()));
         let vault = CredentialVault::new(path.clone());
         assert!(vault.load_active().unwrap().is_none());
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn load_active_falls_back_to_first_account_when_active_user_id_is_missing() {
+        let path = std::env::temp_dir().join(format!(
+            "opennow-vault-fallback-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        let vault = CredentialVault::new(path.clone());
+        vault
+            .write_metadata(&Metadata {
+                active_user_id: None,
+                accounts: vec![sample_identity("user-a"), sample_identity("user-b")],
+            })
+            .unwrap();
+        let metadata = vault.read_metadata();
+        assert_eq!(metadata.active_user_id, None);
+        assert_eq!(metadata.accounts.len(), 2);
+        assert_eq!(
+            candidate_user_ids(&metadata),
+            vec!["user-a".to_string(), "user-b".to_string()]
+        );
         let _ = fs::remove_dir_all(path);
     }
 

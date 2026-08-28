@@ -1,51 +1,48 @@
 import QtQuick
-import QtQuick.Controls
 import OpenNOW
 
-Rectangle {
+Item {
     id: root
     property var options: []
     property int selectedIndex: 0
     property int optionWidth: 72
     signal selected(int index, var value)
 
-    implicitWidth: options.length * optionWidth + 4
-    implicitHeight: 34
-    radius: 10
-    color: Qt.rgba(1, 1, 1, 0.035)
-    border.width: 1
-    border.color: Qt.rgba(1, 1, 1, 0.10)
+    implicitWidth: Math.max(0, options.length * optionWidth + Math.max(0, options.length - 1) * 6)
+    implicitHeight: 32
 
     Row {
-        anchors.fill: parent
-        anchors.margins: 2
+        spacing: 6
         Repeater {
             model: root.options
-            delegate: Button {
+            delegate: Rectangle {
+                id: chip
                 required property int index
                 required property var modelData
+                readonly property bool on: index === root.selectedIndex
+                readonly property string label: typeof modelData === "object"
+                    ? String(modelData.label || "")
+                    : String(modelData)
                 width: root.optionWidth
-                height: 30
-                hoverEnabled: true
-                onClicked: root.selected(index, modelData)
-                background: Rectangle {
-                    radius: 8
-                    color: index === root.selectedIndex ? Theme.face
-                         : choice.hovered ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
-                    border.width: parent.activeFocus ? 2 : 0
-                    border.color: DesktopTokens.focus
-                    Behavior on color { ColorAnimation { duration: Theme.focusDuration } }
-                }
-                contentItem: Text {
-                    text: typeof modelData === "object" ? modelData.label : String(modelData)
-                    color: index === root.selectedIndex ? Theme.faceText : Theme.textMuted
-                    font.family: Theme.monoFont
+                height: 32
+                radius: 9
+                color: chip.on ? "#F2FFFFFF" : (chipHover.hovered ? "#1AFFFFFF" : "#0FFFFFFF")
+                border.width: chip.on ? 0 : 1
+                border.color: "#1FFFFFFF"
+
+                Text {
+                    anchors.centerIn: parent
+                    width: parent.width - 8
+                    text: chip.label
+                    color: chip.on ? "#0B0F1A" : DesktopTokens.textBody
+                    font.family: DesktopTokens.monoFont
                     font.pixelSize: 9
                     font.weight: Font.Bold
                     horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
                     elide: Text.ElideRight
                 }
+                HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: root.selected(chip.index, chip.modelData) }
             }
         }
     }

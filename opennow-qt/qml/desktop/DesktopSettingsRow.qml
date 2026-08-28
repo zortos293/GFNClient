@@ -7,7 +7,7 @@ Item {
     property string title: ""
     property string description: ""
     property string value: ""
-    property int rowHeight: 62
+    property int rowHeight: DesktopTokens.rowHeight
     property bool showDivider: true
     default property alias trailing: trailingSlot.data
 
@@ -22,9 +22,9 @@ Item {
         Text {
             width: parent.width
             text: root.title
-            color: Qt.rgba(1, 1, 1, 0.88)
+            color: Theme.label
             font.family: Theme.bodyFont
-            font.pixelSize: 13
+            font.pixelSize: DesktopTokens.bodySize
             font.weight: Font.Bold
             elide: Text.ElideRight
         }
@@ -32,9 +32,9 @@ Item {
             width: parent.width
             visible: root.description !== ""
             text: root.description
-            color: Qt.rgba(1, 1, 1, 0.50)
+            color: Theme.textMuted
             font.family: Theme.bodyFont
-            font.pixelSize: 11
+            font.pixelSize: DesktopTokens.captionSize
             font.weight: Font.Medium
             elide: Text.ElideRight
         }
@@ -45,16 +45,32 @@ Item {
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         spacing: 10
+        height: DesktopTokens.controlHeight
+
+        add: Transition {
+            ScriptAction { script: root.centerTrailing() }
+        }
+
         Text {
             visible: root.value !== ""
             text: root.value
             color: Qt.rgba(1, 1, 1, 0.80)
             font.family: Theme.monoFont
-            font.pixelSize: 10
+            font.pixelSize: DesktopTokens.monoSize
             font.weight: Font.Bold
             anchors.verticalCenter: parent.verticalCenter
         }
     }
+
+    function centerTrailing() {
+        for (let i = 0; i < trailingSlot.children.length; ++i) {
+            const item = trailingSlot.children[i]
+            if (item)
+                item.anchors.verticalCenter = trailingSlot.verticalCenter
+        }
+    }
+
+    Component.onCompleted: centerTrailing()
 
     Rectangle {
         visible: root.showDivider

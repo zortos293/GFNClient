@@ -15,18 +15,37 @@ Item {
     property string footer: ""
     signal chosen(var value)
 
+    readonly property int menuContentHeight: {
+        let height = 0
+        const list = items || []
+        for (let i = 0; i < list.length; ++i)
+            height += list[i] && list[i].kind === "heading" ? 24 : 32
+        if (footer !== "")
+            height += 36
+        return height
+    }
+
+    function placeMenu() {
+        if (!anchorItem)
+            return
+        const point = anchorItem.mapToItem(root, 0, anchorItem.height + 6)
+        menu.x = Math.max(12, Math.min(root.width - menu.width - 12, point.x + anchorItem.width - menu.width))
+        menu.y = Math.max(12, Math.min(root.height - menu.height - 12, point.y))
+    }
+
     function showFor(anchor, choices, current, footerText) {
         closeTimer.stop()
         anchorItem = anchor
         items = choices || []
         selectedValue = current
         footer = footerText || ""
-        const point = anchor.mapToItem(root, 0, anchor.height + 6)
-        menu.x = Math.max(12, Math.min(root.width - menu.width - 12, point.x + anchor.width - menu.width))
-        menu.y = Math.max(12, Math.min(root.height - menu.height - 12, point.y))
         presented = true
         opened = true
-        Qt.callLater(choiceList.forceActiveFocus)
+        placeMenu()
+        Qt.callLater(() => {
+            placeMenu()
+            choiceList.forceActiveFocus()
+        })
     }
 
     function dismiss() {
@@ -50,11 +69,11 @@ Item {
     Rectangle {
         id: menu
         width: 400
-        height: Math.min(420, choiceColumn.implicitHeight + 20)
+        height: Math.min(Math.min(640, root.height - 24), Math.max(48, root.menuContentHeight + 16))
         radius: 14
-        color: Qt.rgba(0.055, 0.063, 0.094, 0.98)
+        color: "#FA141924"
         border.width: 1
-        border.color: Qt.rgba(1, 1, 1, 0.18)
+        border.color: "#2EFFFFFF"
         opacity: root.opened ? 1 : 0
         scale: root.opened ? 1 : 0.97
         transformOrigin: Item.TopRight
@@ -64,89 +83,140 @@ Item {
         Flickable {
             id: choiceList
             anchors.fill: parent
-            anchors.margins: 10
+            anchors.margins: 8
             contentWidth: width
-            contentHeight: choiceColumn.implicitHeight
+            contentHeight: Math.max(choiceColumn.implicitHeight, root.menuContentHeight)
             clip: true
             boundsBehavior: Flickable.StopAtBounds
+            focus: true
+            Keys.onEscapePressed: event => { root.dismiss(); event.accepted = true }
 
             Column {
                 id: choiceColumn
-                width: parent.width
+                width: choiceList.width
+                spacing: 0
+
                 Repeater {
                     model: root.items
                     delegate: Item {
                         required property int index
                         required property var modelData
+                        readonly property bool heading: modelData.kind === "heading"
+                        readonly property bool on: !heading && modelData.value === root.selectedValue
                         width: choiceColumn.width
-                        height: modelData.kind === "heading" ? 28 : 40
+                        height: heading ? 24 : 32
+
                         Text {
-                            visible: modelData.kind === "heading"
+                            visible: heading
                             anchors.left: parent.left
-                            anchors.leftMargin: 10
+                            anchors.leftMargin: 12
                             anchors.verticalCenter: parent.verticalCenter
                             text: modelData.label
-                            color: Qt.rgba(1, 1, 1, 0.42)
-                            font.family: Theme.monoFont
+                            color: "#6BFFFFFF"
+                            font.family: DesktopTokens.monoFont
                             font.pixelSize: 9
-                            font.weight: Font.Bold
-                            font.letterSpacing: 1
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 0.8
                         }
-                        Button {
-                            id: choice
-                            visible: modelData.kind !== "heading"
+
+                        Rectangle {
+                            visible: !heading
                             anchors.fill: parent
-                            hoverEnabled: true
-                            onClicked: { root.chosen(modelData.value); root.dismiss() }
-                            background: Rectangle {
-                                radius: 8
-                                color: choice.hovered ? Qt.rgba(1, 1, 1, 0.06) : "transparent"
-                                border.width: modelData.value === root.selectedValue ? 1 : 0
-                                border.color: DesktopTokens.focus
-                            }
-                            contentItem: Row {
-                                spacing: 10
-                                Text {
-                                    width: 16
-                                    text: modelData.value === root.selectedValue ? "✓" : ""
-                                    color: DesktopTokens.focus
-                                    font.pixelSize: 12
-                                    anchors.verticalCenter: parent.verticalCenter
+                            radius: 8
+                            color: rowHover.hovered ? "#0FFFFFFF" : (on ? "#17FFFFFF" : "transparent")
+                            border.width: on ? 1 : 0
+                            border.color: DesktopTokens.focus
+
+                            Row {
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 12
+                                spacing: 8
+
+                                Item {
+                                    width: 12
+                                    height: parent.height
+                                    DesktopGlyph {
+                                        anchors.centerIn: parent
+                                        width: 12
+                                        height: 10
+                                        visible: on
+                                        icon: "desktop-check-focus.svg"
+                                    }
                                 }
+
                                 Text {
-                                    width: 152
+                                    width: parent.width - 12 - 8 - detailLabel.implicitWidth - 8
+                                    height: parent.height
                                     text: modelData.label
-                                    color: Theme.label
-                                    font.family: Theme.bodyFont
+                                    color: DesktopTokens.text
+                                    font.family: DesktopTokens.bodyFont
                                     font.pixelSize: 12
-                                    font.weight: Font.Bold
-                                    anchors.verticalCenter: parent.verticalCenter
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                    verticalAlignment: Text.AlignVCenter
                                 }
+
                                 Text {
-                                    width: 168
+                                    id: detailLabel
+                                    height: parent.height
                                     text: modelData.detail || ""
-                                    color: Theme.textMuted
-                                    font.family: Theme.monoFont
+                                    color: DesktopTokens.textMuted
+                                    font.family: DesktopTokens.monoFont
                                     font.pixelSize: 9
-                                    horizontalAlignment: Text.AlignRight
-                                    anchors.verticalCenter: parent.verticalCenter
+                                    font.weight: Font.DemiBold
+                                    verticalAlignment: Text.AlignVCenter
                                 }
                             }
+
+                            HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
+                            TapHandler { onTapped: { root.chosen(modelData.value); root.dismiss() } }
                         }
                     }
                 }
-                Rectangle { width: parent.width; height: root.footer === "" ? 0 : 1; color: Qt.rgba(1,1,1,0.08) }
-                Text {
+
+                Item {
                     visible: root.footer !== ""
                     width: parent.width
-                    height: visible ? 32 : 0
-                    leftPadding: 10
-                    text: root.footer
-                    color: Qt.rgba(1,1,1,0.46)
-                    font.family: Theme.monoFont
-                    font.pixelSize: 9
-                    font.weight: Font.Bold
-                    verticalAlignment: Text.AlignVCenter
+                    height: visible ? 36 : 0
+
+                    Rectangle {
+                        width: parent.width
+                        height: 1
+                        color: "#14FFFFFF"
+                    }
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.footer
+                        color: "#75FFFFFF"
+                        font.family: DesktopTokens.monoFont
+                        font.pixelSize: 9
+                        font.weight: Font.DemiBold
+                    }
+
+                    Row {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 12
+                        Text {
+                            text: "ENTER  Pick"
+                            color: "#66FFFFFF"
+                            font.family: DesktopTokens.monoFont
+                            font.pixelSize: 9
+                            font.weight: Font.DemiBold
+                        }
+                        Text {
+                            text: "ESC  Cancel"
+                            color: "#66FFFFFF"
+                            font.family: DesktopTokens.monoFont
+                            font.pixelSize: 9
+                            font.weight: Font.DemiBold
+                        }
+                    }
                 }
             }
         }

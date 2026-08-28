@@ -5,12 +5,12 @@ Row {
     id: root
     property string keyText: "Enter"
     property string label: "Play"
-    spacing: 6
+    spacing: 8
 
     Rectangle {
-        width: keyLabel.implicitWidth + 12
-        height: 18
-        radius: 5
+        width: keyLabel.implicitWidth + 16
+        height: 26
+        radius: 7
         color: "#1AFFFFFF"
         border.width: 1
         border.color: DesktopTokens.seam
@@ -20,7 +20,7 @@ Row {
             text: root.keyText
             color: DesktopTokens.textBody
             font.family: DesktopTokens.monoFont
-            font.pixelSize: 9
+            font.pixelSize: 12
             font.weight: Font.DemiBold
         }
     }
@@ -29,7 +29,7 @@ Row {
         text: root.label
         color: DesktopTokens.textMuted
         font.family: DesktopTokens.bodyFont
-        font.pixelSize: 11
+        font.pixelSize: 14
         font.weight: Font.DemiBold
     }
 }

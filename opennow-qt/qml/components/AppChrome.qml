@@ -111,7 +111,7 @@ Item {
 
     GlassPanel {
         id: titlePanel
-        x: Math.round((root.width - width) / 2)
+        x: Math.round((profilePanel.x + profilePanel.width + statusPanel.x - width) / 2)
         y: 28
         width: Math.max(156, titleText.implicitWidth + 98)
         height: 56

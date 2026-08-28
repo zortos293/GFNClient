@@ -32,7 +32,7 @@ Item {
         Rectangle { anchors.fill: parent; color: root.fallbackColor }
         Image {
             anchors.fill: parent
-            source: root.artwork
+            source: DesktopTokens.decodeArtworkUrl(root.artwork)
             fillMode: Image.PreserveAspectCrop
             sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
             asynchronous: true

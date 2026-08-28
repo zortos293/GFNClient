@@ -8,9 +8,9 @@ Rectangle {
 
     implicitHeight: body.implicitHeight + padding * 2
     radius: 14
-    color: Qt.rgba(0.043, 0.059, 0.102, 0.72)
+    color: Theme.glass
     border.width: 1
-    border.color: Qt.rgba(1, 1, 1, 0.08)
+    border.color: Theme.seam
 
     Column {
         id: body

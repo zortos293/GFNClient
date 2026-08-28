@@ -309,12 +309,6 @@
     "Color" : {
 
     },
-    "Coming Next" : {
-
-    },
-    "Coming Next games" : {
-
-    },
     "Compact Cards" : {
 
     },
@@ -498,6 +492,9 @@
     "Genre" : {
 
     },
+    "GFN Thursday" : {
+
+    },
     "GPU" : {
 
     },
@@ -648,6 +645,9 @@
     "Network Log" : {
 
     },
+    "New games added" : {
+
+    },
     "Next in queue" : {
 
     },
@@ -796,9 +796,6 @@
 
     },
     "Reading log…" : {
-
-    },
-    "Recently added or updated" : {
 
     },
     "Refresh Connections" : {

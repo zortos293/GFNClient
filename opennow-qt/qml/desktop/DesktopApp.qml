@@ -1,17 +1,17 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 import OpenNOW
 
 FocusScope {
     id: root
-    width: 1440
-    height: 900
+    anchors.fill: parent
     focus: true
     property bool commandOpen: false
     property string searchText: ""
     property string settingsSubtitle: qsTr("Profile")
     readonly property string route: AppController.route
-    readonly property bool signInVisible: !ShellStore.signedIn || route === "sign-in"
+    readonly property bool signInVisible: !ShellStore.authRestorePending && (!ShellStore.signedIn || route === "sign-in")
     readonly property bool sessionStartingVisible: !signInVisible && route === "inserting"
 
     function titleForRoute(value) {
@@ -23,16 +23,25 @@ FocusScope {
     }
     function subtitleForRoute(value) {
         if (value === "library" || value === "game-detail") return qsTr("%1 games").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
-        if (value === "store") return qsTr("4 free this week")
-        if (value === "friends") return qsTr("3 of 24 online")
+        if (value === "store") return qsTr("%1 in catalog").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
+        if (value === "friends") {
+            if (ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
+                return qsTr("Provider friends")
+            return qsTr("Friends unavailable")
+        }
         if (value.indexOf("settings") === 0 || value === "controllers") return settingsSubtitle
-        return qsTr("3 friends online")
+        return ShellStore.catalogTotalCount
+            ? qsTr("%1 games").arg(ShellStore.catalogTotalCount)
+            : qsTr("Your library")
     }
     function settingsSection(value) {
+        if (value === "settings-subscription") return 1
+        if (value === "settings-stores" || value === "game-accounts") return 2
         if (value === "settings-streaming" || value === "settings-video" || value === "settings-video-dropdown") return 3
         if (value === "controllers" || value === "settings-input") return 5
         if (value === "settings-network") return 6
         if (value === "settings-themes") return 8
+        if (value === "settings-console") return 9
         if (value === "settings-advanced" || value === "settings-advanced-dropdown") return 11
         return 0
     }
@@ -43,9 +52,17 @@ FocusScope {
         if (value === "library" || value === "game-detail") return libraryComponent
         return homeComponent
     }
-    function enterConsoleMode() {
-        ShellStore.setSetting("launchInConsoleMode", true)
-        if (!ShellStore.signedIn)
+    function toggleConsoleMode() {
+        const win = Window.window
+        const currentlyConsole = Boolean(win && (win.forceConsole || !win.desktopSurfaceActive))
+        const enable = !currentlyConsole
+        if (win && typeof win.requestConsoleSurface === "function")
+            win.requestConsoleSurface(enable)
+        else {
+            ShellStore.applySetting("launchInConsoleMode", enable)
+            ShellStore.setSetting("launchInConsoleMode", enable)
+        }
+        if (enable && !ShellStore.signedIn)
             AppController.navigate("sign-in")
     }
 
@@ -70,7 +87,7 @@ FocusScope {
         searchText: root.searchText
         onSearchTextChanged: root.searchText = searchText
         onRouteRequested: route => AppController.navigate(route)
-        onConsoleModeRequested: root.enterConsoleMode()
+        onConsoleModeRequested: root.toggleConsoleMode()
         onCommandPaletteRequested: root.commandOpen = true
 
         Loader {
@@ -142,8 +159,15 @@ FocusScope {
             selectedSection: root.settingsSection(root.route)
             onSelectedSectionChanged: root.settingsSubtitle = pageTitles[selectedSection]
             onRequestConsoleMode: enabled => {
-                if (enabled) root.enterConsoleMode()
-                else ShellStore.setSetting("launchInConsoleMode", false)
+                const win = Window.window
+                if (win && typeof win.requestConsoleSurface === "function")
+                    win.requestConsoleSurface(enabled)
+                else {
+                    ShellStore.applySetting("launchInConsoleMode", enabled)
+                    ShellStore.setSetting("launchInConsoleMode", enabled)
+                }
+                if (enabled && !ShellStore.signedIn)
+                    AppController.navigate("sign-in")
             }
             Component.onCompleted: root.settingsSubtitle = pageTitles[selectedSection]
         }

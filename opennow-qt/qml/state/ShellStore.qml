@@ -20,6 +20,8 @@ QtObject {
     property string catalogState: "idle"
     property string catalogSource: "public"
     property string sessionPersistence: "none"
+    property bool authRestorePending: true
+    property bool pendingStaySignedIn: true
     property var subscription: null
     property var regions: []
     property var regionPingResults: ({})
@@ -146,6 +148,13 @@ QtObject {
     property bool currentStreamInputPaused: false
     readonly property bool ready: CoreClient.state === "ready"
     readonly property bool signedIn: authSession !== null
+    readonly property string sessionPersistenceMessage: {
+        if (sessionPersistence === "unavailable")
+            return qsTr("The OS keychain is unavailable. Saved NVIDIA sessions cannot be restored until it is available.")
+        if (sessionPersistence === "memory-only")
+            return qsTr("This session is memory-only. The OS keychain could not save it, so you may need to sign in again after quitting.")
+        return ""
+    }
     readonly property bool streamBusy: streamCreateRequestId !== "" || streamStopRequestId !== ""
     readonly property string microphoneState: streamer && streamer.microphoneState
         ? String(streamer.microphoneState) : (settings.microphoneMode === "voice-activity" ? "armed" : "disabled")
@@ -230,6 +239,8 @@ QtObject {
     function initializeServices() {
         if (!ready)
             return
+        if (!signedIn)
+            authRestorePending = true
         refreshSettings()
         providersRequestId = CoreClient.request("auth.providers.list", {}, 25000)
         authSessionRequestId = CoreClient.request("auth.session.get", {})
@@ -1179,9 +1190,10 @@ QtObject {
         }, 35000)
     }
 
-    function startDeviceLogin(providerIdpId) {
+    function startDeviceLogin(providerIdpId, staySignedIn) {
         if (!ready || deviceStartRequestId !== "")
             return
+        pendingStaySignedIn = staySignedIn !== false
         cancelDeviceLogin()
         lastError = qsTr("")
         authMessage = qsTr("Contacting NVIDIA…")
@@ -1270,8 +1282,10 @@ QtObject {
         function onStateChanged() {
             if (CoreClient.state === "ready")
                 root.initializeServices()
-            else if (CoreClient.state === "failed")
+            else if (CoreClient.state === "failed") {
                 root.lastError = CoreClient.lastError
+                root.authRestorePending = false
+            }
         }
         function onResponseReceived(requestId, result) {
             if (requestId === root.settingsRequestId && result.settings) {
@@ -1299,6 +1313,9 @@ QtObject {
                 root.sessionPersistence = result.persistence || "none"
                 root.authState = root.authSession ? "signed-in" : "idle"
                 root.authSessionRequestId = ""
+                root.authRestorePending = false
+                if (root.sessionPersistenceMessage !== "")
+                    root.accessibilityMessage = root.sessionPersistenceMessage
                 if (root.authSession && root.catalogSource !== "account-library")
                     root.reloadCatalogForSession()
                 if (root.authSession)
@@ -1326,7 +1343,8 @@ QtObject {
                     root.authState = "completing"
                     root.authMessage = qsTr("Signed in. Loading your profile…")
                     root.deviceCompleteRequestId = CoreClient.request("auth.device.complete", {
-                        attemptId: root.authChallenge.attemptId
+                        attemptId: root.authChallenge.attemptId,
+                        staySignedIn: root.pendingStaySignedIn
                     }, 30000)
                 } else if (status === "pending") {
                     root.authState = "waiting"
@@ -1344,9 +1362,13 @@ QtObject {
                 root.authChallenge = null
                 root.authState = root.authSession ? "signed-in" : "error"
                 root.authMessage = root.authSession
-                    ? qsTr("Welcome, %1").arg(root.authSession.user.displayName)
+                    ? (root.sessionPersistenceMessage !== ""
+                        ? qsTr("Welcome, %1. %2").arg(root.authSession.user.displayName).arg(root.sessionPersistenceMessage)
+                        : qsTr("Welcome, %1").arg(root.authSession.user.displayName))
                     : qsTr("Sign-in did not return a session")
                 root.deviceCompleteRequestId = ""
+                if (root.sessionPersistenceMessage !== "")
+                    root.accessibilityMessage = root.sessionPersistenceMessage
                 if (root.authSession)
                     root.reloadCatalogForSession()
                 if (root.authSession)
@@ -1354,6 +1376,8 @@ QtObject {
                 root.resolveDirectLaunch()
             } else if (requestId === root.logoutRequestId) {
                 root.authSession = result.session || null
+                if (!root.authSession)
+                    root.sessionPersistence = "none"
                 root.authState = root.authSession ? "signed-in" : "idle"
                 root.authMessage = qsTr("")
                 root.logoutRequestId = ""
@@ -1365,6 +1389,7 @@ QtObject {
             } else if (requestId === root.logoutAllRequestId) {
                 root.logoutAllRequestId = ""
                 root.authSession = null
+                root.sessionPersistence = "none"
                 root.authState = "idle"
                 root.authMessage = qsTr("")
                 root.savedAccounts = []
@@ -1411,6 +1436,8 @@ QtObject {
                 root.sessionPersistence = result.persistence || "os-credential-store"
                 root.authState = root.authSession ? "signed-in" : "error"
                 root.accountSwitchRequestId = ""
+                if (root.sessionPersistenceMessage !== "")
+                    root.accessibilityMessage = root.sessionPersistenceMessage
                 root.reloadCatalogForSession()
                 root.refreshAccountServices()
                 root.pinMessage = qsTr("")
@@ -1680,6 +1707,12 @@ QtObject {
                 root.streamerDetectionMessage = message
             } else if (requestId === root.providersRequestId) {
                 root.providersRequestId = ""
+            } else if (requestId === root.authSessionRequestId) {
+                root.authSessionRequestId = ""
+                root.authRestorePending = false
+                root.authState = root.authSession ? "signed-in" : "idle"
+                if (code !== "cancelled")
+                    root.authMessage = message
             } else if (requestId === root.deviceStartRequestId
                        || requestId === root.devicePollRequestId
                        || requestId === root.deviceCompleteRequestId) {

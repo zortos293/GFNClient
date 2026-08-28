@@ -12,6 +12,32 @@ FocusScope {
     signal detailsRequested(var game)
     signal playRequested(var game)
 
+    function storeBlob(game) {
+        return (game.availableStores || []).join(" ").toLocaleLowerCase()
+    }
+    function hasRtx(game) {
+        const blob = ((game.genres || []).join(" ") + " " + String(game.title || "") + " " + String(game.nvidiaTech || "")).toLocaleLowerCase()
+        return blob.indexOf("rtx") >= 0 || blob.indexOf("ray tracing") >= 0
+    }
+    function hasController(game) {
+        const controls = (game.supportedControls || []).join(" ").toLocaleLowerCase()
+        return controls.indexOf("gamepad") >= 0 || controls.indexOf("controller") >= 0
+    }
+    function isReady(game) {
+        return Boolean(game.isInLibrary || game.isAvailable)
+    }
+    function countStore(name) {
+        return root.countWhere(function(game) { return root.storeBlob(game).indexOf(name) >= 0 })
+    }
+    function countWhere(predicate) {
+        const source = ShellStore.catalogGames || []
+        let count = 0
+        for (let i = 0; i < source.length; ++i) {
+            if (predicate(source[i]))
+                count += 1
+        }
+        return count
+    }
     function filteredGames() {
         const query = searchQuery.trim().toLocaleLowerCase()
         const source = ShellStore.catalogGames || []
@@ -20,8 +46,12 @@ FocusScope {
             const game = source[index]
             if (query !== "" && String(game.title || "").toLocaleLowerCase().indexOf(query) < 0)
                 continue
-            const stores = (game.availableStores || []).join(" ").toLocaleLowerCase()
-            if (activeFilter === "ready" && !game.isAvailable)
+            const stores = root.storeBlob(game)
+            if (activeFilter === "ready" && !root.isReady(game))
+                continue
+            if (activeFilter === "rtx" && !root.hasRtx(game))
+                continue
+            if (activeFilter === "controller" && !root.hasController(game))
                 continue
             if (activeFilter === "steam" && stores.indexOf("steam") < 0)
                 continue
@@ -34,59 +64,108 @@ FocusScope {
         return result
     }
     readonly property var games: filteredGames()
+    readonly property int libraryColumns: Math.max(4, Math.min(5, Math.floor((grid.width + 16) / 210)))
+    readonly property int libraryCellW: Math.max(188, Math.floor(grid.width / libraryColumns))
+    readonly property int libraryCellH: Math.round(libraryCellW * 214 / 146)
 
     Row {
-        x: 24; y: 18; spacing: 8
+        id: filterRow
+        x: 24
+        y: 16
+        height: 40
+        spacing: 8
         Repeater {
             model: [
                 {key:"all", label:qsTr("All"), count:ShellStore.catalogTotalCount || root.games.length},
-                {key:"ready", label:qsTr("Ready to play"), count:Math.max(0, root.games.length - 8)},
-                {key:"rtx", label:"RTX", count:63},
-                {key:"controller", label:qsTr("Controller"), count:150},
-                {key:"steam", label:"Steam", count:""},
-                {key:"epic", label:"Epic", count:""},
-                {key:"gog", label:"GOG", count:""}
+                {key:"ready", label:qsTr("Ready to play"), count:root.countWhere(root.isReady)},
+                {key:"rtx", label:"RTX", count:root.countWhere(root.hasRtx)},
+                {key:"controller", label:qsTr("Controller"), count:root.countWhere(root.hasController)},
+                {key:"steam", label:"Steam", count:root.countStore("steam")},
+                {key:"epic", label:"Epic", count:root.countStore("epic")},
+                {key:"gog", label:"GOG", count:root.countStore("gog")}
             ]
             delegate: Button {
                 id: filterButton
                 required property var modelData
-                height: 30
-                width: Math.max(69, labelText.implicitWidth + countText.implicitWidth + 35)
+                height: 40
+                implicitHeight: 40
+                implicitWidth: Math.max(84, chipRow.implicitWidth + 28)
                 padding: 0
+                leftPadding: 0
+                rightPadding: 0
+                topPadding: 0
+                bottomPadding: 0
                 focusPolicy: Qt.StrongFocus
+                hoverEnabled: true
+                clip: false
                 background: Rectangle {
-                    radius: 9
+                    radius: 11
                     color: root.activeFilter === filterButton.modelData.key ? "#1AFFFFFF" : (filterButton.hovered ? "#0FFFFFFF" : "transparent")
                     border.width: 1
                     border.color: root.activeFilter === filterButton.modelData.key ? "#3DFFFFFF" : DesktopTokens.seam
                 }
-                contentItem: Row {
-                    anchors.centerIn: parent; spacing: 7
-                    Rectangle { visible: ["steam","epic","gog"].indexOf(filterButton.modelData.key) >= 0; width: 7; height: 7; radius: filterButton.modelData.key === "gog" ? 2 : 4; color: filterButton.modelData.key === "gog" ? "#8D52FF" : "transparent"; border.width: filterButton.modelData.key === "gog" ? 0 : 1; border.color: "#52FFFFFF" }
-                    Text { id: labelText; text: filterButton.modelData.label; color: root.activeFilter === filterButton.modelData.key ? DesktopTokens.text : DesktopTokens.textMuted; font.family: DesktopTokens.bodyFont; font.pixelSize: 11; font.weight: Font.Bold }
-                    Text { id: countText; text: filterButton.modelData.count; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold }
+                contentItem: Item {
+                    implicitWidth: chipRow.implicitWidth
+                    implicitHeight: 40
+                    Row {
+                        id: chipRow
+                        anchors.centerIn: parent
+                        spacing: 8
+                        Rectangle {
+                            visible: ["steam","epic","gog"].indexOf(filterButton.modelData.key) >= 0
+                            width: 8
+                            height: 8
+                            radius: filterButton.modelData.key === "gog" ? 2 : 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: filterButton.modelData.key === "gog" ? "#8D52FF" : "transparent"
+                            border.width: filterButton.modelData.key === "gog" ? 0 : 1
+                            border.color: "#52FFFFFF"
+                        }
+                        Text {
+                            text: filterButton.modelData.label
+                            color: root.activeFilter === filterButton.modelData.key ? DesktopTokens.text : DesktopTokens.textMuted
+                            font.family: DesktopTokens.bodyFont
+                            font.pixelSize: 14
+                            font.weight: Font.Bold
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        Text {
+                            text: filterButton.modelData.count
+                            color: DesktopTokens.textFaint
+                            font.family: DesktopTokens.monoFont
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
                 }
                 onClicked: root.activeFilter = modelData.key
             }
         }
     }
     Text {
-        anchors.right: parent.right; anchors.rightMargin: 24; y: 27
+        anchors.right: parent.right
+        anchors.rightMargin: 24
+        anchors.verticalCenter: filterRow.verticalCenter
         text: qsTr("RIGHT-CLICK A GAME FOR ACTIONS")
         color: DesktopTokens.textFaint
-        font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold; font.letterSpacing: 0.7
+        font.family: DesktopTokens.monoFont
+        font.pixelSize: 10
+        font.weight: Font.DemiBold
+        font.letterSpacing: 0.7
     }
 
     GridView {
         id: grid
         // The delegate keeps a six-pixel focus/scale gutter. Offset the view by
         // that gutter so the artwork remains on Paper's 24/64 alignment lane.
-        x: 18; y: 58
+        x: 18
+        y: 70
         width: parent.width - 36
-        height: parent.height - 58
+        height: parent.height - 70
         clip: true
-        cellWidth: 146
-        cellHeight: 214
+        cellWidth: root.libraryCellW
+        cellHeight: root.libraryCellH
         model: root.games
         focus: true
         boundsBehavior: Flickable.StopAtBounds
@@ -94,6 +173,8 @@ FocusScope {
         delegate: DesktopPoster {
             required property var modelData
             game: modelData
+            tileWidth: root.libraryCellW
+            tileHeight: root.libraryCellH
             onClicked: {
                 ShellStore.selectedGame = modelData
                 root.detailsRequested(modelData)

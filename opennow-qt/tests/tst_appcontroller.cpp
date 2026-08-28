@@ -52,11 +52,24 @@ void AppControllerTest::closesOverlayBeforeNavigatingBack()
 void AppControllerTest::cyclesPrimaryRoutesDeterministically()
 {
     AppController controller;
-    QCOMPARE(controller.route(), QStringLiteral("home"));
+    const QStringList expectedRoutes{
+        QStringLiteral("home"),
+        QStringLiteral("library"),
+        QStringLiteral("store"),
+        QStringLiteral("friends"),
+        QStringLiteral("controllers"),
+        QStringLiteral("settings"),
+    };
+
+    QCOMPARE(controller.route(), expectedRoutes.constFirst());
+    for (qsizetype index = 1; index < expectedRoutes.size(); ++index) {
+        QVERIFY(controller.cyclePrimaryRoute(1));
+        QCOMPARE(controller.route(), expectedRoutes.at(index));
+    }
     QVERIFY(controller.cyclePrimaryRoute(1));
-    QCOMPARE(controller.route(), QStringLiteral("library"));
+    QCOMPARE(controller.route(), expectedRoutes.constFirst());
     QVERIFY(controller.cyclePrimaryRoute(-1));
-    QCOMPARE(controller.route(), QStringLiteral("home"));
+    QCOMPARE(controller.route(), expectedRoutes.constLast());
 }
 
 void AppControllerTest::cyclesGuidePagesDeterministically()

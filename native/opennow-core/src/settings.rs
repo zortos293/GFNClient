@@ -593,8 +593,18 @@ mod tests {
         let directory = env::temp_dir().join(format!("opennow-core-settings-{unique}"));
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(store.set("fps", json!(999)).unwrap(), json!(240));
+        assert_eq!(
+            store.set("launchInConsoleMode", json!(false)).unwrap(),
+            json!(false)
+        );
+        assert_eq!(
+            store.set("reducedMotion", json!(true)).unwrap(),
+            json!(true)
+        );
         let loaded = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(loaded.all()["fps"], json!(240));
+        assert_eq!(loaded.all()["launchInConsoleMode"], json!(false));
+        assert_eq!(loaded.all()["reducedMotion"], json!(true));
         assert!(store.set("notASetting", json!(true)).is_err());
         assert_eq!(store.set("codec", json!("invalid")).unwrap(), json!("auto"));
         assert_eq!(

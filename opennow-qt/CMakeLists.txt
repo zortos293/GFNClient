@@ -31,6 +31,7 @@ qt_standard_project_setup(REQUIRES 6.8)
 
 set_source_files_properties(qml/theme/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/state/ShellStore.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/desktop/DesktopTokens.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_executable(opennow-qt
     src/main.cpp
@@ -87,6 +88,38 @@ qt_add_qml_module(opennow-qt
         qml/Main.qml
         qml/theme/Theme.qml
         qml/state/ShellStore.qml
+        qml/desktop/DesktopTokens.qml
+        qml/desktop/DesktopBackdrop.qml
+        qml/desktop/DesktopButton.qml
+        qml/desktop/DesktopCommandPalette.qml
+        qml/desktop/DesktopFriendsScreen.qml
+        qml/desktop/DesktopGameModal.qml
+        qml/desktop/DesktopHomePoster.qml
+        qml/desktop/DesktopHomeScreen.qml
+        qml/desktop/DesktopKeyHint.qml
+        qml/desktop/DesktopLibraryScreen.qml
+        qml/desktop/DesktopPoster.qml
+        qml/desktop/DesktopSettingsButton.qml
+        qml/desktop/DesktopSettingsDropdown.qml
+        qml/desktop/DesktopSettingsPanel.qml
+        qml/desktop/DesktopSettingsRow.qml
+        qml/desktop/DesktopSettingsScreen.qml
+        qml/desktop/DesktopSettingsSegmented.qml
+        qml/desktop/DesktopSettingsSlider.qml
+        qml/desktop/DesktopSettingsToggle.qml
+        qml/desktop/DesktopShell.qml
+        qml/desktop/DesktopSidebar.qml
+        qml/desktop/DesktopSignInScreen.qml
+        qml/desktop/DesktopInStreamMenu.qml
+        qml/desktop/DesktopSessionStarting.qml
+        qml/desktop/DesktopStreamOverlayHost.qml
+        qml/desktop/DesktopStreamStats.qml
+        qml/desktop/DesktopStoreCard.qml
+        qml/desktop/DesktopStoreChip.qml
+        qml/desktop/DesktopStoreContent.qml
+        qml/desktop/DesktopStoreHero.qml
+        qml/desktop/DesktopStoreShelf.qml
+        qml/desktop/DesktopApp.qml
         qml/components/AppChrome.qml
         qml/components/ControllerGlyph.qml
         qml/components/FocusFrame.qml
@@ -341,6 +374,14 @@ if(BUILD_TESTING)
         add_test(NAME "qml-route-${route}"
                  COMMAND opennow-qt --smoke-test --allow-multiple-instances --route "${route}" --reduced-motion)
         set_tests_properties("qml-route-${route}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            TIMEOUT 5
+        )
+    endforeach()
+    foreach(route home library store friends settings)
+        add_test(NAME "qml-desktop-route-${route}"
+                 COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop --route "${route}" --reduced-motion)
+        set_tests_properties("qml-desktop-route-${route}" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             TIMEOUT 5
         )

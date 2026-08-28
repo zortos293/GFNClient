@@ -15,7 +15,23 @@ ApplicationWindow {
 
     property string activeRoute: AppController.route
     property bool geometryRestored: false
-    readonly property real designScale: Math.min(width / 1920, height / 1080)
+    readonly property bool settingsLoaded: Object.keys(ShellStore.settings || {}).length > 0
+    readonly property bool desktopRequested: LaunchModeOverride === "desktop"
+        || (LaunchModeOverride !== "console" && settingsLoaded
+            && ShellStore.settings.launchInConsoleMode === false)
+    readonly property bool desktopEligibleRoute: ["joining", "stream",
+        "accounts", "profile-pin", "game-accounts", "persistent-storage", "media",
+        "diagnostics", "updates", "feedback", "theme-store", "components"].indexOf(activeRoute) < 0
+    readonly property bool targetDesktopSurface: desktopRequested && desktopEligibleRoute
+    readonly property bool desktopStreamOverlayActive: desktopRequested && activeRoute === "stream"
+        && AppController.overlay.startsWith("desktop-stream-")
+    readonly property bool desktopStatsOverlayActive: AppController.overlay === "desktop-stream-stats"
+        || AppController.overlay === "desktop-stream-stats-expanded"
+    property bool desktopSurfaceActive: targetDesktopSurface
+    property bool modeInitialized: false
+    readonly property real designWidth: desktopSurfaceActive ? 1440 : 1920
+    readonly property real designHeight: desktopSurfaceActive ? 900 : 1080
+    readonly property real designScale: Math.min(width / designWidth, height / designHeight)
 
     Timer {
         id: geometrySaveTimer
@@ -73,13 +89,16 @@ ApplicationWindow {
     onScreenChanged: updateStreamSurface()
 
     function syncInputOwnership() {
-        const shellOwnsInput = AppController.route !== "stream" || AppController.overlay !== ""
+        const shellOwnsInput = AppController.route !== "stream"
+            || (AppController.overlay !== "" && !window.desktopStatsOverlayActive)
         ControllerInput.shellCaptureEnabled = shellOwnsInput
             && ShellStore.settings.controllerMode !== false
         if (AppController.route === "stream")
             ShellStore.setStreamInputPaused(shellOwnsInput)
     }
     Component.onCompleted: {
+        desktopSurfaceActive = targetDesktopSurface
+        modeInitialized = true
         syncInputOwnership()
         updateStreamSurface()
     }
@@ -150,8 +169,8 @@ ApplicationWindow {
     FocusScope {
         x: Math.round((window.width - width * scale) / 2)
         y: Math.round((window.height - height * scale) / 2)
-        width: 1920
-        height: 1080
+        width: window.designWidth
+        height: window.designHeight
         scale: window.designScale
         transformOrigin: Item.TopLeft
         focus: true
@@ -159,14 +178,16 @@ ApplicationWindow {
         Loader {
             id: routeLoader
             anchors.fill: parent
-            sourceComponent: window.componentForRoute(window.activeRoute)
+            sourceComponent: window.desktopSurfaceActive
+                ? desktopAppScreen : window.componentForRoute(window.activeRoute)
             opacity: 1
 
             onLoaded: {
                 if (item) {
                     item.forceActiveFocus()
-                    if (window.activeRoute === "settings-video-dropdown"
-                            || window.activeRoute === "settings-advanced-dropdown") {
+                    if (!window.desktopSurfaceActive
+                            && (window.activeRoute === "settings-video-dropdown"
+                            || window.activeRoute === "settings-advanced-dropdown")) {
                         item.initialDropdownOpen = true
                         Qt.callLater(item.openInitialDropdown)
                     }
@@ -187,6 +208,11 @@ ApplicationWindow {
                 window.syncStreamWindowVisibility()
             }
             function onOverlayChanged() {
+                if (window.desktopRequested && window.activeRoute === "stream"
+                        && AppController.overlay === "guide-session") {
+                    Qt.callLater(() => AppController.showOverlay("desktop-stream-menu"))
+                    return
+                }
                 window.syncInputOwnership()
                 window.syncStreamWindowVisibility()
                 if (AppController.overlay === "" && routeLoader.item)
@@ -218,7 +244,10 @@ ApplicationWindow {
         }
 
         Keys.onPressed: event => {
-            if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
+            if (event.key === Qt.Key_F10) {
+                ShellStore.setSetting("launchInConsoleMode", window.desktopSurfaceActive)
+                event.accepted = true
+            } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
                 event.accepted = AppController.goBack()
             } else if (event.key === Qt.Key_PageUp) {
                 event.accepted = AppController.overlay.startsWith("guide-")
@@ -229,7 +258,11 @@ ApplicationWindow {
                     ? AppController.cycleGuidePage(1)
                     : AppController.cyclePrimaryRoute(1)
             } else if (event.key === Qt.Key_F1) {
-                event.accepted = AppController.showOverlay("guide-session")
+                event.accepted = AppController.showOverlay(window.desktopRequested
+                    && window.activeRoute === "stream" ? "desktop-stream-menu" : "guide-session")
+            } else if (event.key === Qt.Key_F3 && window.desktopRequested
+                       && window.activeRoute === "stream") {
+                event.accepted = AppController.showOverlay("desktop-stream-stats")
             } else if (event.key === Qt.Key_Menu) {
                 event.accepted = AppController.showOverlay("quick-settings")
             } else if (event.key === Qt.Key_Y) {
@@ -252,7 +285,52 @@ ApplicationWindow {
         scale: window.designScale
         transformOrigin: Item.TopLeft
         overlay: AppController.overlay
+        visible: !window.desktopSurfaceActive && !window.desktopStreamOverlayActive
         z: 1000
+    }
+
+    DesktopStreamOverlayHost {
+        readonly property real overlayScale: Math.min(window.width / 1440, window.height / 900)
+        x: Math.round((window.width - width * overlayScale) / 2)
+        y: Math.round((window.height - height * overlayScale) / 2)
+        width: 1440
+        height: 900
+        scale: overlayScale
+        transformOrigin: Item.TopLeft
+        overlay: AppController.overlay
+        visible: window.desktopStreamOverlayActive
+        focus: visible
+        z: 1100
+        onVisibleChanged: if (visible) forceActiveFocus()
+    }
+
+    Rectangle {
+        id: modeCurtain
+        anchors.fill: parent
+        color: Theme.shell
+        opacity: 0
+        visible: opacity > 0
+        z: 2000
+        Text {
+            anchors.centerIn: parent
+            text: window.targetDesktopSurface ? qsTr("DESKTOP MODE") : qsTr("CONSOLE MODE")
+            color: Theme.label
+            font.family: Theme.monoFont
+            font.pixelSize: 13
+            font.weight: Font.Bold
+            font.letterSpacing: 2
+        }
+    }
+    SequentialAnimation {
+        id: modeTransition
+        NumberAnimation { target: modeCurtain; property: "opacity"; to: 1; duration: AppController.reducedMotion ? 0 : 110; easing.type: Easing.OutCubic }
+        PauseAnimation { duration: AppController.reducedMotion ? 0 : 55 }
+        ScriptAction { script: window.desktopSurfaceActive = window.targetDesktopSurface }
+        NumberAnimation { target: modeCurtain; property: "opacity"; to: 0; duration: AppController.reducedMotion ? 0 : 260; easing.type: Easing.OutCubic }
+    }
+    onTargetDesktopSurfaceChanged: {
+        if (modeInitialized)
+            modeTransition.restart()
     }
 
     Item {
@@ -343,6 +421,7 @@ ApplicationWindow {
     }
 
     Component { id: componentsScreen; ComponentsScreen {} }
+    Component { id: desktopAppScreen; DesktopApp {} }
     Component { id: homeScreen; HomeScreen {} }
     Component { id: libraryScreen; LibraryScreen {} }
     Component { id: storeScreen; StoreScreen {} }

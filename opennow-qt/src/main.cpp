@@ -121,6 +121,10 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(u"ThumbnailGenerator"_s, &thumbnailGenerator);
     engine.rootContext()->setContextProperty(u"I18n"_s, &localization);
     engine.rootContext()->setContextProperty(u"CoreClient"_s, &coreClient);
+    engine.rootContext()->setContextProperty(
+        u"LaunchModeOverride"_s,
+        arguments.contains(u"--desktop"_s) ? u"desktop"_s
+            : arguments.contains(u"--console"_s) ? u"console"_s : QString{});
     QObject::connect(&localization, &Localization::localeChanged,
                      &engine, &QQmlApplicationEngine::retranslate);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
@@ -255,8 +259,16 @@ int main(int argc, char *argv[])
             const auto *focused = window ? window->activeFocusItem() : nullptr;
             const auto failed = !window || qmlWarningOccurred || !focused
                 || !focused->isVisible() || !focused->isEnabled();
-            if (failed && window && !focused) {
-                qCritical("QML smoke test lost active focus");
+            if (failed) {
+                if (!window) {
+                    qCritical("QML smoke test did not create a window");
+                } else if (!focused) {
+                    qCritical("QML smoke test lost active focus");
+                } else {
+                    qCritical("QML smoke test focus target is not usable: %s (visible=%d, enabled=%d)",
+                              focused->metaObject()->className(), focused->isVisible(),
+                              focused->isEnabled());
+                }
             }
             application.exit(failed ? EXIT_FAILURE : EXIT_SUCCESS);
         });

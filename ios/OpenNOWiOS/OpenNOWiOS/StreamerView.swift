@@ -18,35 +18,15 @@ import os
 #if os(iOS) && canImport(WebRTC)
 enum NativeStreamAudioSessionPolicy {
     static func category(enableMic: Bool) -> AVAudioSession.Category {
-        enableMic ? .playAndRecord : .playback
+        .playback
     }
 
     static func mode(enableMic: Bool) -> AVAudioSession.Mode {
-        enableMic ? .voiceChat : .moviePlayback
+        .moviePlayback
     }
 
     static func options(enableMic: Bool) -> AVAudioSession.CategoryOptions {
-        enableMic ? [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker] : []
-    }
-
-    /// Teaches WebRTC itself what this app's audio is, which is the only way to stop iOS treating
-    /// a stream as a phone call.
-    ///
-    /// Setting the category on `RTCAudioSession` is not enough on its own. WebRTC's audio device
-    /// module reapplies `RTCAudioSessionConfiguration.webRTC()` whenever it starts playout, and
-    /// that shared default is `playAndRecord` + `voiceChat` — a voice-processing I/O unit. The
-    /// category this app carefully chose was being overwritten from underneath it a moment later,
-    /// which is why the system showed the in-call microphone indicator and the volume HUD drew a
-    /// phone: as far as iOS was concerned, this *was* a call. Overriding the shared default first
-    /// means playback-only is what the module asks for in the first place.
-    ///
-    /// Idempotent, and must run before the peer connection factory is created.
-    static func installWebRTCDefaults() {
-        let configuration = RTCAudioSessionConfiguration.webRTC()
-        configuration.category = category(enableMic: false).rawValue
-        configuration.mode = mode(enableMic: false).rawValue
-        configuration.categoryOptions = options(enableMic: false)
-        RTCAudioSessionConfiguration.setWebRTC(configuration)
+        [.allowAirPlay, .allowBluetoothA2DP]
     }
 }
 
@@ -2338,10 +2318,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var lastPostStartKeyframeRequestAt: TimeInterval?
     private var postStartKeyframeAttempts = 0
     private var autoRetryScheduled = false
-    private var webRTCAudioSessionConfigured = false
+    private var streamAudioPlaybackConfigured = false
     private var mutedAudioDevice: NativeStreamMutedAudioDevice?
+    private var playbackAudioDevice: NativeStreamPlaybackAudioDevice?
     private var audioTrack: RTCAudioTrack?
     private var audioSessionObservers: [NSObjectProtocol] = []
+    private var audioSessionRecoveryTask: Task<Void, Never>?
     private var latestScenePhase: ScenePhase = .active
     private var backgroundPictureInPictureStartPending = false
     private var needsForegroundReconnect = false
@@ -2492,7 +2474,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
         startNetworkMonitoring()
         startAudioSessionObservation()
-        configureWebRTCAudioSession()
+        configureStreamAudioPlayback()
         inputBridge.attach()
         setIdleTimerDisabled(true)
         connectSignaling()
@@ -3100,9 +3082,11 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         inputBridge.detach()
         setIdleTimerDisabled(false)
         stopAudioSessionObservation()
+        audioSessionRecoveryTask?.cancel()
+        audioSessionRecoveryTask = nil
         audioTrack?.isEnabled = false
         audioTrack = nil
-        teardownWebRTCAudioSession()
+        teardownStreamAudioPlayback()
         offerTimeoutWorkItem?.cancel()
         offerTimeoutWorkItem = nil
         iceDisconnectWorkItem?.cancel()
@@ -3141,6 +3125,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         peerConnection = nil
         factory = nil
         mutedAudioDevice = nil
+        playbackAudioDevice = nil
         answerSent = false
         queuedLocalIceCandidates.removeAll(keepingCapacity: true)
     }
@@ -3163,7 +3148,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         // The remote track can arrive after the one-time startup configuration. Re-arming here
         // closes the first-session race where WebRTC creates its audio unit after iOS has already
         // accepted the app's playback category, but never starts playout for that first track.
-        configureWebRTCAudioSession()
+        configureStreamAudioPlayback()
         track.isEnabled = shouldPlayAudio
         log("Native audio track attached enabled=\(track.isEnabled)")
     }
@@ -3327,19 +3312,30 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private func createPeerConnection(with offerSDP: String) {
         if factory == nil {
             _ = RTCInitializeSSL()
-            // Before the factory, because the audio device module reads the shared configuration
-            // when it is built and again every time it starts playout.
-            NativeStreamAudioSessionPolicy.installWebRTCDefaults()
-            let audioDevice = nativeAudioDeviceAvailable ? nil : NativeStreamMutedAudioDevice()
+            #if targetEnvironment(simulator)
+            let audioDevice = NativeStreamMutedAudioDevice()
             mutedAudioDevice = audioDevice
             factory = RTCPeerConnectionFactory(
                 encoderFactory: RTCDefaultVideoEncoderFactory(),
                 decoderFactory: NativeStreamVideoDecoderFactory(),
                 audioDevice: audioDevice
             )
-            if audioDevice != nil {
-                log("Using muted WebRTC audio device")
-            }
+            log("Using muted WebRTC audio device")
+            #else
+            let audioDevice = NativeStreamPlaybackAudioDevice(
+                playbackEnabled: shouldPlayAudio,
+                onEvent: { [weak self] message in
+                    Task { @MainActor [weak self] in self?.log(message) }
+                }
+            )
+            playbackAudioDevice = audioDevice
+            factory = RTCPeerConnectionFactory(
+                encoderFactory: RTCDefaultVideoEncoderFactory(),
+                decoderFactory: NativeStreamVideoDecoderFactory(),
+                audioDevice: audioDevice
+            )
+            log("Using output-only WebRTC playback device")
+            #endif
         }
         guard let factory else {
             fail("Could not create WebRTC factory")
@@ -4437,43 +4433,16 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         nativeAudioDeviceAvailable && !streamerPreferences.audioMuted
     }
 
-    private func configureWebRTCAudioSession() {
-        let audioSession = RTCAudioSession.sharedInstance()
-        // GFN's current offer has no upstream microphone track. Keep the
-        // session playback-only instead of requesting a misleading permission.
-        let enableMic = false
-        NativeStreamAudioSessionPolicy.installWebRTCDefaults()
-
-        audioSession.useManualAudio = true
-        audioSession.ignoresPreferredAttributeConfigurationErrors = true
+    private func configureStreamAudioPlayback() {
         guard shouldPlayAudio else {
-            audioSession.isAudioEnabled = false
+            playbackAudioDevice?.setPlaybackEnabled(false)
+            streamAudioPlaybackConfigured = false
             log("WebRTC audio held disabled")
             return
         }
-        audioSession.lockForConfiguration()
-        defer { audioSession.unlockForConfiguration() }
-
-        configureAudioCategory(audioSession, enableMic: enableMic)
-        audioSession.isAudioEnabled = true
-        do {
-            try audioSession.setPreferredSampleRate(48_000)
-        } catch {
-            log("Audio session sample rate failed: \(error.localizedDescription)")
-        }
-        do {
-            try audioSession.setPreferredIOBufferDuration(0.01)
-        } catch {
-            log("Audio session buffer duration failed: \(error.localizedDescription)")
-        }
-        activateWebRTCAudioSession(audioSession)
-        webRTCAudioSessionConfigured = true
-        let routeTypes = audioSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
-        log(
-            "WebRTC audio playback enabled mic=\(enableMic) "
-                + "sampleRate=\(Int(audioSession.sampleRate)) channels=\(audioSession.outputNumberOfChannels) "
-                + "route=\(routeTypes.isEmpty ? "none" : routeTypes)"
-        )
+        playbackAudioDevice?.setPlaybackEnabled(true)
+        streamAudioPlaybackConfigured = true
+        log("WebRTC media playback enabled")
     }
 
     private func applyLiveAudioPreference() {
@@ -4484,12 +4453,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
         guard shouldPlayAudio else {
             audioTrack?.isEnabled = false
-            teardownWebRTCAudioSession()
+            teardownStreamAudioPlayback()
             log("WebRTC audio held disabled")
             return
         }
 
-        configureWebRTCAudioSession()
+        configureStreamAudioPlayback()
         audioTrack?.isEnabled = true
     }
 
@@ -4531,55 +4500,27 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         case AVAudioSession.mediaServicesWereResetNotification: reason = "media services reset"
         default: reason = "interruption ended"
         }
-        configureWebRTCAudioSession()
-        audioTrack?.isEnabled = shouldPlayAudio
-        log("Audio session recovered after \(reason)")
-    }
-
-    private func configureAudioCategory(_ audioSession: RTCAudioSession, enableMic: Bool) {
-        do {
-            try audioSession.setCategory(
-                NativeStreamAudioSessionPolicy.category(enableMic: enableMic),
-                mode: NativeStreamAudioSessionPolicy.mode(enableMic: enableMic),
-                options: NativeStreamAudioSessionPolicy.options(enableMic: enableMic)
-            )
-        } catch {
-            log("Audio session category failed: \(error.localizedDescription)")
-        }
-        if audioSession.maximumOutputNumberOfChannels >= 2 {
+        // Setting a category or activating a route can itself emit route notifications. Coalesce
+        // those callbacks instead of recursively rebuilding the audio unit on the main actor.
+        audioSessionRecoveryTask?.cancel()
+        audioSessionRecoveryTask = Task { @MainActor [weak self] in
             do {
-                try audioSession.setPreferredOutputNumberOfChannels(2)
+                try await Task.sleep(nanoseconds: 120_000_000)
             } catch {
-                log("Audio session stereo output failed: \(error.localizedDescription)")
+                return
             }
+            guard let self, !self.stopped else { return }
+            self.playbackAudioDevice?.recoverAudioOutput()
+            self.configureStreamAudioPlayback()
+            self.audioTrack?.isEnabled = self.shouldPlayAudio
+            self.log("Audio session recovered after \(reason)")
         }
     }
 
-    private func activateWebRTCAudioSession(_ audioSession: RTCAudioSession) {
-        #if !targetEnvironment(simulator)
-        do {
-            try audioSession.setActive(true)
-        } catch {
-            log("Audio session activation failed: \(error.localizedDescription)")
-        }
-        #endif
-    }
-
-    private func teardownWebRTCAudioSession() {
-        guard webRTCAudioSessionConfigured else { return }
-        let audioSession = RTCAudioSession.sharedInstance()
-        audioSession.lockForConfiguration()
-        defer { audioSession.unlockForConfiguration() }
-        audioSession.useManualAudio = true
-        audioSession.isAudioEnabled = false
-        #if !targetEnvironment(simulator)
-        do {
-            try audioSession.setActive(false)
-        } catch {
-            log("Audio session deactivation failed: \(error.localizedDescription)")
-        }
-        #endif
-        webRTCAudioSessionConfigured = false
+    private func teardownStreamAudioPlayback() {
+        guard streamAudioPlaybackConfigured else { return }
+        playbackAudioDevice?.setPlaybackEnabled(false)
+        streamAudioPlaybackConfigured = false
     }
 }
 

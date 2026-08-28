@@ -2451,6 +2451,22 @@ enum SessionAdAction: String, Codable {
     case cancel
 }
 
+/// Checked continuations trap the process if a framework callback races a synchronous failure.
+/// `ASWebAuthenticationSession.start()` can return false while its completion handler is still
+/// delivered, so every exit goes through this one-shot gate.
+final class OAuthCompletionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return false }
+        completed = true
+        return true
+    }
+}
+
 private final class OAuthWebAuthenticator: NSObject {
     private var session: ASWebAuthenticationSession?
 
@@ -2460,6 +2476,11 @@ private final class OAuthWebAuthenticator: NSObject {
         prefersEphemeralBrowserSession: Bool
     ) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
+            let completionGate = OAuthCompletionGate()
+            let complete: @Sendable (Result<URL, Error>) -> Void = { result in
+                guard completionGate.claim() else { return }
+                continuation.resume(with: result)
+            }
             TVAuthDiagnostics.record(
                 "Preparing ASWebAuthenticationSession host=\(url.host ?? "unknown") callbackScheme=\(callbackScheme)"
             )
@@ -2471,7 +2492,7 @@ private final class OAuthWebAuthenticator: NSObject {
             ) { callbackURL, error in
                 if let callbackURL {
                     TVAuthDiagnostics.record("Auth session completed with \(summarizeOAuthCallback(callbackURL))")
-                    continuation.resume(returning: callbackURL)
+                    complete(.success(callbackURL))
                     return
                 }
                 let authError = error ?? NSError(
@@ -2479,7 +2500,7 @@ private final class OAuthWebAuthenticator: NSObject {
                     userInfo: [NSLocalizedDescriptionKey: "Authentication cancelled"]
                 )
                 TVAuthDiagnostics.record("Auth session ended with error: \(authError.localizedDescription)")
-                continuation.resume(throwing: authError)
+                complete(.failure(authError))
             }
             #else
             authSession = ASWebAuthenticationSession(
@@ -2488,7 +2509,7 @@ private final class OAuthWebAuthenticator: NSObject {
             ) { callbackURL, error in
                 if let callbackURL {
                     TVAuthDiagnostics.record("Auth session completed with \(summarizeOAuthCallback(callbackURL))")
-                    continuation.resume(returning: callbackURL)
+                    complete(.success(callbackURL))
                     return
                 }
                 let authError = error ?? NSError(
@@ -2496,7 +2517,7 @@ private final class OAuthWebAuthenticator: NSObject {
                     userInfo: [NSLocalizedDescriptionKey: "Authentication cancelled"]
                 )
                 TVAuthDiagnostics.record("Auth session ended with error: \(authError.localizedDescription)")
-                continuation.resume(throwing: authError)
+                complete(.failure(authError))
             }
             authSession.presentationContextProvider = self
             authSession.prefersEphemeralWebBrowserSession = prefersEphemeralBrowserSession
@@ -2505,9 +2526,9 @@ private final class OAuthWebAuthenticator: NSObject {
             TVAuthDiagnostics.record("Starting ASWebAuthenticationSession canStart=\(authSession.canStart).")
             if !authSession.start() {
                 TVAuthDiagnostics.record("ASWebAuthenticationSession failed to start.")
-                continuation.resume(throwing: NSError(
+                complete(.failure(NSError(
                     domain: "OpenNOWAuth", code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "Could not start sign-in session"]))
+                    userInfo: [NSLocalizedDescriptionKey: "Could not start sign-in session"])))
             }
         }
     }

@@ -1834,7 +1834,12 @@ final class OpenNOWiOSParityTests: XCTestCase {
         )
     }
 
-    private static func makeGame(title: String, controls: [String]) -> CloudGame {
+    private static func makeGame(
+        title: String,
+        controls: [String],
+        sectionId: String? = nil,
+        sectionTitle: String? = nil
+    ) -> CloudGame {
         CloudGame(
             id: title.lowercased(),
             title: title,
@@ -1855,8 +1860,8 @@ final class OpenNOWiOSParityTests: XCTestCase {
             stores: nil,
             playType: nil,
             membershipTierLabel: nil,
-            catalogSectionId: nil,
-            catalogSectionTitle: nil,
+            catalogSectionId: sectionId,
+            catalogSectionTitle: sectionTitle,
             contentRatings: nil
         )
     }
@@ -2163,10 +2168,48 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertFalse(redacted.contains("2001:db8::1"))
     }
 
-    func testPlaybackAudioPolicyUsesMovieModeWithoutInvalidBluetoothOptions() {
+    func testPlaybackAudioPolicyNeverUsesCallAudio() {
         XCTAssertEqual(NativeStreamAudioSessionPolicy.category(enableMic: false), .playback)
         XCTAssertEqual(NativeStreamAudioSessionPolicy.mode(enableMic: false), .moviePlayback)
-        XCTAssertTrue(NativeStreamAudioSessionPolicy.options(enableMic: false).isEmpty)
+        XCTAssertEqual(
+            NativeStreamAudioSessionPolicy.options(enableMic: false),
+            [.allowAirPlay, .allowBluetoothA2DP]
+        )
+    }
+
+    func testOAuthCompletionGateAllowsOnlyOneContinuationResume() {
+        let gate = OAuthCompletionGate()
+
+        XCTAssertTrue(gate.claim())
+        XCTAssertFalse(gate.claim())
+        XCTAssertFalse(gate.claim())
+    }
+
+    func testNewGamesHeroUsesProviderOrderDeduplicatesAndExcludesPersonalRows() {
+        let weeklyID = "section-cbc43218-6ad6-4ff3-8538-bc84f90c796c-week-34"
+        let first = Self.makeGame(title: "First", controls: [], sectionTitle: "GFN Thursday")
+        let duplicate = Self.makeGame(title: "First", controls: [], sectionId: weeklyID)
+        let second = Self.makeGame(title: "Second", controls: [], sectionId: weeklyID)
+        let unrelated = Self.makeGame(title: "Recent-ish", controls: [], sectionTitle: "Recently updated")
+
+        let result = newlyAddedStoreHeroGames(
+            games: [unrelated, first, duplicate, second],
+            excludedGameKeys: [catalogStableGameKey(first)]
+        )
+
+        XCTAssertEqual(result.map(\.title), ["Second"])
+    }
+
+    func testNewGamesHeroFallsBackToWeeklyListWhenEveryPageIsInPersonalRows() {
+        let first = Self.makeGame(title: "First", controls: [], sectionTitle: "GFN Thursday")
+        let second = Self.makeGame(title: "Second", controls: [], sectionTitle: "GFN Thursday")
+
+        let result = newlyAddedStoreHeroGames(
+            games: [first, second],
+            excludedGameKeys: [catalogStableGameKey(first), catalogStableGameKey(second)]
+        )
+
+        XCTAssertEqual(result.map(\.title), ["First", "Second"])
     }
 
     func testIOS26UsesFilteredRendererWithoutRequiringSharpeningToggle() {

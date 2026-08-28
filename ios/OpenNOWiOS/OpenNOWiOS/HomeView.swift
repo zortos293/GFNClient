@@ -752,8 +752,8 @@ struct HomeView: View {
                 continueSection
             }
 
-            if !isHomeSearchActive && !comingNextGames.isEmpty {
-                comingNextSection
+            if !isHomeSearchActive && !newGamesHeroGames.isEmpty {
+                newGamesHeroSection
             }
 
             if !isHomeSearchActive {
@@ -819,12 +819,9 @@ struct HomeView: View {
         }
     }
 
-    private var comingNextSection: some View {
-        CatalogPosterRail(
-            title: "Coming Next",
-            symbol: "sparkles",
-            caption: "Recently added or updated",
-            games: comingNextGames,
+    private var newGamesHeroSection: some View {
+        ComingNextCarousel(
+            games: newGamesHeroGames,
             onOpenDetails: { selectedGameForDetails = $0 },
             onPlay: launchFromCard
         )
@@ -834,7 +831,7 @@ struct HomeView: View {
     /// was flattening all of them into one grid. A section is only worth a rail when it is long
     /// enough to scroll — anything shorter reads as a rendering bug, so it stays in the grid.
     private var storeSectionRails: [CatalogSectionGroup] {
-        let excluded = comingNextExcludedGameKeys.union(comingNextGames.map(catalogStableGameKey))
+        let excluded = newGamesExcludedGameKeys.union(newGamesHeroGames.map(catalogStableGameKey))
         var order: [String] = []
         var grouped: [String: [CloudGame]] = [:]
         var seen = Set<String>()
@@ -857,32 +854,14 @@ struct HomeView: View {
         .map { $0 }
     }
 
-    private var comingNextGames: [CloudGame] {
-        let excludedGameKeys = comingNextExcludedGameKeys
-        var seenGameKeys = Set<String>()
-        return Array(
-            store.allGames.lazy
-                .filter { !excludedGameKeys.contains(catalogStableGameKey($0)) }
-                .filter { game in
-                    guard let sectionTitle = game.catalogSectionTitle?
-                        .trimmingCharacters(in: .whitespacesAndNewlines),
-                        !sectionTitle.isEmpty else {
-                        return false
-                    }
-
-                    let normalizedTitle = sectionTitle.lowercased()
-                    guard !normalizedTitle.contains("jump back in") else { return false }
-                    return normalizedTitle.contains("new") ||
-                        normalizedTitle.contains("recent") ||
-                        normalizedTitle.contains("updated") ||
-                        normalizedTitle.contains("just added")
-                }
-                .filter { seenGameKeys.insert(catalogStableGameKey($0)).inserted }
-                .prefix(14)
+    private var newGamesHeroGames: [CloudGame] {
+        newlyAddedStoreHeroGames(
+            games: store.allGames,
+            excludedGameKeys: newGamesExcludedGameKeys
         )
     }
 
-    private var comingNextExcludedGameKeys: Set<String> {
+    private var newGamesExcludedGameKeys: Set<String> {
         var keys = Set(continueGameItems.map { catalogStableGameKey($0.game) })
         if let activeGame = store.activeSession?.game {
             keys.insert(catalogStableGameKey(activeGame))
@@ -1082,6 +1061,31 @@ func gameBannerRows(for games: [CloudGame]) -> [GameBannerRowGroup] {
     }
 
     return rows
+}
+
+/// Android's Store hero is the provider's weekly GFN Thursday section, in provider order. Keep
+/// that exact contract here: section-title guesses can silently turn a named feed into unrelated
+/// games, and alphabetical sorting destroys the weekly order users expect.
+func newlyAddedStoreHeroGames(
+    games: [CloudGame],
+    excludedGameKeys: Set<String> = [],
+    limit: Int = 6
+) -> [CloudGame] {
+    guard limit > 0 else { return [] }
+    let sectionIDPrefix = "section-cbc43218-6ad6-4ff3-8538-bc84f90c796c-"
+    var seen = Set<String>()
+    let providerOrdered = games.filter { game in
+        let isWeeklySection = game.catalogSectionTitle?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveCompare("GFN Thursday") == .orderedSame
+        let isWeeklySectionID = game.catalogSectionId?.hasPrefix(sectionIDPrefix) == true
+        guard isWeeklySection || isWeeklySectionID else { return false }
+        return seen.insert(catalogStableGameKey(game)).inserted
+    }
+    let nonRepeating = providerOrdered.filter {
+        !excludedGameKeys.contains(catalogStableGameKey($0))
+    }
+    return Array((nonRepeating.isEmpty ? providerOrdered : nonRepeating).prefix(limit))
 }
 
 struct CatalogFilterChip: Identifiable {
@@ -1995,8 +1999,8 @@ private struct JumpBackInCard: View {
 
 /// A horizontal row of poster cards under a titled header.
 ///
-/// Used both for "Coming Next" and for the curated sections the catalog itself defines, so a rail
-/// looks and behaves the same wherever it appears — which is the point of having rails at all.
+/// Used for curated sections the catalog itself defines, so a rail looks and behaves the same
+/// wherever it appears — which is the point of having rails at all.
 private struct CatalogPosterRail: View {
     @EnvironmentObject private var store: OpenNOWStore
 
@@ -2108,10 +2112,10 @@ private struct ComingNextCarousel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Coming Next", systemImage: "sparkles")
+                Label("New games added", systemImage: "sparkles")
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 8)
-                Text("Recently added or updated")
+                Text("GFN Thursday")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -2137,7 +2141,7 @@ private struct ComingNextCarousel: View {
             }
             .frame(height: 218)
             .tabViewStyle(.page(indexDisplayMode: .never))
-            .accessibilityLabel("Coming Next games")
+            .accessibilityLabel("New games added")
 
             HStack(spacing: 2) {
                 ForEach(games.indices, id: \.self) { index in
@@ -2257,7 +2261,7 @@ private struct ComingNextHeroCard: View {
         ZStack(alignment: .bottom) {
             Button(action: openDetails) {
                 ZStack(alignment: .bottomLeading) {
-                    GameArtworkView(game: game, iconSize: 54)
+                    GameArtworkView(game: game, iconSize: 54, role: .details)
 
                     LinearGradient(
                         colors: [.clear, .black.opacity(0.30), .black.opacity(0.92)],
@@ -2270,10 +2274,13 @@ private struct ComingNextHeroCard: View {
                             .font(.title3.bold())
                             .foregroundStyle(.white)
                             .lineLimit(2)
-                        Text(gameCatalogSubtitle(for: game))
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Color.white.opacity(0.78))
-                            .lineLimit(1)
+                        if let publisher = game.publisher?.trimmingCharacters(in: .whitespacesAndNewlines),
+                           !publisher.isEmpty {
+                            Text(publisher)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(Color.white.opacity(0.78))
+                                .lineLimit(1)
+                        }
                     }
                     .padding(16)
                     .padding(.bottom, 44)

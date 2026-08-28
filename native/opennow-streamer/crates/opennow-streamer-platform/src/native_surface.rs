@@ -50,7 +50,7 @@ fn parse_handle(value: &str) -> Result<usize, String> {
     parsed
         .ok()
         .filter(|handle| *handle != 0)
-        .ok_or_else(|| format!("invalid Electron native window handle: {value}"))
+        .ok_or_else(|| format!("invalid shell native window handle: {value}"))
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -227,7 +227,7 @@ mod platform {
                 RawWindowHandle::Xlib(handle) => handle.window,
                 RawWindowHandle::Wayland(_) => {
                     return Err(
-                        "native Electron surface embedding requires an X11/XWayland session"
+                        "native shell surface embedding requires an X11/XWayland session"
                             .to_owned(),
                     );
                 }

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, RecvError, Sender, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -25,6 +25,82 @@ const MAC_VIDEO_QUEUE_MAX_CAPACITY: usize = 60;
 const AUDIO_QUEUE_CAPACITY: usize = 4;
 const OPUS_SAMPLE_RATE: u32 = 48_000;
 const MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL: usize = 5_760;
+const RECORDING_TAP_QUEUE_CAPACITY: usize = 256;
+
+pub struct EncodedRecordingReceiver {
+    receiver: Receiver<EncodedFrame>,
+    overflowed: Arc<AtomicBool>,
+}
+
+impl EncodedRecordingReceiver {
+    pub fn recv(&self) -> Result<EncodedFrame, RecvError> {
+        self.receiver.recv()
+    }
+
+    pub fn overflowed(&self) -> bool {
+        self.overflowed.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_receiver(receiver: Receiver<EncodedFrame>) -> Self {
+        Self {
+            receiver,
+            overflowed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RecordingTap {
+    sender: Mutex<Option<SyncSender<EncodedFrame>>>,
+    overflowed: Arc<AtomicBool>,
+}
+
+impl RecordingTap {
+    fn subscribe(&self) -> Result<EncodedRecordingReceiver, String> {
+        let mut active = self
+            .sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active.is_some() {
+            return Err("a native stream recording is already active".to_owned());
+        }
+        self.overflowed.store(false, Ordering::Release);
+        let (sender, receiver) = sync_channel(RECORDING_TAP_QUEUE_CAPACITY);
+        *active = Some(sender);
+        Ok(EncodedRecordingReceiver {
+            receiver,
+            overflowed: Arc::clone(&self.overflowed),
+        })
+    }
+
+    fn unsubscribe(&self) {
+        self.sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
+    fn publish(&self, frame: &EncodedFrame) {
+        let mut active = self
+            .sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(sender) = active.as_ref() else {
+            return;
+        };
+        match sender.try_send(frame.clone()) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.overflowed.store(true, Ordering::Release);
+                active.take();
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                active.take();
+            }
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn macos_video_queue_capacity(fps: u32) -> usize {
@@ -56,6 +132,180 @@ impl MediaVideoCodec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShortcutChord {
+    pub virtual_key: u16,
+    pub modifiers: u16,
+}
+
+impl ShortcutChord {
+    pub fn parse(value: &str) -> Option<Self> {
+        let mut modifiers = 0_u16;
+        let mut virtual_key = None;
+        for part in value.split('+').map(str::trim) {
+            if part.is_empty() {
+                return None;
+            }
+            let normalized = part.to_ascii_lowercase();
+            let modifier = match normalized.as_str() {
+                "shift" => Some(0x01),
+                "ctrl" | "control" => Some(0x02),
+                "alt" | "option" => Some(0x04),
+                "meta" | "command" | "cmd" | "super" | "win" => Some(0x08),
+                key if virtual_key.is_none() => {
+                    virtual_key = shortcut_virtual_key(key);
+                    None
+                }
+                _ => return None,
+            };
+            if let Some(modifier) = modifier {
+                if modifiers & modifier != 0 {
+                    return None;
+                }
+                modifiers |= modifier;
+            }
+        }
+        virtual_key.map(|virtual_key| Self {
+            virtual_key,
+            modifiers,
+        })
+    }
+}
+
+fn shortcut_virtual_key(value: &str) -> Option<u16> {
+    if value.len() == 1 {
+        let byte = value.as_bytes()[0].to_ascii_uppercase();
+        if byte.is_ascii_alphanumeric() {
+            return Some(u16::from(byte));
+        }
+    }
+    if let Some(number) = value
+        .strip_prefix('f')
+        .and_then(|number| number.parse::<u16>().ok())
+        && (1..=24).contains(&number)
+    {
+        return Some(0x6f + number);
+    }
+    Some(match value {
+        "enter" | "return" => 0x0d,
+        "escape" | "esc" => 0x1b,
+        "backspace" => 0x08,
+        "tab" => 0x09,
+        "space" => 0x20,
+        "left" => 0x25,
+        "up" => 0x26,
+        "right" => 0x27,
+        "down" => 0x28,
+        "insert" => 0x2d,
+        "delete" | "del" => 0x2e,
+        "home" => 0x24,
+        "end" => 0x23,
+        "pageup" => 0x21,
+        "pagedown" => 0x22,
+        "printscreen" => 0x2a,
+        "pause" => 0x13,
+        _ => return None,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamShortcutAction {
+    ToggleStats,
+    TogglePointerLock,
+    ToggleFullscreen,
+    StopStream,
+    ToggleAntiAfk,
+    ToggleMicrophone,
+    Screenshot,
+    ToggleRecording,
+}
+
+impl StreamShortcutAction {
+    pub const fn protocol_name(self) -> &'static str {
+        match self {
+            Self::ToggleStats => "toggle-stats",
+            Self::TogglePointerLock => "toggle-pointer-lock",
+            Self::ToggleFullscreen => "toggle-fullscreen",
+            Self::StopStream => "stop-stream",
+            Self::ToggleAntiAfk => "toggle-anti-afk",
+            Self::ToggleMicrophone => "toggle-microphone",
+            Self::Screenshot => "screenshot",
+            Self::ToggleRecording => "toggle-recording",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamShortcutBindings {
+    bindings: [(StreamShortcutAction, Option<ShortcutChord>); 8],
+}
+
+impl StreamShortcutBindings {
+    pub fn from_json(value: &serde_json::Value) -> Self {
+        let read = |key: &str, fallback: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .and_then(ShortcutChord::parse)
+                .or_else(|| ShortcutChord::parse(fallback))
+        };
+        Self {
+            bindings: [
+                (
+                    StreamShortcutAction::ToggleStats,
+                    read("toggleStats", "Ctrl+N"),
+                ),
+                (
+                    StreamShortcutAction::TogglePointerLock,
+                    read("togglePointerLock", "F8"),
+                ),
+                (
+                    StreamShortcutAction::ToggleFullscreen,
+                    read("toggleFullscreen", "F10"),
+                ),
+                (
+                    StreamShortcutAction::StopStream,
+                    read("stopStream", "Ctrl+Shift+Q"),
+                ),
+                (
+                    StreamShortcutAction::ToggleAntiAfk,
+                    read("toggleAntiAfk", "Ctrl+Shift+K"),
+                ),
+                (
+                    StreamShortcutAction::ToggleMicrophone,
+                    read("toggleMicrophone", "Ctrl+Shift+M"),
+                ),
+                (StreamShortcutAction::Screenshot, read("screenshot", "F11")),
+                (
+                    StreamShortcutAction::ToggleRecording,
+                    read("toggleRecording", "F12"),
+                ),
+            ],
+        }
+    }
+
+    pub const fn action(self, virtual_key: u16, modifiers: u16) -> Option<StreamShortcutAction> {
+        let mut index = 0;
+        while index < self.bindings.len() {
+            let (action, chord) = self.bindings[index];
+            if let Some(chord) = chord
+                && chord.virtual_key == virtual_key
+                && chord.modifiers == modifiers
+            {
+                return Some(action);
+            }
+            index += 1;
+        }
+        None
+    }
+}
+
+impl Default for StreamShortcutBindings {
+    fn default() -> Self {
+        Self::from_json(&serde_json::Value::Null)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaStreamConfig {
     pub codec: MediaVideoCodec,
     pub width: u32,
@@ -64,6 +314,21 @@ pub struct MediaStreamConfig {
     pub bitrate_bps: u32,
     /// CloudMatch accepted Cloud G-SYNC and the host presentation path is VRR-capable.
     pub cloud_gsync: bool,
+    /// Start the local performance overlay in its compact mode.
+    pub show_stats: bool,
+    pub stats_position: StatsOverlayPosition,
+    /// Open the shell-neutral stream window in compositor-managed fullscreen.
+    pub start_fullscreen: bool,
+    pub shortcuts: StreamShortcutBindings,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StatsOverlayPosition {
+    TopLeft,
+    TopRight,
+    #[default]
+    BottomLeft,
+    BottomRight,
 }
 
 impl Default for MediaStreamConfig {
@@ -75,6 +340,10 @@ impl Default for MediaStreamConfig {
             fps: 60,
             bitrate_bps: 10_000_000,
             cloud_gsync: false,
+            show_stats: false,
+            stats_position: StatsOverlayPosition::default(),
+            start_fullscreen: false,
+            shortcuts: StreamShortcutBindings::default(),
         }
     }
 }
@@ -123,6 +392,21 @@ pub enum CapturedInput {
     MouseWheel {
         delta: i16,
     },
+    Gamepad {
+        controller_id: u8,
+        bitmap: u16,
+        buttons: u16,
+        left_trigger: u8,
+        right_trigger: u8,
+        left_stick_x: i16,
+        left_stick_y: i16,
+        right_stick_x: i16,
+        right_stick_y: i16,
+    },
+    Guide,
+    Screenshot,
+    RecordingToggle,
+    Shortcut(StreamShortcutAction),
 }
 
 const CAPTURED_INPUT_CAPACITY: usize = 256;
@@ -258,6 +542,8 @@ struct SharedPipeline {
     video_desynced: AtomicBool,
     keyframe_requested: AtomicBool,
     stopped: AtomicBool,
+    recording_tap: RecordingTap,
+    stream: MediaStreamConfig,
     #[cfg(target_os = "macos")]
     mac_sink: Mutex<Option<opennow_streamer_platform_macos::StreamSink>>,
     #[cfg(target_os = "macos")]
@@ -286,6 +572,12 @@ impl MediaSink {
         }
         if self.shared.paused.load(Ordering::Acquire) {
             return PushOutcome::Paused;
+        }
+        match frame.codec {
+            MediaCodec::H264 | MediaCodec::H265 | MediaCodec::Av1 | MediaCodec::Opus { .. } => {
+                self.shared.recording_tap.publish(&frame);
+            }
+            MediaCodec::Unsupported(_) => {}
         }
         match frame.codec {
             MediaCodec::H264 | MediaCodec::H265 | MediaCodec::Av1 => self.push_video(frame),
@@ -381,9 +673,11 @@ impl MediaSession {
             return Self::spawn_macos(output, feedback, host_commands, stream);
         }
         #[cfg(target_os = "windows")]
-        let use_windows_hardware = use_hardware && windows_bridge.backend().is_some();
+        let use_windows_backend = windows_bridge.backend().is_some();
+        #[cfg(target_os = "windows")]
+        let _ = use_hardware;
         #[cfg(not(target_os = "windows"))]
-        let use_windows_hardware = false;
+        let use_windows_backend = false;
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         let _ = use_hardware;
         #[cfg(target_os = "linux")]
@@ -413,13 +707,13 @@ impl MediaSession {
                 }
             }
         }
-        if !use_windows_hardware && stream.codec != MediaVideoCodec::H264 {
+        if !use_windows_backend && stream.codec != MediaVideoCodec::H264 {
             return Err(format!(
                 "{} requires the Windows hardware decoder",
                 stream.codec.label().to_ascii_uppercase()
             ));
         }
-        let video_decoder = (!use_windows_hardware).then(H264Decoder::new).transpose()?;
+        let video_decoder = (!use_windows_backend).then(H264Decoder::new).transpose()?;
         let audio_decoder = OpusDecoder::new(2)?;
         let shared = Arc::new(SharedPipeline {
             video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
@@ -430,6 +724,8 @@ impl MediaSession {
             video_desynced: AtomicBool::new(true),
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            recording_tap: RecordingTap::default(),
+            stream,
             #[cfg(target_os = "macos")]
             mac_sink: Mutex::new(None),
             #[cfg(target_os = "macos")]
@@ -450,7 +746,7 @@ impl MediaSession {
             .name(format!("opennow-{}-decode", stream.codec.label()))
             .spawn(move || {
                 #[cfg(target_os = "windows")]
-                if use_windows_hardware {
+                if use_windows_backend {
                     run_windows_video(video_shared, stream.fps);
                     return;
                 }
@@ -500,14 +796,29 @@ impl MediaSession {
             video_desynced: AtomicBool::new(true),
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            recording_tap: RecordingTap::default(),
+            stream,
             mac_sink: Mutex::new(None),
             mac_software_fallback: AtomicBool::new(false),
         });
         let video_shared = Arc::clone(&shared);
         let video_commands = host_commands.clone();
         let video_worker = thread::Builder::new()
-            .name("opennow-videotoolbox-submit".to_owned())
-            .spawn(move || run_macos_video(video_shared, video_commands, stream.fps))
+            .name(format!(
+                "opennow-videotoolbox-{}-submit",
+                stream.codec.label()
+            ))
+            .spawn(move || match stream.codec {
+                MediaVideoCodec::H264 => {
+                    run_macos_h264_video(video_shared, video_commands, stream.fps);
+                }
+                MediaVideoCodec::H265 => {
+                    run_macos_h265_video(video_shared, video_commands, stream.fps);
+                }
+                MediaVideoCodec::Av1 => {
+                    run_macos_av1_video(video_shared, video_commands, stream);
+                }
+            })
             .map_err(|error| format!("failed to start VideoToolbox submit worker: {error}"))?;
         let audio_shared = Arc::clone(&shared);
         let audio_worker = match thread::Builder::new()
@@ -564,6 +875,8 @@ impl MediaSession {
             video_desynced: AtomicBool::new(true),
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            recording_tap: RecordingTap::default(),
+            stream,
             linux_session: Mutex::new(Some(session)),
             linux_software_fallback: software_fallback,
             linux_video_mid: Mutex::new(String::new()),
@@ -686,6 +999,19 @@ impl MediaSession {
 }
 
 impl MediaControl {
+    pub fn subscribe_recording(
+        &self,
+    ) -> Result<(MediaStreamConfig, EncodedRecordingReceiver), String> {
+        self.shared
+            .recording_tap
+            .subscribe()
+            .map(|receiver| (self.shared.stream, receiver))
+    }
+
+    pub fn unsubscribe_recording(&self) {
+        self.shared.recording_tap.unsubscribe();
+    }
+
     pub fn update_cursor(&self, bytes: Vec<u8>) {
         let _ = self.host_commands.send(HostCommand::Cursor(bytes));
     }
@@ -696,6 +1022,7 @@ impl MediaControl {
         }
         self.shared.video.close();
         self.shared.audio.close();
+        self.shared.recording_tap.unsubscribe();
         self.shared.output.clear();
         let _ = self.host_commands.send(HostCommand::Stop);
     }
@@ -1021,6 +1348,16 @@ fn run_audio_decoder_from(
         }
         match decoder.decode(&frame.data) {
             Ok(samples) => {
+                let stereo;
+                let samples = if configured_channels == 1 {
+                    stereo = samples
+                        .iter()
+                        .flat_map(|sample| [*sample, *sample])
+                        .collect::<Vec<_>>();
+                    stereo.as_slice()
+                } else {
+                    samples
+                };
                 #[cfg(target_os = "windows")]
                 if !shared.windows_bridge.use_software()
                     && let Some(backend) = shared.windows_bridge.backend()
@@ -1028,16 +1365,8 @@ fn run_audio_decoder_from(
                     use opennow_streamer_platform_windows::{
                         AudioFormat, PcmFrame, PushOutcome as WindowsPushOutcome,
                     };
-                    let samples = if configured_channels == 1 {
-                        samples
-                            .iter()
-                            .flat_map(|sample| [*sample, *sample])
-                            .collect()
-                    } else {
-                        samples.to_vec()
-                    };
                     match backend.submit_audio(PcmFrame {
-                        samples,
+                        samples: samples.to_vec(),
                         format: AudioFormat {
                             sample_rate: OPUS_SAMPLE_RATE,
                             channels: 2,
@@ -1059,26 +1388,12 @@ fn run_audio_decoder_from(
                     }
                     continue;
                 }
-                if configured_channels == 1 {
-                    let mut stereo = Vec::with_capacity(samples.len() * 2);
-                    for sample in samples {
-                        stereo.extend([*sample, *sample]);
-                    }
-                    let dropped = shared.output.push_audio(&stereo);
-                    if dropped > 0 {
-                        let _ = shared.feedback.send(MediaFeedback::QueueDropped {
-                            media: "audio-output",
-                            count: dropped,
-                        });
-                    }
-                } else {
-                    let dropped = shared.output.push_audio(samples);
-                    if dropped > 0 {
-                        let _ = shared.feedback.send(MediaFeedback::QueueDropped {
-                            media: "audio-output",
-                            count: dropped,
-                        });
-                    }
+                let dropped = shared.output.push_audio(samples);
+                if dropped > 0 {
+                    let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                        media: "audio-output",
+                        count: dropped,
+                    });
                 }
             }
             Err(message) => {
@@ -1349,7 +1664,7 @@ fn media_timestamp_us(timestamp: u64, clock_rate_hz: u32) -> u64 {
 }
 
 #[cfg(target_os = "macos")]
-fn run_macos_video(
+fn run_macos_h264_video(
     shared: Arc<SharedPipeline>,
     host_commands: Sender<HostCommand>,
     stream_fps: u32,
@@ -1565,6 +1880,384 @@ fn run_macos_video(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn run_macos_h265_video(
+    shared: Arc<SharedPipeline>,
+    host_commands: Sender<HostCommand>,
+    stream_fps: u32,
+) {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use opennow_streamer_platform_macos::{
+        FrameTiming, H265Format, SubmitOutcome, VideoColorSpace,
+    };
+
+    let mut tracker = crate::macos_backend::H265ParameterSetTracker::default();
+    let mut configured_parameter_sets = None;
+    let mut backend_sink: Option<opennow_streamer_platform_macos::StreamSink> = None;
+    let mut playback_started = false;
+    while let Some(frame) = shared.video.pop() {
+        if shared.paused.load(Ordering::Acquire) {
+            continue;
+        }
+        if let Some(sink) = backend_sink.as_ref() {
+            let mut decode_loss = None;
+            while let Some(loss) = sink.pop_video_decode_loss() {
+                decode_loss = Some(loss);
+            }
+            if let Some(loss) = decode_loss {
+                let reason = loss.status.map_or(
+                    "VideoToolbox produced no decoded HEVC pixel buffer",
+                    |_| "VideoToolbox lost HEVC decoder synchronization",
+                );
+                mark_macos_video_desynced(&shared, &frame.mid, reason);
+            }
+            if let Some(failure) = sink.fatal_failure() {
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: "h265",
+                    message: format!(
+                        "{} failed while decoding HEVC: {}",
+                        failure.subsystem.name(),
+                        failure.message
+                    ),
+                });
+                mark_macos_video_desynced(&shared, &frame.mid, "VideoToolbox HEVC backend failed");
+                return;
+            }
+        }
+        let framing = match tracker.observe(&frame.data) {
+            Ok(framing) => framing,
+            Err(message) => {
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: "h265",
+                    message,
+                });
+                mark_macos_video_desynced(&shared, &frame.mid, "invalid H.265 framing");
+                continue;
+            }
+        };
+        let parameter_sets = tracker.parameter_sets();
+        if shared.video_desynced.load(Ordering::Acquire) && !frame.keyframe {
+            continue;
+        }
+        if backend_sink.is_none() {
+            let Some(parameter_sets) = parameter_sets.clone() else {
+                mark_macos_video_desynced(
+                    &shared,
+                    &frame.mid,
+                    "VideoToolbox is waiting for H.265 VPS/SPS/PPS",
+                );
+                continue;
+            };
+            let (reply, response) = mpsc::channel();
+            if host_commands
+                .send(HostCommand::ConfigureMacH265 {
+                    parameter_sets: parameter_sets.clone(),
+                    reply,
+                })
+                .is_err()
+            {
+                return;
+            }
+            match response.recv_timeout(Duration::from_secs(10)) {
+                Ok(Ok(sink)) => {
+                    *shared
+                        .mac_sink
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = Some(sink.clone());
+                    tracker.commit_parameter_sets(parameter_sets.clone());
+                    configured_parameter_sets = Some(parameter_sets);
+                    backend_sink = Some(sink);
+                }
+                Ok(Err(message)) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "h265",
+                        message,
+                    });
+                    return;
+                }
+                Err(_) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "h265",
+                        message: "VideoToolbox HEVC initialization timed out on the main thread"
+                            .to_owned(),
+                    });
+                    return;
+                }
+            }
+        } else if let Some(ref parameter_sets) = parameter_sets
+            && configured_parameter_sets.as_ref() != Some(parameter_sets)
+            && frame.keyframe
+        {
+            let format = H265Format::new(parameter_sets.clone(), VideoColorSpace::Bt709);
+            let Some(sink) = backend_sink.as_ref() else {
+                return;
+            };
+            if let Err(error) = sink.reconfigure_h265(format) {
+                eprintln!(
+                    "Rejected H.265 parameter-set update; retaining the last known-good VideoToolbox decoder: {error} (vpsBytes={}, spsBytes={}, ppsBytes={})",
+                    parameter_sets.video().len(),
+                    parameter_sets.sequence().len(),
+                    parameter_sets.picture().len(),
+                );
+                mark_macos_video_desynced(
+                    &shared,
+                    &frame.mid,
+                    "rejected H.265 parameter-set update; waiting for a clean keyframe",
+                );
+                continue;
+            }
+            tracker.commit_parameter_sets(parameter_sets.clone());
+            configured_parameter_sets = Some(parameter_sets.clone());
+        } else if let Some(parameter_sets) = parameter_sets
+            && configured_parameter_sets.as_ref() == Some(&parameter_sets)
+        {
+            tracker.commit_parameter_sets(parameter_sets);
+        }
+
+        shared.video_desynced.store(false, Ordering::Release);
+        shared.keyframe_requested.store(false, Ordering::Release);
+        let timescale = i32::try_from(frame.clock_rate_hz)
+            .ok()
+            .filter(|timescale| *timescale > 0)
+            .unwrap_or(90_000);
+        let timing = FrameTiming::new(
+            i64::try_from(frame.timestamp).unwrap_or(i64::MAX),
+            i64::from(timescale) / i64::from(stream_fps.max(1)),
+            timescale,
+        );
+        let Some(sink) = backend_sink.as_ref() else {
+            return;
+        };
+        match sink.submit_h265(&frame.data, framing, timing) {
+            Ok(SubmitOutcome::Accepted) => report_video_frame_accepted(&shared, &frame),
+            Ok(SubmitOutcome::Paused) => {}
+            Ok(SubmitOutcome::Backpressured | SubmitOutcome::ReplacedOldest) => {
+                let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                    media: "videotoolbox-hevc",
+                    count: 1,
+                });
+                mark_macos_video_desynced(
+                    &shared,
+                    &frame.mid,
+                    "VideoToolbox HEVC decode queue backpressure",
+                );
+            }
+            Err(error) => {
+                mark_macos_video_desynced(
+                    &shared,
+                    &frame.mid,
+                    &format!("VideoToolbox rejected an H.265 access unit: {error}"),
+                );
+            }
+        }
+        if !playback_started && sink.stats().video_presented > 0 {
+            playback_started = true;
+            let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
+                backend: "VideoToolbox HEVC/Metal",
+            });
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_av1_video(
+    shared: Arc<SharedPipeline>,
+    host_commands: Sender<HostCommand>,
+    stream: MediaStreamConfig,
+) {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use opennow_streamer_platform_macos::{Av1Format, FrameTiming, SubmitOutcome, VideoColorSpace};
+
+    let mut configured_codec_configuration: Option<Vec<u8>> = None;
+    let mut backend_sink: Option<opennow_streamer_platform_macos::StreamSink> = None;
+    let mut playback_started = false;
+    while let Some(frame) = shared.video.pop() {
+        if shared.paused.load(Ordering::Acquire) {
+            continue;
+        }
+        if let Some(sink) = backend_sink.as_ref() {
+            let mut decode_loss = None;
+            while let Some(loss) = sink.pop_video_decode_loss() {
+                decode_loss = Some(loss);
+            }
+            if let Some(loss) = decode_loss {
+                let reason = loss.status.map_or(
+                    "VideoToolbox produced no decoded AV1 pixel buffer",
+                    |_| "VideoToolbox lost AV1 decoder synchronization",
+                );
+                mark_macos_video_desynced(&shared, &frame.mid, reason);
+            }
+            if let Some(failure) = sink.fatal_failure() {
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: "av1",
+                    message: format!(
+                        "{} failed while decoding AV1: {}",
+                        failure.subsystem.name(),
+                        failure.message
+                    ),
+                });
+                mark_macos_video_desynced(&shared, &frame.mid, "VideoToolbox AV1 backend failed");
+                return;
+            }
+        }
+        if shared.video_desynced.load(Ordering::Acquire) && !frame.keyframe {
+            continue;
+        }
+
+        let candidate_configuration = frame
+            .keyframe
+            .then(|| crate::recording::av1_codec_private(&frame.data));
+        if backend_sink.is_none() {
+            let codec_configuration = match candidate_configuration {
+                Some(Ok(configuration)) => configuration,
+                Some(Err(_)) | None => {
+                    mark_macos_video_desynced(
+                        &shared,
+                        &frame.mid,
+                        "VideoToolbox is waiting for an AV1 sequence-header keyframe",
+                    );
+                    continue;
+                }
+            };
+            let format = match Av1Format::new(
+                &codec_configuration,
+                stream.width,
+                stream.height,
+                VideoColorSpace::Bt709,
+            ) {
+                Ok(format) => format,
+                Err(error) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "av1",
+                        message: format!("invalid AV1 VideoToolbox format: {error}"),
+                    });
+                    mark_macos_video_desynced(
+                        &shared,
+                        &frame.mid,
+                        "invalid AV1 VideoToolbox configuration",
+                    );
+                    continue;
+                }
+            };
+            let (reply, response) = mpsc::channel();
+            if host_commands
+                .send(HostCommand::ConfigureMacAv1 { format, reply })
+                .is_err()
+            {
+                return;
+            }
+            match response.recv_timeout(Duration::from_secs(10)) {
+                Ok(Ok(sink)) => {
+                    *shared
+                        .mac_sink
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = Some(sink.clone());
+                    configured_codec_configuration = Some(codec_configuration);
+                    backend_sink = Some(sink);
+                }
+                Ok(Err(message)) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "av1",
+                        message,
+                    });
+                    return;
+                }
+                Err(_) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "av1",
+                        message: "VideoToolbox AV1 initialization timed out on the main thread"
+                            .to_owned(),
+                    });
+                    return;
+                }
+            }
+        } else if let Some(Ok(codec_configuration)) = candidate_configuration
+            && configured_codec_configuration.as_ref() != Some(&codec_configuration)
+        {
+            let format = match Av1Format::new(
+                &codec_configuration,
+                stream.width,
+                stream.height,
+                VideoColorSpace::Bt709,
+            ) {
+                Ok(format) => format,
+                Err(error) => {
+                    eprintln!("Rejected AV1 configuration update: {error}");
+                    mark_macos_video_desynced(
+                        &shared,
+                        &frame.mid,
+                        "rejected AV1 configuration update; waiting for a clean keyframe",
+                    );
+                    continue;
+                }
+            };
+            let Some(sink) = backend_sink.as_ref() else {
+                return;
+            };
+            if let Err(error) = sink.reconfigure_av1(format) {
+                eprintln!(
+                    "Rejected AV1 sequence-header update; retaining the last known-good VideoToolbox decoder: {error} (configurationBytes={})",
+                    codec_configuration.len(),
+                );
+                mark_macos_video_desynced(
+                    &shared,
+                    &frame.mid,
+                    "rejected AV1 sequence-header update; waiting for a clean keyframe",
+                );
+                continue;
+            }
+            configured_codec_configuration = Some(codec_configuration);
+        }
+
+        shared.video_desynced.store(false, Ordering::Release);
+        shared.keyframe_requested.store(false, Ordering::Release);
+        let timescale = i32::try_from(frame.clock_rate_hz)
+            .ok()
+            .filter(|timescale| *timescale > 0)
+            .unwrap_or(90_000);
+        let timing = FrameTiming::new(
+            i64::try_from(frame.timestamp).unwrap_or(i64::MAX),
+            i64::from(timescale) / i64::from(stream.fps.max(1)),
+            timescale,
+        );
+        let Some(sink) = backend_sink.as_ref() else {
+            return;
+        };
+        match sink.submit_av1(&frame.data, timing) {
+            Ok(SubmitOutcome::Accepted) => report_video_frame_accepted(&shared, &frame),
+            Ok(SubmitOutcome::Paused) => {}
+            Ok(SubmitOutcome::Backpressured | SubmitOutcome::ReplacedOldest) => {
+                let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                    media: "videotoolbox-av1",
+                    count: 1,
+                });
+                mark_macos_video_desynced(
+                    &shared,
+                    &frame.mid,
+                    "VideoToolbox AV1 decode queue backpressure",
+                );
+            }
+            Err(error) => {
+                mark_macos_video_desynced(
+                    &shared,
+                    &frame.mid,
+                    &format!("VideoToolbox rejected an AV1 temporal unit: {error}"),
+                );
+            }
+        }
+        if !playback_started && sink.stats().video_presented > 0 {
+            playback_started = true;
+            let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
+                backend: "VideoToolbox AV1/Metal",
+            });
+        }
+    }
+}
+
 fn report_video_frame_accepted(shared: &SharedPipeline, frame: &EncodedFrame) {
     let _ = shared.feedback.send(MediaFeedback::VideoFrameAccepted {
         timestamp: frame.timestamp,
@@ -1657,6 +2350,73 @@ fn mark_macos_video_desynced(shared: &SharedPipeline, mid: &str, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcut_chords_parse_supported_keys_and_reject_ambiguous_input() {
+        assert_eq!(
+            ShortcutChord::parse("Ctrl+Shift+Q"),
+            Some(ShortcutChord {
+                virtual_key: u16::from(b'Q'),
+                modifiers: 0x03,
+            })
+        );
+        assert_eq!(
+            ShortcutChord::parse("command+f24"),
+            Some(ShortcutChord {
+                virtual_key: 0x87,
+                modifiers: 0x08,
+            })
+        );
+        assert_eq!(ShortcutChord::parse("Ctrl"), None);
+        assert_eq!(ShortcutChord::parse("Ctrl+Control+Q"), None);
+        assert_eq!(ShortcutChord::parse("Ctrl+Q+W"), None);
+        assert_eq!(ShortcutChord::parse("Ctrl+"), None);
+        assert_eq!(ShortcutChord::parse("F25"), None);
+    }
+
+    #[test]
+    fn shortcut_bindings_use_custom_values_defaults_and_stable_conflict_order() {
+        let bindings = StreamShortcutBindings::from_json(&serde_json::json!({
+            "toggleStats":"Alt+S",
+            "togglePointerLock":"Alt+S",
+            "toggleFullscreen":"not-a-key"
+        }));
+        assert_eq!(
+            bindings.action(u16::from(b'S'), 0x04),
+            Some(StreamShortcutAction::ToggleStats)
+        );
+        assert_eq!(
+            bindings.action(0x79, 0),
+            Some(StreamShortcutAction::ToggleFullscreen)
+        );
+        assert_eq!(
+            StreamShortcutBindings::default().action(0x7a, 0),
+            Some(StreamShortcutAction::Screenshot)
+        );
+    }
+
+    #[test]
+    fn encoded_recording_tap_fails_closed_on_overflow() {
+        let tap = RecordingTap::default();
+        let receiver = tap.subscribe().expect("recording subscription");
+        let frame = EncodedFrame {
+            mid: "video".to_owned(),
+            codec: MediaCodec::H264,
+            data: Arc::from([0_u8, 0, 0, 1, 0x65]),
+            timestamp: 0,
+            clock_rate_hz: 90_000,
+            keyframe: true,
+            contiguous: true,
+        };
+        for _ in 0..=RECORDING_TAP_QUEUE_CAPACITY {
+            tap.publish(&frame);
+        }
+        assert!(receiver.overflowed());
+        for _ in 0..RECORDING_TAP_QUEUE_CAPACITY {
+            receiver.recv().expect("queued recording frame");
+        }
+        assert!(receiver.recv().is_err());
+    }
     use openh264::encoder::Encoder;
     use openh264::formats::{RgbSliceU8, YUVBuffer};
     use opus::{Application, Encoder as OpusEncoder};
@@ -1749,6 +2509,8 @@ mod tests {
             video_desynced: AtomicBool::new(true),
             keyframe_requested: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            recording_tap: RecordingTap::default(),
+            stream: MediaStreamConfig::default(),
             #[cfg(target_os = "macos")]
             mac_sink: Mutex::new(None),
             #[cfg(target_os = "macos")]

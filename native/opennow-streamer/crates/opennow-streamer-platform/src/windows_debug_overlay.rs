@@ -9,7 +9,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
-use crate::media::MediaStreamConfig;
+use crate::media::{MediaStreamConfig, StatsOverlayPosition};
 use crate::native_stats_overlay::{NativeStatsOverlay, OverlayMode};
 
 const EDGE_MARGIN: i32 = 24;
@@ -102,7 +102,8 @@ impl NativeDebugOverlay {
     }
 
     fn refresh_position(&mut self) {
-        let Some((client_x, client_y, client_width, _)) = client_bounds(self.parent) else {
+        let Some((client_x, client_y, client_width, client_height)) = client_bounds(self.parent)
+        else {
             return;
         };
         let Some((requested_width, requested_height)) = self.stats.mode().size() else {
@@ -115,17 +116,27 @@ impl NativeDebugOverlay {
             OverlayMode::Minimal => requested_width,
             OverlayMode::Hidden => return,
         };
-        let x = match self.stats.mode() {
-            OverlayMode::Minimal => client_x + client_width as i32 - width as i32 - EDGE_MARGIN,
-            OverlayMode::Full => client_x + EDGE_MARGIN,
-            OverlayMode::Hidden => return,
+        let right = matches!(
+            self.stats.position(),
+            StatsOverlayPosition::TopRight | StatsOverlayPosition::BottomRight
+        );
+        let bottom = matches!(
+            self.stats.position(),
+            StatsOverlayPosition::BottomLeft | StatsOverlayPosition::BottomRight
+        );
+        let x = if right {
+            client_x + client_width as i32 - width as i32 - EDGE_MARGIN
+        } else {
+            client_x + EDGE_MARGIN
+        };
+        let y = if bottom {
+            client_y + client_height as i32 - requested_height as i32 - EDGE_MARGIN
+        } else {
+            client_y + EDGE_MARGIN
         };
         let window = self.canvas.window_mut();
         let _ = window.set_size(width, requested_height);
-        window.set_position(
-            WindowPos::Positioned(x),
-            WindowPos::Positioned(client_y + EDGE_MARGIN),
-        );
+        window.set_position(WindowPos::Positioned(x), WindowPos::Positioned(y));
     }
 
     fn draw(&mut self) {

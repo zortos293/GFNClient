@@ -1,7 +1,8 @@
 use opennow_streamer_platform_macos::{
-    AudioFormat, BackendConfig, BackendStats, BorrowedNsView, GpuOverlayFrame, GpuOverlayPlacement,
-    H264Format, H264Framing, H264ParameterSets, MacOsBackend, OwnedOverlayConfig, QueueLimits,
-    ScreenRect, StreamSink, SurfaceTarget, VideoColorSpace, probe_h264_hardware,
+    AudioFormat, Av1Format, BackendConfig, BackendStats, BorrowedNsView, GpuOverlayFrame,
+    GpuOverlayPlacement, H264Format, H264Framing, H264ParameterSets, H265Format, H265ParameterSets,
+    MacOsBackend, OwnedOverlayConfig, QueueLimits, ScreenRect, StreamSink, SurfaceTarget,
+    VideoColorSpace, probe_av1_hardware, probe_h264_hardware, probe_h265_hardware,
 };
 use opennow_streamer_protocol::{RenderSurface, RenderSurfaceRect};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -9,27 +10,59 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::media::{CapturedInput, MediaStreamConfig};
+use crate::media::{CapturedInput, MediaStreamConfig, StatsOverlayPosition};
 use crate::native_stats_overlay::{NativeStatsOverlay, OverlayMode};
 use crate::output::{
-    SdlInputCapture, external_renderer_enabled, handle_native_window_shortcut,
-    native_input_capture_enabled,
+    OutputControl, SdlInputCapture, external_renderer_enabled, native_input_capture_enabled,
+    toggle_sdl_fullscreen,
 };
 
 const HIDDEN_SURFACE: ScreenRect = ScreenRect::new(0.0, 0.0, 2.0, 2.0);
 const ORDERING_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub(crate) fn available() -> bool {
-    availability().load(Ordering::Acquire)
+    h264_available() || h265_available() || av1_available()
+}
+
+pub(crate) fn h264_available() -> bool {
+    h264_availability().load(Ordering::Acquire)
+}
+
+pub(crate) fn h265_available() -> bool {
+    h265_availability().load(Ordering::Acquire)
+}
+
+pub(crate) fn av1_available() -> bool {
+    av1_availability().load(Ordering::Acquire)
 }
 
 pub(crate) fn disable() {
-    availability().store(false, Ordering::Release);
+    h264_availability().store(false, Ordering::Release);
+    h265_availability().store(false, Ordering::Release);
+    av1_availability().store(false, Ordering::Release);
 }
 
-fn availability() -> &'static AtomicBool {
+pub(crate) fn disable_h265() {
+    h265_availability().store(false, Ordering::Release);
+}
+
+pub(crate) fn disable_av1() {
+    av1_availability().store(false, Ordering::Release);
+}
+
+fn h264_availability() -> &'static AtomicBool {
     static AVAILABLE: OnceLock<AtomicBool> = OnceLock::new();
     AVAILABLE.get_or_init(|| AtomicBool::new(probe_h264_hardware()))
+}
+
+fn h265_availability() -> &'static AtomicBool {
+    static AVAILABLE: OnceLock<AtomicBool> = OnceLock::new();
+    AVAILABLE.get_or_init(|| AtomicBool::new(probe_h265_hardware()))
+}
+
+fn av1_availability() -> &'static AtomicBool {
+    static AVAILABLE: OnceLock<AtomicBool> = OnceLock::new();
+    AVAILABLE.get_or_init(|| AtomicBool::new(probe_av1_hardware()))
 }
 
 pub(crate) struct MacOutput {
@@ -84,7 +117,7 @@ impl MacOutput {
         };
         let mut backend = MacOsBackend::start(BackendConfig {
             surface,
-            video: H264Format::new(parameter_sets, VideoColorSpace::Bt709),
+            video: H264Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
             audio: AudioFormat::OPUS_STEREO_48KHZ,
             queues: QueueLimits::default(),
         })
@@ -100,10 +133,73 @@ impl MacOutput {
         Ok(sink)
     }
 
+    pub(crate) fn configure_h265(
+        &mut self,
+        parameter_sets: H265ParameterSets,
+    ) -> Result<StreamSink, String> {
+        if self.backend.is_some() {
+            return Err("macOS VideoToolbox backend is already configured".to_owned());
+        }
+        let surface = match self.external_surface.as_ref() {
+            Some(surface) => surface.target()?,
+            None => SurfaceTarget::OwnedOverlay(OwnedOverlayConfig::new(
+                self.screen_rect,
+                self.visible && !self.paused,
+            )),
+        };
+        let mut backend = MacOsBackend::start(BackendConfig {
+            surface,
+            video: H265Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
+            audio: AudioFormat::OPUS_STEREO_48KHZ,
+            queues: QueueLimits::default(),
+        })
+        .map_err(|error| format!("VideoToolbox HEVC backend initialization failed: {error}"))?;
+        if let Some(surface) = self.external_surface.as_ref() {
+            backend.set_gpu_overlay(surface.gpu_overlay());
+        }
+        backend
+            .set_paused(self.paused)
+            .map_err(|error| format!("VideoToolbox pause state failed: {error}"))?;
+        let sink = backend.sink();
+        self.backend = Some(backend);
+        Ok(sink)
+    }
+
+    pub(crate) fn configure_av1(&mut self, format: Av1Format) -> Result<StreamSink, String> {
+        if self.backend.is_some() {
+            return Err("macOS VideoToolbox backend is already configured".to_owned());
+        }
+        let surface = match self.external_surface.as_ref() {
+            Some(surface) => surface.target()?,
+            None => SurfaceTarget::OwnedOverlay(OwnedOverlayConfig::new(
+                self.screen_rect,
+                self.visible && !self.paused,
+            )),
+        };
+        let mut backend = MacOsBackend::start(BackendConfig {
+            surface,
+            video: format.into(),
+            audio: AudioFormat::OPUS_STEREO_48KHZ,
+            queues: QueueLimits::default(),
+        })
+        .map_err(|error| format!("VideoToolbox AV1 backend initialization failed: {error}"))?;
+        if let Some(surface) = self.external_surface.as_ref() {
+            backend.set_gpu_overlay(surface.gpu_overlay());
+        }
+        backend
+            .set_paused(self.paused)
+            .map_err(|error| format!("VideoToolbox pause state failed: {error}"))?;
+        let sink = backend.sink();
+        self.backend = Some(backend);
+        Ok(sink)
+    }
+
     pub(crate) fn set_paused(&mut self, paused: bool) -> Result<(), String> {
         self.paused = paused;
-        if paused && let Some(surface) = self.external_surface.as_mut() {
-            surface.release_input();
+        if let Some(surface) = self.external_surface.as_mut() {
+            surface
+                .input_capture
+                .set_input_paused(paused, &surface.sdl, &mut surface.window);
         }
         if let Some(backend) = self.backend.as_mut() {
             backend
@@ -199,6 +295,28 @@ impl MacOutput {
             surface.update_cursor(bytes);
         }
     }
+
+    pub(crate) fn control(&mut self, control: OutputControl) -> Result<(), String> {
+        let Some(surface) = self.external_surface.as_mut() else {
+            return Err("Runtime controls require the external stream window".to_owned());
+        };
+        match control {
+            OutputControl::Stats => {
+                surface.debug_overlay.toggle();
+                if let Some(backend) = self.backend.as_mut() {
+                    backend.set_gpu_overlay(surface.gpu_overlay());
+                }
+                Ok(())
+            }
+            OutputControl::Fullscreen => toggle_sdl_fullscreen(&mut surface.window),
+            OutputControl::PointerLock => {
+                surface
+                    .input_capture
+                    .toggle_pointer_lock(&surface.sdl, &mut surface.window);
+                Ok(())
+            }
+        }
+    }
 }
 
 struct MacExternalSurface {
@@ -220,13 +338,17 @@ impl MacExternalSurface {
         let video = sdl
             .video()
             .map_err(|error| format!("SDL video initialization failed: {error}"))?;
-        let window = video
-            .window("OpenNOW Stream", 1280, 800)
+        let mut window_builder = video.window("OpenNOW Stream", 1280, 800);
+        window_builder
             .position_centered()
             .resizable()
             .allow_highdpi()
             .hidden()
-            .metal_view()
+            .metal_view();
+        if stream.start_fullscreen {
+            window_builder.fullscreen_desktop();
+        }
+        let window = window_builder
             .build()
             .map_err(|error| format!("external macOS stream window creation failed: {error}"))?;
         // Resolve the AppKit handle now so startup fails clearly instead of waiting for the first
@@ -239,8 +361,10 @@ impl MacExternalSurface {
         eprintln!(
             "External macOS stream window ready (native keyboard/mouse capture: {capture_input})"
         );
+        let mut input_capture = SdlInputCapture::new(capture_input, false, stream.shortcuts);
+        input_capture.enable_gamepads(&sdl);
         Ok(Self {
-            input_capture: SdlInputCapture::new(capture_input, false),
+            input_capture,
             event_pump,
             window,
             sdl,
@@ -300,10 +424,6 @@ impl MacExternalSurface {
                 self.release_input();
                 self.window.hide();
                 self.visible = false;
-            } else if handle_macos_stats_shortcut(&mut self.debug_overlay, &event) {
-                overlay_changed = true;
-            } else if handle_native_window_shortcut(&mut self.window, &event) {
-                continue;
             } else {
                 self.input_capture.handle_event(
                     &self.sdl,
@@ -330,10 +450,14 @@ impl MacExternalSurface {
 
     fn gpu_overlay(&self) -> Option<GpuOverlayFrame> {
         let frame = self.debug_overlay.frame()?;
-        let placement = match self.debug_overlay.mode() {
-            OverlayMode::Minimal => GpuOverlayPlacement::TopRight,
-            OverlayMode::Full => GpuOverlayPlacement::TopLeft,
-            OverlayMode::Hidden => return None,
+        if self.debug_overlay.mode() == OverlayMode::Hidden {
+            return None;
+        }
+        let placement = match self.debug_overlay.position() {
+            StatsOverlayPosition::TopLeft => GpuOverlayPlacement::TopLeft,
+            StatsOverlayPosition::TopRight => GpuOverlayPlacement::TopRight,
+            StatsOverlayPosition::BottomLeft => GpuOverlayPlacement::BottomLeft,
+            StatsOverlayPosition::BottomRight => GpuOverlayPlacement::BottomRight,
         };
         let mut rgba = Vec::with_capacity(frame.rgb.len() / 3 * 4);
         for rgb in frame.rgb.chunks_exact(3) {
@@ -364,30 +488,6 @@ impl MacExternalSurface {
     fn update_cursor(&mut self, bytes: &[u8]) {
         self.input_capture
             .apply_cursor(&self.sdl, &mut self.window, self.stream_size, bytes);
-    }
-}
-
-fn handle_macos_stats_shortcut(
-    overlay: &mut NativeStatsOverlay,
-    event: &sdl2::event::Event,
-) -> bool {
-    use sdl2::event::Event;
-    use sdl2::keyboard::Scancode;
-
-    match event {
-        Event::KeyDown {
-            scancode: Some(Scancode::F3),
-            repeat: false,
-            ..
-        } => {
-            overlay.toggle();
-            true
-        }
-        Event::KeyUp {
-            scancode: Some(Scancode::F3),
-            ..
-        } => true,
-        _ => false,
     }
 }
 
@@ -528,6 +628,152 @@ impl H264ParameterSetTracker {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct H265ParameterSetTracker {
+    committed: Option<H265ParameterSets>,
+    bootstrap_video: Option<Vec<u8>>,
+    bootstrap_sequence: Option<Vec<u8>>,
+    bootstrap_picture: Option<Vec<u8>>,
+    candidate: Option<H265ParameterSets>,
+}
+
+impl H265ParameterSetTracker {
+    pub(crate) fn observe(&mut self, access_unit: &[u8]) -> Result<H264Framing, String> {
+        self.candidate = None;
+        let (framing, video, sequence, picture) = if find_start_code(access_unit, 0).is_some() {
+            let (video, sequence, picture) = Self::parameter_sets_from_annex_b(access_unit)?;
+            (H264Framing::AnnexB, video, sequence, picture)
+        } else {
+            let (video, sequence, picture) = Self::parameter_sets_from_avcc(access_unit)?;
+            (H264Framing::Avcc, video, sequence, picture)
+        };
+
+        if let (Some(video), Some(sequence), Some(picture)) =
+            (video.as_ref(), sequence.as_ref(), picture.as_ref())
+        {
+            self.candidate = Some(
+                H265ParameterSets::new(video, sequence, picture)
+                    .map_err(|error| format!("invalid H.265 parameter sets: {error}"))?,
+            );
+        } else if self.committed.is_none() {
+            if video.is_some() {
+                self.bootstrap_video = video;
+            }
+            if sequence.is_some() {
+                self.bootstrap_sequence = sequence;
+            }
+            if picture.is_some() {
+                self.bootstrap_picture = picture;
+            }
+            if let (Some(video), Some(sequence), Some(picture)) = (
+                &self.bootstrap_video,
+                &self.bootstrap_sequence,
+                &self.bootstrap_picture,
+            ) {
+                self.candidate = Some(
+                    H265ParameterSets::new(video, sequence, picture)
+                        .map_err(|error| format!("invalid H.265 parameter sets: {error}"))?,
+                );
+            }
+        }
+        Ok(framing)
+    }
+
+    pub(crate) fn parameter_sets(&self) -> Option<H265ParameterSets> {
+        self.candidate.clone().or_else(|| self.committed.clone())
+    }
+
+    pub(crate) fn commit_parameter_sets(&mut self, parameter_sets: H265ParameterSets) {
+        self.committed = Some(parameter_sets);
+        self.bootstrap_video = None;
+        self.bootstrap_sequence = None;
+        self.bootstrap_picture = None;
+        self.candidate = None;
+    }
+
+    fn parameter_sets_from_annex_b(
+        access_unit: &[u8],
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>), String> {
+        let Some((mut start, prefix)) = find_start_code(access_unit, 0) else {
+            return Err("H.265 access unit has no Annex B start code".to_owned());
+        };
+        if access_unit[..start].iter().any(|byte| *byte != 0) {
+            return Err("H.265 access unit has invalid Annex B framing".to_owned());
+        }
+        start += prefix;
+        let mut video = None;
+        let mut sequence = None;
+        let mut picture = None;
+        loop {
+            let next = find_start_code(access_unit, start);
+            let end = next.map_or(access_unit.len(), |(offset, _)| offset);
+            Self::observe_nal(
+                &access_unit[start..end],
+                &mut video,
+                &mut sequence,
+                &mut picture,
+            )?;
+            let Some((next_start, next_prefix)) = next else {
+                return Ok((video, sequence, picture));
+            };
+            start = next_start + next_prefix;
+        }
+    }
+
+    fn parameter_sets_from_avcc(
+        access_unit: &[u8],
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>), String> {
+        let mut offset = 0usize;
+        let mut video = None;
+        let mut sequence = None;
+        let mut picture = None;
+        while offset < access_unit.len() {
+            let length_bytes = access_unit
+                .get(offset..offset + 4)
+                .ok_or_else(|| "H.265 access unit has truncated HVCC framing".to_owned())?;
+            let length = u32::from_be_bytes(
+                length_bytes
+                    .try_into()
+                    .expect("HVCC length was checked as four bytes"),
+            ) as usize;
+            offset += 4;
+            let end = offset
+                .checked_add(length)
+                .filter(|end| *end <= access_unit.len())
+                .ok_or_else(|| "H.265 access unit has invalid HVCC framing".to_owned())?;
+            Self::observe_nal(
+                &access_unit[offset..end],
+                &mut video,
+                &mut sequence,
+                &mut picture,
+            )?;
+            offset = end;
+        }
+        if offset == 0 {
+            return Err("H.265 access unit is empty".to_owned());
+        }
+        Ok((video, sequence, picture))
+    }
+
+    fn observe_nal(
+        nal: &[u8],
+        video: &mut Option<Vec<u8>>,
+        sequence: &mut Option<Vec<u8>>,
+        picture: &mut Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        let header = *nal
+            .first()
+            .ok_or_else(|| "H.265 access unit contains an empty NAL unit".to_owned())?;
+        match (header >> 1) & 0x3f {
+            32 => *video = Some(nal.to_vec()),
+            33 => *sequence = Some(nal.to_vec()),
+            34 => *picture = Some(nal.to_vec()),
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 fn find_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
     let mut index = from;
     while index + 3 <= bytes.len() {
@@ -609,6 +855,63 @@ mod tests {
         // Observing the next regular frame discards the uncommitted candidate and restores the
         // last known-good pair, which models a failed decoder reconfiguration.
         tracker.observe(&[0, 0, 0, 1, 0x65, 5]).unwrap();
+        assert_eq!(tracker.parameter_sets(), Some(committed));
+    }
+
+    #[test]
+    fn extracts_hevc_parameter_sets_from_annex_b_access_unit() {
+        let mut tracker = H265ParameterSetTracker::default();
+        let framing = tracker
+            .observe(&[
+                0, 0, 0, 1, 0x40, 0x01, 0x0c, 0, 0, 1, 0x42, 0x01, 0x01, 0, 0, 0, 1, 0x44, 0x01,
+                0xc0, 0, 0, 1, 0x26, 0x01,
+            ])
+            .unwrap();
+        assert_eq!(framing, H264Framing::AnnexB);
+        let parameters = tracker.parameter_sets().unwrap();
+        assert_eq!(parameters.video(), &[0x40, 0x01, 0x0c]);
+        assert_eq!(parameters.sequence(), &[0x42, 0x01, 0x01]);
+        assert_eq!(parameters.picture(), &[0x44, 0x01, 0xc0]);
+    }
+
+    #[test]
+    fn extracts_hevc_parameter_sets_across_hvcc_access_units() {
+        let mut tracker = H265ParameterSetTracker::default();
+        assert_eq!(
+            tracker.observe(&[0, 0, 0, 3, 0x40, 1, 1]).unwrap(),
+            H264Framing::Avcc
+        );
+        assert!(tracker.parameter_sets().is_none());
+        tracker.observe(&[0, 0, 0, 3, 0x42, 1, 2]).unwrap();
+        assert!(tracker.parameter_sets().is_none());
+        tracker.observe(&[0, 0, 0, 3, 0x44, 1, 3]).unwrap();
+        assert!(tracker.parameter_sets().is_some());
+    }
+
+    #[test]
+    fn committed_hevc_sets_are_replaced_only_as_a_complete_triplet() {
+        let mut tracker = H265ParameterSetTracker::default();
+        tracker
+            .observe(&[
+                0, 0, 0, 1, 0x40, 1, 1, 0, 0, 1, 0x42, 1, 2, 0, 0, 1, 0x44, 1, 3,
+            ])
+            .unwrap();
+        let committed = tracker.parameter_sets().unwrap();
+        tracker.commit_parameter_sets(committed.clone());
+
+        tracker
+            .observe(&[0, 0, 0, 1, 0x42, 1, 9, 0, 0, 0, 1, 0x26, 1])
+            .unwrap();
+        assert_eq!(tracker.parameter_sets(), Some(committed.clone()));
+
+        tracker
+            .observe(&[
+                0, 0, 0, 1, 0x40, 1, 7, 0, 0, 1, 0x42, 1, 8, 0, 0, 1, 0x44, 1, 9,
+            ])
+            .unwrap();
+        assert_ne!(tracker.parameter_sets(), Some(committed.clone()));
+
+        tracker.observe(&[0, 0, 0, 1, 0x26, 1]).unwrap();
         assert_eq!(tracker.parameter_sets(), Some(committed));
     }
 }

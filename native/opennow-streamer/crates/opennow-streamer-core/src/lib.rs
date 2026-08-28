@@ -1,24 +1,27 @@
 use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use opennow_streamer_platform::{
-    CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, MediaCodec, MediaControl,
-    MediaFeedback, MediaRuntime, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec,
-    PushOutcome, supports_audio_decode, supports_audio_output, video_backends,
+    CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedMicrophoneQueue,
+    MediaCodec, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl, MediaSession,
+    MediaSink, MediaStreamConfig, MediaVideoCodec, MicrophoneCapture, PushOutcome,
+    RecordingSummary, StatsOverlayPosition, StreamShortcutAction, StreamShortcutBindings,
+    record_matroska, supports_audio_decode, supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
 };
 use opennow_streamer_transport::{
-    NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstUdpReceiverControl,
-    NvstUdpReceiverSession, PreferredVideoTransport, ReservedNvstBundle, SharedNvstFeedback,
-    TransportControl, TransportEvent, TransportSession, negotiate, reserve_nvst_mjolnir_udp_socket,
+    EncodedMicrophoneFrame, NegotiatedVideoCodec, NvstDropReason, NvstReceiveEvent,
+    NvstReceiverState, NvstRecovery, NvstUdpReceiverControl, NvstUdpReceiverSession,
+    PreferredVideoTransport, ReservedNvstBundle, SharedNvstFeedback, TransportControl,
+    TransportEvent, TransportSession, negotiate, reserve_nvst_mjolnir_udp_socket,
     select_preferred_video_transport, spawn_nvst_mjolnir_receiver,
     spawn_nvst_udp_receiver_with_socket,
 };
@@ -112,6 +115,9 @@ pub struct Engine {
     media_worker: Option<JoinHandle<()>>,
     media_feedback: Option<Receiver<MediaFeedback>>,
     feedback_worker: Option<JoinHandle<()>>,
+    microphone_capture: Option<MicrophoneCapture>,
+    microphone_enabled: bool,
+    recording_worker: Option<JoinHandle<Result<RecordingSummary, String>>>,
 }
 
 #[derive(Debug)]
@@ -141,6 +147,9 @@ impl Engine {
             media_worker: None,
             media_feedback: None,
             feedback_worker: None,
+            microphone_capture: None,
+            microphone_enabled: false,
+            recording_worker: None,
         }
     }
 
@@ -163,6 +172,9 @@ impl Engine {
             media_worker: None,
             media_feedback: None,
             feedback_worker: None,
+            microphone_capture: None,
+            microphone_enabled: false,
+            recording_worker: None,
         }
     }
 
@@ -185,6 +197,9 @@ impl Engine {
             media_worker: None,
             media_feedback: None,
             feedback_worker: None,
+            microphone_capture: None,
+            microphone_enabled: false,
+            recording_worker: None,
         }
     }
 
@@ -201,6 +216,12 @@ impl Engine {
             "input" => self.input(command),
             "input-paused" => self.set_paused(command),
             "surface" => self.update_surface(command),
+            "stats-toggle" => self.runtime_control(command, MediaRuntimeControl::Stats),
+            "fullscreen-toggle" => self.runtime_control(command, MediaRuntimeControl::Fullscreen),
+            "microphone-toggle" => self.toggle_microphone(command),
+            "anti-afk-pulse" => self.anti_afk_pulse(command),
+            "recording-start" => self.start_recording(command),
+            "recording-stop" => self.stop_recording(command),
             "bitrate" | "update-shortcuts" => Err(error(
                 Some(&id),
                 "unsupported-command",
@@ -256,12 +277,15 @@ impl Engine {
             supports_audio_output: media_ready && supports_audio_output(),
             video_backends: backends,
         };
-        Ok(vec![json!({
+        let mut ready = json!({
             "id": command.id,
             "type": "ready",
             "processId": std::process::id(),
             "capabilities": capabilities,
-        })])
+        });
+        ready["capabilities"]["microphoneDevices"] =
+            json!(MicrophoneCapture::device_names().unwrap_or_default());
+        Ok(vec![ready])
     }
 
     fn nvst_bind(&mut self, command: Command) -> Result<Vec<Value>, Value> {
@@ -424,20 +448,6 @@ impl Engine {
                     )),
                 ),
             };
-        if self.media_runtime.is_some()
-            && nvst_config.is_none()
-            && context
-                .settings
-                .get("codec")
-                .and_then(Value::as_str)
-                .is_some_and(|codec| !codec.eq_ignore_ascii_case("h264"))
-        {
-            return Err(error(
-                Some(&command.id),
-                "unsupported-video-codec",
-                "Native streamer v2 was built with H.264 decode only",
-            ));
-        }
         let nvst_bundle_available = nvst_config
             .as_ref()
             .is_some_and(|config| config.remote_dtls_fingerprint().is_some());
@@ -610,6 +620,7 @@ impl Engine {
                 .media_session
                 .as_ref()
                 .map(MediaSession::captured_input);
+            let shortcut_runtime = self.media_runtime.clone();
             let nvst_resources = nvst_resources.expect("NVST events require active resources");
             self.feedback_worker = thread::Builder::new()
                 .name("opennow-nvst-events".to_owned())
@@ -618,10 +629,13 @@ impl Engine {
                         &output,
                         &lifecycle,
                         generation,
-                        nvst_events,
-                        media_feedback,
-                        captured_input,
-                        nvst_resources,
+                        NvstSessionEventResources {
+                            nvst_events,
+                            media_feedback,
+                            captured_input,
+                            shortcut_runtime,
+                            transport: nvst_resources,
+                        },
                     );
                 })
                 .ok();
@@ -770,10 +784,16 @@ impl Engine {
             ));
         };
         let threshold = partial_reliable_threshold(offer_sdp).unwrap_or(300);
+        let video_codec = match media_stream_config(&context).codec {
+            MediaVideoCodec::H264 => NegotiatedVideoCodec::H264,
+            MediaVideoCodec::H265 => NegotiatedVideoCodec::H265,
+            MediaVideoCodec::Av1 => NegotiatedVideoCodec::Av1,
+        };
         let (transport_events, receiver) = std::sync::mpsc::channel();
         let negotiated = negotiate(
             offer_sdp,
             &context.session,
+            video_codec,
             threshold,
             transport_events,
             media_consumer,
@@ -793,6 +813,64 @@ impl Engine {
         let lifecycle = self.lifecycle.clone();
         let transport_control = negotiated.session.control();
         let media_feedback = self.media_feedback.take();
+        let captured_input = self
+            .media_session
+            .as_ref()
+            .map(MediaSession::captured_input);
+        let microphone_packets = match context
+            .settings
+            .get("microphoneMode")
+            .and_then(Value::as_str)
+            .unwrap_or("disabled")
+        {
+            "voice-activity" if self.media_runtime.is_some() => {
+                let configured_device = context
+                    .settings
+                    .get("microphoneDeviceId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty());
+                let capture = MicrophoneCapture::start(configured_device).or_else(|configured_error| {
+                    if configured_device.is_none() {
+                        return Err(configured_error);
+                    }
+                    let _ = self.events.send(event(
+                        "log",
+                        json!({"level":"warn","message":"Configured microphone is unavailable; using the system default"}),
+                    ));
+                    MicrophoneCapture::start(None).map_err(|fallback_error| {
+                        format!("configured microphone failed ({configured_error}); default microphone failed ({fallback_error})")
+                    })
+                });
+                match capture {
+                    Ok(capture) => {
+                        let packets = capture.packets();
+                        self.microphone_capture = Some(capture);
+                        self.microphone_enabled = true;
+                        Some(packets)
+                    }
+                    Err(message) => {
+                        let _ = self.events.send(event(
+                            "microphone-state",
+                            json!({"state":"unavailable","enabled":false,"message":message}),
+                        ));
+                        None
+                    }
+                }
+            }
+            "push-to-talk" => {
+                let _ = self.events.send(event(
+                    "microphone-state",
+                    json!({
+                        "state":"unavailable",
+                        "enabled":false,
+                        "message":"Push-to-talk requires dynamic shortcut negotiation and remains disabled"
+                    }),
+                ));
+                None
+            }
+            _ => None,
+        };
+        let shortcut_runtime = self.media_runtime.clone();
         let feedback_worker = thread::Builder::new()
             .name("opennow-media-events".to_owned())
             .spawn(move || {
@@ -800,9 +878,14 @@ impl Engine {
                     &output,
                     &lifecycle,
                     generation,
-                    receiver,
-                    media_feedback,
-                    transport_control,
+                    WebrtcSessionResources {
+                        transport_events: receiver,
+                        media_feedback,
+                        captured_input,
+                        microphone_packets,
+                        shortcut_runtime,
+                        transport: transport_control,
+                    },
                 );
             });
         self.feedback_worker = Some(match feedback_worker {
@@ -990,6 +1073,24 @@ impl Engine {
         Ok(vec![response(command.id, "ok")])
     }
 
+    fn runtime_control(
+        &self,
+        command: Command,
+        control: MediaRuntimeControl,
+    ) -> Result<Vec<Value>, Value> {
+        let Some(runtime) = self.media_runtime.as_ref() else {
+            return Err(error(
+                Some(&command.id),
+                "unsupported-command",
+                "Native streamer has no media runtime for this control",
+            ));
+        };
+        runtime
+            .control(control)
+            .map_err(|message| error(Some(&command.id), "media-host-unavailable", message))?;
+        Ok(vec![response(command.id, "ok")])
+    }
+
     fn stop(&mut self, reason: &str) {
         let was_active = {
             let mut lifecycle = lock_lifecycle(&self.lifecycle);
@@ -1020,6 +1121,9 @@ impl Engine {
     }
 
     fn stop_media_resources(&mut self) {
+        let _ = self.stop_recording_inner();
+        self.microphone_capture = None;
+        self.microphone_enabled = false;
         if self.media_runtime.is_some() {
             self.media_consumer = None;
             if let Some(session) = self.media_session.take() {
@@ -1033,6 +1137,179 @@ impl Engine {
         if let Some(worker) = self.feedback_worker.take() {
             let _ = worker.join();
         }
+    }
+
+    fn start_recording(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        if self.recording_worker.is_some() {
+            return Err(error(
+                Some(&command.id),
+                "recording-already-active",
+                "A native stream recording is already active",
+            ));
+        }
+        let output_path = command
+            .output_path
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| {
+                error(
+                    Some(&command.id),
+                    "invalid-recording-output",
+                    "Native recording requires an absolute .mkv output path",
+                )
+            })?;
+        let path = std::path::PathBuf::from(&output_path);
+        if !path.is_absolute() || path.extension().and_then(|value| value.to_str()) != Some("mkv") {
+            return Err(error(
+                Some(&command.id),
+                "invalid-recording-output",
+                "Native recording requires an absolute .mkv output path",
+            ));
+        }
+        let control = self
+            .media_session
+            .as_ref()
+            .map(MediaSession::control)
+            .ok_or_else(|| {
+                error(
+                    Some(&command.id),
+                    "media-output-unavailable",
+                    "Native recording requires an active media session",
+                )
+            })?;
+        let (stream, receiver) = control
+            .subscribe_recording()
+            .map_err(|message| error(Some(&command.id), "recording-start-failed", message))?;
+        let events = self.events.clone();
+        let worker_path = path.clone();
+        let worker = thread::Builder::new()
+            .name("opennow-matroska-recording".to_owned())
+            .spawn(move || {
+                let result = record_matroska(&worker_path, stream, receiver);
+                let payload = match &result {
+                    Ok(summary) => json!({
+                        "state":"saved",
+                        "path":summary.path,
+                        "videoPackets":summary.video_packets,
+                        "audioPackets":summary.audio_packets,
+                    }),
+                    Err(message) => json!({"state":"failed","message":message}),
+                };
+                let _ = events.send(event("recording-state", payload));
+                result
+            })
+            .map_err(|spawn_error| {
+                control.unsubscribe_recording();
+                error(
+                    Some(&command.id),
+                    "recording-worker-failed",
+                    spawn_error.to_string(),
+                )
+            })?;
+        self.recording_worker = Some(worker);
+        Ok(vec![json!({
+            "id":command.id,
+            "type":"recording-started",
+            "path":path,
+        })])
+    }
+
+    fn stop_recording(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        match self.stop_recording_inner() {
+            Ok(Some(summary)) => Ok(vec![json!({
+                "id":command.id,
+                "type":"recording-stopped",
+                "path":summary.path,
+                "videoPackets":summary.video_packets,
+                "audioPackets":summary.audio_packets,
+            })]),
+            Ok(None) => Ok(vec![response(command.id, "recording-not-active")]),
+            Err(message) => Err(error(Some(&command.id), "recording-failed", message)),
+        }
+    }
+
+    fn toggle_microphone(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        let capture = self.microphone_capture.as_ref().ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "microphone-unavailable",
+                "Microphone was not armed when this WebRTC session started",
+            )
+        })?;
+        self.microphone_enabled = !self.microphone_enabled;
+        capture.set_enabled(self.microphone_enabled);
+        let message = if self.microphone_enabled {
+            "Microphone is streaming"
+        } else {
+            "Microphone is muted"
+        };
+        let _ = self.events.send(event(
+            "microphone-state",
+            json!({
+                "state":if self.microphone_enabled { "ready" } else { "disabled" },
+                "enabled":self.microphone_enabled,
+                "message":message
+            }),
+        ));
+        Ok(vec![json!({
+            "id":command.id,
+            "type":"microphone-state",
+            "enabled":self.microphone_enabled,
+        })])
+    }
+
+    fn anti_afk_pulse(&self, command: Command) -> Result<Vec<Value>, Value> {
+        let state = lock_lifecycle(&self.lifecycle).state;
+        if state != State::Connected {
+            return Err(invalid_state(
+                &command.id,
+                "anti-afk-pulse",
+                state,
+                "Connected with an initialized input channel",
+            ));
+        }
+        let send = |input| {
+            let bytes = captured_input_packet(input, 0);
+            if let Some(transport) = self.nvst_transport.as_ref() {
+                transport.send_input(bytes, false)
+            } else if let Some(transport) = self.transport.as_ref() {
+                transport.send_input(bytes, false)
+            } else {
+                Err(opennow_streamer_transport::TransportError::Closed)
+            }
+        };
+        send(CapturedInput::Key {
+            virtual_key: 0x7c,
+            modifiers: 0,
+            pressed: true,
+        })
+        .and_then(|_| {
+            send(CapturedInput::Key {
+                virtual_key: 0x7c,
+                modifiers: 0,
+                pressed: false,
+            })
+        })
+        .map_err(|transport_error| {
+            error(
+                Some(&command.id),
+                transport_error.code(),
+                transport_error.to_string(),
+            )
+        })?;
+        Ok(vec![response(command.id, "ok")])
+    }
+
+    fn stop_recording_inner(&mut self) -> Result<Option<RecordingSummary>, String> {
+        let Some(worker) = self.recording_worker.take() else {
+            return Ok(None);
+        };
+        if let Some(session) = self.media_session.as_ref() {
+            session.control().unsubscribe_recording();
+        }
+        worker
+            .join()
+            .map_err(|_| "native recording worker panicked".to_owned())?
+            .map(Some)
     }
 }
 
@@ -1190,6 +1467,14 @@ fn forward_transport_event(
         TransportEvent::InputUnavailable(reason) => {
             event("input-unavailable", json!({ "reason": reason }))
         }
+        TransportEvent::MicrophoneReady => event(
+            "microphone-state",
+            json!({"state":"ready","enabled":true,"message":"Microphone is streaming"}),
+        ),
+        TransportEvent::MicrophoneUnavailable(reason) => event(
+            "microphone-state",
+            json!({"state":"unavailable","enabled":false,"message":reason}),
+        ),
         TransportEvent::Log(message) => {
             event("log", json!({ "level": "warn", "message": message }))
         }
@@ -1197,15 +1482,56 @@ fn forward_transport_event(
     let _ = output.send(value);
 }
 
+fn forward_shortcut_action(
+    output: &Sender<Value>,
+    runtime: Option<&MediaRuntime>,
+    action: StreamShortcutAction,
+) {
+    let control = match action {
+        StreamShortcutAction::ToggleStats => Some(MediaRuntimeControl::Stats),
+        StreamShortcutAction::ToggleFullscreen => Some(MediaRuntimeControl::Fullscreen),
+        StreamShortcutAction::TogglePointerLock => Some(MediaRuntimeControl::PointerLock),
+        _ => None,
+    };
+    if let Some(control) = control {
+        let result = runtime
+            .ok_or_else(|| "native media runtime is unavailable".to_owned())
+            .and_then(|runtime| runtime.control(control));
+        if let Err(message) = result {
+            let _ = output.send(event(
+                "log",
+                json!({"level":"warn", "message":format!("Shortcut {} failed: {message}", action.protocol_name())}),
+            ));
+        }
+        return;
+    }
+    let _ = output.send(event(
+        "shortcut-action",
+        json!({"action":action.protocol_name(), "source":"keyboard"}),
+    ));
+}
+
+struct NvstSessionEventResources<R> {
+    nvst_events: Receiver<NvstReceiveEvent>,
+    media_feedback: Option<Receiver<MediaFeedback>>,
+    captured_input: Option<Arc<CapturedInputQueue>>,
+    shortcut_runtime: Option<MediaRuntime>,
+    transport: R,
+}
+
 fn forward_nvst_session_events<R: NvstSessionResources>(
     output: &Sender<Value>,
     lifecycle: &Mutex<Lifecycle>,
     generation: u64,
-    nvst_events: Receiver<NvstReceiveEvent>,
-    media_feedback: Option<Receiver<MediaFeedback>>,
-    captured_input: Option<Arc<CapturedInputQueue>>,
-    resources: R,
+    event_resources: NvstSessionEventResources<R>,
 ) {
+    let NvstSessionEventResources {
+        nvst_events,
+        media_feedback,
+        captured_input,
+        shortcut_runtime,
+        transport: resources,
+    } = event_resources;
     let mut feedback_state = NvstMediaFeedbackState {
         drop_reports: HashMap::new(),
         recovery_attempts: 0,
@@ -1246,6 +1572,26 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     let Some(input) = captured_input.take_sample() else {
                         break;
                     };
+                    if matches!(input.input, CapturedInput::Guide) {
+                        let _ = output.send(event("overlay-request", json!({"source":"gamepad"})));
+                        continue;
+                    }
+                    if matches!(input.input, CapturedInput::Screenshot) {
+                        let _ =
+                            output.send(event("screenshot-request", json!({"source":"keyboard"})));
+                        continue;
+                    }
+                    if matches!(input.input, CapturedInput::RecordingToggle) {
+                        let _ = output.send(event(
+                            "recording-toggle-request",
+                            json!({"source":"keyboard"}),
+                        ));
+                        continue;
+                    }
+                    if let CapturedInput::Shortcut(action) = &input.input {
+                        forward_shortcut_action(output, shortcut_runtime.as_ref(), *action);
+                        continue;
+                    }
                     if let Err(error) =
                         forward_nvst_captured_sample(&resources, input, &feedback_state)
                     {
@@ -1531,6 +1877,8 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             let _ = output.send(event(
                 "status",
                 json!({
+                    "event": "first-frame",
+                    "backend": backend,
                     "status": "streaming",
                     "message": format!("{backend} presented the first NVST video frame")
                 }),
@@ -1540,6 +1888,10 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             let _ = output.send(event(
                 "log",
                 json!({
+                    "event": "backend-fallback",
+                    "fromBackend": from,
+                    "toBackend": to,
+                    "reason": reason,
                     "level": "warn",
                     "message": format!("{from} startup failed; using {to}: {reason}")
                 }),
@@ -1550,6 +1902,8 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             let _ = output.send(event(
                 "log",
                 json!({
+                    "event": "keyframe-request",
+                    "reason": reason,
                     "level": "info",
                     "message": format!("Requested an NVST video keyframe: {reason}")
                 }),
@@ -1559,6 +1913,8 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             let _ = output.send(event(
                 "error",
                 json!({
+                    "event": "decoder-error",
+                    "codec": codec,
                     "code": "media-decode-error",
                     "message": format!("{codec} decoder error: {message}")
                 }),
@@ -1567,7 +1923,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
         MediaFeedback::OutputError { message } => {
             let _ = output.send(event(
                 "error",
-                json!({ "code": "media-output-error", "message": message }),
+                json!({ "event": "output-error", "code": "media-output-error", "message": message }),
             ));
         }
         MediaFeedback::DeviceLost {
@@ -1578,6 +1934,9 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             let _ = output.send(event(
                 "log",
                 json!({
+                    "event": "device-state",
+                    "subsystem": subsystem,
+                    "recovered": recovered,
                     "level": if recovered { "info" } else { "warn" },
                     "message": message.unwrap_or_else(|| format!(
                         "{subsystem} device {}",
@@ -1591,6 +1950,9 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                 let _ = output.send(event(
                     "log",
                     json!({
+                        "event": "queue-dropped",
+                        "media": media,
+                        "count": dropped,
                         "level": "debug",
                         "message": format!("Low-latency {media} queues dropped {dropped} stale samples/frames")
                     }),
@@ -1606,6 +1968,15 @@ fn forward_nvst_captured_input<R: NvstSessionResources>(
     input: CapturedInput,
     state: &NvstMediaFeedbackState,
 ) -> Result<(), String> {
+    if matches!(
+        input,
+        CapturedInput::Guide
+            | CapturedInput::Screenshot
+            | CapturedInput::RecordingToggle
+            | CapturedInput::Shortcut(_)
+    ) {
+        return Ok(());
+    }
     let timestamp_us = u64::try_from(state.input_origin.elapsed().as_micros()).unwrap_or(u64::MAX);
     resources.send_captured_input(captured_input_packet(input, timestamp_us))
 }
@@ -1615,6 +1986,15 @@ fn forward_nvst_captured_sample<R: NvstSessionResources>(
     sample: CapturedInputSample,
     state: &NvstMediaFeedbackState,
 ) -> Result<(), String> {
+    if matches!(
+        sample.input,
+        CapturedInput::Guide
+            | CapturedInput::Screenshot
+            | CapturedInput::RecordingToggle
+            | CapturedInput::Shortcut(_)
+    ) {
+        return Ok(());
+    }
     // Bifrost timestamps native input at OS capture, before aggregation and
     // SCTP sending. Keeping that time prevents a delayed queue drain from
     // making a group of older reports look newly generated.
@@ -1642,6 +2022,7 @@ fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
             packet
         }
         CapturedInput::MouseMove { delta_x, delta_y } => {
+            let (delta_x, delta_y) = tune_relative_mouse(delta_x, delta_y, input_tuning());
             let mut packet = Vec::with_capacity(22);
             packet.extend_from_slice(&7_u32.to_le_bytes());
             packet.extend_from_slice(&delta_x.to_be_bytes());
@@ -1684,7 +2065,84 @@ fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
             packet.extend_from_slice(&timestamp_us.to_be_bytes());
             packet
         }
+        CapturedInput::Gamepad {
+            controller_id,
+            bitmap,
+            buttons,
+            left_trigger,
+            right_trigger,
+            left_stick_x,
+            left_stick_y,
+            right_stick_x,
+            right_stick_y,
+        } => {
+            let mut packet = Vec::with_capacity(38);
+            packet.extend_from_slice(&12_u32.to_le_bytes());
+            packet.extend_from_slice(&26_u16.to_le_bytes());
+            packet.extend_from_slice(&u16::from(controller_id & 0x03).to_le_bytes());
+            packet.extend_from_slice(&bitmap.to_le_bytes());
+            packet.extend_from_slice(&20_u16.to_le_bytes());
+            packet.extend_from_slice(&buttons.to_le_bytes());
+            packet.extend_from_slice(
+                &(u16::from(left_trigger) | (u16::from(right_trigger) << 8)).to_le_bytes(),
+            );
+            packet.extend_from_slice(&left_stick_x.to_le_bytes());
+            packet.extend_from_slice(&left_stick_y.to_le_bytes());
+            packet.extend_from_slice(&right_stick_x.to_le_bytes());
+            packet.extend_from_slice(&right_stick_y.to_le_bytes());
+            packet.extend_from_slice(&0_u16.to_le_bytes());
+            packet.extend_from_slice(&85_u16.to_le_bytes());
+            packet.extend_from_slice(&0_u16.to_le_bytes());
+            packet.extend_from_slice(&timestamp_us.to_le_bytes());
+            packet
+        }
+        CapturedInput::Guide
+        | CapturedInput::Screenshot
+        | CapturedInput::RecordingToggle
+        | CapturedInput::Shortcut(_) => Vec::new(),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InputTuning {
+    sensitivity: f64,
+    acceleration_percent: f64,
+}
+
+fn input_tuning() -> InputTuning {
+    static TUNING: OnceLock<InputTuning> = OnceLock::new();
+    *TUNING.get_or_init(|| InputTuning {
+        sensitivity: std::env::var("OPENNOW_MOUSE_SENSITIVITY")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(1.0)
+            .clamp(0.1, 3.0),
+        acceleration_percent: std::env::var("OPENNOW_MOUSE_ACCELERATION")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(1.0)
+            .clamp(1.0, 150.0),
+    })
+}
+
+fn tune_relative_mouse(delta_x: i16, delta_y: i16, tuning: InputTuning) -> (i16, i16) {
+    let mut x = f64::from(delta_x) * tuning.sensitivity;
+    let mut y = f64::from(delta_y) * tuning.sensitivity;
+    if tuning.acceleration_percent > 1.0 {
+        let speed = x.hypot(y);
+        let strength = (tuning.acceleration_percent - 1.0) / 149.0;
+        // Match the legacy client curve: preserve low-speed precision and cap
+        // the maximum turn boost at 60% for the 150% setting.
+        let factor = 1.0 + (0.6 * strength).min(speed / 50.0 * strength);
+        x *= factor;
+        y *= factor;
+    }
+    let clamp = |value: f64| {
+        value
+            .round()
+            .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
+    };
+    (clamp(x), clamp(y))
 }
 
 fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
@@ -1731,11 +2189,20 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(10);
-    let requested_cloud_gsync = context
+    let requested_cloud_gsync = match context
         .settings
-        .get("enableCloudGsync")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+        .get("nativeCloudGsyncMode")
+        .and_then(Value::as_str)
+        .unwrap_or("auto")
+    {
+        "disabled" => false,
+        "forced" => true,
+        _ => context
+            .settings
+            .get("enableCloudGsync")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    };
     // `enableCloudGsync` is the resolved client request, but CloudMatch may
     // explicitly reject it in the finalized profile. Never switch Linux into
     // unthrottled VRR pacing when the server negotiated the feature off.
@@ -1746,6 +2213,32 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .and_then(|profile| profile.get("enableCloudGsync"))
         .and_then(Value::as_bool);
     let cloud_gsync = requested_cloud_gsync && negotiated_cloud_gsync.unwrap_or(true);
+    let show_stats = context
+        .settings
+        .get("showNativeStreamerStats")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || context
+            .settings
+            .get("showStatsOnLaunch")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    let stats_position = match context
+        .settings
+        .get("statsOverlayPosition")
+        .and_then(Value::as_str)
+        .unwrap_or("bottom-left")
+    {
+        "top-left" => StatsOverlayPosition::TopLeft,
+        "top-right" => StatsOverlayPosition::TopRight,
+        "bottom-right" => StatsOverlayPosition::BottomRight,
+        _ => StatsOverlayPosition::BottomLeft,
+    };
+    let start_fullscreen = context
+        .settings
+        .get("autoFullScreen")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     MediaStreamConfig {
         codec,
         width: resolution.0,
@@ -1753,6 +2246,10 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         fps,
         bitrate_bps: bitrate_mbps.saturating_mul(1_000_000).max(1),
         cloud_gsync,
+        show_stats,
+        stats_position,
+        start_fullscreen,
+        shortcuts: StreamShortcutBindings::from_json(&context.shortcuts),
     }
 }
 
@@ -1801,15 +2298,33 @@ fn consume_encoded_media(
     }
 }
 
+struct WebrtcSessionResources {
+    transport_events: Receiver<TransportEvent>,
+    media_feedback: Option<Receiver<MediaFeedback>>,
+    captured_input: Option<Arc<CapturedInputQueue>>,
+    microphone_packets: Option<Arc<EncodedMicrophoneQueue>>,
+    shortcut_runtime: Option<MediaRuntime>,
+    transport: TransportControl,
+}
+
 fn forward_session_events(
     output: &Sender<Value>,
     lifecycle: &Mutex<Lifecycle>,
     generation: u64,
-    transport_events: Receiver<TransportEvent>,
-    media_feedback: Option<Receiver<MediaFeedback>>,
-    transport: TransportControl,
+    resources: WebrtcSessionResources,
 ) {
+    let WebrtcSessionResources {
+        transport_events,
+        media_feedback,
+        captured_input,
+        microphone_packets,
+        shortcut_runtime,
+        transport,
+    } = resources;
     let mut drop_reports = HashMap::new();
+    let input_origin = Instant::now();
+    let mut input_available = false;
+    let mut microphone_available = false;
     loop {
         if let Some(feedback) = media_feedback.as_ref() {
             while let Ok(feedback) = feedback.try_recv() {
@@ -1823,8 +2338,96 @@ fn forward_session_events(
                 );
             }
         }
+        if let Some(captured_input) = captured_input.as_ref() {
+            if !input_available {
+                captured_input.clear();
+            } else if captured_input.take_overflowed() {
+                let _ = output.send(event(
+                    "error",
+                    json!({
+                        "code":"native-input-capture-overflow",
+                        "message":"Native input capture queue overflowed; input was paused to prevent stuck controls"
+                    }),
+                ));
+                input_available = false;
+            } else {
+                for _ in 0..32 {
+                    let Some(sample) = captured_input.take_sample() else {
+                        break;
+                    };
+                    if matches!(sample.input, CapturedInput::Guide) {
+                        let _ = output.send(event("overlay-request", json!({"source":"gamepad"})));
+                        continue;
+                    }
+                    if matches!(sample.input, CapturedInput::Screenshot) {
+                        let _ =
+                            output.send(event("screenshot-request", json!({"source":"keyboard"})));
+                        continue;
+                    }
+                    if matches!(sample.input, CapturedInput::RecordingToggle) {
+                        let _ = output.send(event(
+                            "recording-toggle-request",
+                            json!({"source":"keyboard"}),
+                        ));
+                        continue;
+                    }
+                    if let CapturedInput::Shortcut(action) = &sample.input {
+                        forward_shortcut_action(output, shortcut_runtime.as_ref(), *action);
+                        continue;
+                    }
+                    let captured = sample
+                        .captured_at
+                        .checked_duration_since(input_origin)
+                        .unwrap_or_default();
+                    let timestamp_us = u64::try_from(captured.as_micros()).unwrap_or(u64::MAX);
+                    if transport
+                        .send_input(captured_input_packet(sample.input, timestamp_us), false)
+                        .is_err()
+                    {
+                        input_available = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(microphone_packets) = microphone_packets.as_ref() {
+            if !microphone_available {
+                microphone_packets.clear();
+            } else {
+                let dropped = microphone_packets.take_dropped();
+                if dropped > 0 {
+                    let _ = output.send(event(
+                        "log",
+                        json!({
+                            "level":"warn",
+                            "message":format!("Dropped {dropped} microphone packets under load")
+                        }),
+                    ));
+                }
+                for _ in 0..4 {
+                    let Some(packet) = microphone_packets.take() else {
+                        break;
+                    };
+                    let _ = transport.send_microphone(EncodedMicrophoneFrame {
+                        payload: packet.payload,
+                        captured_at_us: packet.captured_at_us,
+                        audio_level_db: packet.audio_level_db,
+                        voice_activity: packet.voice_activity,
+                    });
+                }
+            }
+        }
         match transport_events.recv_timeout(Duration::from_millis(5)) {
             Ok(transport_event) => {
+                match &transport_event {
+                    TransportEvent::InputReady(_) => input_available = true,
+                    TransportEvent::InputUnavailable(_) | TransportEvent::Disconnected(_) => {
+                        input_available = false
+                    }
+                    TransportEvent::MicrophoneReady => microphone_available = true,
+                    TransportEvent::MicrophoneUnavailable(_) => microphone_available = false,
+                    _ => {}
+                }
                 let disconnected = matches!(transport_event, TransportEvent::Disconnected(_));
                 forward_transport_event(output, lifecycle, generation, transport_event);
                 if disconnected {
@@ -1854,6 +2457,8 @@ fn forward_media_feedback(
             let _ = output.send(event(
                 "status",
                 json!({
+                    "event": "first-frame",
+                    "backend": backend,
                     "status": "streaming",
                     "message": format!("{backend} presented the first video frame")
                 }),
@@ -1863,6 +2468,10 @@ fn forward_media_feedback(
             let _ = output.send(event(
                 "log",
                 json!({
+                    "event": "backend-fallback",
+                    "fromBackend": from,
+                    "toBackend": to,
+                    "reason": reason,
                     "level": "warn",
                     "message": format!("{from} startup failed; using {to}: {reason}")
                 }),
@@ -1873,6 +2482,8 @@ fn forward_media_feedback(
             let _ = output.send(event(
                 "log",
                 json!({
+                    "event": "keyframe-request",
+                    "reason": reason,
                     "level": if request_result.is_ok() { "info" } else { "warn" },
                     "message": format!("Requested a video keyframe: {reason}")
                 }),
@@ -1882,6 +2493,8 @@ fn forward_media_feedback(
             let _ = output.send(event(
                 "error",
                 json!({
+                    "event": "decoder-error",
+                    "codec": codec,
                     "code": "media-decode-error",
                     "message": format!("{codec} decoder error: {message}")
                 }),
@@ -1890,7 +2503,7 @@ fn forward_media_feedback(
         MediaFeedback::OutputError { message } => {
             let _ = output.send(event(
                 "error",
-                json!({ "code": "media-output-error", "message": message }),
+                json!({ "event": "output-error", "code": "media-output-error", "message": message }),
             ));
         }
         MediaFeedback::DeviceLost {
@@ -1901,6 +2514,9 @@ fn forward_media_feedback(
             let _ = output.send(event(
                 "log",
                 json!({
+                    "event": "device-state",
+                    "subsystem": subsystem,
+                    "recovered": recovered,
                     "level": if recovered { "info" } else { "warn" },
                     "message": message.unwrap_or_else(|| format!(
                         "{subsystem} device {}",
@@ -1914,6 +2530,9 @@ fn forward_media_feedback(
                 let _ = output.send(event(
                     "log",
                     json!({
+                        "event": "queue-dropped",
+                        "media": media,
+                        "count": dropped,
                         "level": "debug",
                         "message": format!(
                             "Low-latency {media} queues dropped {dropped} stale samples/frames"
@@ -1995,6 +2614,24 @@ mod tests {
 
     fn lifecycle_state(engine: &Engine) -> State {
         lock_lifecycle(&engine.lifecycle).state
+    }
+
+    #[test]
+    fn shell_shortcuts_emit_typed_actions_and_runtime_shortcuts_fail_visibly() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        forward_shortcut_action(&sender, None, StreamShortcutAction::ToggleMicrophone);
+        let action = receiver.recv().expect("shortcut action");
+        assert_eq!(action["type"], "shortcut-action");
+        assert_eq!(action["action"], "toggle-microphone");
+
+        forward_shortcut_action(&sender, None, StreamShortcutAction::ToggleFullscreen);
+        let warning = receiver.recv().expect("runtime warning");
+        assert_eq!(warning["type"], "log");
+        assert!(
+            warning["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("native media runtime is unavailable"))
+        );
     }
 
     fn unused_udp_port() -> u16 {
@@ -2230,6 +2867,101 @@ mod tests {
     }
 
     #[test]
+    fn captured_gamepad_matches_the_official_38_byte_packet() {
+        let packet = captured_input_packet(
+            CapturedInput::Gamepad {
+                controller_id: 2,
+                bitmap: 0x0404,
+                buttons: 0x5101,
+                left_trigger: 17,
+                right_trigger: 231,
+                left_stick_x: -12_345,
+                left_stick_y: 23_456,
+                right_stick_x: -30_000,
+                right_stick_y: 30_001,
+            },
+            0x0102_0304_0506_0708,
+        );
+
+        assert_eq!(packet.len(), 38);
+        assert_eq!(u32::from_le_bytes(packet[0..4].try_into().unwrap()), 12);
+        assert_eq!(u16::from_le_bytes(packet[4..6].try_into().unwrap()), 26);
+        assert_eq!(u16::from_le_bytes(packet[6..8].try_into().unwrap()), 2);
+        assert_eq!(
+            u16::from_le_bytes(packet[8..10].try_into().unwrap()),
+            0x0404
+        );
+        assert_eq!(u16::from_le_bytes(packet[10..12].try_into().unwrap()), 20);
+        assert_eq!(
+            u16::from_le_bytes(packet[12..14].try_into().unwrap()),
+            0x5101
+        );
+        assert_eq!(
+            u16::from_le_bytes(packet[14..16].try_into().unwrap()),
+            0xe711
+        );
+        assert_eq!(
+            i16::from_le_bytes(packet[16..18].try_into().unwrap()),
+            -12_345
+        );
+        assert_eq!(
+            i16::from_le_bytes(packet[18..20].try_into().unwrap()),
+            23_456
+        );
+        assert_eq!(
+            i16::from_le_bytes(packet[20..22].try_into().unwrap()),
+            -30_000
+        );
+        assert_eq!(
+            i16::from_le_bytes(packet[22..24].try_into().unwrap()),
+            30_001
+        );
+        assert_eq!(u16::from_le_bytes(packet[26..28].try_into().unwrap()), 85);
+        assert_eq!(
+            u64::from_le_bytes(packet[30..38].try_into().unwrap()),
+            0x0102_0304_0506_0708
+        );
+        assert!(captured_input_packet(CapturedInput::Guide, 1).is_empty());
+        assert!(captured_input_packet(CapturedInput::Screenshot, 1).is_empty());
+        assert!(captured_input_packet(CapturedInput::RecordingToggle, 1).is_empty());
+    }
+
+    #[test]
+    fn relative_mouse_tuning_matches_sensitivity_and_bounded_acceleration() {
+        assert_eq!(
+            tune_relative_mouse(
+                20,
+                -10,
+                InputTuning {
+                    sensitivity: 0.5,
+                    acceleration_percent: 1.0,
+                },
+            ),
+            (10, -5)
+        );
+        let accelerated = tune_relative_mouse(
+            100,
+            0,
+            InputTuning {
+                sensitivity: 1.0,
+                acceleration_percent: 150.0,
+            },
+        );
+        assert_eq!(accelerated, (160, 0));
+        assert_eq!(
+            tune_relative_mouse(
+                i16::MAX,
+                i16::MIN,
+                InputTuning {
+                    sensitivity: 3.0,
+                    acceleration_percent: 150.0,
+                },
+            ),
+            (i16::MAX, i16::MIN)
+        );
+    }
+
+    #[test]
     fn queue_drop_reports_do_not_mix_audio_samples_with_video_frames() {
         let expired = Instant::now() - Duration::from_secs(2);
         let mut reports = HashMap::from([
@@ -2454,7 +3186,8 @@ mod tests {
             "resolution": "2560x1440",
             "fps": 120,
             "maxBitrateMbps": 75,
-            "enableCloudGsync": true
+            "enableCloudGsync": true,
+            "autoFullScreen": true
         });
         value["session"]["negotiatedStreamProfile"] = json!({
             "enableCloudGsync": true
@@ -2470,6 +3203,10 @@ mod tests {
                 fps: 120,
                 bitrate_bps: 75_000_000,
                 cloud_gsync: true,
+                show_stats: false,
+                stats_position: StatsOverlayPosition::BottomLeft,
+                start_fullscreen: true,
+                shortcuts: StreamShortcutBindings::default(),
             }
         );
 
@@ -2500,6 +3237,34 @@ mod tests {
         });
         let rejected_vrr: SessionContext = serde_json::from_value(rejected_vrr).expect("context");
         assert!(!media_stream_config(&rejected_vrr).cloud_gsync);
+
+        let mut forced_vrr = synthetic_context("forced-vrr-config", json!([]));
+        forced_vrr["settings"] = json!({
+            "enableCloudGsync": false,
+            "nativeCloudGsyncMode": "forced",
+            "showNativeStreamerStats": true,
+            "statsOverlayPosition": "top-right"
+        });
+        forced_vrr["session"]["negotiatedStreamProfile"] = json!({
+            "enableCloudGsync": true
+        });
+        let forced_vrr: SessionContext = serde_json::from_value(forced_vrr).expect("context");
+        let forced_config = media_stream_config(&forced_vrr);
+        assert!(forced_config.cloud_gsync);
+        assert!(forced_config.show_stats);
+        assert_eq!(forced_config.stats_position, StatsOverlayPosition::TopRight);
+
+        for (wire, expected) in [
+            ("top-left", StatsOverlayPosition::TopLeft),
+            ("bottom-left", StatsOverlayPosition::BottomLeft),
+            ("bottom-right", StatsOverlayPosition::BottomRight),
+            ("invalid", StatsOverlayPosition::BottomLeft),
+        ] {
+            let mut value = synthetic_context("stats-position-config", json!([]));
+            value["settings"] = json!({ "statsOverlayPosition": wire });
+            let context: SessionContext = serde_json::from_value(value).expect("context");
+            assert_eq!(media_stream_config(&context).stats_position, expected);
+        }
     }
 
     #[test]

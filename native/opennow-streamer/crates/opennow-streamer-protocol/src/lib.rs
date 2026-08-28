@@ -35,6 +35,8 @@ pub struct Command {
     pub port: Option<u16>,
     #[serde(default)]
     pub payload_base64: Option<String>,
+    #[serde(default)]
+    pub output_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

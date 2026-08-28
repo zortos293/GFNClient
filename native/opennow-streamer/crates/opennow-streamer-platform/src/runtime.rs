@@ -10,7 +10,7 @@ use opennow_streamer_protocol::RenderSurface;
 use crate::media::{MediaFeedback, MediaSession, MediaStreamConfig};
 #[cfg(target_os = "windows")]
 use crate::output::WindowsBridge;
-use crate::output::{ActiveOutput, OutputBuffers, OutputEvent};
+use crate::output::{ActiveOutput, OutputBuffers, OutputControl, OutputEvent};
 
 #[cfg(target_os = "linux")]
 use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
@@ -21,6 +21,13 @@ use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 const HOST_POLL_INTERVAL: Duration = Duration::from_micros(250);
 const HOST_START_TIMEOUT: Duration = Duration::from_secs(10);
 const HOST_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaRuntimeControl {
+    Stats,
+    Fullscreen,
+    PointerLock,
+}
 
 #[cfg(target_os = "macos")]
 pub(crate) enum MacH264Configuration {
@@ -42,11 +49,25 @@ pub(crate) enum HostCommand {
         surface: RenderSurface,
         reply: Sender<Result<(), String>>,
     },
+    Control {
+        control: MediaRuntimeControl,
+        reply: Sender<Result<(), String>>,
+    },
     Cursor(Vec<u8>),
     #[cfg(target_os = "macos")]
     ConfigureMacH264 {
         parameter_sets: opennow_streamer_platform_macos::H264ParameterSets,
         reply: Sender<Result<MacH264Configuration, String>>,
+    },
+    #[cfg(target_os = "macos")]
+    ConfigureMacH265 {
+        parameter_sets: opennow_streamer_platform_macos::H265ParameterSets,
+        reply: Sender<Result<opennow_streamer_platform_macos::StreamSink, String>>,
+    },
+    #[cfg(target_os = "macos")]
+    ConfigureMacAv1 {
+        format: opennow_streamer_platform_macos::Av1Format,
+        reply: Sender<Result<opennow_streamer_platform_macos::StreamSink, String>>,
     },
     #[cfg(target_os = "linux")]
     FallbackLinux {
@@ -132,7 +153,7 @@ impl MediaRuntime {
             .map_err(|_| "native media host is no longer running".to_owned())?;
         response
             .recv_timeout(HOST_CONTROL_TIMEOUT)
-            .map_err(|_| "native media host did not apply the Electron surface update".to_owned())?
+            .map_err(|_| "native media host did not apply the shell surface update".to_owned())?
     }
 
     pub fn set_paused(&self, paused: bool) -> Result<(), String> {
@@ -147,6 +168,16 @@ impl MediaRuntime {
         response
             .recv_timeout(HOST_CONTROL_TIMEOUT)
             .map_err(|_| "native media host did not apply the pause update".to_owned())?
+    }
+
+    pub fn control(&self, control: MediaRuntimeControl) -> Result<(), String> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(HostCommand::Control { control, reply })
+            .map_err(|_| "native media host is no longer running".to_owned())?;
+        response
+            .recv_timeout(HOST_CONTROL_TIMEOUT)
+            .map_err(|_| "native media host did not apply the runtime control".to_owned())?
     }
 
     pub fn shutdown(&self) {
@@ -174,7 +205,6 @@ impl MainThreadHost {
         let mut paused = false;
         let mut feedback: Option<Sender<MediaFeedback>> = None;
         let mut software_playback_started = false;
-        #[cfg(target_os = "linux")]
         let mut active_stream = MediaStreamConfig::default();
         loop {
             match self.commands.recv_timeout(HOST_POLL_INTERVAL) {
@@ -183,10 +213,7 @@ impl MainThreadHost {
                     feedback: session_feedback,
                     stream,
                 }) => {
-                    #[cfg(target_os = "linux")]
-                    {
-                        active_stream = stream;
-                    }
+                    active_stream = stream;
                     if let Some(output) = active.as_mut() {
                         output.stop();
                     }
@@ -239,6 +266,10 @@ impl MainThreadHost {
                                     from: hardware_backend_label(),
                                     to: if requested_linux_hardware {
                                         "Linux decoder/SDL NV12"
+                                    } else if cfg!(target_os = "windows")
+                                        && stream.codec != crate::media::MediaVideoCodec::H264
+                                    {
+                                        "Media Foundation software/D3D11/WASAPI"
                                     } else {
                                         "OpenH264/SDL"
                                     },
@@ -339,6 +370,18 @@ impl MainThreadHost {
                     surface = Some(new_surface);
                     let _ = reply.send(result);
                 }
+                Ok(HostCommand::Control { control, reply }) => {
+                    let output_control = match control {
+                        MediaRuntimeControl::Stats => OutputControl::Stats,
+                        MediaRuntimeControl::Fullscreen => OutputControl::Fullscreen,
+                        MediaRuntimeControl::PointerLock => OutputControl::PointerLock,
+                    };
+                    let result = active
+                        .as_mut()
+                        .ok_or_else(|| "native media output is not active".to_owned())
+                        .and_then(|output| output.control(output_control));
+                    let _ = reply.send(result);
+                }
                 #[cfg(target_os = "macos")]
                 Ok(HostCommand::ConfigureMacH264 {
                     parameter_sets,
@@ -361,7 +404,7 @@ impl MainThreadHost {
                             let fallback = ActiveOutput::initialize(
                                 Arc::clone(&self.output),
                                 false,
-                                MediaStreamConfig::default(),
+                                active_stream,
                                 false,
                             )
                             .and_then(|mut output| {
@@ -386,6 +429,31 @@ impl MainThreadHost {
                             }
                         }
                     }
+                }
+                #[cfg(target_os = "macos")]
+                Ok(HostCommand::ConfigureMacH265 {
+                    parameter_sets,
+                    reply,
+                }) => {
+                    let result = active
+                        .as_mut()
+                        .ok_or_else(|| "native media output is not active".to_owned())
+                        .and_then(|output| output.configure_macos_h265(parameter_sets));
+                    if result.is_err() {
+                        crate::macos_backend::disable_h265();
+                    }
+                    let _ = reply.send(result);
+                }
+                #[cfg(target_os = "macos")]
+                Ok(HostCommand::ConfigureMacAv1 { format, reply }) => {
+                    let result = active
+                        .as_mut()
+                        .ok_or_else(|| "native media output is not active".to_owned())
+                        .and_then(|output| output.configure_macos_av1(format));
+                    if result.is_err() {
+                        crate::macos_backend::disable_av1();
+                    }
+                    let _ = reply.send(result);
                 }
                 Ok(HostCommand::Cursor(bytes)) => {
                     if let Some(output) = active.as_mut() {
@@ -495,6 +563,16 @@ impl MainThreadHost {
                     }
                     #[cfg(target_os = "windows")]
                     Ok(OutputEvent::Fatal(message)) => {
+                        if !output.is_windows_hardware() {
+                            if let Some(feedback) = feedback.as_ref() {
+                                let _ = feedback.send(MediaFeedback::OutputError { message });
+                            }
+                            output.stop();
+                            active = None;
+                            feedback = None;
+                            software_playback_started = false;
+                            continue;
+                        }
                         let fallback = (|| {
                             output.stop();
                             self.use_macos_hardware.store(false, Ordering::Release);
@@ -503,7 +581,7 @@ impl MainThreadHost {
                             let mut replacement = ActiveOutput::initialize(
                                 Arc::clone(&self.output),
                                 false,
-                                MediaStreamConfig::default(),
+                                active_stream,
                                 #[cfg(target_os = "windows")]
                                 Arc::clone(&self.windows_bridge),
                                 false,
@@ -519,7 +597,13 @@ impl MainThreadHost {
                                 if let Some(feedback) = feedback.as_ref() {
                                     let _ = feedback.send(MediaFeedback::BackendFallback {
                                         from: "Media Foundation/D3D11/WASAPI",
-                                        to: "OpenH264/SDL",
+                                        to: if active_stream.codec
+                                            == crate::media::MediaVideoCodec::H264
+                                        {
+                                            "OpenH264/SDL"
+                                        } else {
+                                            "Media Foundation software/D3D11/WASAPI"
+                                        },
                                         reason: message,
                                     });
                                     let _ = feedback.send(MediaFeedback::RequestKeyframe {
@@ -557,7 +641,7 @@ impl MainThreadHost {
                                 surface.as_ref(),
                                 paused,
                                 false,
-                                MediaStreamConfig::default(),
+                                active_stream,
                                 false,
                             );
                             match fallback {
@@ -735,7 +819,7 @@ fn backend_preference_allows_value(value: Option<&str>, hardware_backend: &str) 
         .filter(|value| !value.is_empty())
         .is_none_or(|value| {
             let value = value.to_ascii_lowercase();
-            value == "auto" || value == hardware_backend
+            value == "auto" || value == "hardware" || value == hardware_backend
         })
 }
 

@@ -14,8 +14,8 @@ use thiserror::Error;
 
 use crate::failure::{BackendFailure, FailureReporter, VideoDecodeLoss};
 use crate::format::{
-    AudioFormat, BackendConfig, FormatError, FrameTiming, GpuOverlayFrame, H264Format, H264Framing,
-    RendererRect, ScreenRect, access_unit_to_avcc,
+    AudioFormat, Av1Format, BackendConfig, FormatError, FrameTiming, GpuOverlayFrame, H264Format,
+    H264Framing, H265Format, RendererRect, ScreenRect, VideoFormat, access_unit_to_avcc,
 };
 use crate::lifecycle::{BackendState, Lifecycle};
 use crate::queue::{BoundedQueue, PushResult};
@@ -84,7 +84,7 @@ pub enum BackendError {
     MainThreadRequired,
     #[error("the backend is stopping or stopped")]
     Stopped,
-    #[error("H.264 access unit is {actual} bytes; configured maximum is {maximum}")]
+    #[error("video access unit is {actual} bytes; configured maximum is {maximum}")]
     AccessUnitTooLarge { actual: usize, maximum: usize },
     #[error("Opus packet is {0} bytes; the maximum is 1275")]
     OpusPacketTooLarge(usize),
@@ -115,7 +115,21 @@ unsafe extern "C" {
 
 pub fn probe_h264_hardware() -> bool {
     const H264_CODEC_TYPE: u32 = u32::from_be_bytes(*b"avc1");
-    if unsafe { VTIsHardwareDecodeSupported(H264_CODEC_TYPE) } == 0 {
+    probe_hardware_codec(H264_CODEC_TYPE)
+}
+
+pub fn probe_h265_hardware() -> bool {
+    const H265_CODEC_TYPE: u32 = u32::from_be_bytes(*b"hvc1");
+    probe_hardware_codec(H265_CODEC_TYPE)
+}
+
+pub fn probe_av1_hardware() -> bool {
+    const AV1_CODEC_TYPE: u32 = u32::from_be_bytes(*b"av01");
+    probe_hardware_codec(AV1_CODEC_TYPE)
+}
+
+fn probe_hardware_codec(codec_type: u32) -> bool {
+    if unsafe { VTIsHardwareDecodeSupported(codec_type) } == 0 {
         return false;
     }
     MTLCreateSystemDefaultDevice().is_some_and(|device| device.newCommandQueue().is_some())
@@ -220,6 +234,44 @@ impl StreamSink {
         framing: H264Framing,
         timing: FrameTiming,
     ) -> Result<SubmitOutcome, BackendError> {
+        self.submit_video(access_unit, framing, timing)
+    }
+
+    pub fn submit_h265(
+        &self,
+        access_unit: &[u8],
+        framing: H264Framing,
+        timing: FrameTiming,
+    ) -> Result<SubmitOutcome, BackendError> {
+        self.submit_video(access_unit, framing, timing)
+    }
+
+    pub fn submit_av1(
+        &self,
+        access_unit: &[u8],
+        timing: FrameTiming,
+    ) -> Result<SubmitOutcome, BackendError> {
+        if access_unit.is_empty() {
+            return Err(FormatError::EmptyAccessUnit.into());
+        }
+        self.submit_packetized_video(access_unit, timing)
+    }
+
+    fn submit_video(
+        &self,
+        access_unit: &[u8],
+        framing: H264Framing,
+        timing: FrameTiming,
+    ) -> Result<SubmitOutcome, BackendError> {
+        let avcc = access_unit_to_avcc(access_unit, framing)?;
+        self.submit_packetized_video(&avcc, timing)
+    }
+
+    fn submit_packetized_video(
+        &self,
+        packetized_access_unit: &[u8],
+        timing: FrameTiming,
+    ) -> Result<SubmitOutcome, BackendError> {
         if self.shared.lifecycle.state() != BackendState::Running {
             return Err(BackendError::Stopped);
         }
@@ -227,13 +279,12 @@ impl StreamSink {
             return Ok(SubmitOutcome::Paused);
         }
         timing.validate()?;
-        if access_unit.len() > self.shared.max_video_access_unit_bytes {
+        if packetized_access_unit.len() > self.shared.max_video_access_unit_bytes {
             return Err(BackendError::AccessUnitTooLarge {
-                actual: access_unit.len(),
+                actual: packetized_access_unit.len(),
                 maximum: self.shared.max_video_access_unit_bytes,
             });
         }
-        let avcc = access_unit_to_avcc(access_unit, framing)?;
         let decoder = self
             .shared
             .video
@@ -246,7 +297,7 @@ impl StreamSink {
             return Ok(SubmitOutcome::Paused);
         }
         let decoder = decoder.as_ref().ok_or(BackendError::Stopped)?;
-        if !decoder.submit(&avcc, timing)? {
+        if !decoder.submit(packetized_access_unit, timing)? {
             self.shared
                 .counters
                 .video_backpressured
@@ -260,7 +311,7 @@ impl StreamSink {
         self.shared
             .counters
             .video_submitted_bytes
-            .fetch_add(access_unit.len() as u64, Ordering::Relaxed);
+            .fetch_add(packetized_access_unit.len() as u64, Ordering::Relaxed);
         Ok(SubmitOutcome::Accepted)
     }
 
@@ -312,6 +363,18 @@ impl StreamSink {
     }
 
     pub fn reconfigure_h264(&self, format: H264Format) -> Result<(), BackendError> {
+        self.reconfigure_video(format.into())
+    }
+
+    pub fn reconfigure_h265(&self, format: H265Format) -> Result<(), BackendError> {
+        self.reconfigure_video(format.into())
+    }
+
+    pub fn reconfigure_av1(&self, format: Av1Format) -> Result<(), BackendError> {
+        self.reconfigure_video(format.into())
+    }
+
+    fn reconfigure_video(&self, format: VideoFormat) -> Result<(), BackendError> {
         if self.shared.lifecycle.state() != BackendState::Running {
             return Err(BackendError::Stopped);
         }
@@ -522,7 +585,7 @@ impl MacOsBackend {
             .update_window_child(bounds, visible, main_thread)
     }
 
-    /// Repositions the process-owned passive overlay using absolute Electron screen coordinates.
+    /// Repositions the process-owned passive overlay using absolute shell screen coordinates.
     pub fn update_owned_overlay(
         &mut self,
         screen_rect: ScreenRect,

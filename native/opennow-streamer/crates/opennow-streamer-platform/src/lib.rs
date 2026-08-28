@@ -7,11 +7,13 @@ mod linux_xinput;
 #[cfg(target_os = "macos")]
 mod macos_backend;
 mod media;
+mod microphone;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native_stats_overlay;
 mod native_surface;
 mod output;
 mod queue;
+mod recording;
 mod runtime;
 #[cfg(target_os = "windows")]
 mod windows_debug_overlay;
@@ -19,10 +21,14 @@ mod windows_debug_overlay;
 mod windows_raw_input;
 
 pub use media::{
-    CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, MediaCodec, MediaControl,
-    MediaFeedback, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome,
+    CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedRecordingReceiver,
+    MediaCodec, MediaControl, MediaFeedback, MediaSession, MediaSink, MediaStreamConfig,
+    MediaVideoCodec, PushOutcome, ShortcutChord, StatsOverlayPosition, StreamShortcutAction,
+    StreamShortcutBindings,
 };
-pub use runtime::{MainThreadHost, MediaRuntime, create_runtime};
+pub use microphone::{EncodedMicrophonePacket, EncodedMicrophoneQueue, MicrophoneCapture};
+pub use recording::{RecordingSummary, record_matroska};
+pub use runtime::{MainThreadHost, MediaRuntime, MediaRuntimeControl, create_runtime};
 
 /// Shows a standalone overlay window through the exact production creation path.
 /// Debug-only aid for isolating window-server behavior without a streaming session.
@@ -35,26 +41,61 @@ use opennow_streamer_protocol::{CodecCapability, VideoBackendCapability};
 
 pub fn video_backends() -> Vec<VideoBackendCapability> {
     #[cfg(target_os = "linux")]
-    {
+    let mut backends = {
         let mut backends = linux_backend::video_backends();
         backends.push(software_backend());
         backends
+    };
+    #[cfg(target_os = "windows")]
+    let mut backends = {
+        use opennow_streamer_platform_windows::WindowsGraphicsApi;
+        vec![
+            windows_hardware_backend(WindowsGraphicsApi::D3d12, "d3d12", "d3d11on12-nv12"),
+            windows_hardware_backend(WindowsGraphicsApi::D3d11, "d3d11", "d3d11-nv12"),
+            software_backend(),
+        ]
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    let mut backends = vec![hardware_backend(), software_backend()];
+    apply_backend_policy(
+        &mut backends,
+        std::env::var("OPENNOW_NATIVE_VIDEO_BACKEND")
+            .ok()
+            .as_deref(),
+    );
+    backends
+}
+
+fn apply_backend_policy(backends: &mut [VideoBackendCapability], requested: Option<&str>) {
+    let requested = requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("auto")
+        .to_ascii_lowercase();
+    if requested == "auto" {
+        return;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        #[cfg(target_os = "windows")]
-        {
-            use opennow_streamer_platform_windows::WindowsGraphicsApi;
-            vec![
-                windows_hardware_backend(WindowsGraphicsApi::D3d12, "d3d12", "d3d11on12-nv12"),
-                windows_hardware_backend(WindowsGraphicsApi::D3d11, "d3d11", "d3d11-nv12"),
-                software_backend(),
-            ]
+    for backend in backends {
+        if backend_allowed_by_policy(&requested, backend.backend) {
+            continue;
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            vec![hardware_backend(), software_backend()]
+        backend.available = false;
+        backend.reason = Some("video backend was disabled by decoder policy");
+        backend.zero_copy_modes.clear();
+        for codec in &mut backend.codecs {
+            codec.available = false;
+            codec.reason = Some("video backend was disabled by decoder policy");
         }
+    }
+}
+
+fn backend_allowed_by_policy(requested: &str, backend: &str) -> bool {
+    match requested {
+        "auto" | "" => true,
+        "software" => matches!(backend, "software" | "ffmpeg"),
+        "hardware" => !matches!(backend, "software" | "ffmpeg"),
+        "nvdec" => backend == "cuda",
+        explicit => backend == explicit,
     }
 }
 
@@ -130,26 +171,32 @@ fn hardware_backend() -> VideoBackendCapability {
             "VideoToolbox hardware decode was disabled by configuration",
         );
     }
-    const UNAVAILABLE: &str = "VideoToolbox H.264 hardware decode or Metal is unavailable";
+    const UNAVAILABLE: &str = "VideoToolbox hardware decode or Metal is unavailable";
     let available = macos_backend::available();
+    let h264_available = macos_backend::h264_available();
+    let h265_available = macos_backend::h265_available();
+    let av1_available = macos_backend::av1_available();
     VideoBackendCapability {
         backend: "videotoolbox",
         platform: "macos",
         codecs: vec![
             CodecCapability {
                 codec: "h264",
-                available,
-                reason: (!available).then_some(UNAVAILABLE),
+                available: h264_available,
+                reason: (!h264_available)
+                    .then_some("H.264 VideoToolbox hardware decode or Metal is unavailable"),
             },
             CodecCapability {
                 codec: "h265",
-                available: false,
-                reason: Some("H.265 VideoToolbox decode is not implemented"),
+                available: h265_available,
+                reason: (!h265_available)
+                    .then_some("H.265 VideoToolbox hardware decode or Metal is unavailable"),
             },
             CodecCapability {
                 codec: "av1",
-                available: false,
-                reason: Some("AV1 VideoToolbox decode is not implemented"),
+                available: av1_available,
+                reason: (!av1_available)
+                    .then_some("AV1 VideoToolbox hardware decode or Metal is unavailable"),
             },
         ],
         zero_copy_modes: available
@@ -166,6 +213,45 @@ fn hardware_backend() -> VideoBackendCapability {
 }
 
 fn software_backend() -> VideoBackendCapability {
+    #[cfg(target_os = "windows")]
+    {
+        let probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(
+            opennow_streamer_platform_windows::WindowsGraphicsApi::D3d11,
+        );
+        let media_output_available = probe.d3d11_presentation && probe.wasapi_render;
+        // OpenH264 is bundled for the guaranteed H.264 path. HEVC and AV1 can
+        // additionally use a D3D11-aware synchronous Media Foundation decoder.
+        let available = true;
+        return VideoBackendCapability {
+            backend: "software",
+            platform: "windows",
+            codecs: vec![
+                CodecCapability {
+                    codec: "h264",
+                    available: true,
+                    reason: None,
+                },
+                CodecCapability {
+                    codec: "h265",
+                    available: media_output_available && probe.h265_software_decode,
+                    reason: (!(media_output_available && probe.h265_software_decode)).then_some(
+                        "H.265 Media Foundation software decode or media output is unavailable",
+                    ),
+                },
+                CodecCapability {
+                    codec: "av1",
+                    available: media_output_available && probe.av1_software_decode,
+                    reason: (!(media_output_available && probe.av1_software_decode)).then_some(
+                        "AV1 Media Foundation software decode or media output is unavailable",
+                    ),
+                },
+            ],
+            zero_copy_modes: Vec::new(),
+            available,
+            reason: None,
+        };
+    }
+    #[cfg(not(target_os = "windows"))]
     VideoBackendCapability {
         backend: "software",
         platform: "cross-platform",
@@ -220,6 +306,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decoder_policy_separates_hardware_software_and_explicit_backends() {
+        assert!(backend_allowed_by_policy("auto", "software"));
+        assert!(backend_allowed_by_policy("software", "ffmpeg"));
+        assert!(backend_allowed_by_policy("software", "software"));
+        assert!(!backend_allowed_by_policy("software", "vulkan"));
+        assert!(backend_allowed_by_policy("hardware", "d3d11"));
+        assert!(!backend_allowed_by_policy("hardware", "software"));
+        assert!(!backend_allowed_by_policy("hardware", "ffmpeg"));
+        assert!(backend_allowed_by_policy("nvdec", "cuda"));
+        assert!(!backend_allowed_by_policy("nvdec", "vulkan"));
+        assert!(backend_allowed_by_policy("videotoolbox", "videotoolbox"));
+    }
+
+    #[test]
     fn advertises_only_the_linked_software_codec() {
         let backends = video_backends();
         let software = backends
@@ -235,6 +335,7 @@ mod tests {
                 .expect("h264")
                 .available
         );
+        #[cfg(not(target_os = "windows"))]
         assert!(
             software
                 .codecs
@@ -252,6 +353,31 @@ mod tests {
         #[cfg(target_os = "windows")]
         {
             use opennow_streamer_platform_windows::WindowsGraphicsApi;
+            let software_probe = opennow_streamer_platform_windows::WindowsBackend::probe_for(
+                WindowsGraphicsApi::D3d11,
+            );
+            assert_eq!(
+                software
+                    .codecs
+                    .iter()
+                    .find(|codec| codec.codec == "h265")
+                    .expect("h265")
+                    .available,
+                software_probe.h265_software_decode
+                    && software_probe.d3d11_presentation
+                    && software_probe.wasapi_render,
+            );
+            assert_eq!(
+                software
+                    .codecs
+                    .iter()
+                    .find(|codec| codec.codec == "av1")
+                    .expect("av1")
+                    .available,
+                software_probe.av1_software_decode
+                    && software_probe.d3d11_presentation
+                    && software_probe.wasapi_render,
+            );
             for (backend_name, api) in [
                 ("d3d12", WindowsGraphicsApi::D3d12),
                 ("d3d11", WindowsGraphicsApi::D3d11),

@@ -4114,7 +4114,7 @@ fn bind_nvst_udp(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket> {
     if let Ok(fd_text) = std::env::var("OPENNOW_NVST_VIDEO_UDP_FD") {
         if let Ok(fd) = fd_text.parse::<std::os::unix::io::RawFd>() {
             use std::os::unix::io::FromRawFd;
-            // Electron dups the probe socket onto this fd so native never rebinds.
+            // A legacy parent can dup the probe socket onto this fd so native never rebinds.
             eprintln!("NVST inheriting video UDP socket from fd {fd}");
             return Ok(unsafe { UdpSocket::from_raw_fd(fd) });
         }
@@ -4142,7 +4142,7 @@ fn bind_nvst_udp_socket(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket
 }
 
 /// Reserves the dedicated NATT-only video (Mjolnir) socket. The native streamer
-/// always owns this socket outright, so it never inherits an Electron-owned fd.
+/// always owns this socket outright, so it never inherits a parent-owned fd.
 pub fn reserve_nvst_mjolnir_udp_socket() -> std::io::Result<UdpSocket> {
     bind_nvst_udp_socket(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
 }

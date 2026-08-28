@@ -1,0 +1,480 @@
+cmake_minimum_required(VERSION 3.24)
+
+if(POLICY CMP0207)
+    cmake_policy(SET CMP0207 NEW)
+endif()
+
+project(OpenNOWQt VERSION 0.5.4 LANGUAGES CXX)
+
+include(GNUInstallDirs)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_AUTOMOC ON)
+
+find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 QuickEffects Network Multimedia Test)
+find_package(SDL3 REQUIRED CONFIG)
+find_program(CARGO_EXECUTABLE cargo REQUIRED)
+set(OPENNOW_BUILD_VERSION "${PROJECT_VERSION}" CACHE STRING
+    "Numeric OpenNOW release version embedded in Qt, Rust, bundles, and packages")
+if(NOT OPENNOW_BUILD_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR
+        "OPENNOW_BUILD_VERSION must be a numeric semantic version such as 0.5.4")
+endif()
+set(OPENNOW_UPDATE_ED25519_PUBLIC_KEY "" CACHE STRING
+    "Base64 Ed25519 public key pinned into release builds for update manifests")
+set(OPENNOW_RUST_TARGET "" CACHE STRING
+    "Optional Rust target triple for cross-architecture desktop packages")
+
+qt_standard_project_setup(REQUIRES 6.8)
+
+set_source_files_properties(qml/theme/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/state/ShellStore.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
+qt_add_executable(opennow-qt
+    src/main.cpp
+    src/AcceptanceProfiler.cpp
+    src/AcceptanceProfiler.h
+    src/AppController.cpp
+    src/AppController.h
+    src/ControllerInput.cpp
+    src/ControllerInput.h
+    src/CoreClient.cpp
+    src/CoreClient.h
+    src/InputModeTracker.cpp
+    src/InputModeTracker.h
+    src/Localization.cpp
+    src/Localization.h
+    src/SingleInstance.cpp
+    src/SingleInstance.h
+    src/ThumbnailGenerator.cpp
+    src/ThumbnailGenerator.h
+)
+
+file(GLOB OPENNOW_LOCALE_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../locales/*.json")
+foreach(OPENNOW_LOCALE_FILE IN LISTS OPENNOW_LOCALE_FILES)
+    get_filename_component(OPENNOW_LOCALE_NAME "${OPENNOW_LOCALE_FILE}" NAME)
+    set_source_files_properties("${OPENNOW_LOCALE_FILE}" PROPERTIES
+        QT_RESOURCE_ALIAS "${OPENNOW_LOCALE_NAME}")
+endforeach()
+qt_add_resources(opennow-qt "opennow-locales"
+    PREFIX "/locales"
+    FILES ${OPENNOW_LOCALE_FILES}
+)
+
+if(WIN32 OR APPLE)
+    set(OPENNOW_EXECUTABLE_NAME "OpenNOW")
+else()
+    set(OPENNOW_EXECUTABLE_NAME "opennow-qt")
+endif()
+set_target_properties(opennow-qt PROPERTIES
+    OUTPUT_NAME "${OPENNOW_EXECUTABLE_NAME}"
+    WIN32_EXECUTABLE TRUE
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_BUNDLE_NAME "OpenNOW"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.opencloudgaming.OpenNOW"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${OPENNOW_BUILD_VERSION}"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${OPENNOW_BUILD_VERSION}"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/Info.plist.in"
+)
+
+qt_add_qml_module(opennow-qt
+    URI OpenNOW
+    VERSION 1.0
+    QML_FILES
+        qml/Main.qml
+        qml/theme/Theme.qml
+        qml/state/ShellStore.qml
+        qml/components/AppChrome.qml
+        qml/components/ControllerGlyph.qml
+        qml/components/FocusFrame.qml
+        qml/components/FilterDropdown.qml
+        qml/components/GameTile.qml
+        qml/components/GlassPanel.qml
+        qml/components/GlassButton.qml
+        qml/components/HintBar.qml
+        qml/components/HomeTileMenu.qml
+        qml/components/NavPill.qml
+        qml/components/PosterTile.qml
+        qml/components/PlatformPicker.qml
+        qml/components/ScreenBackground.qml
+        qml/components/SettingRow.qml
+        qml/components/RoundedArtwork.qml
+        qml/components/StoreBadge.qml
+        qml/components/TogglePill.qml
+        qml/components/VirtualKeyboard.qml
+        qml/overlays/FriendsOverlay.qml
+        qml/overlays/GuideOverlay.qml
+        qml/overlays/OverlayHost.qml
+        qml/overlays/QuickSettingsOverlay.qml
+        qml/overlays/SessionConflictOverlay.qml
+        qml/overlays/SessionReportOverlay.qml
+        qml/overlays/QueueAdOverlay.qml
+        qml/screens/ComponentsScreen.qml
+        qml/screens/GameDetailScreen.qml
+        qml/screens/HomeScreen.qml
+        qml/screens/InsertingScreen.qml
+        qml/screens/JoiningScreen.qml
+        qml/screens/LibraryScreen.qml
+        qml/screens/SettingsScreen.qml
+        qml/screens/SignInScreen.qml
+        qml/screens/StoreScreen.qml
+        qml/screens/ThemeStoreScreen.qml
+        qml/screens/StreamScreen.qml
+        qml/screens/AccountsScreen.qml
+        qml/screens/ProfilePinScreen.qml
+        qml/screens/GameAccountsScreen.qml
+        qml/screens/PersistentStorageScreen.qml
+        qml/screens/MediaScreen.qml
+        qml/screens/DiagnosticsScreen.qml
+        qml/screens/UpdateScreen.qml
+        qml/screens/FeedbackScreen.qml
+    RESOURCES
+        res/icons/nav-home.svg
+        res/icons/nav-library.svg
+        res/icons/nav-controller.svg
+        res/icons/nav-friends.svg
+        res/icons/nav-settings.svg
+        res/icons/settings-account.svg
+        res/icons/settings-streaming.svg
+        res/icons/settings-video.svg
+        res/icons/settings-input.svg
+        res/icons/settings-network.svg
+        res/icons/settings-themes.svg
+        res/icons/settings-advanced.svg
+        res/icons/store-steam.svg
+        res/icons/store-epic.svg
+        res/icons/store-ubisoft.svg
+        res/icons/store-battlenet.svg
+)
+
+target_include_directories(opennow-qt PRIVATE src)
+target_link_libraries(opennow-qt PRIVATE
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::QuickEffects
+    Qt6::Network
+    Qt6::Multimedia
+    SDL3::SDL3
+)
+
+target_compile_definitions(opennow-qt PRIVATE
+    QT_NO_CAST_FROM_ASCII
+    QT_NO_CAST_TO_ASCII
+    OPENNOW_VERSION="${OPENNOW_BUILD_VERSION}"
+)
+
+set(OPENNOW_CORE_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-target")
+set(OPENNOW_CORE_PROFILE "$<IF:$<CONFIG:Release>,release,debug>")
+set(OPENNOW_CORE_SUFFIX "$<IF:$<PLATFORM_ID:Windows>,.exe,>")
+set(OPENNOW_RUST_TARGET_ARGS)
+set(OPENNOW_CORE_ARTIFACT_ROOT "${OPENNOW_CORE_TARGET_DIR}")
+if(OPENNOW_RUST_TARGET)
+    list(APPEND OPENNOW_RUST_TARGET_ARGS --target "${OPENNOW_RUST_TARGET}")
+    set(OPENNOW_CORE_ARTIFACT_ROOT
+        "${OPENNOW_CORE_TARGET_DIR}/${OPENNOW_RUST_TARGET}")
+endif()
+add_custom_target(opennow-core ALL
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "OPENNOW_UPDATE_ED25519_PUBLIC_KEY=${OPENNOW_UPDATE_ED25519_PUBLIC_KEY}"
+            "OPENNOW_BUILD_VERSION=${OPENNOW_BUILD_VERSION}"
+            "${CARGO_EXECUTABLE}" build
+            --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-core/Cargo.toml"
+            --target-dir "${OPENNOW_CORE_TARGET_DIR}"
+            --bin opennow-core
+            --bin opennow-acceptance-verify
+            ${OPENNOW_RUST_TARGET_ARGS}
+            $<$<CONFIG:Release>:--release>
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${OPENNOW_CORE_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-core${OPENNOW_CORE_SUFFIX}"
+            "$<TARGET_FILE_DIR:opennow-qt>/opennow-core${OPENNOW_CORE_SUFFIX}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${OPENNOW_CORE_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-acceptance-verify${OPENNOW_CORE_SUFFIX}"
+            "$<TARGET_FILE_DIR:opennow-qt>/opennow-acceptance-verify${OPENNOW_CORE_SUFFIX}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-core"
+    COMMENT "Building and bundling the OpenNOW Rust application core"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
+add_dependencies(opennow-qt opennow-core)
+
+set(OPENNOW_GENERATED_NOTICES "${CMAKE_BINARY_DIR}/THIRD_PARTY_NOTICES.generated")
+add_custom_target(opennow-license-notices ALL
+    COMMAND "${CARGO_EXECUTABLE}" build
+            --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-core/Cargo.toml"
+            --target-dir "${OPENNOW_CORE_TARGET_DIR}"
+            --bin opennow-license-report
+            $<$<CONFIG:Release>:--release>
+    COMMAND
+        "${OPENNOW_CORE_TARGET_DIR}/${OPENNOW_CORE_PROFILE}/opennow-license-report${OPENNOW_CORE_SUFFIX}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../THIRD_PARTY_NOTICES"
+        "${OPENNOW_GENERATED_NOTICES}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-core/Cargo.toml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
+    DEPENDS opennow-core
+    BYPRODUCTS "${OPENNOW_GENERATED_NOTICES}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    COMMENT "Generating exact Rust dependency license notices"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
+add_dependencies(opennow-qt opennow-license-notices)
+
+set(OPENNOW_STREAMER_TARGET_DIR "${CMAKE_BINARY_DIR}/streamer-rust-target")
+set(OPENNOW_STREAMER_ARTIFACT_ROOT "${OPENNOW_STREAMER_TARGET_DIR}")
+if(OPENNOW_RUST_TARGET)
+    set(OPENNOW_STREAMER_ARTIFACT_ROOT
+        "${OPENNOW_STREAMER_TARGET_DIR}/${OPENNOW_RUST_TARGET}")
+endif()
+set(OPENNOW_STREAMER_CARGO_FEATURE_ARGS)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Distributable Linux builds carry FFmpeg's H.264/HEVC/AV1 software
+    # fallback and dynamically load optional GPU driver interfaces. Keeping
+    # this on the Release expression avoids the long vendor build in ordinary
+    # debug/QML iteration while preventing a release from silently omitting it.
+    list(APPEND OPENNOW_STREAMER_CARGO_FEATURE_ARGS
+        "$<$<CONFIG:Release>:--features>"
+        "$<$<CONFIG:Release>:linux-ffmpeg-bundled>")
+endif()
+add_custom_target(opennow-streamer ALL
+    COMMAND "${CMAKE_COMMAND}" -E env "CMAKE=${CMAKE_COMMAND}"
+            "${CARGO_EXECUTABLE}" build
+            --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
+            --target-dir "${OPENNOW_STREAMER_TARGET_DIR}"
+            ${OPENNOW_RUST_TARGET_ARGS}
+            ${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}
+            $<$<CONFIG:Release>:--release>
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${OPENNOW_STREAMER_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-streamer${OPENNOW_CORE_SUFFIX}"
+            "$<TARGET_FILE_DIR:opennow-qt>/opennow-streamer${OPENNOW_CORE_SUFFIX}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer"
+    COMMENT "Building and bundling the OpenNOW native media streamer"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
+add_dependencies(opennow-qt opennow-streamer)
+
+if(MSVC)
+    target_compile_options(opennow-qt PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(opennow-qt PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(opennow-fake-core tests/fake_core.cpp)
+
+    qt_add_executable(opennow-localization-tests
+        tests/tst_localization.cpp
+        src/Localization.cpp
+        src/Localization.h
+    )
+    target_include_directories(opennow-localization-tests PRIVATE src)
+    target_link_libraries(opennow-localization-tests PRIVATE Qt6::Test Qt6::Core)
+    target_compile_definitions(opennow-localization-tests PRIVATE
+        OPENNOW_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
+    qt_add_resources(opennow-localization-tests "opennow-test-locales"
+        PREFIX "/locales"
+        FILES ${OPENNOW_LOCALE_FILES}
+    )
+    add_test(NAME opennow-localization-tests COMMAND opennow-localization-tests)
+
+    qt_add_executable(opennow-qt-tests
+        tests/tst_appcontroller.cpp
+        src/AppController.cpp
+        src/AppController.h
+    )
+    target_include_directories(opennow-qt-tests PRIVATE src)
+    target_link_libraries(opennow-qt-tests PRIVATE Qt6::Test Qt6::Core Qt6::Gui)
+    add_test(NAME opennow-qt-tests COMMAND opennow-qt-tests)
+
+    qt_add_executable(opennow-coreclient-tests
+        tests/tst_coreclient.cpp
+        src/CoreClient.cpp
+        src/CoreClient.h
+    )
+    target_include_directories(opennow-coreclient-tests PRIVATE src)
+    target_link_libraries(opennow-coreclient-tests PRIVATE Qt6::Test Qt6::Core)
+    target_compile_definitions(opennow-coreclient-tests PRIVATE OPENNOW_VERSION="${OPENNOW_BUILD_VERSION}")
+    add_dependencies(opennow-coreclient-tests opennow-fake-core)
+    add_test(NAME opennow-coreclient-tests COMMAND opennow-coreclient-tests)
+
+    qt_add_executable(opennow-singleinstance-tests
+        tests/tst_singleinstance.cpp
+        src/SingleInstance.cpp
+        src/SingleInstance.h
+    )
+    target_include_directories(opennow-singleinstance-tests PRIVATE src)
+    target_link_libraries(opennow-singleinstance-tests PRIVATE Qt6::Test Qt6::Core Qt6::Network)
+    add_test(NAME opennow-singleinstance-tests COMMAND opennow-singleinstance-tests)
+
+    qt_add_executable(opennow-thumbnail-tests
+        tests/tst_thumbnailgenerator.cpp
+        src/ThumbnailGenerator.cpp
+        src/ThumbnailGenerator.h
+    )
+    target_include_directories(opennow-thumbnail-tests PRIVATE src)
+    target_link_libraries(opennow-thumbnail-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui Qt6::Multimedia)
+    add_test(NAME opennow-thumbnail-tests COMMAND opennow-thumbnail-tests)
+    set_tests_properties(opennow-thumbnail-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 8
+    )
+    qt_add_executable(opennow-controllerinput-tests
+        tests/tst_controllerinput.cpp
+        src/ControllerInput.cpp
+        src/ControllerInput.h
+    )
+    target_include_directories(opennow-controllerinput-tests PRIVATE src)
+    target_link_libraries(opennow-controllerinput-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui SDL3::SDL3)
+    add_test(NAME opennow-controllerinput-tests COMMAND opennow-controllerinput-tests)
+    set_tests_properties(opennow-controllerinput-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 8
+    )
+
+    foreach(route components home library store theme-store controllers settings settings-account settings-streaming settings-video settings-video-dropdown settings-input settings-network settings-themes settings-advanced settings-advanced-dropdown game-detail game-detail-platform-dropdown sign-in joining inserting stream accounts profile-pin game-accounts persistent-storage media diagnostics updates feedback)
+        add_test(NAME "qml-route-${route}"
+                 COMMAND opennow-qt --smoke-test --allow-multiple-instances --route "${route}" --reduced-motion)
+        set_tests_properties("qml-route-${route}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            TIMEOUT 5
+        )
+    endforeach()
+    foreach(overlay friends friend-actions quick-settings session-conflict session-report queue-ad guide-session guide-controls guide-media guide-shortcuts)
+        add_test(NAME "qml-overlay-${overlay}"
+                 COMMAND opennow-qt --smoke-test --allow-multiple-instances --route home --overlay "${overlay}" --reduced-motion)
+        set_tests_properties("qml-overlay-${overlay}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            TIMEOUT 5
+        )
+    endforeach()
+    add_test(NAME opennow-performance-report-harness
+             COMMAND opennow-qt
+                     --allow-multiple-instances
+                     --performance-report "${CMAKE_BINARY_DIR}/performance-harness.json"
+                     --performance-width 960
+                     --performance-height 540
+                     --performance-cycles 1
+                     --performance-refresh-hz 30
+                     --performance-label ci-harness)
+    set_tests_properties(opennow-performance-report-harness PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        RUN_SERIAL TRUE
+        TIMEOUT 15
+    )
+    add_test(NAME opennow-performance-relative-path-rejected
+             COMMAND opennow-qt
+                     --allow-multiple-instances
+                     --performance-report performance-report-must-be-absolute.json
+                     --performance-width 960
+                     --performance-height 540
+                     --performance-cycles 1)
+    set_tests_properties(opennow-performance-relative-path-rejected PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        WILL_FAIL TRUE
+        TIMEOUT 5
+    )
+    add_test(NAME opennow-acceptance-verifier-help
+             COMMAND "$<TARGET_FILE_DIR:opennow-qt>/opennow-acceptance-verify${OPENNOW_CORE_SUFFIX}"
+                     --help)
+    set_tests_properties(opennow-acceptance-verifier-help PROPERTIES TIMEOUT 5)
+endif()
+
+install(TARGETS opennow-qt
+    BUNDLE DESTINATION .
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)
+
+if(WIN32)
+    install(IMPORTED_RUNTIME_ARTIFACTS SDL3::SDL3
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
+elseif(APPLE)
+    install(IMPORTED_RUNTIME_ARTIFACTS SDL3::SDL3
+        LIBRARY DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/Frameworks"
+        FRAMEWORK DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/Frameworks"
+    )
+endif()
+
+if(NOT APPLE)
+    install(PROGRAMS
+        "$<TARGET_FILE_DIR:opennow-qt>/opennow-core${OPENNOW_CORE_SUFFIX}"
+        "$<TARGET_FILE_DIR:opennow-qt>/opennow-streamer${OPENNOW_CORE_SUFFIX}"
+        "$<TARGET_FILE_DIR:opennow-qt>/opennow-acceptance-verify${OPENNOW_CORE_SUFFIX}"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
+endif()
+
+if(APPLE)
+    set(OPENNOW_LICENSE_DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/Resources/licenses")
+else()
+    set(OPENNOW_LICENSE_DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/opennow")
+endif()
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE"
+    DESTINATION "${OPENNOW_LICENSE_DESTINATION}"
+)
+install(FILES "${OPENNOW_GENERATED_NOTICES}"
+    DESTINATION "${OPENNOW_LICENSE_DESTINATION}"
+    RENAME THIRD_PARTY_NOTICES
+)
+install(DIRECTORY packaging/licenses/
+    DESTINATION "${OPENNOW_LICENSE_DESTINATION}"
+)
+
+if(UNIX AND NOT APPLE)
+    install(FILES packaging/io.github.opencloudgaming.OpenNOW.desktop
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
+    install(FILES packaging/io.github.opencloudgaming.OpenNOW.metainfo.xml
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo")
+    install(FILES packaging/io.github.opencloudgaming.OpenNOW.svg
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
+endif()
+
+if(WIN32 OR APPLE)
+    qt_generate_deploy_qml_app_script(
+        TARGET opennow-qt
+        OUTPUT_SCRIPT opennow_deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(SCRIPT "${opennow_deploy_script}")
+endif()
+
+set(CPACK_PACKAGE_NAME "OpenNOW")
+set(CPACK_PACKAGE_VENDOR "OpenCloudGaming")
+set(CPACK_PACKAGE_CONTACT "OpenCloudGaming <support@opennow.app>")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Controller-first GeForce NOW client")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/OpenCloudGaming/OpenNOW")
+set(CPACK_PACKAGE_VERSION "${OPENNOW_BUILD_VERSION}")
+string(REPLACE "." ";" OPENNOW_BUILD_VERSION_PARTS "${OPENNOW_BUILD_VERSION}")
+list(GET OPENNOW_BUILD_VERSION_PARTS 0 CPACK_PACKAGE_VERSION_MAJOR)
+list(GET OPENNOW_BUILD_VERSION_PARTS 1 CPACK_PACKAGE_VERSION_MINOR)
+list(GET OPENNOW_BUILD_VERSION_PARTS 2 CPACK_PACKAGE_VERSION_PATCH)
+set(CPACK_PACKAGE_FILE_NAME "OpenNOW-Qt-${OPENNOW_BUILD_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_STRIP_FILES TRUE)
+if(WIN32)
+    set(CPACK_GENERATOR "WIX;ZIP")
+    set(CPACK_WIX_UPGRADE_GUID "6E81F7AE-B19D-4E87-A94A-2B2F01EBF762")
+elseif(APPLE)
+    set(CPACK_GENERATOR "DragNDrop;ZIP")
+    set(CPACK_DMG_VOLUME_NAME "OpenNOW")
+else()
+    # Linux packages intentionally use the distribution Qt runtime. AppImage
+    # assembly uses linuxdeploy in release CI so plugin selection is explicit.
+    set(CPACK_GENERATOR "DEB")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "games")
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS TRUE)
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS
+        "libqt6core6 (>= 6.8) | libqt6core6t64 (>= 6.8), libqt6gui6 (>= 6.8), libqt6network6 (>= 6.8), libqt6qml6 (>= 6.8), libqt6quick6 (>= 6.8), libqt6quickcontrols2-6 (>= 6.8), libqt6multimedia6 (>= 6.8), qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-dialogs, qml6-module-qtquick-effects, qml6-module-qtmultimedia, libsdl3-0 | libsdl3-0.0")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
+    endif()
+endif()
+include(CPack)

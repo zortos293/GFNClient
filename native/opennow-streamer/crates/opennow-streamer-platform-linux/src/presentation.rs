@@ -1848,7 +1848,7 @@ fn fd_identity(fd: RawFd) -> Result<(u64, u64)> {
         ));
     }
     let metadata = unsafe { metadata.assume_init() };
-    Ok((metadata.st_dev as u64, metadata.st_ino as u64))
+    Ok((metadata.st_dev, metadata.st_ino))
 }
 
 #[allow(clippy::too_many_arguments)]

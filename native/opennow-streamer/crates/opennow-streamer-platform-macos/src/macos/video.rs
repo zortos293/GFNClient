@@ -4,12 +4,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use objc2_core_foundation::{
-    CFDictionary, CFNumber, CFNumberType, CFRetained, kCFBooleanTrue,
+    CFData, CFDictionary, CFNumber, CFNumberType, CFRetained, CFString, kCFBooleanTrue,
     kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
 };
 use objc2_core_media::{
     CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime,
-    CMVideoFormatDescriptionCreateFromH264ParameterSets, kCMTimeInvalid,
+    CMVideoFormatDescriptionCreate, CMVideoFormatDescriptionCreateFromH264ParameterSets,
+    CMVideoFormatDescriptionCreateFromHEVCParameterSets,
+    kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms, kCMTimeInvalid,
+    kCMVideoCodecType_AV1,
 };
 use objc2_core_video::{
     CVImageBuffer, kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey,
@@ -21,7 +24,7 @@ use objc2_video_toolbox::{
 };
 
 use crate::failure::FailureReporter;
-use crate::format::{FrameTiming, H264Format, VideoColorSpace};
+use crate::format::{Av1Format, FrameTiming, H264Format, H265Format, VideoColorSpace, VideoFormat};
 use crate::queue::{BoundedQueue, PushResult};
 
 use super::{BackendError, Counters};
@@ -76,7 +79,7 @@ unsafe impl Send for VideoDecoder {}
 
 impl VideoDecoder {
     pub(super) fn new(
-        format: &H264Format,
+        format: &VideoFormat,
         queue: Arc<BoundedQueue<DecodedFrame>>,
         counters: Arc<Counters>,
         failures: Arc<FailureReporter>,
@@ -92,7 +95,7 @@ impl VideoDecoder {
             counters,
             failures,
             in_flight: Arc::clone(&in_flight),
-            color_space: format.color_space,
+            color_space: format.color_space(),
         });
         let callback = VTDecompressionOutputCallbackRecord {
             decompressionOutputCallback: Some(decompression_callback),
@@ -344,6 +347,46 @@ mod tests {
 }
 
 fn create_format_description(
+    format: &VideoFormat,
+) -> Result<CFRetained<CMFormatDescription>, BackendError> {
+    match format {
+        VideoFormat::H264(format) => create_h264_format_description(format),
+        VideoFormat::H265(format) => create_h265_format_description(format),
+        VideoFormat::Av1(format) => create_av1_format_description(format),
+    }
+}
+
+fn create_av1_format_description(
+    format: &Av1Format,
+) -> Result<CFRetained<CMFormatDescription>, BackendError> {
+    let atom_name = CFString::from_static_str("av1C");
+    let atom_data = CFData::from_bytes(format.codec_configuration());
+    let atoms = make_dictionary(&[(cf_ptr(&*atom_name), cf_ptr(&*atom_data))])?;
+    let extensions = make_dictionary(&[(
+        cf_ptr(unsafe { kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms }),
+        cf_ptr(&*atoms),
+    )])?;
+    let mut description_ptr: *const CMFormatDescription = ptr::null();
+    let status = unsafe {
+        CMVideoFormatDescriptionCreate(
+            None,
+            kCMVideoCodecType_AV1,
+            format.width(),
+            format.height(),
+            Some(&extensions),
+            NonNull::from(&mut description_ptr),
+        )
+    };
+    check_status("CMVideoFormatDescriptionCreate(AV1)", status)?;
+    let description_ptr =
+        NonNull::new(description_ptr.cast_mut()).ok_or(BackendError::AppleApi {
+            api: "CMVideoFormatDescriptionCreate(AV1)",
+            status: -1,
+        })?;
+    Ok(unsafe { CFRetained::from_raw(description_ptr) })
+}
+
+fn create_h264_format_description(
     format: &H264Format,
 ) -> Result<CFRetained<CMFormatDescription>, BackendError> {
     let mut pointers = [
@@ -374,6 +417,46 @@ fn create_format_description(
     let description_ptr =
         NonNull::new(description_ptr.cast_mut()).ok_or(BackendError::AppleApi {
             api: "CMVideoFormatDescriptionCreateFromH264ParameterSets",
+            status: -1,
+        })?;
+    Ok(unsafe { CFRetained::from_raw(description_ptr) })
+}
+
+fn create_h265_format_description(
+    format: &H265Format,
+) -> Result<CFRetained<CMFormatDescription>, BackendError> {
+    let mut pointers = [
+        NonNull::new(format.parameter_sets.video().as_ptr().cast_mut())
+            .expect("validated VPS is non-empty"),
+        NonNull::new(format.parameter_sets.sequence().as_ptr().cast_mut())
+            .expect("validated SPS is non-empty"),
+        NonNull::new(format.parameter_sets.picture().as_ptr().cast_mut())
+            .expect("validated PPS is non-empty"),
+    ];
+    let mut sizes = [
+        format.parameter_sets.video().len(),
+        format.parameter_sets.sequence().len(),
+        format.parameter_sets.picture().len(),
+    ];
+    let mut description_ptr: *const CMFormatDescription = ptr::null();
+    let status = unsafe {
+        CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+            None,
+            pointers.len(),
+            NonNull::new(pointers.as_mut_ptr()).expect("parameter set array is non-empty"),
+            NonNull::new(sizes.as_mut_ptr()).expect("parameter set size array is non-empty"),
+            4,
+            None,
+            NonNull::from(&mut description_ptr),
+        )
+    };
+    check_status(
+        "CMVideoFormatDescriptionCreateFromHEVCParameterSets",
+        status,
+    )?;
+    let description_ptr =
+        NonNull::new(description_ptr.cast_mut()).ok_or(BackendError::AppleApi {
+            api: "CMVideoFormatDescriptionCreateFromHEVCParameterSets",
             status: -1,
         })?;
     Ok(unsafe { CFRetained::from_raw(description_ptr) })

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::media::MediaStreamConfig;
+use crate::media::{MediaStreamConfig, StatsOverlayPosition};
 
 const FULL_SIZE: (u32, u32) = (480, 470);
 const MINIMAL_SIZE: (u32, u32) = (180, 40);
@@ -71,8 +71,12 @@ pub(crate) struct NativeStatsOverlay {
 
 impl NativeStatsOverlay {
     pub(crate) fn new(stream: MediaStreamConfig, decoder: &'static str) -> Self {
-        Self {
-            mode: OverlayMode::Hidden,
+        let mut overlay = Self {
+            mode: if stream.show_stats {
+                OverlayMode::Minimal
+            } else {
+                OverlayMode::Hidden
+            },
             stream,
             decoder,
             last_presented: 0,
@@ -85,7 +89,11 @@ impl NativeStatsOverlay {
             presentation_skips: 0,
             relative_mouse: false,
             rendered: None,
+        };
+        if stream.show_stats {
+            overlay.render();
         }
+        overlay
     }
 
     pub(crate) fn toggle(&mut self) {
@@ -97,6 +105,11 @@ impl NativeStatsOverlay {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub(crate) const fn mode(&self) -> OverlayMode {
         self.mode
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    pub(crate) const fn position(&self) -> StatsOverlayPosition {
+        self.stream.stats_position
     }
 
     pub(crate) fn update(
@@ -155,7 +168,9 @@ impl NativeStatsOverlay {
         let Some(source) = self.frame() else {
             return;
         };
-        let Some((origin_x, origin_y)) = overlay_origin(self.mode, width, height, source) else {
+        let Some((origin_x, origin_y)) =
+            overlay_origin(self.mode, self.stream.stats_position, width, height, source)
+        else {
             return;
         };
         let copy_width = source.width.min(width.saturating_sub(origin_x));
@@ -193,9 +208,13 @@ impl NativeStatsOverlay {
         let Some(source) = self.frame() else {
             return;
         };
-        let Some((origin_x, origin_y)) =
-            overlay_origin(self.mode, frame.format.width, frame.format.height, source)
-        else {
+        let Some((origin_x, origin_y)) = overlay_origin(
+            self.mode,
+            self.stream.stats_position,
+            frame.format.width,
+            frame.format.height,
+            source,
+        ) else {
             return;
         };
         let origin_x = origin_x & !1;
@@ -462,6 +481,7 @@ fn measured_bitrate_bps(bytes: u64, elapsed: Duration) -> f32 {
 #[cfg(any(target_os = "linux", test))]
 fn overlay_origin(
     mode: OverlayMode,
+    position: StatsOverlayPosition,
     width: u32,
     height: u32,
     frame: &OverlayFrame,
@@ -469,10 +489,18 @@ fn overlay_origin(
     mode.size()?;
     let max_x = width.saturating_sub(frame.width);
     let max_y = height.saturating_sub(frame.height);
-    Some(match mode {
-        OverlayMode::Hidden => return None,
-        OverlayMode::Minimal => (max_x.saturating_sub(EDGE_MARGIN), EDGE_MARGIN.min(max_y)),
-        OverlayMode::Full => (EDGE_MARGIN.min(max_x), EDGE_MARGIN.min(max_y)),
+    Some(match position {
+        StatsOverlayPosition::TopLeft => (EDGE_MARGIN.min(max_x), EDGE_MARGIN.min(max_y)),
+        StatsOverlayPosition::TopRight => {
+            (max_x.saturating_sub(EDGE_MARGIN), EDGE_MARGIN.min(max_y))
+        }
+        StatsOverlayPosition::BottomLeft => {
+            (EDGE_MARGIN.min(max_x), max_y.saturating_sub(EDGE_MARGIN))
+        }
+        StatsOverlayPosition::BottomRight => (
+            max_x.saturating_sub(EDGE_MARGIN),
+            max_y.saturating_sub(EDGE_MARGIN),
+        ),
     })
 }
 
@@ -675,7 +703,7 @@ mod tests {
         overlay.toggle();
         let mut destination = vec![0_u8; 640 * 360 * 3];
         overlay.composite_rgb24(&mut destination, 640, 360, 640 * 3);
-        let origin = (24 * 640 + (640 - MINIMAL_SIZE.0 - EDGE_MARGIN)) as usize * 3;
+        let origin = ((360 - MINIMAL_SIZE.1 - EDGE_MARGIN) * 640 + EDGE_MARGIN) as usize * 3;
         assert_ne!(&destination[origin..origin + 3], &[0, 0, 0]);
         assert_eq!(&destination[..3], &[0, 0, 0]);
     }
@@ -711,9 +739,10 @@ mod tests {
 
         overlay.composite_linux_frame(&mut frame);
 
-        let origin_x = 640 - MINIMAL_SIZE.0 as usize - EDGE_MARGIN as usize;
-        let luma_origin = 24 * 640 + origin_x;
-        let chroma_origin = 12 * 640 + origin_x;
+        let origin_x = EDGE_MARGIN as usize;
+        let origin_y = 360 - MINIMAL_SIZE.1 as usize - EDGE_MARGIN as usize;
+        let luma_origin = origin_y * 640 + origin_x;
+        let chroma_origin = origin_y / 2 * 640 + origin_x;
         assert_ne!(frame.planes[0].data[luma_origin], 16);
         assert_ne!(
             &frame.planes[1].data[chroma_origin..chroma_origin + 2],

@@ -11,7 +11,7 @@
 //! - [`MacOsBackend::start`] must run on the AppKit main thread. `MacOsBackend` is deliberately
 //!   `!Send` and owns all AppKit objects, so its `stop` and `Drop` paths also run on that thread.
 //! - The native streamer integration uses only the process-owned overlay target and never
-//!   dereferences an Electron AppKit pointer. A supplied [`BorrowedNsView`] must be dedicated to
+//!   dereferences a foreign-process AppKit pointer. A supplied [`BorrowedNsView`] must be dedicated to
 //!   video because its layer is temporarily
 //!   replaced. A supplied [`BorrowedNsWindow`] keeps its existing content view and renderer layer;
 //!   the backend inserts a passive, non-focusable child view and removes it on shutdown.
@@ -40,9 +40,10 @@ mod macos;
 
 pub use failure::{BackendFailure, BackendSubsystem, VideoDecodeLoss};
 pub use format::{
-    AudioFormat, BackendConfig, BorrowedNsView, BorrowedNsWindow, FrameTiming, GpuOverlayFrame,
-    GpuOverlayPlacement, H264Format, H264Framing, H264ParameterSets, OwnedOverlayConfig,
-    QueueLimits, RendererRect, ScreenRect, SurfaceTarget, VideoColorSpace, WindowSurfaceConfig,
+    AudioFormat, Av1Format, BackendConfig, BorrowedNsView, BorrowedNsWindow, FrameTiming,
+    GpuOverlayFrame, GpuOverlayPlacement, H264Format, H264Framing, H264ParameterSets, H265Format,
+    H265ParameterSets, OwnedOverlayConfig, QueueLimits, RendererRect, ScreenRect, SurfaceTarget,
+    VideoColorSpace, VideoFormat, WindowSurfaceConfig,
 };
 pub use lifecycle::BackendState;
 
@@ -56,7 +57,8 @@ pub(crate) const fn overlay_should_be_ordered(
 #[cfg(target_os = "macos")]
 pub use macos::{
     BackendError, BackendStats, MacOsBackend, NativeSurfaceHandle, StreamSink, SubmitOutcome,
-    activate_stream_application, debug_show_overlay_window, probe_h264_hardware, pump_app_events,
+    activate_stream_application, debug_show_overlay_window, probe_av1_hardware,
+    probe_h264_hardware, probe_h265_hardware, pump_app_events,
 };
 
 #[cfg(test)]

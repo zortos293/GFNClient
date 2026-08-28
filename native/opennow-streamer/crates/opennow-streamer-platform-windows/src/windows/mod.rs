@@ -16,7 +16,7 @@ use ::windows::Win32::System::Threading::{
 
 use crate::{
     ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendConfig, BackendError, BackendEvent, CapabilityProbe,
-    Control, LifecycleState, Shared, Subsystem, VideoCodec, WindowsGraphicsApi,
+    Control, LifecycleState, Shared, Subsystem, VideoCodec, WindowsDecoderMode, WindowsGraphicsApi,
 };
 
 use self::audio::AudioRenderer;
@@ -279,6 +279,9 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
                 h264_hardware_decode: false,
                 h265_hardware_decode: false,
                 av1_hardware_decode: false,
+                h264_software_decode: false,
+                h265_software_decode: false,
+                av1_software_decode: false,
                 d3d11_presentation: false,
                 wasapi_render: false,
                 reason: Some(error.to_string()),
@@ -291,24 +294,51 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
         .as_ref()
         .map_err(Clone::clone)
         .and_then(|graphics| {
-            Decoder::probe(graphics, VideoCodec::H264).map_err(|error| error.to_string())
+            Decoder::probe(graphics, VideoCodec::H264, WindowsDecoderMode::Hardware)
+                .map_err(|error| error.to_string())
         });
     let h265_decoder = graphics
         .as_ref()
         .map_err(Clone::clone)
         .and_then(|graphics| {
-            Decoder::probe(graphics, VideoCodec::H265).map_err(|error| error.to_string())
+            Decoder::probe(graphics, VideoCodec::H265, WindowsDecoderMode::Hardware)
+                .map_err(|error| error.to_string())
         });
     let av1_decoder = graphics
         .as_ref()
         .map_err(Clone::clone)
         .and_then(|graphics| {
-            Decoder::probe(graphics, VideoCodec::Av1).map_err(|error| error.to_string())
+            Decoder::probe(graphics, VideoCodec::Av1, WindowsDecoderMode::Hardware)
+                .map_err(|error| error.to_string())
+        });
+    let h264_software_decoder = graphics
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|graphics| {
+            Decoder::probe(graphics, VideoCodec::H264, WindowsDecoderMode::Software)
+                .map_err(|error| error.to_string())
+        });
+    let h265_software_decoder = graphics
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|graphics| {
+            Decoder::probe(graphics, VideoCodec::H265, WindowsDecoderMode::Software)
+                .map_err(|error| error.to_string())
+        });
+    let av1_software_decoder = graphics
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|graphics| {
+            Decoder::probe(graphics, VideoCodec::Av1, WindowsDecoderMode::Software)
+                .map_err(|error| error.to_string())
         });
     let audio = AudioRenderer::probe().map_err(|error| error.to_string());
     let h264_hardware_decode = h264_decoder.is_ok();
     let h265_hardware_decode = h265_decoder.is_ok();
     let av1_hardware_decode = av1_decoder.is_ok();
+    let h264_software_decode = h264_software_decoder.is_ok();
+    let h265_software_decode = h265_software_decoder.is_ok();
+    let av1_software_decode = av1_software_decoder.is_ok();
     let d3d11_presentation = graphics.is_ok();
     let wasapi_render = audio.is_ok();
     let mut probe = CapabilityProbe {
@@ -316,6 +346,9 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
         h264_hardware_decode,
         h265_hardware_decode,
         av1_hardware_decode,
+        h264_software_decode,
+        h265_software_decode,
+        av1_software_decode,
         d3d11_presentation,
         wasapi_render,
         reason: None,
@@ -339,6 +372,7 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
 
 pub(super) fn spawn(
     api: WindowsGraphicsApi,
+    decoder_mode: WindowsDecoderMode,
     config: BackendConfig,
     shared: Arc<Shared>,
     controls: mpsc::Receiver<Control>,
@@ -348,7 +382,7 @@ pub(super) fn spawn(
     let worker = thread::Builder::new()
         .name("opennow-windows-media".to_owned())
         .spawn(move || {
-            let runtime = match Worker::new(api, config, worker_shared, controls) {
+            let runtime = match Worker::new(api, decoder_mode, config, worker_shared, controls) {
                 Ok(worker) => {
                     let _ = ready_sender.send(Ok(()));
                     worker
@@ -379,6 +413,7 @@ pub(super) fn spawn(
 
 struct Worker {
     api: WindowsGraphicsApi,
+    decoder_mode: WindowsDecoderMode,
     config: BackendConfig,
     shared: Arc<Shared>,
     controls: mpsc::Receiver<Control>,
@@ -401,6 +436,7 @@ struct AudioRecovery {
 impl Worker {
     fn new(
         api: WindowsGraphicsApi,
+        decoder_mode: WindowsDecoderMode,
         config: BackendConfig,
         shared: Arc<Shared>,
         controls: mpsc::Receiver<Control>,
@@ -408,14 +444,23 @@ impl Worker {
         let runtime = MediaRuntime::initialize()?;
         let graphics = Graphics::new(api, config.surface, config.video)
             .map_err(|error| BackendError::Startup(format!("{api:?} presentation: {error}")))?;
-        let decoder = Decoder::new(&graphics, config.video)
-            .map_err(|error| BackendError::Startup(format!("Media Foundation H.264: {error}")))?;
+        let decoder = Decoder::new(&graphics, config.video, decoder_mode).map_err(|error| {
+            BackendError::Startup(format!(
+                "Media Foundation {} {} decoder: {error}",
+                match decoder_mode {
+                    WindowsDecoderMode::Hardware => "hardware",
+                    WindowsDecoderMode::Software => "software",
+                },
+                config.video.codec.label()
+            ))
+        })?;
         let audio = AudioRenderer::new(config.audio)
             .map_err(|error| BackendError::Startup(format!("WASAPI: {error}")))?;
         let presentation_clock = PresentationClock::new(config.video.frame_duration_100ns());
         shared.set_state(LifecycleState::Running);
         Ok(Self {
             api,
+            decoder_mode,
             config,
             shared,
             controls,
@@ -719,7 +764,8 @@ impl Worker {
                 .unwrap_or_else(|error| error.into_inner());
             match Graphics::new(self.api, self.config.surface, self.config.video).and_then(
                 |graphics| {
-                    Decoder::new(&graphics, self.config.video).map(|decoder| (graphics, decoder))
+                    Decoder::new(&graphics, self.config.video, self.decoder_mode)
+                        .map(|decoder| (graphics, decoder))
                 },
             ) {
                 Ok((graphics, decoder)) => {
@@ -754,7 +800,7 @@ impl Worker {
         self.presentation_clock
             .reset(self.config.video.frame_duration_100ns());
         self.first_frame_presented = false;
-        match Decoder::new(&self.graphics, self.config.video) {
+        match Decoder::new(&self.graphics, self.config.video, self.decoder_mode) {
             Ok(decoder) => {
                 self.decoder = decoder;
                 self.graphics

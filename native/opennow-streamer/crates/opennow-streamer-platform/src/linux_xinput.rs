@@ -303,7 +303,7 @@ fn process_button(state: &XInputState, detail: libc::c_int, pressed: bool) {
             }
             _ => {}
         }
-    } else if matches!(detail, 4 | 5 | 6 | 7) {
+    } else if matches!(detail, 4..=7) {
         return;
     }
     let button = match detail {

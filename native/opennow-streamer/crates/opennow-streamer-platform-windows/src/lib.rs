@@ -65,6 +65,15 @@ pub enum WindowsGraphicsApi {
     D3d12,
 }
 
+/// Restricts Media Foundation decoder discovery to the requested execution
+/// class. Keeping this explicit prevents a synchronous software MFT from being
+/// reported as hardware merely because it can publish D3D11 surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsDecoderMode {
+    Hardware,
+    Software,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendEvent {
     StateChanged(LifecycleState),
@@ -86,6 +95,9 @@ pub struct CapabilityProbe {
     pub h264_hardware_decode: bool,
     pub h265_hardware_decode: bool,
     pub av1_hardware_decode: bool,
+    pub h264_software_decode: bool,
+    pub h265_software_decode: bool,
+    pub av1_software_decode: bool,
     pub d3d11_presentation: bool,
     pub wasapi_render: bool,
     pub reason: Option<String>,
@@ -94,6 +106,12 @@ pub struct CapabilityProbe {
 impl CapabilityProbe {
     pub const fn bundled_backend_available(&self) -> bool {
         (self.h264_hardware_decode || self.h265_hardware_decode || self.av1_hardware_decode)
+            && self.d3d11_presentation
+            && self.wasapi_render
+    }
+
+    pub const fn software_backend_available(&self) -> bool {
+        (self.h264_software_decode || self.h265_software_decode || self.av1_software_decode)
             && self.d3d11_presentation
             && self.wasapi_render
     }
@@ -225,6 +243,9 @@ impl WindowsBackend {
                 h264_hardware_decode: false,
                 h265_hardware_decode: false,
                 av1_hardware_decode: false,
+                h264_software_decode: false,
+                h265_software_decode: false,
+                av1_software_decode: false,
                 d3d11_presentation: false,
                 wasapi_render: false,
                 reason: Some("the current target is not Windows".to_owned()),
@@ -237,12 +258,20 @@ impl WindowsBackend {
     }
 
     pub fn start_for(api: WindowsGraphicsApi, config: BackendConfig) -> Result<Self, BackendError> {
+        Self::start_for_mode(api, WindowsDecoderMode::Hardware, config)
+    }
+
+    pub fn start_for_mode(
+        api: WindowsGraphicsApi,
+        decoder_mode: WindowsDecoderMode,
+        config: BackendConfig,
+    ) -> Result<Self, BackendError> {
         config.validate()?;
 
         #[cfg(not(windows))]
         {
             let _ = api;
-            let _ = config;
+            let _ = (decoder_mode, config);
             Err(BackendError::UnsupportedPlatform)
         }
 
@@ -260,7 +289,13 @@ impl WindowsBackend {
                 presented_frames: AtomicU64::new(0),
             });
             let (control_sender, control_receiver) = mpsc::channel();
-            let worker = windows::spawn(api, config, Arc::clone(&shared), control_receiver)?;
+            let worker = windows::spawn(
+                api,
+                decoder_mode,
+                config,
+                Arc::clone(&shared),
+                control_receiver,
+            )?;
             Ok(Self {
                 shared,
                 control: control_sender,
@@ -496,6 +531,9 @@ mod tests {
             assert!(!probe.h264_hardware_decode);
             assert!(!probe.h265_hardware_decode);
             assert!(!probe.av1_hardware_decode);
+            assert!(!probe.h264_software_decode);
+            assert!(!probe.h265_software_decode);
+            assert!(!probe.av1_software_decode);
             assert!(!probe.d3d11_presentation);
             assert!(!probe.wasapi_render);
         }
@@ -508,6 +546,9 @@ mod tests {
             h264_hardware_decode: true,
             h265_hardware_decode: true,
             av1_hardware_decode: true,
+            h264_software_decode: true,
+            h265_software_decode: true,
+            av1_software_decode: true,
             d3d11_presentation: true,
             wasapi_render: false,
             reason: Some("WASAPI failed to start".to_owned()),
@@ -516,6 +557,7 @@ mod tests {
         assert!(!probe.bundled_backend_available());
         probe.wasapi_render = true;
         assert!(probe.bundled_backend_available());
+        assert!(probe.software_backend_available());
     }
 
     #[test]

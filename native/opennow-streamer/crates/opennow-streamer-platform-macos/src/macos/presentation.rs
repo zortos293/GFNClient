@@ -902,16 +902,23 @@ fn overlay_uniforms(frame: &GpuOverlayFrame, viewport: MTLViewport) -> OverlayUn
     let width = f64::from(frame.width) * scale;
     let height = f64::from(frame.height) * scale;
     let x = match frame.placement {
-        GpuOverlayPlacement::TopLeft => viewport.originX + EDGE_MARGIN,
-        GpuOverlayPlacement::TopRight => viewport.originX + viewport.width - width - EDGE_MARGIN,
+        GpuOverlayPlacement::TopLeft | GpuOverlayPlacement::BottomLeft => {
+            viewport.originX + EDGE_MARGIN
+        }
+        GpuOverlayPlacement::TopRight | GpuOverlayPlacement::BottomRight => {
+            viewport.originX + viewport.width - width - EDGE_MARGIN
+        }
+    };
+    let y = match frame.placement {
+        GpuOverlayPlacement::TopLeft | GpuOverlayPlacement::TopRight => {
+            viewport.originY + EDGE_MARGIN
+        }
+        GpuOverlayPlacement::BottomLeft | GpuOverlayPlacement::BottomRight => {
+            viewport.originY + viewport.height - height - EDGE_MARGIN
+        }
     };
     OverlayUniforms {
-        bounds: [
-            x as f32,
-            (viewport.originY + EDGE_MARGIN) as f32,
-            width as f32,
-            height as f32,
-        ],
+        bounds: [x as f32, y as f32, width as f32, height as f32],
         enabled: 1,
         padding: [0; 3],
     }

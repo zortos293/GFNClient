@@ -636,6 +636,8 @@ jobs:
 
       - name: Commit and push
         shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && 'dev' || 'main' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -645,4 +647,4 @@ jobs:
             exit 0
           fi
           git commit -m "chore(release): prepare v${{ needs.preflight.outputs.version }}"
-          git push origin HEAD:${{ steps.branch.outputs.branch }}
+          git push origin "HEAD:${TARGET_BRANCH}"

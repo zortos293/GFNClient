@@ -17,8 +17,12 @@ base64.workspace = true
 image.workspace = true
 openh264.workspace = true
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+oxideav-core.workspace = true
+oxideav-mkv.workspace = true
 opus.workspace = true
 sdl2.workspace = true
+scuffle-av1.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 opennow-streamer-platform-windows = { path = "../opennow-streamer-platform-windows" }

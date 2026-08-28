@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use opennow_streamer_protocol::{IceCandidate, IceServer, MediaConnectionInfo, Session};
 use str0m::change::SdpOffer;
 use str0m::crypto::from_feature_flags;
-use str0m::media::{KeyframeRequestKind, Mid};
+use str0m::format::Codec;
+use str0m::media::{KeyframeRequestKind, MediaKind, MediaTime, Mid, Pt};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 use thiserror::Error;
@@ -68,6 +69,10 @@ pub enum TransportError {
     MediaConsumerBackpressured,
     #[error("transport worker is no longer running")]
     Closed,
+    #[error("microphone media is not negotiated")]
+    MicrophoneUnavailable,
+    #[error("microphone media queue is backpressured")]
+    MicrophoneBackpressured,
 }
 
 impl TransportError {
@@ -86,6 +91,8 @@ impl TransportError {
             Self::MediaConsumerClosed => "media-consumer-closed",
             Self::MediaConsumerBackpressured => "media-consumer-backpressured",
             Self::Closed => "transport-closed",
+            Self::MicrophoneUnavailable => "microphone-unavailable",
+            Self::MicrophoneBackpressured => "microphone-backpressured",
         }
     }
 }
@@ -96,6 +103,8 @@ pub enum TransportEvent {
     Disconnected(String),
     InputReady(u16),
     InputUnavailable(String),
+    MicrophoneReady,
+    MicrophoneUnavailable(String),
     Log(String),
 }
 
@@ -113,6 +122,26 @@ pub struct EncodedMediaFrame {
 }
 
 pub type MediaConsumer = SyncSender<EncodedMediaFrame>;
+
+/// The single video codec the local decoder has been configured to consume.
+///
+/// WebRTC offers can contain several GFN codecs. Advertising more than this
+/// one would allow the peer to select a format that does not match the active
+/// native decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NegotiatedVideoCodec {
+    H264,
+    H265,
+    Av1,
+}
+
+#[derive(Debug, Clone)]
+pub struct EncodedMicrophoneFrame {
+    pub payload: Arc<[u8]>,
+    pub captured_at_us: u64,
+    pub audio_level_db: i8,
+    pub voice_activity: bool,
+}
 
 pub fn install_crypto() {
     INSTALL_CRYPTO.call_once(|| from_feature_flags().install_process_default());
@@ -151,17 +180,25 @@ pub struct TransportSession {
     join: Option<JoinHandle<()>>,
     media_endpoint: Option<SocketAddr>,
     input_ready: Arc<AtomicBool>,
+    microphone: SyncSender<EncodedMicrophoneFrame>,
+    microphone_ready: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
 pub struct TransportControl {
     commands: Sender<TransportCommand>,
+    input_ready: Arc<AtomicBool>,
+    microphone: SyncSender<EncodedMicrophoneFrame>,
+    microphone_ready: Arc<AtomicBool>,
 }
 
 impl TransportSession {
     pub fn control(&self) -> TransportControl {
         TransportControl {
             commands: self.commands.clone(),
+            input_ready: Arc::clone(&self.input_ready),
+            microphone: self.microphone.clone(),
+            microphone_ready: Arc::clone(&self.microphone_ready),
         }
     }
 
@@ -205,6 +242,34 @@ impl TransportControl {
             .send(TransportCommand::RequestKeyframe { mid: mid.into() })
             .map_err(|_| TransportError::Closed)
     }
+
+    pub fn send_input(
+        &self,
+        bytes: Vec<u8>,
+        partially_reliable: bool,
+    ) -> Result<(), TransportError> {
+        if !self.input_ready.load(Ordering::Acquire) {
+            return Err(TransportError::InputNotReady);
+        }
+        self.commands
+            .send(TransportCommand::SendInput {
+                bytes,
+                partially_reliable,
+            })
+            .map_err(|_| TransportError::Closed)
+    }
+
+    pub fn send_microphone(&self, frame: EncodedMicrophoneFrame) -> Result<(), TransportError> {
+        if !self.microphone_ready.load(Ordering::Acquire) {
+            return Err(TransportError::MicrophoneUnavailable);
+        }
+        self.microphone
+            .try_send(frame)
+            .map_err(|error| match error {
+                TrySendError::Full(_) => TransportError::MicrophoneBackpressured,
+                TrySendError::Disconnected(_) => TransportError::Closed,
+            })
+    }
 }
 
 impl Drop for TransportSession {
@@ -216,6 +281,7 @@ impl Drop for TransportSession {
 pub fn negotiate(
     offer_sdp: &str,
     session: &Session,
+    video_codec: NegotiatedVideoCodec,
     partial_reliable_lifetime_ms: u16,
     events: Sender<TransportEvent>,
     media_consumer: MediaConsumer,
@@ -237,14 +303,16 @@ pub fn negotiate(
     let local_candidate = Candidate::host(local_addr, "udp")
         .map_err(|error| TransportError::LocalCandidate(error.to_string()))?;
 
-    // Advertise only media formats that the native pipeline can actually
-    // consume. str0m enables several video codecs by default, which made the
-    // answer claim AV1/H.265 support even though the decoder is H.264-only.
-    let mut rtc = RtcConfig::new()
-        .clear_codecs()
-        .enable_opus(true)
-        .enable_h264(true)
-        .build(Instant::now());
+    // Advertise exactly the format selected by CloudMatch and configured in
+    // the native decoder. Offering fallback video formats here is unsafe: the
+    // peer may choose one after the decoder has already been created.
+    let builder = RtcConfig::new().clear_codecs().enable_opus(true);
+    let builder = match video_codec {
+        NegotiatedVideoCodec::H264 => builder.enable_h264(true),
+        NegotiatedVideoCodec::H265 => builder.enable_h265(true),
+        NegotiatedVideoCodec::Av1 => builder.enable_av1(true),
+    };
+    let mut rtc = builder.build(Instant::now());
     rtc.add_local_candidate(local_candidate.clone());
     let offer = SdpOffer::from_sdp_string(&normalized_offer.sdp)
         .map_err(|error| TransportError::Offer(error.to_string()))?;
@@ -258,8 +326,11 @@ pub fn negotiate(
     let answer_sdp = answer.to_sdp_string();
     let candidate_text = local_candidate.to_sdp_string();
     let (command_tx, command_rx) = mpsc::channel();
+    let (microphone_tx, microphone_rx) = mpsc::sync_channel(4);
     let input_ready = Arc::new(AtomicBool::new(false));
+    let microphone_ready = Arc::new(AtomicBool::new(false));
     let worker_input_ready = input_ready.clone();
+    let worker_microphone_ready = microphone_ready.clone();
     let transport_origin = Instant::now();
     let join = thread::Builder::new()
         .name("opennow-webrtc".to_owned())
@@ -272,9 +343,13 @@ pub fn negotiate(
                     events,
                     media_consumer,
                 },
-                channels,
-                worker_input_ready,
-                transport_origin,
+                TransportRuntime {
+                    channels,
+                    input_ready_state: worker_input_ready,
+                    microphone_rx,
+                    microphone_ready_state: worker_microphone_ready,
+                    origin: transport_origin,
+                },
             );
         })
         .map_err(TransportError::Bind)?;
@@ -292,6 +367,8 @@ pub fn negotiate(
             join: Some(join),
             media_endpoint: normalized_offer.media_endpoint,
             input_ready,
+            microphone: microphone_tx,
+            microphone_ready,
         },
     })
 }
@@ -494,14 +571,20 @@ struct TransportOutputs {
     media_consumer: MediaConsumer,
 }
 
+struct TransportRuntime {
+    channels: InputChannels,
+    input_ready_state: Arc<AtomicBool>,
+    microphone_rx: Receiver<EncodedMicrophoneFrame>,
+    microphone_ready_state: Arc<AtomicBool>,
+    origin: Instant,
+}
+
 fn run_transport(
     mut rtc: Rtc,
     socket: UdpSocket,
     commands: Receiver<TransportCommand>,
     outputs: TransportOutputs,
-    channels: InputChannels,
-    input_ready_state: Arc<AtomicBool>,
-    transport_origin: Instant,
+    runtime: TransportRuntime,
 ) {
     struct ResetInputReady(Arc<AtomicBool>);
 
@@ -511,12 +594,21 @@ fn run_transport(
         }
     }
 
+    let TransportRuntime {
+        channels,
+        input_ready_state,
+        microphone_rx,
+        microphone_ready_state,
+        origin: transport_origin,
+    } = runtime;
     let _reset_input_ready = ResetInputReady(input_ready_state.clone());
+    let _reset_microphone_ready = ResetInputReady(microphone_ready_state.clone());
     let mut receive_buffer = vec![0_u8; 65_536];
     let mut input_state = InputChannelState::default();
     let mut next_heartbeat = next_input_heartbeat(Instant::now());
     let mut input_handshake_started_at = None;
     let mut input_timeout_reported = false;
+    let mut microphone_writer: Option<(Mid, Pt)> = None;
 
     loop {
         loop {
@@ -580,6 +672,38 @@ fn run_transport(
             }
             next_heartbeat = next_input_heartbeat(Instant::now());
         }
+
+        while let Ok(frame) = microphone_rx.try_recv() {
+            let Some((mid, pt)) = microphone_writer else {
+                break;
+            };
+            let Some(writer) = rtc.writer(mid) else {
+                microphone_writer = None;
+                microphone_ready_state.store(false, Ordering::Release);
+                let _ = outputs.events.send(TransportEvent::MicrophoneUnavailable(
+                    "Negotiated microphone media disappeared".to_owned(),
+                ));
+                break;
+            };
+            if let Err(error) = writer
+                .audio_level(frame.audio_level_db, frame.voice_activity)
+                .write(
+                    pt,
+                    transport_origin + Duration::from_micros(frame.captured_at_us),
+                    MediaTime::from_micros(frame.captured_at_us),
+                    frame.payload,
+                )
+            {
+                microphone_writer = None;
+                microphone_ready_state.store(false, Ordering::Release);
+                let _ = outputs
+                    .events
+                    .send(TransportEvent::MicrophoneUnavailable(format!(
+                        "Microphone media could not be queued: {error}"
+                    )));
+                break;
+            }
+        }
         if !input_timeout_reported
             && !input_state.is_ready()
             && input_handshake_started_at.is_some_and(|started| {
@@ -633,6 +757,31 @@ fn run_transport(
                             input_ready_state.store(false, Ordering::Release);
                             let _ = outputs.events.send(TransportEvent::InputUnavailable(
                                 "input data channel closed".to_owned(),
+                            ));
+                        }
+                    }
+                    Event::MediaAdded(media)
+                        if media.kind == MediaKind::Audio && media.direction.is_sending() =>
+                    {
+                        let mid = media.mid;
+                        let payload = rtc.writer(mid).and_then(|writer| {
+                            writer
+                                .payload_params()
+                                .find(|params| params.spec().codec == Codec::Opus)
+                                .map(|params| params.pt())
+                        });
+                        if let Some(payload) = payload {
+                            microphone_writer = Some((mid, payload));
+                            microphone_ready_state.store(true, Ordering::Release);
+                            let _ = outputs.events.send(TransportEvent::MicrophoneReady);
+                        }
+                    }
+                    Event::MediaChanged(media) if !media.direction.is_sending() => {
+                        if microphone_writer.is_some_and(|(mid, _)| mid == media.mid) {
+                            microphone_writer = None;
+                            microphone_ready_state.store(false, Ordering::Release);
+                            let _ = outputs.events.send(TransportEvent::MicrophoneUnavailable(
+                                "Remote session disabled microphone media".to_owned(),
                             ));
                         }
                     }
@@ -887,14 +1036,104 @@ mod tests {
         let (events, _receiver) = mpsc::channel();
         let (media_consumer, _media_receiver) = mpsc::sync_channel(4);
 
-        let negotiated = negotiate(&offer_sdp, &session, 300, events, media_consumer)
-            .expect("negotiated answer");
+        let negotiated = negotiate(
+            &offer_sdp,
+            &session,
+            NegotiatedVideoCodec::H264,
+            300,
+            events,
+            media_consumer,
+        )
+        .expect("negotiated answer");
 
         assert!(negotiated.answer_sdp.contains("m=video"));
         assert!(!negotiated.answer_sdp.contains("m=video 0"));
         assert!(negotiated.answer_sdp.contains("H264/90000"));
         assert!(!negotiated.answer_sdp.contains("AV1/90000"));
         assert!(!negotiated.answer_sdp.contains("H265/90000"));
+        negotiated.session.stop();
+    }
+
+    #[test]
+    fn answer_advertises_only_the_decoder_selected_hevc_codec() {
+        let answer = synthetic_video_answer(NegotiatedVideoCodec::H265);
+
+        assert!(answer.contains("H265/90000"));
+        assert!(!answer.contains("H264/90000"));
+        assert!(!answer.contains("AV1/90000"));
+    }
+
+    #[test]
+    fn answer_advertises_only_the_decoder_selected_av1_codec() {
+        let answer = synthetic_video_answer(NegotiatedVideoCodec::Av1);
+
+        assert!(answer.contains("AV1/90000"));
+        assert!(!answer.contains("H264/90000"));
+        assert!(!answer.contains("H265/90000"));
+    }
+
+    fn synthetic_video_answer(codec: NegotiatedVideoCodec) -> String {
+        install_crypto();
+        let mut offerer = RtcConfig::new().build(Instant::now());
+        offerer.add_local_candidate(
+            Candidate::host("127.0.0.1:49154".parse().expect("candidate address"), "udp")
+                .expect("local candidate"),
+        );
+        let mut change = offerer.sdp_api();
+        change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
+        let (offer, _pending) = change.apply().expect("offer");
+        let session = synthetic_session(serde_json::Value::Null);
+        let (events, _receiver) = mpsc::channel();
+        let (media_consumer, _media_receiver) = mpsc::sync_channel(4);
+
+        let negotiated = negotiate(
+            &offer.to_sdp_string(),
+            &session,
+            codec,
+            300,
+            events,
+            media_consumer,
+        )
+        .expect("negotiated codec-specific answer");
+        let answer = negotiated.answer_sdp.clone();
+        negotiated.session.stop();
+        answer
+    }
+
+    #[test]
+    fn negotiates_opus_microphone_media_when_the_peer_receives_audio() {
+        install_crypto();
+        let mut offerer = RtcConfig::new().build(Instant::now());
+        offerer.add_local_candidate(
+            Candidate::host("127.0.0.1:49153".parse().expect("candidate address"), "udp")
+                .expect("local candidate"),
+        );
+        let mut change = offerer.sdp_api();
+        change.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+        let (offer, _pending) = change.apply().expect("offer");
+        let session = synthetic_session(serde_json::Value::Null);
+        let (events, _receiver) = mpsc::channel();
+        let (media_consumer, _media_receiver) = mpsc::sync_channel(4);
+
+        let negotiated = negotiate(
+            &offer.to_sdp_string(),
+            &session,
+            NegotiatedVideoCodec::H264,
+            300,
+            events,
+            media_consumer,
+        )
+        .expect("negotiated microphone answer");
+        let audio_section = negotiated
+            .answer_sdp
+            .split("m=audio")
+            .nth(1)
+            .expect("audio section")
+            .split("m=")
+            .next()
+            .expect("bounded audio section");
+        assert!(audio_section.to_ascii_lowercase().contains("opus/48000/2"));
+        assert!(audio_section.contains("a=sendonly"));
         negotiated.session.stop();
     }
 

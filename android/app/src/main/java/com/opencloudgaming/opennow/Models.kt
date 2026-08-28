@@ -2077,13 +2077,13 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
         val lowPowerProfile = copy(
             codec = effectiveCodec,
             colorQuality = ColorQuality.EightBit420,
-            maxBitrateMbps = minOf(maxBitrateMbps, LOW_POWER_TV_BITRATE_CAP_MBPS),
             fps = minOf(fps, LOW_POWER_TV_FPS_CAP),
             hdrEnabled = false,
         ).withStableAndroidCloudMatchProfile()
             .withoutAndroidTvSharpening(report)
         // A codec probe may be incomplete or conservative, especially on Android TV. It can
-        // choose a safer codec/FPS/bitrate, but it must not silently replace the user's geometry.
+        // choose a safer codec/FPS, but it must not silently replace the user's geometry or
+        // selected bitrate ceiling.
         // The server-negotiated and decoded dimensions are reported separately at runtime.
         return lowPowerProfile.copy(
             resolution = normalizeStreamResolutionForAspect(resolution, aspectRatio),
@@ -2101,27 +2101,17 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
         else -> report?.bestStreamingCodecForResolution(this) ?: codec
     }
 
-    val profileBitrateCap = when {
-        !codecSupported -> 35
-        report?.constrainedRuntimeProfile == true -> 75
-        report?.lowPowerGpuProfile == true -> 25
-        report?.androidTvProfile == true -> 35
-        effectiveCodec == VideoCodec.H264 -> 75
-        else -> 75
-    }
-
     val adjusted = (if (effectiveCodec == codec) this else copy(codec = effectiveCodec)).withCodecColorCompatibility()
-    val capped = when (effectiveCodec) {
-        VideoCodec.H264 -> adjusted.copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap))
+    val compatible = when (effectiveCodec) {
+        VideoCodec.H264 -> adjusted.copy(colorQuality = ColorQuality.EightBit420)
         VideoCodec.H265,
         VideoCodec.AV1 -> adjusted.copy(
             colorQuality = adjusted.androidWebRtcColorQuality(),
-            maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap),
         )
     }.withStableAndroidCloudMatchProfile()
         .withoutAndroidTvSharpening(report)
-    return capped.copy(
-        resolution = normalizeStreamResolutionForAspect(capped.resolution, capped.aspectRatio),
+    return compatible.copy(
+        resolution = normalizeStreamResolutionForAspect(compatible.resolution, compatible.aspectRatio),
     )
 }
 
@@ -2176,7 +2166,6 @@ private fun CodecCapability?.supportsStreamResolution(settings: StreamSettings):
 internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
     copy(
         fps = minOf(fps, 60),
-        maxBitrateMbps = minOf(maxBitrateMbps, 75),
         codec = VideoCodec.H264,
         colorQuality = ColorQuality.EightBit420,
         hdrEnabled = false,
@@ -2245,7 +2234,6 @@ private fun StreamResolutionOption.pixelCount(): Int {
     return width * height
 }
 
-private const val LOW_POWER_TV_BITRATE_CAP_MBPS = 25
 private const val LOW_POWER_TV_FPS_CAP = 60
 private const val LEGACY_PORTAL_STREAM_RESOLUTION = "1376x640"
 private const val LEGACY_PORTAL_STREAM_ASPECT = "19.5:9"

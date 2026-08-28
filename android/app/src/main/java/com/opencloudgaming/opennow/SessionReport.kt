@@ -587,3 +587,4 @@ private fun formatMbps(kbps: Int): String =
 
 private const val MIN_CONFIDENT_SESSION_REPORT_SAMPLES = 10
 private const val MAX_SESSION_REPORT_RECOMMENDATIONS = 4
+private const val STREAM_NETWORK_HEADROOM_KBPS_PER_MBPS = 1_200

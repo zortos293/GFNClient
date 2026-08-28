@@ -49,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
@@ -73,7 +74,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.min
 import kotlin.math.floor
 
@@ -81,23 +84,35 @@ import kotlin.math.floor
 internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val signInFocusRequester = remember { FocusRequester() }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var tokenDialogVisible by remember { mutableStateOf(false) }
     var tokenInput by remember { mutableStateOf("") }
     var pendingLogText by remember { mutableStateOf("") }
+    var logExportInProgress by remember { mutableStateOf(false) }
     val logExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.openOutputStream(uri)?.use { output ->
-                output.write(pendingLogText.toByteArray(Charsets.UTF_8))
-            } ?: error("Could not open log file")
-        }.onSuccess {
-            Toast.makeText(context, context.getString(R.string.login_logs_exported), Toast.LENGTH_SHORT).show()
-        }.onFailure { error ->
-            Toast.makeText(
-                context,
-                error.message ?: context.getString(R.string.login_logs_export_failed),
-                Toast.LENGTH_LONG,
-            ).show()
+        if (uri == null) {
+            logExportInProgress = false
+            return@rememberLauncherForActivityResult
+        }
+        val logText = pendingLogText
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { output ->
+                        output.write(logText.toByteArray(Charsets.UTF_8))
+                    } ?: error("Could not open log file")
+                }
+            }
+            result.onSuccess {
+                Toast.makeText(context, context.getString(R.string.login_logs_exported), Toast.LENGTH_SHORT).show()
+            }.onFailure { error ->
+                Toast.makeText(
+                    context,
+                    error.message ?: context.getString(R.string.login_logs_export_failed),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            logExportInProgress = false
         }
     }
     val tvLogin = state.androidTvProfile
@@ -229,10 +244,25 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             if (tvLogin) {
                                 viewModel.requestDiagnosticShare()
                             } else {
-                                pendingLogText = viewModel.sanitizedDebugLogText()
-                                logExportLauncher.launch(viewModel.debugLogFileName())
+                                logExportInProgress = true
+                                scope.launch {
+                                    runCatching { viewModel.sanitizedDebugLogText() }
+                                        .onSuccess { logs ->
+                                            pendingLogText = logs
+                                            logExportLauncher.launch(viewModel.debugLogFileName())
+                                        }
+                                        .onFailure { error ->
+                                            Toast.makeText(
+                                                context,
+                                                error.message ?: context.getString(R.string.login_logs_export_failed),
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                            logExportInProgress = false
+                                        }
+                                }
                             }
                         },
+                        enabled = !logExportInProgress,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(if (tvLogin) "Export logs with QR" else "Export logs")

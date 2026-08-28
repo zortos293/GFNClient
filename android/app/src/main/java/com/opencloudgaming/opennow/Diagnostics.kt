@@ -26,6 +26,31 @@ private const val HTTP_DIAGNOSTIC_LIMIT = 80
 private const val HTTP_DIAGNOSTIC_BODY_LIMIT = 4_000
 private const val HTTP_DIAGNOSTIC_MAX_REQUEST_CAPTURE_BYTES = 48_000L
 
+private val DIAGNOSTIC_SENSITIVE_TEXT_PATTERN = Regex(
+    """(?i)\b(authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|device[_-]?code|user[_-]?code|verification[_-]?uri[_-]?complete|credential|password|secret|cookie|code|sub)(\s*[=:]\s*)([^\s,;&]+)""",
+)
+private val DIAGNOSTIC_BEARER_PATTERN = Regex("""(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+""")
+private val DIAGNOSTIC_JSON_IDENTITY_PATTERN = Regex(
+    """(?i)([\"']?(?:email|user(?:[_-]?id|[_-]?name)?|display[_-]?name|account[_-]?id|profile[_-]?id|session[_-]?id|server[_-]?ip|device[_-]?id|device[_-]?name|ip[_-]?address)[\"']?\s*:\s*)(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'|[^,}\r\n]+)""",
+)
+private val DIAGNOSTIC_LINE_IDENTITY_PATTERN = Regex(
+    """(?im)\b(email|user|user[_-]?id|user[_-]?name|display[_-]?name|account|account[_-]?id|profile[_-]?id|session|session[_-]?id|server|server[_-]?ip|device|device[_-]?id|device[_-]?name|ip[_-]?address)(\s*[=:]\s*)(.*?)(?=\s+[a-z][a-z0-9_.-]*\s*[=:]|$)""",
+)
+private val DIAGNOSTIC_EMAIL_PATTERN = Regex(
+    """\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b""",
+    RegexOption.IGNORE_CASE,
+)
+private val DIAGNOSTIC_IPV4_PATTERN = Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b""")
+private val DIAGNOSTIC_IPV6_FULL_PATTERN = Regex(
+    """(?i)(?<![A-F0-9:])(?:[A-F0-9]{1,4}:){2,7}[A-F0-9]{1,4}(?![A-F0-9:])""",
+)
+private val DIAGNOSTIC_IPV6_COMPRESSED_PATTERN = Regex(
+    """(?i)(?<![A-F0-9:])(?:(?:[A-F0-9]{1,4}:){1,7}:(?:[A-F0-9]{1,4}(?::[A-F0-9]{1,4}){0,6})?|::(?:[A-F0-9]{1,4}(?::[A-F0-9]{1,4}){0,6})?)(?![A-F0-9:])""",
+)
+private val DIAGNOSTIC_UUID_PATTERN = Regex(
+    """\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b""",
+)
+
 private val DebugPayloadJson = Json {
     prettyPrint = true
     ignoreUnknownKeys = true
@@ -178,36 +203,25 @@ private fun shouldRedactDiagnosticKey(key: String): Boolean {
 }
 
 private fun redactDiagnosticText(text: String): String {
-    val sensitive = Regex(
-        """(?i)\b(authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|device[_-]?code|user[_-]?code|verification[_-]?uri[_-]?complete|credential|password|secret|cookie|code|sub)(\s*[=:]\s*)([^\s,;&]+)""",
-    )
-    return sensitive.replace(text) { match ->
+    return DIAGNOSTIC_SENSITIVE_TEXT_PATTERN.replace(text) { match ->
         "${match.groupValues[1]}${match.groupValues[2]}[redacted]"
     }
 }
 
 internal fun sanitizeDiagnosticExport(raw: String): String {
-    var sanitized = Regex("""(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+""").replace(raw, "Bearer [redacted]")
+    var sanitized = DIAGNOSTIC_BEARER_PATTERN.replace(raw, "Bearer [redacted]")
     sanitized = redactDiagnosticText(sanitized)
-    sanitized = Regex(
-        """(?i)([\"']?(?:email|user(?:[_-]?id|[_-]?name)?|display[_-]?name|account[_-]?id|profile[_-]?id|session[_-]?id|server[_-]?ip|device[_-]?id|device[_-]?name|ip[_-]?address)[\"']?\s*:\s*)(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'|[^,}\r\n]+)""",
-    ).replace(sanitized) { match ->
+    sanitized = DIAGNOSTIC_JSON_IDENTITY_PATTERN.replace(sanitized) { match ->
         "${match.groupValues[1]}\"[redacted]\""
     }
-    sanitized = Regex(
-        """(?im)\b(email|user|user[_-]?id|user[_-]?name|display[_-]?name|account|account[_-]?id|profile[_-]?id|session|session[_-]?id|server|server[_-]?ip|device|device[_-]?id|device[_-]?name|ip[_-]?address)(\s*[=:]\s*)(.*?)(?=\s+[a-z][a-z0-9_.-]*\s*[=:]|$)""",
-    ).replace(sanitized) { match ->
+    sanitized = DIAGNOSTIC_LINE_IDENTITY_PATTERN.replace(sanitized) { match ->
         "${match.groupValues[1]}${match.groupValues[2]}[redacted]"
     }
-    sanitized = Regex("""\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b""", RegexOption.IGNORE_CASE)
-        .replace(sanitized, "[redacted-email]")
-    sanitized = Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b""").replace(sanitized, "[redacted-ip]")
-    sanitized = Regex("""(?i)(?<![A-F0-9:])(?:[A-F0-9]{1,4}:){2,7}[A-F0-9]{1,4}(?![A-F0-9:])""")
-        .replace(sanitized, "[redacted-ip]")
-    sanitized = Regex("""(?i)(?<![A-F0-9:])(?:(?:[A-F0-9]{1,4}:){1,7}:(?:[A-F0-9]{1,4}(?::[A-F0-9]{1,4}){0,6})?|::(?:[A-F0-9]{1,4}(?::[A-F0-9]{1,4}){0,6})?)(?![A-F0-9:])""")
-        .replace(sanitized, "[redacted-ip]")
-    sanitized = Regex("""\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b""")
-        .replace(sanitized, "[redacted-id]")
+    sanitized = DIAGNOSTIC_EMAIL_PATTERN.replace(sanitized, "[redacted-email]")
+    sanitized = DIAGNOSTIC_IPV4_PATTERN.replace(sanitized, "[redacted-ip]")
+    sanitized = DIAGNOSTIC_IPV6_FULL_PATTERN.replace(sanitized, "[redacted-ip]")
+    sanitized = DIAGNOSTIC_IPV6_COMPRESSED_PATTERN.replace(sanitized, "[redacted-ip]")
+    sanitized = DIAGNOSTIC_UUID_PATTERN.replace(sanitized, "[redacted-id]")
     return sanitized
 }
 

@@ -8,8 +8,6 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -69,7 +67,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
@@ -88,8 +85,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.opencloudgaming.opennow.ui.controls.ControlActionRow
-import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
-import com.opencloudgaming.opennow.ui.theme.OpenNowMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -318,7 +313,6 @@ internal fun SettingsScreen(
     val categories = remember(state.settings.developerOptionsUnlocked) {
         settingsCategories(state.settings.developerOptionsUnlocked)
     }
-    val reduceMotion = LocalReduceMotion.current
     val platformBringIntoViewSpec = LocalBringIntoViewSpec.current
     val density = LocalDensity.current
     val focusTopClearancePx = with(density) { SettingsFocusTopClearance.toPx() }
@@ -448,7 +442,6 @@ internal fun SettingsScreen(
                     }
                     SettingsRouteContent(
                         targetState = selectedCategory,
-                        reduceMotion = reduceMotion,
                     ) { category ->
                         SettingsBody(
                             state = state,
@@ -498,7 +491,6 @@ internal fun SettingsScreen(
                     item {
                         SettingsRouteContent(
                             targetState = selectedCategory,
-                            reduceMotion = reduceMotion,
                         ) { category ->
                             SettingsBody(
                                 state = state,
@@ -521,59 +513,13 @@ internal fun SettingsScreen(
     }
 }
 
-/**
- * Animates only the page being entered.
- *
- * `AnimatedContent` retains, measures, and draws both route trees for the duration of a transition.
- * Some Settings categories contain dozens of controls, so that overlap can miss the 8.3 ms frame
- * budget of a 120 Hz phone. Replacing the old route immediately lets its composition go, then this
- * draw-layer-only entrance begins after the new route has been composed. No setting control is
- * recomposed or remeasured on animation frames.
- */
+/** Replaces the old settings route immediately without creating a page-sized hardware layer. */
 @Composable
 private fun SettingsRouteContent(
     targetState: SettingsCategory?,
-    reduceMotion: Boolean,
     content: @Composable (SettingsCategory?) -> Unit,
 ) {
-    var initialized by remember { mutableStateOf(false) }
-    var previousDepth by remember { mutableStateOf(settingsRouteDepth(targetState)) }
-    var direction by remember { mutableStateOf(1f) }
-    val animateEntrance = initialized && !reduceMotion
-    val progress = remember(targetState, reduceMotion) {
-        Animatable(if (animateEntrance) 0f else 1f)
-    }
-    LaunchedEffect(targetState, reduceMotion) {
-        val nextDepth = settingsRouteDepth(targetState)
-        direction = if (nextDepth < previousDepth) -1f else 1f
-        previousDepth = nextDepth
-        if (!initialized) {
-            initialized = true
-        } else if (!reduceMotion) {
-            progress.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(
-                    durationMillis = OpenNowMotion.DurationStandard,
-                    easing = OpenNowMotion.EasingEmphasizedDecel,
-                ),
-            )
-        }
-    }
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .graphicsLayer {
-                val value = progress.value
-                alpha = value
-                translationX = if (reduceMotion) {
-                    0f
-                } else {
-                    direction * 32.dp.toPx() * (1f - value)
-                }
-            },
-    ) {
-        content(targetState)
-    }
+    content(targetState)
 }
 
 @Composable

@@ -2383,9 +2383,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             awaitDeviceCapabilityProbe()
             val requestedSettings = streamSettingsBeforeDeviceAdjustment()
-            val deviceAdjustedSettings = requestedSettings.adjustedForDevice(state.value.codecReport)
-            val launchNetwork = AndroidRuntimeDiagnostics.networkSnapshot(getApplication())
-            val settings = deviceAdjustedSettings.adjustedForCurrentNetwork(launchNetwork)
+            val settings = requestedSettings.adjustedForDevice(state.value.codecReport)
             prepareSessionReport(
                 gameTitle = game.title,
                 selectedSettings = state.value.settings.stream,
@@ -2396,15 +2394,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 recordDebugEvent(
                     "launch",
                     "Adjusted stream settings requested=${requestedSettings.debugSummary()} effective=${settings.debugSummary()}",
-                )
-            }
-            if (settings.maxBitrateMbps < deviceAdjustedSettings.maxBitrateMbps) {
-                recordDebugEvent(
-                    "launch",
-                    "Capped stream bitrate for current network requested=${deviceAdjustedSettings.maxBitrateMbps} " +
-                        "effective=${settings.maxBitrateMbps} network=${launchNetwork.networkKind.logValue} " +
-                        "downKbps=${launchNetwork.networkDownstreamKbps ?: 0} " +
-                        "wifiMhz=${launchNetwork.wifiFrequencyMhz ?: 0} wifiBand=${launchNetwork.wifiBand.logValue}",
                 )
             }
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
@@ -3747,7 +3736,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         previous = diagnosticHistoryStore.previousSnapshot(),
     )
 
-    fun sanitizedDebugLogText(): String = sanitizeDiagnosticExport(debugLogText())
+    suspend fun sanitizedDebugLogText(): String {
+        val raw = withContext(Dispatchers.IO) { debugLogText() }
+        return withContext(Dispatchers.Default) { sanitizeDiagnosticExport(raw) }
+    }
 
     fun debugLogFileName(): String {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())

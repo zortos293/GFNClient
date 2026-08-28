@@ -36,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +71,9 @@ import android.provider.Settings
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Spacer
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -1723,21 +1727,33 @@ private fun openExternalUrlOrCopy(
 internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf<String?>(null) }
     var pendingLogText by remember { mutableStateOf("") }
+    var diagnosticActionInProgress by remember { mutableStateOf(false) }
     val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.openOutputStream(uri)?.use { output ->
-                output.write(pendingLogText.toByteArray(Charsets.UTF_8))
-            } ?: error("Could not open log file")
-        }.onSuccess {
-            saved = true
-            saveError = null
-        }.onFailure { error ->
-            saveError = error.message ?: "Could not save logs"
+        if (uri == null) {
+            diagnosticActionInProgress = false
+            return@rememberLauncherForActivityResult
+        }
+        val logText = pendingLogText
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { output ->
+                        output.write(logText.toByteArray(Charsets.UTF_8))
+                    } ?: error("Could not open log file")
+                }
+            }
+            result.onSuccess {
+                saved = true
+                saveError = null
+            }.onFailure { error ->
+                saveError = error.message ?: "Could not save logs"
+            }
+            diagnosticActionInProgress = false
         }
     }
     Text(
@@ -1760,20 +1776,43 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    clipboard.setText(AnnotatedString(viewModel.sanitizedDebugLogText()))
-                    copied = true
+                    diagnosticActionInProgress = true
+                    saveError = null
+                    scope.launch {
+                        runCatching { viewModel.sanitizedDebugLogText() }
+                            .onSuccess { logs ->
+                                clipboard.setText(AnnotatedString(logs))
+                                copied = true
+                            }
+                            .onFailure { error ->
+                                saveError = error.message ?: "Could not copy logs"
+                            }
+                        diagnosticActionInProgress = false
+                    }
                 },
+                enabled = !diagnosticActionInProgress,
                 modifier = Modifier.weight(1f),
             ) {
                 Text(if (copied) "Copied logs" else "Copy logs", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinedButton(
                 onClick = {
-                    pendingLogText = viewModel.sanitizedDebugLogText()
+                    diagnosticActionInProgress = true
                     saved = false
                     saveError = null
-                    saveLauncher.launch(viewModel.debugLogFileName())
+                    scope.launch {
+                        runCatching { viewModel.sanitizedDebugLogText() }
+                            .onSuccess { logs ->
+                                pendingLogText = logs
+                                saveLauncher.launch(viewModel.debugLogFileName())
+                            }
+                            .onFailure { error ->
+                                saveError = error.message ?: "Could not prepare logs"
+                                diagnosticActionInProgress = false
+                            }
+                    }
                 },
+                enabled = !diagnosticActionInProgress,
                 modifier = Modifier.weight(1f),
             ) {
                 Text(if (saved) "Exported" else "Export logs", maxLines = 1, overflow = TextOverflow.Ellipsis)

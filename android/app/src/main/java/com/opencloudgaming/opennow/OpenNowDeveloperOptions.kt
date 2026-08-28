@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -33,6 +34,7 @@ import com.opencloudgaming.opennow.ui.controls.ControlSection
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import com.opencloudgaming.opennow.ui.theme.OpenNowRadius
 import com.opencloudgaming.opennow.ui.theme.OpenNowSpacing
+import kotlinx.coroutines.launch
 
 /**
  * Settings > Developer options.
@@ -54,6 +56,7 @@ internal fun DeveloperOptionsPanel(state: OpenNowUiState, viewModel: OpenNowView
     val settings = state.settings
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     var pendingDestructive by remember { mutableStateOf<DeveloperDestructiveAction?>(null) }
 
     fun update(transform: (AppSettings) -> AppSettings, message: String) {
@@ -228,8 +231,10 @@ internal fun DeveloperOptionsPanel(state: OpenNowUiState, viewModel: OpenNowView
                 value = stringResource(R.string.dev_copy_diagnostics_desc),
                 actionLabel = stringResource(R.string.dev_action_copy),
                 onClick = {
-                    clipboard.setText(AnnotatedString(viewModel.sanitizedDebugLogText()))
-                    Toast.makeText(context, context.getString(R.string.dev_toast_diagnostics_copied), Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        clipboard.setText(AnnotatedString(viewModel.sanitizedDebugLogText()))
+                        Toast.makeText(context, context.getString(R.string.dev_toast_diagnostics_copied), Toast.LENGTH_SHORT).show()
+                    }
                 },
             )
             ControlActionRow(

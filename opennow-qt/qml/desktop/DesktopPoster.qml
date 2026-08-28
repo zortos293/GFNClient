@@ -8,50 +8,69 @@ ItemDelegate {
     property bool showTitle: false
     property bool showPlay: false
     property bool selected: activeFocus
+    property int tileWidth: DesktopTokens.libraryCellWidth
+    property int tileHeight: showTitle ? DesktopTokens.px(248) : DesktopTokens.libraryCellHeight
+    readonly property int artGutter: 6
+    readonly property int artWidth: Math.max(1, tileWidth - artGutter * 2)
+    readonly property int artHeight: Math.round(artWidth * 198 / 132)
+    readonly property bool highlighted: hovered || activeFocus
     signal contextRequested(real sceneX, real sceneY)
     // Keep focus geometry inside the delegate so GridView clipping never cuts
     // off the top/left ring while the tile scales up.
-    width: 144
-    height: showTitle ? 248 : 210
+    width: tileWidth
+    height: tileHeight
     padding: 0
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
-    scale: down ? 0.985 : (activeFocus ? 1.025 : 1)
-    z: activeFocus || hovered ? 5 : 1
-    Behavior on scale { NumberAnimation { duration: DesktopTokens.quickDuration; easing.type: Easing.OutCubic } }
+    scale: down ? 0.985 : (highlighted ? DesktopTokens.cardHoverScale : 1)
+    transformOrigin: Item.Center
+    z: highlighted ? 20 : 1
+    Behavior on scale {
+        NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic }
+    }
     background: Item {}
     contentItem: Item {
         RoundedArtwork {
             id: art
-            x: 6; y: 6; width: 132; height: 198
-            artwork: root.game ? String(root.game.imageUrl || root.game.heroImageUrl || "") : ""
+            x: root.artGutter; y: root.artGutter; width: root.artWidth; height: root.artHeight
+            artwork: DesktopTokens.artworkUrl(root.game, false)
             cornerRadius: 12
-            scrimStart: root.hovered || root.showPlay ? 0.48 : 1
+            scrimStart: root.highlighted || root.showPlay ? 0.48 : 1
             fallbackColor: "#1A2232"
         }
         Rectangle {
-            x: 6; y: 6; width: 132; height: 198; radius: 12
+            x: art.x - DesktopTokens.cardOutlinePad
+            y: art.y - DesktopTokens.cardOutlinePad
+            width: art.width + DesktopTokens.cardOutlinePad * 2
+            height: art.height + DesktopTokens.cardOutlinePad * 2
+            radius: 14
             color: "transparent"
-            border.width: root.activeFocus ? 2 : 1
-            border.color: root.activeFocus ? "#FFFFFF" : "#29FFFFFF"
-            layer.enabled: true
-        }
-        Rectangle {
-            x: 3; y: 3; width: 138; height: 204; radius: 15
-            visible: root.activeFocus
-            color: "transparent"; border.width: 2; border.color: DesktopTokens.focus
-        }
-        Column {
-            x: 15; y: 153; width: 114; spacing: 7
-            visible: (root.hovered || root.activeFocus) && !root.showTitle
-            Text { width: parent.width; text: root.game ? String(root.game.title || qsTr("Game")) : qsTr("Game"); color: DesktopTokens.text; elide: Text.ElideRight; font.family: DesktopTokens.bodyFont; font.pixelSize: 12; font.weight: Font.Bold }
-            Rectangle {
-                width: parent.width; height: 26; radius: 8; color: "#F2FFFFFF"
-                Text { anchors.centerIn: parent; text: "▶  " + qsTr("Play"); color: DesktopTokens.shell; font.family: DesktopTokens.bodyFont; font.pixelSize: 11; font.weight: Font.Bold }
+            border.width: root.highlighted ? 2 : 1
+            border.color: root.highlighted ? DesktopTokens.focus : DesktopTokens.cardOutlineIdle
+            Behavior on border.color {
+                ColorAnimation { duration: Theme.focusDuration }
             }
         }
         Column {
-            x: 6; y: 210; width: 132; spacing: 5
+            x: root.artGutter + 9
+            anchors.bottom: art.bottom
+            anchors.bottomMargin: 12
+            width: root.artWidth - 18
+            spacing: 7
+            visible: root.highlighted && !root.showTitle
+            Text { width: parent.width; text: root.game ? String(root.game.title || qsTr("Game")) : qsTr("Game"); color: DesktopTokens.text; elide: Text.ElideRight; font.family: DesktopTokens.bodyFont; font.pixelSize: 12; font.weight: Font.Bold }
+            Rectangle {
+                width: parent.width; height: 26; radius: 8; color: "#F2FFFFFF"
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 6
+                    DesktopGlyph { width: 8; height: 10; icon: "desktop-play.svg" }
+                    Text { text: qsTr("Play"); color: DesktopTokens.shell; font.family: DesktopTokens.bodyFont; font.pixelSize: 11; font.weight: Font.Bold }
+                }
+            }
+        }
+        Column {
+            x: root.artGutter; y: root.artGutter + root.artHeight + 6; width: root.artWidth; spacing: 5
             visible: root.showTitle
             Text { width: parent.width; text: root.game ? String(root.game.title || qsTr("Game")) : qsTr("Game"); color: DesktopTokens.textHigh; elide: Text.ElideRight; font.family: DesktopTokens.bodyFont; font.pixelSize: 12; font.weight: Font.Bold }
             Text { width: parent.width; text: root.game && root.game.price ? String(root.game.price) : qsTr("Available"); color: DesktopTokens.textMuted; elide: Text.ElideRight; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.DemiBold }

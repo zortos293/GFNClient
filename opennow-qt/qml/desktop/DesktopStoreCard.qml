@@ -12,13 +12,16 @@ Item {
     property bool owned: false
     property bool freeToPlay: false
     property color fallbackColor: Theme.cartSteam
+    property int tileWidth: 132
+    property int tileHeight: 250
+    readonly property int artHeight: Math.round(tileWidth * 198 / 132)
 
     signal activated(var game)
     signal pointed()
 
-    width: 132
-    height: 250
-    scale: selected ? 1.025 : 1
+    width: tileWidth
+    height: tileHeight
+    scale: selected ? DesktopTokens.cardHoverScale : 1
     transformOrigin: Item.Center
     z: selected ? 20 : 0
     Accessible.role: Accessible.Button
@@ -32,23 +35,23 @@ Item {
         id: cover
         x: 0
         y: 0
-        width: 132
-        height: 198
+        width: root.tileWidth
+        height: root.artHeight
         cornerRadius: 12
         scrimStart: 1
-        artwork: root.game ? String(root.game.imageUrl || root.game.heroImageUrl || "") : ""
+        artwork: DesktopTokens.artworkUrl(root.game, false)
         fallbackColor: root.fallbackColor
     }
 
     Rectangle {
-        x: -2
-        y: -2
-        width: 136
-        height: 202
+        x: -DesktopTokens.cardOutlinePad
+        y: -DesktopTokens.cardOutlinePad
+        width: root.tileWidth + DesktopTokens.cardOutlinePad * 2
+        height: root.artHeight + DesktopTokens.cardOutlinePad * 2
         radius: 14
         color: "transparent"
         border.width: root.selected ? 2 : 1
-        border.color: root.selected ? DesktopTokens.focus : Qt.rgba(1, 1, 1, 0.16)
+        border.color: root.selected ? DesktopTokens.focus : DesktopTokens.cardOutlineIdle
 
         Behavior on border.color {
             ColorAnimation { duration: Theme.focusDuration }
@@ -57,8 +60,8 @@ Item {
 
     Text {
         x: 0
-        y: 206
-        width: 132
+        y: root.artHeight + 8
+        width: root.tileWidth
         height: 15
         text: root.game ? String(root.game.title || qsTr("Untitled game")) : qsTr("Untitled game")
         color: Qt.rgba(1, 1, 1, 0.88)
@@ -71,8 +74,8 @@ Item {
 
     Row {
         x: 0
-        y: 229
-        width: 132
+        y: root.artHeight + 31
+        width: root.tileWidth
         height: 17
         spacing: 7
 
@@ -95,14 +98,12 @@ Item {
             }
         }
 
-        Text {
+        DesktopGlyph {
             anchors.verticalCenter: parent.verticalCenter
             visible: root.owned
-            text: "✓"
-            color: Qt.rgba(1, 1, 1, 0.40)
-            font.family: Theme.bodyFont
-            font.pixelSize: 11
-            font.weight: Font.Bold
+            width: 10
+            height: 8
+            icon: "desktop-check-light.svg"
         }
 
         Text {

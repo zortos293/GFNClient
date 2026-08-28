@@ -15,6 +15,13 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 QuickEffects Network Multimedia Test)
 find_package(SDL3 REQUIRED CONFIG)
+if(TARGET SDL3::SDL3-shared)
+    set(OPENNOW_SDL3_RUNTIME_TARGET SDL3::SDL3-shared)
+elseif(TARGET SDL3::SDL3-static)
+    set(OPENNOW_SDL3_RUNTIME_TARGET SDL3::SDL3-static)
+else()
+    set(OPENNOW_SDL3_RUNTIME_TARGET SDL3::SDL3)
+endif()
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 set(OPENNOW_BUILD_VERSION "${PROJECT_VERSION}" CACHE STRING
     "Numeric OpenNOW release version embedded in Qt, Rust, bundles, and packages")
@@ -94,6 +101,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/DesktopCommandPalette.qml
         qml/desktop/DesktopFriendsScreen.qml
         qml/desktop/DesktopGameModal.qml
+        qml/desktop/DesktopGlyph.qml
         qml/desktop/DesktopHomePoster.qml
         qml/desktop/DesktopHomeScreen.qml
         qml/desktop/DesktopKeyHint.qml
@@ -181,6 +189,52 @@ qt_add_qml_module(opennow-qt
         res/icons/store-epic.svg
         res/icons/store-ubisoft.svg
         res/icons/store-battlenet.svg
+        res/brand/opennow-mark.png
+        res/brand/signin-hero.jpg
+        res/fonts/Nunito-Variable.ttf
+        res/fonts/IBMPlexMono-Regular.ttf
+        res/fonts/IBMPlexMono-Medium.ttf
+        res/fonts/IBMPlexMono-Bold.ttf
+        res/icons/desktop-nav-home.svg
+        res/icons/desktop-nav-home-active.svg
+        res/icons/desktop-nav-library.svg
+        res/icons/desktop-nav-library-active.svg
+        res/icons/desktop-nav-store.svg
+        res/icons/desktop-nav-store-active.svg
+        res/icons/desktop-nav-friends.svg
+        res/icons/desktop-nav-friends-active.svg
+        res/icons/desktop-nav-settings.svg
+        res/icons/desktop-nav-settings-active.svg
+        res/icons/desktop-collapse.svg
+        res/icons/desktop-expand.svg
+        res/icons/desktop-plus.svg
+        res/icons/desktop-star.svg
+        res/icons/desktop-clock.svg
+        res/icons/desktop-coop.svg
+        res/icons/desktop-rtx.svg
+        res/icons/desktop-gamepad.svg
+        res/icons/desktop-chevron-up.svg
+        res/icons/desktop-chevron-down.svg
+        res/icons/desktop-search.svg
+        res/icons/desktop-play.svg
+        res/icons/desktop-lock.svg
+        res/icons/desktop-check.svg
+        res/icons/desktop-shield.svg
+        res/icons/desktop-qr.svg
+        res/icons/desktop-info.svg
+        res/icons/desktop-close.svg
+        res/icons/desktop-folder.svg
+        res/icons/desktop-check-mint.svg
+        res/icons/desktop-check-light.svg
+        res/icons/desktop-check-focus.svg
+        res/icons/desktop-message.svg
+        res/icons/desktop-sliders.svg
+        res/icons/desktop-user-plus.svg
+        res/icons/desktop-logout.svg
+        res/icons/desktop-plus-ink.svg
+        res/icons/desktop-mic.svg
+        res/icons/desktop-mic-off.svg
+        res/icons/desktop-play-stroke.svg
 )
 
 target_include_directories(opennow-qt PRIVATE src)
@@ -192,6 +246,24 @@ target_link_libraries(opennow-qt PRIVATE
     Qt6::Multimedia
     SDL3::SDL3
 )
+
+if(WIN32)
+    add_custom_command(TARGET opennow-qt POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:${OPENNOW_SDL3_RUNTIME_TARGET}>"
+                "$<TARGET_FILE_DIR:opennow-qt>"
+        COMMENT "Copying SDL3 next to the OpenNOW executable")
+    find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${Qt6_DIR}/../../../bin")
+    if(WINDEPLOYQT_EXECUTABLE)
+        add_custom_command(TARGET opennow-qt POST_BUILD
+            COMMAND "${WINDEPLOYQT_EXECUTABLE}" --no-translations --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml"
+                    "$<TARGET_FILE:opennow-qt>"
+            COMMAND "${CMAKE_COMMAND}" -E rm -f
+                    "$<TARGET_FILE_DIR:opennow-qt>/tls/qopensslbackend.dll"
+                    "$<TARGET_FILE_DIR:opennow-qt>/plugins/tls/qopensslbackend.dll"
+            COMMENT "Deploying Qt runtime plugins and preferring Windows Schannel TLS")
+    endif()
+endif()
 
 target_compile_definitions(opennow-qt PRIVATE
     QT_NO_CAST_FROM_ASCII
@@ -271,23 +343,26 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         "$<$<CONFIG:Release>:--features>"
         "$<$<CONFIG:Release>:linux-ffmpeg-bundled>")
 endif()
-add_custom_target(opennow-streamer ALL
-    COMMAND "${CMAKE_COMMAND}" -E env "CMAKE=${CMAKE_COMMAND}"
-            "${CARGO_EXECUTABLE}" build
-            --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
-            --target-dir "${OPENNOW_STREAMER_TARGET_DIR}"
-            ${OPENNOW_RUST_TARGET_ARGS}
-            ${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}
-            $<$<CONFIG:Release>:--release>
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${OPENNOW_STREAMER_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-streamer${OPENNOW_CORE_SUFFIX}"
-            "$<TARGET_FILE_DIR:opennow-qt>/opennow-streamer${OPENNOW_CORE_SUFFIX}"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer"
-    COMMENT "Building and bundling the OpenNOW native media streamer"
-    COMMAND_EXPAND_LISTS
-    VERBATIM
-)
-add_dependencies(opennow-qt opennow-streamer)
+option(OPENNOW_BUILD_STREAMER "Build and bundle the native media streamer" ON)
+if(OPENNOW_BUILD_STREAMER)
+    add_custom_target(opennow-streamer ALL
+        COMMAND "${CMAKE_COMMAND}" -E env "CMAKE=${CMAKE_COMMAND}"
+                "${CARGO_EXECUTABLE}" build
+                --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
+                --target-dir "${OPENNOW_STREAMER_TARGET_DIR}"
+                ${OPENNOW_RUST_TARGET_ARGS}
+                ${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}
+                $<$<CONFIG:Release>:--release>
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${OPENNOW_STREAMER_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-streamer${OPENNOW_CORE_SUFFIX}"
+                "$<TARGET_FILE_DIR:opennow-qt>/opennow-streamer${OPENNOW_CORE_SUFFIX}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer"
+        COMMENT "Building and bundling the OpenNOW native media streamer"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
+    add_dependencies(opennow-qt opennow-streamer)
+endif()
 
 if(MSVC)
     target_compile_options(opennow-qt PRIVATE /W4 /permissive-)
@@ -432,11 +507,11 @@ install(TARGETS opennow-qt
 )
 
 if(WIN32)
-    install(IMPORTED_RUNTIME_ARTIFACTS SDL3::SDL3
+    install(IMPORTED_RUNTIME_ARTIFACTS ${OPENNOW_SDL3_RUNTIME_TARGET}
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     )
 elseif(APPLE)
-    install(IMPORTED_RUNTIME_ARTIFACTS SDL3::SDL3
+    install(IMPORTED_RUNTIME_ARTIFACTS ${OPENNOW_SDL3_RUNTIME_TARGET}
         LIBRARY DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/Frameworks"
         FRAMEWORK DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/Frameworks"
     )

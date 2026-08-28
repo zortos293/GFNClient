@@ -9,6 +9,8 @@
 
 #include <QGuiApplication>
 #include <QElapsedTimer>
+#include <QFont>
+#include <QFontDatabase>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -55,6 +57,7 @@ private:
 
 int main(int argc, char *argv[])
 {
+    qputenv("QT_TLS_BACKEND", "schannel");
     QElapsedTimer startupTimer;
     startupTimer.start();
     QGuiApplication::setApplicationName(u"OpenNOW"_s);
@@ -62,10 +65,25 @@ int main(int argc, char *argv[])
     QGuiApplication::setOrganizationDomain(u"opennow.app"_s);
     QGuiApplication::setApplicationVersion(QString::fromLatin1(OPENNOW_VERSION));
     QQuickWindow::setDefaultAlphaBuffer(true);
+    QQuickWindow::setTextRenderType(QQuickWindow::QtTextRendering);
     QQuickStyle::setStyle(u"Basic"_s);
 
     QGuiApplication application(argc, argv);
     qSetMessagePattern(u"%{time yyyy-MM-ddTHH:mm:ss.zzz} %{type} %{category}: %{message}"_s);
+    const QStringList bundledFonts = {
+        u":/qt/qml/OpenNOW/res/fonts/Nunito-Variable.ttf"_s,
+        u":/qt/qml/OpenNOW/res/fonts/IBMPlexMono-Regular.ttf"_s,
+        u":/qt/qml/OpenNOW/res/fonts/IBMPlexMono-Medium.ttf"_s,
+        u":/qt/qml/OpenNOW/res/fonts/IBMPlexMono-Bold.ttf"_s,
+    };
+    for (const auto &fontPath : bundledFonts) {
+        if (QFontDatabase::addApplicationFont(fontPath) == -1)
+            qWarning("Could not load bundled font %s", qUtf8Printable(fontPath));
+    }
+    QFont applicationFont(QStringLiteral("Nunito"));
+    applicationFont.setHintingPreference(QFont::PreferNoHinting);
+    applicationFont.setStyleStrategy(QFont::PreferAntialias);
+    application.setFont(applicationFont);
     const auto arguments = application.arguments();
     SingleInstance singleInstance;
     if (!arguments.contains(u"--allow-multiple-instances"_s)

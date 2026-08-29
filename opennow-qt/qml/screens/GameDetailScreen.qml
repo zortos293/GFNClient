@@ -23,11 +23,14 @@ FocusScope {
     }
 
     function streamQualityLabel() {
-        const resolution = String(ShellStore.settings.resolution || "2560x1440")
+        const resolution = String(ShellStore.settings.resolution || "")
+        if (!resolution)
+            return "—"
         const parts = resolution.split("x")
         const height = parts.length === 2 ? Number(parts[1]) : 1440
         const named = height >= 2160 ? "4K" : height + "p"
-        return qsTr("%1 · %2 FPS").arg(named).arg(Number(ShellStore.settings.fps || 120))
+        const fps = Number(ShellStore.settings.fps || 0)
+        return fps > 0 ? qsTr("%1 · %2 FPS").arg(named).arg(fps) : named
     }
 
     function codecLabel() {
@@ -63,30 +66,8 @@ FocusScope {
         }
         Column {
             x: 38; y: parent.height - height - 38; spacing: 8
-            Text { text: (root.game.publisherName || root.game.developerName || "GeForce NOW").toUpperCase() + (root.game.genres && root.game.genres.length ? " · " + root.game.genres.join(" · ").toUpperCase() : ""); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Black; font.letterSpacing: 1.2 }
+            Text { text: (root.game.publisherName || root.game.developerName || "").toUpperCase() + (root.game.genres && root.game.genres.length ? (root.game.publisherName || root.game.developerName ? " · " : "") + root.game.genres.join(" · ").toUpperCase() : ""); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Black; font.letterSpacing: 1.2 }
             Text { text: root.game.title; color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 52; font.weight: Font.Black }
-        }
-        GlassPanel {
-            anchors.right: parent.right
-            anchors.rightMargin: 38
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 38
-            width: friendsPlaying.implicitWidth + 90
-            height: 40
-            panelRadius: 20
-            strong: true
-            Row {
-                anchors.centerIn: parent
-                spacing: 8
-                Row {
-                    spacing: -5
-                    Repeater {
-                        model: [Theme.violet, Theme.focus, Theme.coral]
-                        Rectangle { required property color modelData; width: 26; height: 26; radius: 13; color: modelData; border.color: Theme.face; border.width: 2 }
-                    }
-                }
-                Text { id: friendsPlaying; anchors.verticalCenter: parent.verticalCenter; text: qsTr("3 friends play this"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 13; font.weight: Font.Black }
-            }
         }
         Rectangle {
             anchors.fill: parent
@@ -109,7 +90,11 @@ FocusScope {
         Row {
             x: 28; y: 98; width: 504; height: 72; spacing: 10
             Repeater {
-                model: [{value:root.game.hoursPlayed ? root.game.hoursPlayed + " h" : "—", label:qsTr("PLAYED")}, {value:root.game.sessionCount || "—", label:qsTr("SESSIONS")}, {value:root.game.lastPlayedLabel || qsTr("Ready"), label:qsTr("LAST PLAYED")}]
+                model: [
+                    {value: root.game.hoursPlayed === undefined || root.game.hoursPlayed === null ? "—" : root.game.hoursPlayed + " h", label: qsTr("PLAYED")},
+                    {value: root.game.sessionCount === undefined || root.game.sessionCount === null ? "—" : root.game.sessionCount, label: qsTr("SESSIONS")},
+                    {value: root.game.lastPlayedLabel || "—", label: qsTr("LAST PLAYED")}
+                ]
                 Rectangle { required property var modelData; width: (504 - 20) / 3; height: 72; radius: 18; color: Theme.glassStrong
                     Column { anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; spacing: 2
                         Text { text: modelData.value; color: modelData.label === qsTr("LAST PLAYED") ? Theme.mint : Theme.label; font.family: Theme.bodyFont; font.pixelSize: 24; font.weight: Font.Black }

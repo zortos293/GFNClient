@@ -9,6 +9,20 @@ FocusScope {
     Accessible.name: qsTr("Existing GeForce NOW session")
     Accessible.role: Accessible.Dialog
 
+    function sessionDescription() {
+        const session = ShellStore.conflictSession
+        if (!session)
+            return qsTr("OpenNOW found another session on your NVIDIA account.")
+        const parts = []
+        if (session.appId)
+            parts.push(qsTr("App %1").arg(String(session.appId)))
+        if (session.resolution)
+            parts.push(String(session.resolution))
+        if (Number(session.fps || 0) > 0)
+            parts.push(qsTr("%1 FPS").arg(Number(session.fps)))
+        return parts.length ? parts.join(" · ") : qsTr("Session details unavailable")
+    }
+
     Rectangle {
         anchors.fill: parent
         color: Qt.rgba(0, 0, 0, 0.58)
@@ -50,12 +64,7 @@ FocusScope {
             }
             Text {
                 width: parent.width
-                text: ShellStore.conflictSession
-                      ? qsTr("App %1 · %2 · %3 FPS")
-                            .arg(String(ShellStore.conflictSession.appId || "—"))
-                            .arg(String(ShellStore.conflictSession.resolution || qsTr("Cloud rig")))
-                            .arg(Number(ShellStore.conflictSession.fps || 60))
-                      : qsTr("OpenNOW found another session on your NVIDIA account.")
+                text: root.sessionDescription()
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
                 font.pixelSize: 18

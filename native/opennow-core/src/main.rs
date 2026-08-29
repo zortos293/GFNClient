@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 mod account_connections;
+mod artwork_cache;
 mod cloudmatch;
 mod community;
 mod console_profiles;
@@ -38,6 +39,7 @@ const MAXIMUM_LINE_BYTES: usize = 1024 * 1024;
 const MAXIMUM_CONCURRENT_REQUESTS: usize = 8;
 
 struct AppCore {
+    artwork: artwork_cache::ArtworkCache,
     settings: Mutex<SettingsStore>,
     gfn: GfnService,
     streamer: StreamerService,
@@ -59,7 +61,22 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let data_dir = resolve_data_dir(argument_value("--data-dir").map(PathBuf::from));
+    let (output_tx, output_rx) = mpsc::channel::<Value>();
+    thread::Builder::new()
+        .name("opennow-core-writer".to_owned())
+        .spawn(move || {
+            let stdout = io::stdout();
+            let mut output = stdout.lock();
+            for value in output_rx {
+                if let Err(error) = write_json(&mut output, &value) {
+                    eprintln!("opennow-core: output failed: {error}");
+                    break;
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
     let core = Arc::new(AppCore {
+        artwork: artwork_cache::ArtworkCache::new(&data_dir, output_tx.clone()),
         settings: Mutex::new(
             SettingsStore::load(Some(data_dir.clone())).map_err(|error| error.to_string())?,
         ),
@@ -81,20 +98,6 @@ fn run() -> Result<(), String> {
     });
     let cancelled = Arc::new(Mutex::new(HashSet::<String>::new()));
     let active = Arc::new(AtomicUsize::new(0));
-    let (output_tx, output_rx) = mpsc::channel::<Value>();
-    thread::Builder::new()
-        .name("opennow-core-writer".to_owned())
-        .spawn(move || {
-            let stdout = io::stdout();
-            let mut output = stdout.lock();
-            for value in output_rx {
-                if let Err(error) = write_json(&mut output, &value) {
-                    eprintln!("opennow-core: output failed: {error}");
-                    break;
-                }
-            }
-        })
-        .map_err(|error| error.to_string())?;
     let stdin = io::stdin();
 
     for line in stdin.lock().lines() {
@@ -262,7 +265,7 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "nativeStreamer.v4", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v4", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "social.capabilitySurface"]}),
                 None,
             ))
         }
@@ -406,6 +409,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 .library_catalog(params, &settings)
                 .map(|value| (value, None))
                 .map_err(gfn_error)
+        }
+        "artwork.resolve" => {
+            let settings = core.settings.lock().expect("settings poisoned").all();
+            core.artwork
+                .resolve(params, &settings)
+                .map(|value| (value, None))
+                .map_err(|message| ("invalid_params".to_owned(), message))
         }
         "network.regions.list" => core
             .gfn

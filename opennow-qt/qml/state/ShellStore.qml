@@ -23,6 +23,12 @@ QtObject {
     property bool authRestorePending: true
     property bool pendingStaySignedIn: true
     signal consoleSurfaceRequested(bool enabled)
+    property string consoleSurfaceRequestId: ""
+    property bool consoleSurfaceConfirmedValue: false
+    property bool consoleSurfaceDesiredValue: false
+    property bool consoleSurfaceRequestValue: false
+    property bool consoleSurfaceInitialized: false
+    property string consoleSurfaceError: ""
     property var subscription: null
     property var regions: []
     property var regionPingResults: ({})
@@ -62,15 +68,14 @@ QtObject {
     property var conflictSession: null
     property bool forceNewAfterStop: false
     property var streamer: null
-    property var streamerDetection: ({available: false, availableCodecs: ["h264"], capabilities: ({})})
+    property var streamerDetection: ({available: false, availableCodecs: [], capabilities: ({})})
     property string streamerDetectionMessage: qsTr("Checking native codec support…")
     property string streamState: "idle"
     property string streamMessage: ""
     property int streamerRestartAttempts: 0
     property int sessionReconnectAttempts: 0
-    property int streamerRecoveryCount: 0
+    property int streamerRestartRecoveryCount: 0
     property int sessionRecoveryCount: 0
-    property int countedStreamerRestartAttempts: 0
     property var guidePagesVisited: []
     property string regionsVpcId: ""
     property string providersRequestId: ""
@@ -78,6 +83,7 @@ QtObject {
     property string activeSessionRequestId: ""
     property string remoteSessionsRequestId: ""
     property string sessionClaimRequestId: ""
+    property bool sessionClaimIsRecovery: false
     property string streamCreateRequestId: ""
     property string streamPollRequestId: ""
     property string streamStopRequestId: ""
@@ -85,6 +91,11 @@ QtObject {
     property string streamerDetectRequestId: ""
     property string streamerStatusRequestId: ""
     property string streamerStopRequestId: ""
+    property bool streamerStopExpected: false
+    property var artworkUrls: ({})
+    property var artworkPending: ({})
+    property var artworkRequestSources: ({})
+    property var artworkRetrySources: ({})
     property string catalogRequestId: ""
     property string deviceStartRequestId: ""
     property string devicePollRequestId: ""
@@ -131,9 +142,13 @@ QtObject {
     property string bugReportRequestId: ""
     property string streamInputPauseRequestId: ""
     property string streamControlRequestId: ""
+    property string streamControlAction: ""
     property string streamSurfaceRequestId: ""
     property string streamControlMessage: ""
     property bool streamSurfaceDirty: false
+    property int streamSurfaceFailureCount: 0
+    property int streamSurfaceGeneration: 0
+    property int streamSurfaceRequestGeneration: 0
     property var streamSurface: ({
         screenRect: {x: 0, y: 0, width: 1600, height: 900},
         visible: true,
@@ -147,8 +162,16 @@ QtObject {
     property var lastSessionReport: null
     property bool desiredStreamInputPaused: false
     property bool currentStreamInputPaused: false
+    property bool streamInputStateKnown: false
     readonly property bool ready: CoreClient.state === "ready"
     readonly property bool signedIn: authSession !== null
+    readonly property string sessionStatus: activeSession
+        ? String(activeSession.phase || activeSession.status || "requesting") : "idle"
+    readonly property string streamerStatus: streamer ? String(streamer.status || "unknown") : "stopped"
+    readonly property var negotiatedStreamProfile: activeSession && activeSession.negotiatedStreamProfile
+        ? activeSession.negotiatedStreamProfile : ({})
+    readonly property int streamerRecoveryCount: streamerRestartRecoveryCount
+        + Number(streamer && streamer.deviceRecoveryCount || 0)
     readonly property string sessionPersistenceMessage: {
         if (sessionPersistence === "unavailable")
             return qsTr("A saved NVIDIA session could not be opened. Sign in once more to store it on this PC.")
@@ -199,6 +222,17 @@ QtObject {
         onTriggered: root.refreshStreamerStatus()
     }
 
+    property Timer artworkRetryTimer: Timer {
+        interval: 30000
+        repeat: true
+        running: Object.keys(root.artworkRetrySources).length > 0
+        onTriggered: {
+            const sources = Object.keys(root.artworkRetrySources)
+            for (let index = 0; index < sources.length; ++index)
+                root.requestArtwork(sources[index])
+        }
+    }
+
     property Timer streamRecordingTimer: Timer {
         interval: 250
         repeat: true
@@ -246,6 +280,8 @@ QtObject {
         providersRequestId = CoreClient.request("auth.providers.list", {}, 25000)
         authSessionRequestId = CoreClient.request("auth.session.get", {})
         activeSessionRequestId = CoreClient.request("session.active.get", {})
+        if (streamerStatusRequestId === "")
+            streamerStatusRequestId = CoreClient.request("streamer.status.get", {})
         updaterStateRequestId = CoreClient.request("updater.state.get", {})
         socialCapabilitiesRequestId = CoreClient.request("social.capabilities.get", {})
         refreshCatalog()
@@ -777,9 +813,8 @@ QtObject {
             return
         streamerRestartAttempts = 0
         sessionReconnectAttempts = 0
-        streamerRecoveryCount = 0
+        streamerRestartRecoveryCount = 0
         sessionRecoveryCount = 0
-        countedStreamerRestartAttempts = 0
         guidePagesVisited = []
         antiAfkEnabled = false
         const variants = selectedGame.variants || []
@@ -834,6 +869,7 @@ QtObject {
                 return
             streamState = "resuming"
             streamMessage = qsTr("Resuming your existing cloud session…")
+            sessionClaimIsRecovery = false
             sessionClaimRequestId = CoreClient.request("session.claim", {
                 sessionId: conflictSession.sessionId,
                 streamingBaseUrl: conflictSession.streamingBaseUrl,
@@ -877,9 +913,32 @@ QtObject {
         AppController.showOverlay("session-conflict")
     }
 
+    function normalizedStreamingSession(session) {
+        if (!session)
+            return null
+        const normalized = Object.assign({}, session)
+        if (session.negotiatedStreamProfile) {
+            const profile = Object.assign({}, session.negotiatedStreamProfile)
+            const resolution = String(profile.resolution || "").split("x")
+            if (resolution.length === 2) {
+                const width = Number(resolution[0])
+                const height = Number(resolution[1])
+                if (Number.isFinite(width) && width > 0)
+                    profile.width = width
+                if (Number.isFinite(height) && height > 0)
+                    profile.height = height
+            }
+            normalized.negotiatedStreamProfile = profile
+        }
+        return normalized
+    }
+
     function acceptStreamingSession(session) {
-        activeSession = session || null
+        const previousSession = activeSession
+        activeSession = normalizedStreamingSession(session)
         if (!activeSession) {
+            if (previousSession && streamer && streamer.status !== "stopped")
+                stopNativeStreamer("The remote session ended")
             streamRecordingActive = false
             streamRecordingElapsedMs = 0
             pendingRecordingPath = ""
@@ -965,6 +1024,8 @@ QtObject {
             message: qsTr("Launching the native media runtime…"),
             sessionId: activeSession.sessionId
         }
+        streamInputStateKnown = false
+        streamerStopExpected = false
         streamerStartRequestId = CoreClient.request("streamer.start", {
             session: activeSession,
             surface: streamSurface
@@ -978,16 +1039,175 @@ QtObject {
         startNativeStreamer()
     }
 
+    function acceptStreamerSnapshot(snapshot) {
+        streamer = snapshot || null
+        if (!streamer) {
+            streamerStatusTimer.stop()
+            return
+        }
+        inspectStreamerOverlayRequest(streamer)
+        inspectStreamerScreenshotRequest(streamer)
+        inspectStreamerRecordingRequest(streamer)
+        inspectStreamerShortcutAction(streamer)
+
+        const startedAt = Number(streamer.sessionStartedAtMs || 0)
+        if (Number.isFinite(startedAt) && startedAt > 0)
+            streamStartedAtMs = startedAt
+
+        const status = String(streamer.status || "unknown")
+        if (activeSession && status !== "stopped" && status !== "error") {
+            streamState = status
+            streamMessage = streamer.message || streamMessage
+            streamerStatusTimer.restart()
+            if (streamSurfaceDirty)
+                streamSurfaceTimer.restart()
+            setStreamInputPaused(desiredStreamInputPaused)
+        }
+        if (status === "streaming") {
+            if (streamerRestartAttempts > 0) {
+                streamerRestartRecoveryCount += streamerRestartAttempts
+                streamerRestartAttempts = 0
+            }
+            return
+        }
+        if (status !== "error" && status !== "stopped")
+            return
+
+        streamerStatusTimer.stop()
+        streamInputStateKnown = false
+        if (streamRecordingActive) {
+            streamRecordingActive = false
+            streamRecordingElapsedMs = 0
+            pendingRecordingPath = ""
+            pendingRecordingThumbnailPath = ""
+            refreshMedia()
+        }
+        if (status === "stopped" && (streamerStopExpected || !activeSession)) {
+            streamerStopExpected = false
+            streamInputStateKnown = false
+            return
+        }
+        streamMessage = streamer.message || (status === "error"
+            ? qsTr("Native media startup failed") : qsTr("The native media runtime stopped unexpectedly"))
+        if (!activeSession)
+            return
+        if (streamerRestartAttempts < 2) {
+            streamerRestartAttempts += 1
+            streamerRestartTimer.restart()
+            return
+        }
+        recoverStreamingSession(streamMessage)
+    }
+
+    function recoverStreamingSession(reason) {
+        if (!ready || !activeSession || sessionClaimRequestId !== "")
+            return
+        if (sessionReconnectAttempts >= 2) {
+            streamState = "error"
+            streamMessage = reason || qsTr("The streaming session could not be recovered")
+            lastError = streamMessage
+            return
+        }
+        sessionReconnectAttempts += 1
+        streamState = "reconnecting"
+        streamMessage = qsTr("Reconnecting to the GeForce NOW session…")
+        sessionClaimIsRecovery = true
+        sessionClaimRequestId = CoreClient.request("session.claim", {
+            sessionId: activeSession.sessionId,
+            streamingBaseUrl: activeSession.streamingBaseUrl,
+            appId: String(activeSession.appId || "0"),
+            recoveryMode: true
+        }, 35000)
+    }
+
     function refreshStreamerStatus() {
         if (!ready || streamerStatusRequestId !== "")
             return
         streamerStatusRequestId = CoreClient.request("streamer.status.get", {})
     }
 
+    function artworkUrl(sourceUrl) {
+        const source = String(sourceUrl || "")
+        if (source === "")
+            return ""
+        if (!/^https?:\/\//i.test(source))
+            return source
+        const resolved = artworkUrls[source]
+        if (resolved !== undefined)
+            return String(resolved)
+        return ""
+    }
+
+    function requestArtwork(sourceUrl) {
+        const source = String(sourceUrl || "")
+        const resolved = artworkUrls[source]
+        if (!ready || !/^https?:\/\//i.test(source) || artworkPending[source]
+                || (resolved !== undefined && String(resolved) !== source))
+            return ""
+        const requestId = CoreClient.request("artwork.resolve", { sourceUrl: source }, 2000)
+        if (requestId === "")
+            return ""
+        const pending = Object.assign({}, artworkPending)
+        const requests = Object.assign({}, artworkRequestSources)
+        pending[source] = true
+        requests[requestId] = source
+        artworkPending = pending
+        artworkRequestSources = requests
+        return requestId
+    }
+
+    function finishArtworkRequest(requestId, result, failed) {
+        const source = artworkRequestSources[requestId]
+        if (source === undefined)
+            return false
+        const requests = Object.assign({}, artworkRequestSources)
+        const pending = Object.assign({}, artworkPending)
+        delete requests[requestId]
+        delete pending[source]
+        artworkRequestSources = requests
+        artworkPending = pending
+        const resolved = result && result.cached === true && result.artworkUrl
+            ? String(result.artworkUrl) : ""
+        if (resolved !== "") {
+            const urls = Object.assign({}, artworkUrls)
+            urls[source] = resolved
+            artworkUrls = urls
+        }
+        if (failed || (result && result.cached === false)) {
+            const retries = Object.assign({}, artworkRetrySources)
+            retries[source] = true
+            artworkRetrySources = retries
+        }
+        return true
+    }
+
+    function acceptArtworkResult(payload) {
+        const source = String(payload && payload.sourceUrl || "")
+        const resolved = payload && payload.cached === true
+            ? String(payload.artworkUrl || "") : ""
+        if (source === "")
+            return
+        const pending = Object.assign({}, artworkPending)
+        delete pending[source]
+        artworkPending = pending
+        if (resolved !== "") {
+            const urls = Object.assign({}, artworkUrls)
+            urls[source] = resolved
+            artworkUrls = urls
+        }
+        const retries = Object.assign({}, artworkRetrySources)
+        if (payload.cached === false)
+            retries[source] = true
+        else
+            delete retries[source]
+        artworkRetrySources = retries
+    }
+
     function stopNativeStreamer(reason) {
         streamerStatusTimer.stop()
         if (!ready || streamerStopRequestId !== "")
             return
+        streamerStopExpected = true
         streamerStopRequestId = CoreClient.request("streamer.stop", {
             reason: reason || "User stopped the session"
         }, 10000)
@@ -995,7 +1215,10 @@ QtObject {
 
     function setStreamInputPaused(paused) {
         desiredStreamInputPaused = Boolean(paused)
-        if (!ready || streamInputPauseRequestId !== "")
+        if (!ready || streamInputPauseRequestId !== "" || !streamer
+                || streamer.status === "stopped" || streamer.status === "error")
+            return
+        if (streamInputStateKnown && currentStreamInputPaused === desiredStreamInputPaused)
             return
         streamInputPauseRequestId = CoreClient.request("streamer.input.pause", {
             paused: desiredStreamInputPaused
@@ -1010,6 +1233,7 @@ QtObject {
             return
         }
         streamControlMessage = qsTr("")
+        streamControlAction = action
         streamControlRequestId = CoreClient.request("streamer.control", {
             action: action
         }, 5000)
@@ -1029,6 +1253,8 @@ QtObject {
             deviceScaleFactor: Math.max(0.5, Math.min(8.0, Number(deviceScaleFactor || 1)))
         }
         streamSurfaceDirty = true
+        streamSurfaceFailureCount = 0
+        streamSurfaceGeneration += 1
         if (activeSession && streamer && streamer.status !== "stopped" && streamer.status !== "error")
             streamSurfaceTimer.restart()
     }
@@ -1039,6 +1265,7 @@ QtObject {
         if (streamer.status === "stopped" || streamer.status === "error")
             return
         streamSurfaceDirty = false
+        streamSurfaceRequestGeneration = streamSurfaceGeneration
         streamSurfaceRequestId = CoreClient.request("streamer.surface.update", {
             surface: streamSurface
         }, 5000)
@@ -1160,14 +1387,24 @@ QtObject {
             lastSessionReport = {
                 gameTitle: selectedGame && selectedGame.title ? selectedGame.title : "GeForce NOW",
                 durationMs: Math.max(0, Date.now() - streamStartedAtMs),
-                transport: String(snapshot.transport || settings.transportMode || "webrtc").toUpperCase(),
-                mediaBackend: String(snapshot.mediaBackend || settings.nativeVideoBackend || "auto"),
-                firstFrameLatencyMs: Number(snapshot.firstFrameLatencyMs || 0),
+                transport: snapshot.transport ? String(snapshot.transport).toUpperCase() : "",
+                mediaBackend: snapshot.mediaBackend ? String(snapshot.mediaBackend) : "",
+                firstFrameLatencyMs: snapshot.firstFrameLatencyMs !== undefined
+                    && snapshot.firstFrameLatencyMs !== null
+                    ? Number(snapshot.firstFrameLatencyMs) : null,
                 recoveries: Number(streamerRecoveryCount || 0) + Number(sessionRecoveryCount || 0),
-                decoderErrors: Number(snapshot.decoderErrorCount || 0),
-                outputErrors: Number(snapshot.outputErrorCount || 0),
-                queueDrops: Number(snapshot.queueDropCount || 0),
-                recordingCount: Number(snapshot.recordingStopCount || 0)
+                decoderErrors: snapshot.decoderErrorCount !== undefined
+                    && snapshot.decoderErrorCount !== null
+                    ? Number(snapshot.decoderErrorCount) : null,
+                outputErrors: snapshot.outputErrorCount !== undefined
+                    && snapshot.outputErrorCount !== null
+                    ? Number(snapshot.outputErrorCount) : null,
+                queueDrops: snapshot.queueDropCount !== undefined
+                    && snapshot.queueDropCount !== null
+                    ? Number(snapshot.queueDropCount) : null,
+                recordingCount: snapshot.recordingStopCount !== undefined
+                    && snapshot.recordingStopCount !== null
+                    ? Number(snapshot.recordingStopCount) : null
             }
         }
         streamPollTimer.stop()
@@ -1236,10 +1473,47 @@ QtObject {
     }
 
     function requestConsoleSurface(enabled) {
-        root.consoleSurfaceRequested(Boolean(enabled))
+        const requested = Boolean(enabled)
+        const previous = consoleSurfaceInitialized
+            ? consoleSurfaceConfirmedValue : Boolean(settings.launchInConsoleMode)
+        consoleSurfaceError = ""
+        consoleSurfaceDesiredValue = requested
+        applySetting("launchInConsoleMode", requested)
+        root.consoleSurfaceRequested(requested)
+        if (!ready) {
+            consoleSurfaceDesiredValue = previous
+            applySetting("launchInConsoleMode", previous)
+            root.consoleSurfaceRequested(previous)
+            consoleSurfaceError = qsTr("Console mode could not be saved because the OpenNOW core is not ready. The previous mode was restored.")
+            lastError = consoleSurfaceError
+            accessibilityMessage = lastError
+            return ""
+        }
+        if (consoleSurfaceRequestId === "")
+            beginConsoleSurfacePersistence()
+        return consoleSurfaceRequestId
+    }
+
+    function beginConsoleSurfacePersistence() {
+        consoleSurfaceRequestValue = consoleSurfaceDesiredValue
+        consoleSurfaceRequestId = CoreClient.request("settings.set", {
+            key: "launchInConsoleMode",
+            value: consoleSurfaceRequestValue
+        })
+        if (consoleSurfaceRequestId !== "")
+            return
+        const restored = consoleSurfaceConfirmedValue
+        consoleSurfaceDesiredValue = restored
+        applySetting("launchInConsoleMode", restored)
+        root.consoleSurfaceRequested(restored)
+        consoleSurfaceError = qsTr("Console mode could not be saved. The previous mode was restored.")
+        lastError = consoleSurfaceError
+        accessibilityMessage = lastError
     }
 
     function setSetting(key, value) {
+        if (key === "launchInConsoleMode")
+            return requestConsoleSurface(Boolean(value))
         if (!ready) {
             lastError = qsTr("The OpenNOW core is not ready")
             return ""
@@ -1293,8 +1567,13 @@ QtObject {
             }
         }
         function onResponseReceived(requestId, result) {
-            if (requestId === root.settingsRequestId && result.settings) {
+            if (root.finishArtworkRequest(requestId, result, false)) {
+                return
+            } else if (requestId === root.settingsRequestId && result.settings) {
                 root.settings = result.settings
+                root.consoleSurfaceConfirmedValue = Boolean(result.settings.launchInConsoleMode)
+                root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
+                root.consoleSurfaceInitialized = true
                 AppController.reducedMotion = Boolean(result.settings.reducedMotion)
                 I18n.setLocale(String(result.settings.appLanguage || "system"))
                 root.settingsRequestId = ""
@@ -1303,6 +1582,18 @@ QtObject {
                 root.refreshStreamerDetection()
                 if (result.settings.autoCheckForUpdates && root.updaterCheckRequestId === "")
                     root.autoUpdateCheckTimer.restart()
+            } else if (requestId === root.consoleSurfaceRequestId) {
+                root.consoleSurfaceRequestId = ""
+                root.consoleSurfaceConfirmedValue = Boolean(result.value)
+                root.consoleSurfaceInitialized = true
+                if (root.consoleSurfaceDesiredValue === root.consoleSurfaceConfirmedValue) {
+                    root.applySetting("launchInConsoleMode", root.consoleSurfaceConfirmedValue)
+                    root.consoleSurfaceError = ""
+                    root.accessibilityMessage = root.consoleSurfaceConfirmedValue
+                        ? qsTr("Console mode saved") : qsTr("Computer mode saved")
+                } else {
+                    root.beginConsoleSurfacePersistence()
+                }
             } else if (requestId === root.streamerDetectRequestId) {
                 root.streamerDetectRequestId = ""
                 root.streamerDetection = result
@@ -1619,6 +1910,7 @@ QtObject {
                 root.inspectRemoteSessions(result)
             } else if (requestId === root.sessionClaimRequestId) {
                 root.sessionClaimRequestId = ""
+                root.sessionClaimIsRecovery = false
                 root.pendingLaunchParams = null
                 root.conflictSession = null
                 root.acceptStreamingSession(result.session || null)
@@ -1646,64 +1938,54 @@ QtObject {
                     AppController.showOverlay("session-report")
             } else if (requestId === root.streamerStartRequestId) {
                 root.streamerStartRequestId = ""
-                root.streamer = result.streamer || null
-                root.inspectStreamerOverlayRequest(root.streamer)
-                root.inspectStreamerScreenshotRequest(root.streamer)
-                root.inspectStreamerRecordingRequest(root.streamer)
-                root.inspectStreamerShortcutAction(root.streamer)
-                root.streamerStatusTimer.restart()
+                root.acceptStreamerSnapshot(result.streamer || result || null)
             } else if (requestId === root.streamerStatusRequestId) {
                 root.streamerStatusRequestId = ""
-                root.streamer = result.streamer || root.streamer
-                root.inspectStreamerOverlayRequest(root.streamer)
-                root.inspectStreamerScreenshotRequest(root.streamer)
-                root.inspectStreamerRecordingRequest(root.streamer)
-                root.inspectStreamerShortcutAction(root.streamer)
-                if (root.streamer && root.streamer.status === "streaming"
-                        && root.streamerRestartAttempts > root.countedStreamerRestartAttempts) {
-                    root.streamerRecoveryCount += root.streamerRestartAttempts
-                        - root.countedStreamerRestartAttempts
-                    root.countedStreamerRestartAttempts = root.streamerRestartAttempts
-                }
-                if (root.streamer && root.streamer.status === "error") {
-                    root.streamMessage = root.streamer.message || qsTr("Native media startup failed")
-                    root.streamerStatusTimer.stop()
-                    if (root.streamerRestartAttempts < 2 && root.activeSession) {
-                        root.streamerRestartAttempts += 1
-                        root.streamerRestartTimer.restart()
-                    }
-                } else if (root.streamer && root.streamer.status === "stopped") {
-                    root.streamerStatusTimer.stop()
-                    if (root.streamRecordingActive) {
-                        root.streamRecordingActive = false
-                        root.streamRecordingElapsedMs = 0
-                        root.pendingRecordingPath = ""
-                        root.pendingRecordingThumbnailPath = ""
-                        root.refreshMedia()
-                    }
-                }
+                root.acceptStreamerSnapshot(result.streamer || result || root.streamer)
             } else if (requestId === root.streamerStopRequestId) {
                 root.streamerStopRequestId = ""
-                root.streamer = result.streamer || null
+                root.acceptStreamerSnapshot(result.streamer || result || null)
             } else if (requestId === root.streamInputPauseRequestId) {
                 root.streamInputPauseRequestId = ""
-                root.currentStreamInputPaused = Boolean(result.paused)
-                if (root.currentStreamInputPaused !== root.desiredStreamInputPaused)
+                if (result.streamerRunning)
+                    root.currentStreamInputPaused = Boolean(result.paused)
+                root.streamInputStateKnown = Boolean(result.streamerRunning)
+                if (result.streamerRunning
+                        && root.currentStreamInputPaused !== root.desiredStreamInputPaused)
                     Qt.callLater(() => root.setStreamInputPaused(root.desiredStreamInputPaused))
             } else if (requestId === root.streamControlRequestId) {
                 root.streamControlRequestId = ""
-                root.streamControlMessage = result.action === "toggle-fullscreen"
+                const action = String(result.action || root.streamControlAction)
+                root.streamControlAction = ""
+                root.streamControlMessage = action === "toggle-fullscreen"
                     ? qsTr("Fullscreen changed")
-                    : qsTr("Stats overlay changed")
+                    : action === "toggle-stats" ? qsTr("Stats overlay changed")
+                    : action === "toggle-microphone" ? qsTr("Microphone state changed")
+                    : qsTr("Stream control applied")
+                root.refreshStreamerStatus()
             } else if (requestId === root.streamSurfaceRequestId) {
                 root.streamSurfaceRequestId = ""
-                if (root.streamSurfaceDirty)
+                const applied = Boolean(result.applied)
+                root.streamSurfaceDirty = root.streamSurfaceRequestGeneration
+                    !== root.streamSurfaceGeneration || !applied
+                root.streamSurfaceFailureCount = applied ? 0 : root.streamSurfaceFailureCount + 1
+                if (root.streamSurfaceDirty && root.streamSurfaceFailureCount < 3)
                     root.streamSurfaceTimer.restart()
             }
         }
         function onRequestFailed(requestId, code, message) {
+            if (root.finishArtworkRequest(requestId, null, true))
+                return
             root.lastError = message
-            if (requestId === root.catalogRequestId) {
+            if (requestId === root.consoleSurfaceRequestId) {
+                root.consoleSurfaceRequestId = ""
+                root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
+                root.applySetting("launchInConsoleMode", root.consoleSurfaceConfirmedValue)
+                root.consoleSurfaceRequested(root.consoleSurfaceConfirmedValue)
+                root.consoleSurfaceError = qsTr("Console mode could not be saved. The previous mode was restored. %1").arg(message)
+                root.lastError = root.consoleSurfaceError
+                root.accessibilityMessage = root.lastError
+            } else if (requestId === root.catalogRequestId) {
                 root.catalogState = "error"
                 root.catalogRequestId = ""
             } else if (requestId === root.streamerDetectRequestId) {
@@ -1853,9 +2135,17 @@ QtObject {
                 root.streamMessage = qsTr("Could not check existing sessions; starting a new one.")
                 root.createPendingSession()
             } else if (requestId === root.sessionClaimRequestId) {
+                const recovering = root.sessionClaimIsRecovery
                 root.sessionClaimRequestId = ""
-                root.streamState = "error"
-                root.streamMessage = message
+                root.sessionClaimIsRecovery = false
+                if (recovering && root.sessionReconnectAttempts < 2) {
+                    root.streamState = "reconnecting"
+                    root.streamMessage = qsTr("Session recovery was interrupted. Retrying…")
+                    Qt.callLater(() => root.recoverStreamingSession(message))
+                } else {
+                    root.streamState = "error"
+                    root.streamMessage = message
+                }
             } else if (requestId === root.streamCreateRequestId) {
                 root.streamCreateRequestId = ""
                 root.streamState = "error"
@@ -1877,12 +2167,7 @@ QtObject {
             } else if (requestId === root.streamerStartRequestId) {
                 root.streamerStartRequestId = ""
                 root.streamerStatusTimer.stop()
-                root.streamer = { status: "error", message: message, errorCode: code }
-                root.streamMessage = message
-                if (root.streamerRestartAttempts < 2 && root.activeSession) {
-                    root.streamerRestartAttempts += 1
-                    root.streamerRestartTimer.restart()
-                }
+                root.acceptStreamerSnapshot({ status: "error", message: message, errorCode: code })
             } else if (requestId === root.streamerStatusRequestId) {
                 root.streamerStatusRequestId = ""
             } else if (requestId === root.streamerStopRequestId) {
@@ -1892,17 +2177,34 @@ QtObject {
                 root.streamInputPauseRequestId = ""
             } else if (requestId === root.streamControlRequestId) {
                 root.streamControlRequestId = ""
+                root.streamControlAction = ""
                 root.streamControlMessage = message
             } else if (requestId === root.streamSurfaceRequestId) {
                 root.streamSurfaceRequestId = ""
-                if (root.streamSurfaceDirty)
+                root.streamSurfaceDirty = true
+                root.streamSurfaceFailureCount += 1
+                if (root.streamSurfaceDirty && root.streamSurfaceFailureCount < 3)
                     root.streamSurfaceTimer.restart()
+                else
+                    root.streamControlMessage = message
             }
         }
         function onEventReceived(name, payload) {
-            if (name === "settings.changed")
-                root.applySetting(payload.key, payload.value)
-            else if (name === "settings.reset")
+            if (name === "settings.changed") {
+                if (payload.key === "launchInConsoleMode") {
+                    const persisted = Boolean(payload.value)
+                    root.consoleSurfaceConfirmedValue = persisted
+                    root.consoleSurfaceInitialized = true
+                    if (root.consoleSurfaceRequestId !== ""
+                            && root.consoleSurfaceDesiredValue !== persisted)
+                        return
+                    root.consoleSurfaceDesiredValue = persisted
+                    root.applySetting(payload.key, persisted)
+                    root.consoleSurfaceRequested(persisted)
+                } else {
+                    root.applySetting(payload.key, payload.value)
+                }
+            } else if (name === "settings.reset")
                 root.refreshSettings()
             else if (name === "auth.session.changed") {
                 root.authSession = payload.session || null
@@ -1910,7 +2212,9 @@ QtObject {
             } else if (name === "session.changed")
                 root.acceptStreamingSession(payload.session || null)
             else if (name === "streamer.changed")
-                root.streamer = payload.streamer || null
+                root.acceptStreamerSnapshot(payload.streamer || payload || null)
+            else if (name === "artwork.ready")
+                root.acceptArtworkResult(payload)
             else if (name === "updater.changed")
                 root.updaterState = payload
             else if (name === "updater.highlights.show") {

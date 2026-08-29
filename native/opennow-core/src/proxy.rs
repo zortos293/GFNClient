@@ -1,5 +1,5 @@
 use reqwest::Proxy;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, ClientBuilder};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -23,17 +23,27 @@ pub fn config_from_settings(settings: &Value) -> Result<Option<ProxyConfig>, Str
 }
 
 pub fn client_for_settings(base: &Client, settings: &Value) -> Result<Client, String> {
+    client_for_settings_with(base, settings, |builder| builder)
+}
+
+pub fn client_for_settings_with(
+    base: &Client,
+    settings: &Value,
+    configure: impl FnOnce(ClientBuilder) -> ClientBuilder,
+) -> Result<Client, String> {
     let Some(config) = config_from_settings(settings)? else {
         return Ok(base.clone());
     };
     let proxy = Proxy::all(&config.normalized_url).map_err(|_| INVALID_PROXY.to_owned())?;
-    Client::builder()
-        .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(20))
-        .pool_idle_timeout(Duration::from_secs(60))
-        .proxy(proxy)
-        .build()
-        .map_err(|_| "Could not initialize the configured session proxy".to_owned())
+    configure(
+        Client::builder()
+            .connect_timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(20))
+            .pool_idle_timeout(Duration::from_secs(60))
+            .proxy(proxy),
+    )
+    .build()
+    .map_err(|_| "Could not initialize the configured session proxy".to_owned())
 }
 
 pub fn normalize_proxy_url(raw: &str) -> Result<ProxyConfig, String> {

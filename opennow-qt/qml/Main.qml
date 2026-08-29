@@ -35,7 +35,7 @@ ApplicationWindow {
         || (LaunchModeOverride !== "console" && !consolePreferred)
     readonly property bool desktopEligibleRoute: ["joining", "stream",
         "accounts", "profile-pin", "game-accounts", "persistent-storage", "media",
-        "diagnostics", "updates", "feedback", "theme-store", "components"].indexOf(activeRoute) < 0
+        "diagnostics", "updates", "feedback", "theme-store"].indexOf(activeRoute) < 0
     readonly property bool targetDesktopSurface: desktopRequested && desktopEligibleRoute
     readonly property bool desktopStreamOverlayActive: desktopRequested && activeRoute === "stream"
         && AppController.overlay.startsWith("desktop-stream-")
@@ -43,6 +43,13 @@ ApplicationWindow {
         || AppController.overlay === "desktop-stream-stats-expanded"
     property bool desktopSurfaceActive: targetDesktopSurface
     property bool modeInitialized: false
+    readonly property bool settingsLoadedForSmokeTest: settingsLoaded
+    readonly property bool consoleModePersistedForSmokeTest:
+        ShellStore.settings.launchInConsoleMode === true
+    readonly property bool modePersistenceBusyForSmokeTest:
+        ShellStore.consoleSurfaceRequestId !== ""
+    readonly property string modePersistenceErrorForSmokeTest: ShellStore.lastError
+    readonly property var streamerSnapshotForSmokeTest: ShellStore.streamer
     readonly property real designWidth: desktopSurfaceActive ? 1440 : 1920
     readonly property real designHeight: desktopSurfaceActive ? 900 : 1080
     readonly property real designScale: Math.min(width / designWidth, height / designHeight)
@@ -117,16 +124,25 @@ ApplicationWindow {
         onTriggered: window.pointerRecentlyActive = false
     }
 
-    function requestConsoleSurface(enabled) {
+    function applyConsoleSurface(enabled) {
         window.pointerRecentlyActive = false
         window.forceConsole = enabled
-        ShellStore.applySetting("launchInConsoleMode", enabled)
-        ShellStore.setSetting("launchInConsoleMode", enabled)
         if (!enabled)
             window.consoleHeldByPad = false
         if (ShellStore.signedIn && AppController.route === "sign-in")
             AppController.navigate("home")
-        if (modeInitialized && window.desktopSurfaceActive !== window.targetDesktopSurface)
+        window.synchronizeRenderedSurface()
+    }
+
+    function requestConsoleSurface(enabled) {
+        ShellStore.requestConsoleSurface(enabled)
+    }
+
+    function synchronizeRenderedSurface() {
+        if (window.desktopSurfaceActive === window.targetDesktopSurface)
+            return
+        window.desktopSurfaceActive = window.targetDesktopSurface
+        if (modeInitialized)
             modeTransition.restart()
     }
 
@@ -147,8 +163,7 @@ ApplicationWindow {
     Component.onCompleted: {
         syncPadHold()
         modeInitialized = true
-        if (window.desktopSurfaceActive !== window.targetDesktopSurface)
-            modeTransition.restart()
+        window.synchronizeRenderedSurface()
         syncInputOwnership()
         updateStreamSurface()
     }
@@ -162,8 +177,6 @@ ApplicationWindow {
     }
 
     function componentForRoute(route) {
-        if (route === "components")
-            return componentsScreen
         if (route === "library")
             return libraryScreen
         if (route === "store")
@@ -280,7 +293,7 @@ ApplicationWindow {
         Connections {
             target: ShellStore
             function onStreamerChanged() { window.syncStreamWindowVisibility() }
-            function onConsoleSurfaceRequested(enabled) { window.requestConsoleSurface(enabled) }
+            function onConsoleSurfaceRequested(enabled) { window.applyConsoleSurface(enabled) }
             function onSettingsChanged() {
                 window.syncInputOwnership()
                 if (window.geometryRestored || !ShellStore.settings.windowWidth)
@@ -324,9 +337,6 @@ ApplicationWindow {
             } else if (event.key === Qt.Key_X
                        && (AppController.route === "home" || AppController.route === "library")) {
                 event.accepted = AppController.navigate("game-detail")
-            } else if (event.key === Qt.Key_F12) {
-                AppController.navigate("components")
-                event.accepted = true
             }
         }
     }
@@ -395,7 +405,6 @@ ApplicationWindow {
         PauseAnimation { duration: AppController.reducedMotion ? 0 : 160 }
         ScriptAction {
             script: {
-                window.desktopSurfaceActive = window.targetDesktopSurface
                 if (ShellStore.signedIn && AppController.route === "sign-in")
                     AppController.navigate("home")
             }
@@ -403,8 +412,7 @@ ApplicationWindow {
         NumberAnimation { target: modeCurtain; property: "opacity"; to: 0; duration: AppController.reducedMotion ? 0 : 380; easing.type: Easing.OutCubic }
     }
     onTargetDesktopSurfaceChanged: {
-        if (modeInitialized)
-            modeTransition.restart()
+        window.synchronizeRenderedSurface()
     }
 
     Item {
@@ -418,7 +426,6 @@ ApplicationWindow {
 
         function routeName(route) {
             const names = {
-                "components": qsTr("Components"),
                 "home": qsTr("Home"),
                 "library": qsTr("Library"),
                 "store": qsTr("Store"),
@@ -499,7 +506,6 @@ ApplicationWindow {
         }
     }
 
-    Component { id: componentsScreen; ComponentsScreen {} }
     Component { id: desktopAppScreen; DesktopApp {} }
     Component { id: homeScreen; HomeScreen {} }
     Component { id: libraryScreen; LibraryScreen {} }
@@ -518,19 +524,8 @@ ApplicationWindow {
     Component {
         id: gameDetailPlatformDropdownScreen
         GameDetailScreen {
-            initialPlatformOpen: true
-            previewGame: ({
-                title: "Baldur's Gate 3",
-                publisherName: "Larian Studios",
-                genres: ["RPG"],
-                selectedVariantIndex: 0,
-                variants: [
-                    {id:"1001", store:"Steam", inLibrary:true},
-                    {id:"1002", store:"Epic Games Store", inLibrary:false},
-                    {id:"1003", store:"Xbox", inLibrary:true}
-                ],
-                availableStores: ["Steam", "Epic Games Store", "Xbox"]
-            })
+            initialPlatformOpen: SmokeTestMode
+            previewGame: SmokeTestMode ? SmokeTestGame : null
         }
     }
     Component { id: signInScreen; SignInScreen {} }

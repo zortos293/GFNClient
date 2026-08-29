@@ -340,7 +340,7 @@ FocusScope {
 
     function activateCurrent() {
         if (focusZone === "hero") {
-            if (focusIndex === 0) claimRequested(heroGames)
+            if (focusIndex === 0 && heroGames.length) gameSelected(heroGames[0])
             else if (heroGames.length) gameSelected(heroGames[0])
             return
         }
@@ -425,7 +425,7 @@ FocusScope {
             games: root.heroGames
             selectedAction: root.focusZone === "hero" ? root.focusIndex : -1
             onActionPointed: index => root.selectZone("hero", index)
-            onClaimRequested: root.claimRequested(root.heroGames)
+            onClaimRequested: if (root.heroGames.length) root.gameSelected(root.heroGames[0])
             onIncludedRequested: if (root.heroGames.length) root.gameSelected(root.heroGames[0])
         }
 

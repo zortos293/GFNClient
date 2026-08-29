@@ -31,6 +31,8 @@ FocusScope {
         return list
     }
     readonly property var heroGame: root.sortedRecent.length ? root.sortedRecent[0] : null
+    readonly property string heroArtwork: DesktopTokens.decodeArtworkUrl(
+        DesktopTokens.artworkUrl(root.heroGame, true))
     readonly property var jumpGames: root.takeGames(root.sortedRecent, 1, 12)
     readonly property var favoriteGames: {
         const list = []
@@ -57,6 +59,12 @@ FocusScope {
         for (let index = start; index < list.length && result.length < limit; ++index)
             result.push(list[index])
         return result
+    }
+
+    ArtworkSource {
+        id: heroArtworkSource
+        sourceUrl: root.heroArtwork
+        active: root.active
     }
 
     function heroMeta() {
@@ -246,7 +254,7 @@ FocusScope {
                     Rectangle { anchors.fill: parent; color: "#171B27" }
                     Image {
                         anchors.fill: parent
-                        source: DesktopTokens.artworkUrl(root.heroGame, true)
+                        source: heroArtworkSource.resolvedUrl
                         fillMode: Image.PreserveAspectCrop
                         sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
                         asynchronous: true

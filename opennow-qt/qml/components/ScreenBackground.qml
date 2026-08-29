@@ -8,9 +8,15 @@ Rectangle {
     anchors.fill: parent
     color: Theme.shell
 
+    ArtworkSource {
+        id: artworkSource
+        sourceUrl: DesktopTokens.decodeArtworkUrl(root.artwork)
+        active: root.visible
+    }
+
     Image {
         anchors.fill: parent
-        source: root.artwork
+        source: artworkSource.resolvedUrl
         fillMode: Image.PreserveAspectCrop
         sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
         asynchronous: true

@@ -9,6 +9,18 @@ Item {
     property real cornerRadius: 34
     property real scrimStart: 0.28
 
+    property bool loadStarted: false
+    readonly property string normalizedArtwork: DesktopTokens.decodeArtworkUrl(root.artwork)
+    onVisibleChanged: loadStarted = visible
+    Component.onCompleted: if (visible)
+        loadStarted = true
+
+    ArtworkSource {
+        id: artworkSource
+        sourceUrl: root.normalizedArtwork
+        active: root.loadStarted
+    }
+
     Rectangle {
         id: roundedMask
         anchors.fill: parent
@@ -32,7 +44,7 @@ Item {
         Rectangle { anchors.fill: parent; color: root.fallbackColor }
         Image {
             anchors.fill: parent
-            source: DesktopTokens.decodeArtworkUrl(root.artwork)
+            source: artworkSource.resolvedUrl
             fillMode: Image.PreserveAspectCrop
             sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
             asynchronous: true

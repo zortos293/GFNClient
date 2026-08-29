@@ -7,18 +7,18 @@ FocusScope {
     focus: true
     property int selectedIndex: 0
     property int filterIndex: 0
-    property string statusMessage: qsTr("Choose a theme to preview or install")
-    readonly property var filters: ["All", "Dark", "Light", "Wallpapers", "High contrast", "Cartridge art", "Sound packs"]
-    readonly property var filterLabels: [qsTr("All"), qsTr("Dark"), qsTr("Light"), qsTr("Wallpapers"), qsTr("High contrast"), qsTr("Cartridge art"), qsTr("Sound packs")]
+    property string statusMessage: qsTr("Choose a built-in theme to preview or apply")
+    readonly property var filters: ["All", "Dark", "Light", "High contrast"]
+    readonly property var filterLabels: [qsTr("All"), qsTr("Dark"), qsTr("Light"), qsTr("High contrast")]
     readonly property var themes: [
-        {id:"nocturne", name:"Nocturne", author:"ZORTOS", category:"Dark", detail:"VIOLET GLASS", bg:"#101321", mid:"#252A48", accent:"#A78BFA"},
+        {id:"nocturne", name:"Nocturne", author:"OPENNOW", category:"Dark", detail:"VIOLET GLASS", bg:"#101321", mid:"#252A48", accent:"#A78BFA"},
         {id:"aurora", name:"Aurora", author:"OPENNOW", category:"Dark", detail:"MINT AURORA", bg:"#071A20", mid:"#16434A", accent:"#6EE7B7"},
-        {id:"kraft", name:"Kraft", author:"MIRA", category:"Light", detail:"PAPER UI", bg:"#D8C7A6", mid:"#756346", accent:"#D3A85C"},
-        {id:"phosphor", name:"Phosphor", author:"KENJI", category:"High contrast", detail:"CRT GLOW", bg:"#07120B", mid:"#12351D", accent:"#6BFF8A"},
-        {id:"bone", name:"Bone", author:"DAX", category:"Light", detail:"WARM MINIMAL", bg:"#EEE7DB", mid:"#A89578", accent:"#7F6A4D"},
-        {id:"cobalt", name:"Cobalt", author:"PRIYA", category:"Cartridge art", detail:"EDITORIAL", bg:"#F7F9FF", mid:"#ADC4FF", accent:"#245BDB"},
-        {id:"hibiscus", name:"Hibiscus", author:"MIRA", category:"Wallpapers", detail:"PHOTO BG", bg:"#1F0C18", mid:"#642343", accent:"#FF6F9F"},
-        {id:"chapel", name:"Chapel", author:"LOU", category:"Sound packs", detail:"PHOTO + AUDIO", bg:"#151225", mid:"#40355D", accent:"#FFD166"}
+        {id:"kraft", name:"Kraft", author:"OPENNOW", category:"Dark", detail:"WARM BRASS", bg:"#211D17", mid:"#756346", accent:"#D3A85C"},
+        {id:"phosphor", name:"Phosphor", author:"OPENNOW", category:"High contrast", detail:"CRT GLOW", bg:"#07120B", mid:"#12351D", accent:"#6BFF8A"},
+        {id:"bone", name:"Bone", author:"OPENNOW", category:"Light", detail:"WARM MINIMAL", bg:"#EEE7DB", mid:"#A89578", accent:"#7F6A4D"},
+        {id:"cobalt", name:"Cobalt", author:"OPENNOW", category:"Light", detail:"COBALT PAPER", bg:"#F7F9FF", mid:"#ADC4FF", accent:"#245BDB"},
+        {id:"hibiscus", name:"Hibiscus", author:"OPENNOW", category:"Dark", detail:"ROSE GLASS", bg:"#1F0C18", mid:"#642343", accent:"#FF6F9F"},
+        {id:"chapel", name:"Chapel", author:"OPENNOW", category:"Dark", detail:"GOLD GLASS", bg:"#151225", mid:"#40355D", accent:"#FFD166"}
     ]
     readonly property var visibleThemes: {
         if (root.filterIndex === 0)
@@ -47,7 +47,7 @@ FocusScope {
         ShellStore.applySetting("themePack", selectedTheme.id)
         ShellStore.previewThemePack = ""
         ShellStore.setSetting("themePack", selectedTheme.id)
-        statusMessage = qsTr("%1 installed and applied").arg(selectedTheme.name)
+        statusMessage = qsTr("%1 applied").arg(selectedTheme.name)
     }
 
     function togglePreview() {
@@ -56,7 +56,7 @@ FocusScope {
         ShellStore.previewThemePack = ShellStore.previewThemePack === selectedTheme.id ? "" : selectedTheme.id
         statusMessage = ShellStore.previewThemePack === ""
                       ? qsTr("Preview closed")
-                      : qsTr("Previewing %1 — press A to install").arg(selectedTheme.name)
+                      : qsTr("Previewing %1 — press A to apply").arg(selectedTheme.name)
     }
 
     onSelectedIndexChanged: if (selectedIndex >= 0) ShellStore.rememberFocus("theme-store", selectedIndex)
@@ -129,7 +129,7 @@ FocusScope {
                     Text {
                         id: filterLabel
                         anchors.centerIn: parent
-                        text: root.filterLabels[index] + (index === 0 ? " 192" : "")
+                        text: root.filterLabels[index] + (index === 0 ? " " + root.themes.length : "")
                         color: root.filterIndex === index ? Theme.faceText : Theme.label
                         font.family: Theme.bodyFont
                         font.pixelSize: 15
@@ -147,7 +147,7 @@ FocusScope {
                 strong: true
                 Text {
                     anchors.centerIn: parent
-                    text: qsTr("SORT  Trending ⌄")
+                    text: qsTr("BUILT IN")
                     color: Theme.label
                     font.family: Theme.bodyFont
                     font.pixelSize: 13
@@ -178,7 +178,7 @@ FocusScope {
                     height: grid.cellHeight
                     Accessible.name: qsTr("%1 theme by %2").arg(modelData.name).arg(modelData.author)
                     Accessible.description: I18n.source(modelData.detail, I18n.revision)
-                        + (ShellStore.settings.themePack === modelData.id ? qsTr(". Installed") : qsTr(". Press to install"))
+                        + (ShellStore.settings.themePack === modelData.id ? qsTr(". Active") : qsTr(". Press to apply"))
                     Accessible.role: Accessible.Button
                     Accessible.onPressAction: {
                         root.select(index)
@@ -268,7 +268,7 @@ FocusScope {
                             Text {
                                 id: installedText
                                 anchors.centerIn: parent
-                                text: ShellStore.settings.themePack === modelData.id ? qsTr("✓ Installed") : qsTr("Install")
+                                text: ShellStore.settings.themePack === modelData.id ? qsTr("✓ Active") : qsTr("Apply")
                                 color: ShellStore.settings.themePack === modelData.id ? "#0B0F1A" : Theme.label
                                 font.family: Theme.bodyFont
                                 font.pixelSize: 12
@@ -295,18 +295,11 @@ FocusScope {
                 Text {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.statusMessage + qsTr("  ·  THEMES ARE PLAIN FILES")
+                    text: root.statusMessage + qsTr("  ·  BUILT-IN OPENNOW PALETTES")
                     color: Theme.textMuted
                     font.family: Theme.monoFont
                     font.pixelSize: 11
                     font.letterSpacing: 0.7
-                }
-                Row {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 10
-                    GlassButton { width: 170; height: 34; text: qsTr("Import folder"); onClicked: if (!AppController.openThemeDirectory()) root.statusMessage = qsTr("Could not open the theme folder") }
-                    GlassButton { width: 184; height: 34; text: qsTr("Submit a theme"); primary: true; onClicked: AppController.openExternalUrl("https://github.com/OpenCloudGaming/OpenNOW/discussions") }
                 }
             }
         }
@@ -317,7 +310,7 @@ FocusScope {
         title: qsTr("Theme store")
         currentRoute: "store"
         leftHints: [{glyph:"Y", label:qsTr("Filter")}, {glyph:"−", label:qsTr("Preview")}]
-        rightHints: [{glyph:"A", label:qsTr("Install")}, {glyph:"+", label:qsTr("Menu")}]
+        rightHints: [{glyph:"A", label:qsTr("Apply")}, {glyph:"+", label:qsTr("Menu")}]
         onRouteRequested: route => AppController.navigate(route)
     }
 }

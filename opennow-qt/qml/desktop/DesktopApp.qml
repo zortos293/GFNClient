@@ -8,6 +8,7 @@ FocusScope {
     anchors.fill: parent
     focus: true
     property bool commandOpen: false
+    property bool modeErrorVisible: false
     property string searchText: ""
     property string settingsSubtitle: qsTr("Profile")
     readonly property string route: AppController.route
@@ -53,10 +54,7 @@ FocusScope {
         return homeComponent
     }
     function toggleConsoleMode() {
-        const win = Window.window
-        const currentlyConsole = Boolean(win && (win.forceConsole || win.desktopSurfaceActive === false))
-            || ShellStore.settings.launchInConsoleMode === true
-        ShellStore.requestConsoleSurface(!currentlyConsole)
+        ShellStore.requestConsoleSurface(!DesktopTokens.consoleModeTargetOn(Window.window))
     }
 
     DesktopSignInScreen {
@@ -119,6 +117,37 @@ FocusScope {
         onRouteRequested: route => AppController.navigate(route)
     }
 
+    Rectangle {
+        anchors.top: parent.top
+        anchors.topMargin: 76
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: Math.min(640, errorText.implicitWidth + 40)
+        height: 48
+        radius: 12
+        color: "#F02B1D24"
+        border.width: 1
+        border.color: DesktopTokens.danger
+        visible: root.modeErrorVisible
+        z: 220
+        Text {
+            id: errorText
+            anchors.centerIn: parent
+            width: parent.width - 28
+            text: ShellStore.consoleSurfaceError
+            color: "#FFFFDAD6"
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: 12
+            font.weight: Font.Bold
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideRight
+        }
+    }
+    Timer {
+        id: modeErrorTimer
+        interval: 6000
+        onTriggered: root.modeErrorVisible = false
+    }
+
     Component {
         id: homeComponent
         DesktopHomeScreen {
@@ -164,6 +193,15 @@ FocusScope {
             root.searchText = ""
             if (root.route !== "game-detail" && shell.visible && pageLoader.item)
                 Qt.callLater(() => pageLoader.item.forceActiveFocus())
+        }
+    }
+    Connections {
+        target: ShellStore
+        function onConsoleSurfaceErrorChanged() {
+            if (ShellStore.consoleSurfaceError === "")
+                return
+            root.modeErrorVisible = true
+            modeErrorTimer.restart()
         }
     }
     onSignInVisibleChanged: Qt.callLater(() => {

@@ -411,7 +411,6 @@ void AppController::setInputMode(const QString &mode)
 const QStringList &AppController::routes()
 {
     static const QStringList value{
-        u"components"_s,
         u"home"_s,
         u"library"_s,
         u"store"_s,

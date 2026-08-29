@@ -276,7 +276,9 @@ FocusScope {
             Row {
                 spacing: 8
                 Repeater {
-                    model: root.selectedGame ? [qsTr("RTX · DLSS 3"), qsTr("Up to 4K 120"), ShellStore.isFavorite(root.selectedGame) ? qsTr("● In your %1 library").arg(root.storeName(root.selectedGame)) : qsTr("Available on %1").arg(root.storeName(root.selectedGame))] : []
+                    model: root.selectedGame ? [ShellStore.isFavorite(root.selectedGame)
+                        ? qsTr("● In your %1 library").arg(root.storeName(root.selectedGame))
+                        : qsTr("Available on %1").arg(root.storeName(root.selectedGame))] : []
                     GlassPanel {
                         required property string modelData
                         width: chipText.implicitWidth + 26; height: 36; panelRadius: 18; strong: true

@@ -225,7 +225,7 @@ ItemDelegate {
                     spacing: 12
                     Text { text: root.rowData.name || qsTr("OpenNOW profile"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 24; font.weight: Font.Black }
                     Rectangle { anchors.verticalCenter: parent.verticalCenter; width: tierText.implicitWidth + 18; height: 28; radius: 14; color: Theme.yellow
-                        Text { id: tierText; anchors.centerIn: parent; text: root.rowData.tier || qsTr("FREE"); color: Theme.faceText; font.family: Theme.bodyFont; font.pixelSize: 12; font.weight: Font.Black }
+                        Text { id: tierText; anchors.centerIn: parent; text: root.rowData.tier || "—"; color: Theme.faceText; font.family: Theme.bodyFont; font.pixelSize: 12; font.weight: Font.Black }
                     }
                 }
                 Text { width: parent.width; text: root.rowData.subtitle || qsTr("NVIDIA account"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 15; font.weight: Font.DemiBold; elide: Text.ElideRight }

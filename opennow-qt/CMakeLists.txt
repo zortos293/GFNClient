@@ -13,7 +13,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 QuickEffects Network Multimedia Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Network Multimedia Test)
 find_package(SDL3 REQUIRED CONFIG)
 if(TARGET SDL3::SDL3-shared)
     set(OPENNOW_SDL3_RUNTIME_TARGET SDL3::SDL3-shared)
@@ -129,6 +129,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/DesktopStoreShelf.qml
         qml/desktop/DesktopApp.qml
         qml/components/AppChrome.qml
+        qml/components/ArtworkSource.qml
         qml/components/ControllerGlyph.qml
         qml/components/FocusFrame.qml
         qml/components/FilterDropdown.qml
@@ -153,7 +154,6 @@ qt_add_qml_module(opennow-qt
         qml/overlays/SessionConflictOverlay.qml
         qml/overlays/SessionReportOverlay.qml
         qml/overlays/QueueAdOverlay.qml
-        qml/screens/ComponentsScreen.qml
         qml/screens/GameDetailScreen.qml
         qml/screens/HomeScreen.qml
         qml/screens/InsertingScreen.qml
@@ -241,7 +241,6 @@ target_include_directories(opennow-qt PRIVATE src)
 target_link_libraries(opennow-qt PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
-    Qt6::QuickEffects
     Qt6::Network
     Qt6::Multimedia
     SDL3::SDL3
@@ -397,6 +396,8 @@ if(BUILD_TESTING)
     target_include_directories(opennow-qt-tests PRIVATE src)
     target_link_libraries(opennow-qt-tests PRIVATE Qt6::Test Qt6::Core Qt6::Gui)
     add_test(NAME opennow-qt-tests COMMAND opennow-qt-tests)
+    set_tests_properties(opennow-qt-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     qt_add_executable(opennow-coreclient-tests
         tests/tst_coreclient.cpp
@@ -445,7 +446,7 @@ if(BUILD_TESTING)
         TIMEOUT 8
     )
 
-    foreach(route components home library store theme-store controllers settings settings-account settings-streaming settings-video settings-video-dropdown settings-input settings-network settings-themes settings-advanced settings-advanced-dropdown game-detail game-detail-platform-dropdown sign-in joining inserting stream accounts profile-pin game-accounts persistent-storage media diagnostics updates feedback)
+    foreach(route home library store theme-store controllers settings settings-account settings-streaming settings-video settings-video-dropdown settings-input settings-network settings-themes settings-advanced settings-advanced-dropdown game-detail game-detail-platform-dropdown sign-in joining inserting stream accounts profile-pin game-accounts persistent-storage media diagnostics updates feedback)
         add_test(NAME "qml-route-${route}"
                  COMMAND opennow-qt --smoke-test --allow-multiple-instances --route "${route}" --reduced-motion)
         set_tests_properties("qml-route-${route}" PROPERTIES
@@ -453,7 +454,7 @@ if(BUILD_TESTING)
             TIMEOUT 5
         )
     endforeach()
-    foreach(route home library store friends settings)
+    foreach(route home library store friends settings stream)
         add_test(NAME "qml-desktop-route-${route}"
                  COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop --route "${route}" --reduced-motion)
         set_tests_properties("qml-desktop-route-${route}" PROPERTIES
@@ -461,6 +462,37 @@ if(BUILD_TESTING)
             TIMEOUT 5
         )
     endforeach()
+    foreach(overlay desktop-stream-menu desktop-stream-stats desktop-stream-stats-expanded)
+        add_test(NAME "qml-${overlay}"
+                 COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                         --desktop --route stream --overlay "${overlay}" --reduced-motion)
+        set_tests_properties("qml-${overlay}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            TIMEOUT 5
+        )
+    endforeach()
+    add_test(NAME qml-console-mode-persistence-rollback
+             COMMAND opennow-qt
+                     --smoke-test
+                     --allow-multiple-instances
+                     --core "$<TARGET_FILE:opennow-fake-core>"
+                     --smoke-console-persistence-rollback
+                     --reduced-motion)
+    set_tests_properties(qml-console-mode-persistence-rollback PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 5
+    )
+    add_test(NAME qml-streamer-event-contract
+             COMMAND opennow-qt
+                     --smoke-test
+                     --allow-multiple-instances
+                     --core "$<TARGET_FILE:opennow-fake-core>"
+                     --smoke-streamer-event
+                     --reduced-motion)
+    set_tests_properties(qml-streamer-event-contract PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 5
+    )
     foreach(overlay friends friend-actions quick-settings session-conflict session-report queue-ad guide-session guide-controls guide-media guide-shortcuts)
         add_test(NAME "qml-overlay-${overlay}"
                  COMMAND opennow-qt --smoke-test --allow-multiple-instances --route home --overlay "${overlay}" --reduced-motion)

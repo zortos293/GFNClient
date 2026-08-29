@@ -7,6 +7,9 @@ FocusScope {
     anchors.fill: parent
     focus: true
     readonly property var report: ShellStore.lastSessionReport || ({})
+    readonly property bool errorCountsKnown: report.decoderErrors !== undefined
+        && report.decoderErrors !== null && report.outputErrors !== undefined
+        && report.outputErrors !== null
     Accessible.name: qsTr("Session report")
     Accessible.role: Accessible.Dialog
 
@@ -39,9 +42,9 @@ FocusScope {
                         {label:qsTr("Transport"), value:root.report.transport || "—"},
                         {label:qsTr("Media backend"), value:root.report.mediaBackend || "—"},
                         {label:qsTr("First frame"), value:Number(root.report.firstFrameLatencyMs || 0) > 0 ? Number(root.report.firstFrameLatencyMs) + " ms" : "—"},
-                        {label:qsTr("Recoveries"), value:String(Number(root.report.recoveries || 0))},
-                        {label:qsTr("Decoder errors"), value:String(Number(root.report.decoderErrors || 0))},
-                        {label:qsTr("Queue drops"), value:String(Number(root.report.queueDrops || 0))}
+                        {label:qsTr("Recoveries"), value:root.report.recoveries !== undefined && root.report.recoveries !== null ? String(Number(root.report.recoveries)) : "—"},
+                        {label:qsTr("Decoder errors"), value:root.report.decoderErrors !== undefined && root.report.decoderErrors !== null ? String(Number(root.report.decoderErrors)) : "—"},
+                        {label:qsTr("Queue drops"), value:root.report.queueDrops !== undefined && root.report.queueDrops !== null ? String(Number(root.report.queueDrops)) : "—"}
                     ]
                     GlassPanel {
                         required property var modelData
@@ -56,10 +59,14 @@ FocusScope {
             }
             Text {
                 width: parent.width
-                text: Number(root.report.decoderErrors || 0) + Number(root.report.outputErrors || 0) === 0
-                    ? qsTr("The native media path completed without decoder or presentation errors.")
-                    : qsTr("Open Diagnostics for the redacted recovery timeline.")
-                color: Number(root.report.decoderErrors || 0) + Number(root.report.outputErrors || 0) === 0 ? Theme.mint : Theme.yellow
+                text: !root.errorCountsKnown
+                    ? qsTr("Error telemetry was unavailable for this session.")
+                    : Number(root.report.decoderErrors) + Number(root.report.outputErrors) === 0
+                        ? qsTr("The native media path completed without decoder or presentation errors.")
+                        : qsTr("Open Diagnostics for the redacted recovery timeline.")
+                color: root.errorCountsKnown
+                    && Number(root.report.decoderErrors) + Number(root.report.outputErrors) === 0
+                    ? Theme.mint : Theme.yellow
                 font.family: Theme.bodyFont; font.pixelSize: 15; wrapMode: Text.WordWrap
             }
             Row {

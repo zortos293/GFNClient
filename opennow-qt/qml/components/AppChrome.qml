@@ -94,7 +94,7 @@ Item {
                 spacing: 6
                 Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 8; height: 8; radius: 4; color: ShellStore.signedIn ? Theme.mint : Theme.textMuted }
                 Text {
-                    text: ShellStore.signedIn ? qsTr("3 online") : qsTr("Offline")
+                    text: ShellStore.signedIn ? qsTr("Connected") : qsTr("Offline")
                     color: Theme.label
                     font.family: Theme.bodyFont
                     font.pixelSize: 16

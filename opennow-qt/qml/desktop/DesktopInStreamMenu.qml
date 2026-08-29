@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Effects
+import QtQuick.Window
 import OpenNOW
 
 FocusScope {
@@ -14,7 +15,7 @@ FocusScope {
     signal resumeRequested()
     signal qualityRequested()
     signal inviteRequested()
-    signal consoleModeRequested()
+    signal consoleModeRequested(bool enabled)
     signal endSessionRequested()
     signal statsRequested()
 
@@ -26,11 +27,41 @@ FocusScope {
     readonly property var session: ShellStore.activeSession || ({})
     readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
     readonly property var live: ShellStore.streamer || ({})
-    readonly property int outputHeight: Number(profile.height || ShellStore.settings.resolutionHeight || 2160)
-    readonly property int fps: Math.round(Number(live.framesPerSecond || live.fps || profile.fps || 119))
-    readonly property int latency: Math.round(Number(live.latencyMs || live.roundTripLatencyMs || session.latencyMs || 18))
-    readonly property int bitrate: Math.round(Number(live.bitrateMbps || live.receiveBitrateMbps || ShellStore.settings.maxBitrate || 71))
-    readonly property string resolution: outputHeight >= 2160 ? "2160P" : outputHeight >= 1440 ? "1440P" : outputHeight >= 1080 ? "1080P" : outputHeight + "P"
+    readonly property bool liveTelemetryAvailable: ["starting", "negotiating", "connecting", "streaming", "error"]
+        .indexOf(String(live.status || "")) >= 0
+    readonly property bool modePending: DesktopTokens.consoleModePending(Window.window)
+    readonly property bool modeOn: DesktopTokens.consoleModeOn(Window.window)
+    readonly property int outputHeight: Number(profile.height || 0)
+    readonly property int qualityFps: Number(profile.fps || profile.frameRate || 0)
+    readonly property bool invitesAvailable: Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.invitesAvailable)
+
+    function liveNumber(value) {
+        return value === undefined || value === null || isNaN(Number(value)) ? null : Number(value)
+    }
+    function firstAvailable(primary, fallback) {
+        return primary === undefined || primary === null ? fallback : primary
+    }
+    function liveValue(value) {
+        return root.liveTelemetryAvailable ? value : undefined
+    }
+    function liveText(value, suffix) {
+        const number = root.liveNumber(value)
+        return number === null ? "—" : String(Math.round(number)) + (suffix || "")
+    }
+    readonly property string fpsText: root.liveText(root.liveValue(root.firstAvailable(live.framesPerSecond, live.fps)))
+    readonly property string latencyText: root.liveText(root.liveValue(root.firstAvailable(live.latencyMs, live.roundTripLatencyMs)), " ms")
+    readonly property string bitrateText: root.liveText(root.liveValue(root.firstAvailable(live.bitrateMbps, live.receiveBitrateMbps)), " Mb")
+    readonly property string pingText: root.liveText(root.firstAvailable(root.liveValue(live.pingMs), session.latencyMs), " ms")
+    readonly property string lossText: {
+        const number = root.liveNumber(root.liveValue(live.packetLossPercent))
+        return number === null ? "—" : number.toFixed(2) + "%"
+    }
+    readonly property string codecText: String(root.liveValue(live.codec) || profile.codec || "").toUpperCase() || "—"
+    readonly property string streamerStatus: String(live.status || "").toUpperCase() || "—"
+    readonly property string resolution: outputHeight >= 2160 ? "2160P"
+        : outputHeight >= 1440 ? "1440P"
+        : outputHeight >= 1080 ? "1080P"
+        : outputHeight > 0 ? outputHeight + "P" : "—"
 
     function runAction(index) {
         if (closing) return
@@ -43,12 +74,14 @@ FocusScope {
         if (pendingAction === 0) resumeRequested()
         else if (pendingAction === 1) qualityRequested()
         else if (pendingAction === 2) inviteRequested()
-        else if (pendingAction === 3) consoleModeRequested()
+        else if (pendingAction === 3) consoleModeRequested(!root.modeOn)
         else if (pendingAction === 4) endSessionRequested()
         else if (pendingAction === 5) statsRequested()
     }
     function clockText() {
-        const elapsed = ShellStore.streamStartedAtMs > 0 ? Math.max(0, nowMs - ShellStore.streamStartedAtMs) : 6130000
+        if (ShellStore.streamStartedAtMs <= 0)
+            return "—"
+        const elapsed = Math.max(0, nowMs - ShellStore.streamStartedAtMs)
         const total = Math.floor(elapsed / 1000)
         const hours = Math.floor(total / 3600)
         const minutes = Math.floor((total % 3600) / 60)
@@ -140,9 +173,9 @@ FocusScope {
                 spacing: 26
                 Repeater {
                     model: [
-                        { label: "FPS", value: root.fps },
-                        { label: qsTr("LATENCY"), value: root.latency + " ms" },
-                        { label: qsTr("BITRATE"), value: root.bitrate + " Mb" }
+                        { label: "FPS", value: root.fpsText },
+                        { label: qsTr("LATENCY"), value: root.latencyText },
+                        { label: qsTr("BITRATE"), value: root.bitrateText }
                     ]
                     delegate: Column {
                         id: headerMetric
@@ -183,10 +216,10 @@ FocusScope {
                 Repeater {
                     model: [
                         { title: qsTr("Back to game"), detail: qsTr("Esc"), icon: "desktop-play.svg", primary: true, danger: false },
-                        { title: qsTr("Stream quality"), detail: root.resolution + " · " + Number(root.profile.fps || 120), icon: "desktop-sliders.svg", primary: false, danger: false },
-                        { title: qsTr("Invite a friend"), detail: qsTr("UNAVAILABLE"), icon: "desktop-user-plus.svg", primary: false, danger: false },
-                        { title: qsTr("Switch to console mode"), detail: qsTr("GAMEPAD ON"), icon: "desktop-gamepad.svg", primary: false, danger: false },
-                        { title: qsTr("End session"), detail: qsTr("SAVES FIRST"), icon: "desktop-logout.svg", primary: false, danger: true }
+                        { title: qsTr("Stream quality"), detail: root.resolution + " · " + (root.qualityFps > 0 ? root.qualityFps : "—"), icon: "desktop-sliders.svg", primary: false, danger: false },
+                        { title: qsTr("Invite a friend"), detail: root.invitesAvailable ? qsTr("AVAILABLE") : qsTr("UNAVAILABLE"), icon: "desktop-user-plus.svg", primary: false, danger: false },
+                        { title: root.modeOn ? qsTr("Switch to desktop mode") : qsTr("Switch to console mode"), detail: root.modePending ? qsTr("SWITCHING…") : root.modeOn ? qsTr("DESKTOP READY") : qsTr("GAMEPAD READY"), icon: "desktop-gamepad.svg", primary: false, danger: false },
+                        { title: qsTr("End session"), detail: "Ctrl Q", icon: "desktop-logout.svg", primary: false, danger: true }
                     ]
                     delegate: Rectangle {
                         id: actionButton
@@ -270,34 +303,59 @@ FocusScope {
                         anchors.right: parent.right
                         anchors.rightMargin: 13
                         y: 10
-                        width: stableText.implicitWidth + 20
+                        width: statusText.implicitWidth + 20
                         height: 20
                         radius: 10
-                        color: "#1756E6A5"
+                        color: root.streamerStatus === "STREAMING" ? "#1756E6A5" : "#17FFFFFF"
                         border.width: 1
-                        border.color: "#3856E6A5"
-                        Text { id: stableText; anchors.centerIn: parent; text: qsTr("STABLE"); color: DesktopTokens.green; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 0.8 }
+                        border.color: root.streamerStatus === "STREAMING" ? "#3856E6A5" : "#29FFFFFF"
+                        Text {
+                            id: statusText
+                            anchors.centerIn: parent
+                            text: root.streamerStatus
+                            color: root.streamerStatus === "STREAMING" ? DesktopTokens.green : DesktopTokens.textMuted
+                            font.family: DesktopTokens.monoFont
+                            font.pixelSize: 8
+                            font.weight: Font.Bold
+                            font.letterSpacing: 0.8
+                        }
                     }
-                    Row {
+                    Column {
                         x: 14
                         y: 50
                         width: parent.width - 28
-                        height: 41
-                        spacing: 3
+                        spacing: 6
                         Repeater {
-                            model: [20,22,18,26,24,29,23,31,28,35,31,34,29,36,32,38,34,36,31,39,35,37,34,40,36,38,35,39,37,40]
-                            delegate: Rectangle {
-                                required property int index
-                                required property int modelData
-                                anchors.bottom: parent.bottom
-                                width: 7
-                                height: modelData
-                                radius: 2
-                                color: index > 26 ? DesktopTokens.green : "#597FD4FF"
+                            model: [
+                                { label: qsTr("PING"), value: root.pingText },
+                                { label: qsTr("LOSS"), value: root.lossText },
+                                { label: qsTr("CODEC"), value: root.codecText }
+                            ]
+                            delegate: Item {
+                                id: connectionRow
+                                required property var modelData
+                                width: parent.width
+                                height: 18
+                                Text {
+                                    text: connectionRow.modelData.label
+                                    color: DesktopTokens.textFaint
+                                    font.family: DesktopTokens.monoFont
+                                    font.pixelSize: 8
+                                    font.weight: Font.Bold
+                                    font.letterSpacing: 0.7
+                                }
+                                Text {
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: connectionRow.modelData.value
+                                    color: DesktopTokens.textHigh
+                                    font.family: DesktopTokens.monoFont
+                                    font.pixelSize: 10
+                                    font.weight: Font.Bold
+                                }
                             }
                         }
                     }
-                    Text { x: 14; y: 102; text: qsTr("9 ms ping · 0.00% loss · AV1 10-bit"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold }
                 }
                 Rectangle {
                     id: statsCard

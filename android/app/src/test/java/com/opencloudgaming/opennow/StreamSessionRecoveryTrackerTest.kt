@@ -7,7 +7,7 @@ import org.junit.Test
 
 class StreamSessionRecoveryTrackerTest {
     @Test
-    fun repeatedRecoveryEscalatesOnlyForTheSameSession() {
+    fun recoveryAttemptsAreTrackedPerSession() {
         val tracker = StreamSessionRecoveryTracker()
 
         assertEquals(1, tracker.nextAttempt("session-a"))
@@ -24,6 +24,34 @@ class StreamSessionRecoveryTrackerTest {
         tracker.reset()
 
         assertEquals(1, tracker.nextAttempt("session-a"))
+    }
+
+    @Test
+    fun repeatedRecoveryNeverAuthorizesAReplacementSession() {
+        assertEquals(
+            StreamSessionRecoveryDisposition.ReclaimAllocatedSession,
+            streamSessionRecoveryDisposition(recoveryAttempt = 1, probedStatus = null),
+        )
+        assertEquals(
+            StreamSessionRecoveryDisposition.ReclaimAllocatedSession,
+            streamSessionRecoveryDisposition(recoveryAttempt = 2, probedStatus = 2),
+        )
+        assertEquals(
+            StreamSessionRecoveryDisposition.ReclaimAllocatedSession,
+            streamSessionRecoveryDisposition(recoveryAttempt = 20, probedStatus = 6),
+        )
+    }
+
+    @Test
+    fun providerEndedSessionIsReportedInsteadOfAutomaticallyReplaced() {
+        assertEquals(
+            StreamSessionRecoveryDisposition.ReportEndedSession,
+            streamSessionRecoveryDisposition(recoveryAttempt = 1, probedStatus = 7),
+        )
+        assertEquals(
+            StreamSessionRecoveryDisposition.ReportEndedSession,
+            streamSessionRecoveryDisposition(recoveryAttempt = 5, probedStatus = 4),
+        )
     }
 
     @Test

@@ -8,6 +8,70 @@ import org.junit.Test
 
 class StoreRailTest {
     @Test
+    fun loadingStoreUsesTheKnownPersonalRailCount() {
+        val game = GameInfo(id = "game", title = "Game")
+
+        assertEquals(0, StoreStartRailGroups(emptyList(), emptyList(), emptyList()).visibleGroupCount)
+        assertEquals(1, StoreStartRailGroups(listOf(game), emptyList(), emptyList()).visibleGroupCount)
+        assertEquals(3, StoreStartRailGroups(listOf(game), listOf(game), listOf(game)).visibleGroupCount)
+    }
+
+    @Test
+    fun recommendationSkeletonUsesTheExactSettingsResolvedGridColumns() {
+        val threeColumnPhone = catalogGridMetrics(
+            availableWidthDp = 360f,
+            compact = false,
+            landscapeLayout = false,
+            posterSizeScale = 1f,
+            handheldLayout = true,
+        )
+        val threeColumnCompactPhone = catalogGridMetrics(
+            availableWidthDp = 360f,
+            compact = true,
+            landscapeLayout = false,
+            posterSizeScale = 1f,
+            handheldLayout = true,
+        )
+        val fourColumnCompactPhone = catalogGridMetrics(
+            availableWidthDp = 411f,
+            compact = true,
+            landscapeLayout = false,
+            posterSizeScale = 1f,
+            handheldLayout = true,
+        )
+        val twoColumnLargeCards = catalogGridMetrics(
+            availableWidthDp = 411f,
+            compact = false,
+            landscapeLayout = false,
+            posterSizeScale = 1.4f,
+            handheldLayout = true,
+        )
+        val sixColumnLandscape = catalogGridMetrics(
+            availableWidthDp = 800f,
+            compact = false,
+            landscapeLayout = true,
+            posterSizeScale = 1f,
+            handheldLayout = true,
+        )
+        val fiveColumnTv = catalogGridMetrics(
+            availableWidthDp = 960f,
+            compact = false,
+            landscapeLayout = true,
+            posterSizeScale = 1f,
+            handheldLayout = false,
+        )
+
+        assertEquals(3, threeColumnPhone.columnCount)
+        assertEquals(3, threeColumnCompactPhone.columnCount)
+        assertEquals(4, fourColumnCompactPhone.columnCount)
+        assertEquals(2, twoColumnLargeCards.columnCount)
+        assertEquals(6, sixColumnLandscape.columnCount)
+        assertEquals(5, fiveColumnTv.columnCount)
+        assertEquals(12, catalogSkeletonPlaceholderCount(threeColumnPhone.columnCount, storeLayout = true))
+        assertEquals(9, catalogSkeletonPlaceholderCount(threeColumnPhone.columnCount, storeLayout = false))
+    }
+
+    @Test
     fun phoneLandscapeHeroDoesNotStackScreenPaddingBelowTopBar() {
         assertEquals(0.dp, storeScreenTopPadding(controlsInTopBar = true, phoneLandscapeHero = true))
         assertEquals(4.dp, storeScreenTopPadding(controlsInTopBar = true, phoneLandscapeHero = false))

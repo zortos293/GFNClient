@@ -217,7 +217,7 @@ class MainActivity : ComponentActivity() {
         if (startupDataReady) {
             viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
         }
-        NativeStreamInputRouter.releaseTouchMouseForLifecycle()
+        NativeStreamInputRouter.releaseInputForLifecycle("picture-in-picture-changed")
     }
 
     private fun isAndroidPictureInPictureActive(): Boolean =
@@ -227,7 +227,7 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         // Backgrounding mid-tap gives us no UP or CANCEL, so without this the host keeps the mouse
         // button held down. PiP does not stop the activity, hence the separate call above.
-        NativeStreamInputRouter.releaseTouchMouseForLifecycle()
+        NativeStreamInputRouter.releaseInputForLifecycle("activity-stopped")
     }
 
     private fun KeyEvent.isAndroidVolumeKey(): Boolean =
@@ -377,7 +377,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && streamSystemUiActive) {
+        if (!hasFocus) {
+            // Pixel desktop and other freeform environments can intercept a shortcut after its
+            // DOWN event (for example Alt+Tab), so no matching UP reaches this window.
+            NativeStreamInputRouter.releaseInputForLifecycle("window-focus-lost")
+        } else if (streamSystemUiActive) {
             applyStreamSystemUi(true, force = true)
             applyStreamDisplayRefreshRate(streamDisplayRefreshActive, streamDisplayRefreshFps, force = true)
             requestExternalMousePointerCaptureIfNeeded()
@@ -416,11 +420,36 @@ class MainActivity : ComponentActivity() {
         applyStreamKeepAwake(active)
         updateStreamSystemUiEnforcer(active)
 
-        if (!active && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            runCatching { window.decorView.releasePointerCapture() }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val decorView = window.decorView
+            decorView.setOnCapturedPointerListener(
+                if (active) {
+                    View.OnCapturedPointerListener { _, event ->
+                        dispatchCapturedStreamPointer(event)
+                    }
+                } else {
+                    null
+                },
+            )
+            if (!active) {
+                runCatching { decorView.releasePointerCapture() }
+            }
         }
 
         applyStreamSystemBars(active)
+    }
+
+    /**
+     * Pointer capture is delivered to the focused view. The Activity retry path focuses and asks
+     * the decor view for capture, so that same view must own a forwarding listener; otherwise a
+     * Bluetooth mouse can be captured successfully while its events never reach the stream view.
+     */
+    private fun dispatchCapturedStreamPointer(event: MotionEvent): Boolean {
+        if (!shouldRouteCapturedAndroidMousePointer(streamSystemUiActive, event.isMouseLikePointerEvent())) {
+            return false
+        }
+        enforceStreamSystemUiFromInput()
+        return NativeStreamInputRouter.dispatchMotion(event)
     }
 
     /** Reapplies only immersive bars; pointer-icon traversal and window flags are state changes. */
@@ -764,6 +793,11 @@ internal fun shouldPeriodicallyEnforceStreamSystemUi(
     navigationBarsVisible: Boolean,
     pointerLockEnabled: Boolean,
 ): Boolean = streamActive && (pointerLockEnabled || !navigationBarsVisible)
+
+internal fun shouldRouteCapturedAndroidMousePointer(
+    streamActive: Boolean,
+    mouseLikePointer: Boolean,
+): Boolean = streamActive && mouseLikePointer
 
 internal fun shouldRequestAndroidMousePointerCapture(
     streamActive: Boolean,

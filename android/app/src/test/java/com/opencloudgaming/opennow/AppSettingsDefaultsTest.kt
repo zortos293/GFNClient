@@ -17,7 +17,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.hideStreamButtons)
         assertTrue(settings.externalMousePointerLock)
         assertFalse(settings.showFavoriteIconOnGameCards)
-        assertTrue(settings.liveSelectedOutlines)
+        assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
         assertFalse(settings.absoluteCinemaEverywhere)
         assertFalse(settings.localAppsEnabled)
@@ -69,7 +69,7 @@ class AppSettingsDefaultsTest {
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)
         assertFalse(settings.showFavoriteIconOnGameCards)
-        assertTrue(settings.liveSelectedOutlines)
+        assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
         assertFalse(settings.absoluteCinemaEverywhere)
         assertFalse(settings.localAppsEnabled)
@@ -98,14 +98,14 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
-    fun liveSelectedOutlinesDefaultOnAndPreserveOptOut() {
+    fun liveSelectedOutlinesDefaultOffAndPreserveOptIn() {
         val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
-        val optedOut = OpenNowJson.decodeFromString<AppSettings>(
-            """{"liveSelectedOutlines":false}""",
+        val optedIn = OpenNowJson.decodeFromString<AppSettings>(
+            """{"liveSelectedOutlines":true}""",
         )
 
-        assertTrue(defaulted.liveSelectedOutlines)
-        assertFalse(optedOut.liveSelectedOutlines)
+        assertFalse(defaulted.liveSelectedOutlines)
+        assertTrue(optedIn.liveSelectedOutlines)
     }
 
     @Test

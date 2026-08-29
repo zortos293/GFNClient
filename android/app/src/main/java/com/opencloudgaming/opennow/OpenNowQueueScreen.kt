@@ -7,8 +7,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -46,8 +49,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.DisposableEffect
@@ -81,6 +86,8 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
+import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.OpenNowMotion
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -104,6 +111,10 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
     val visibleQueuePosition = rememberStableQueuePosition(queuePosition)
     val queueCopy = queueLaunchStatusText(state, visibleQueuePosition)
     val hasPlayableAd = ad != null && mediaUrl != null
+    val reduceMotion = LocalReduceMotion.current
+    val entranceState = remember(game?.id) {
+        MutableTransitionState(false).apply { targetState = true }
+    }
 
     BoxWithConstraints(
         Modifier
@@ -123,34 +134,53 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
                 .padding(18.dp),
             contentAlignment = Alignment.Center,
         ) {
-            if (ad != null && mediaUrl != null) {
-                QueueAdPanel(
-                    ad = ad,
-                    mediaUrl = mediaUrl,
-                    viewModel = viewModel,
-                    game = game,
-                    queueCopy = queueCopy,
-                    queuePosition = visibleQueuePosition,
-                    error = state.error,
-                    playbackKey = session?.sessionId.orEmpty(),
-                    compact = useLandscapeAdLayout,
-                    onMinimize = viewModel::minimizeStreamLaunch,
-                    onCancel = viewModel::stopStream,
-                    modifier = Modifier
-                        .fillMaxWidth(if (useLandscapeAdLayout) 0.72f else 1f)
-                        .widthIn(max = if (useLandscapeAdLayout) 900.dp else 620.dp),
-                )
-            } else {
-                QueueStatusPanel(
-                    game = game,
-                    queueCopy = queueCopy,
-                    queuePosition = visibleQueuePosition,
-                    error = state.error,
-                    compact = false,
-                    onMinimize = viewModel::minimizeStreamLaunch,
-                    onCancel = viewModel::stopStream,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            AnimatedVisibility(
+                visibleState = entranceState,
+                enter = fadeIn(
+                    tween(if (reduceMotion) 0 else OpenNowMotion.DurationFast),
+                ) + scaleIn(
+                    initialScale = if (reduceMotion) 1f else 0.965f,
+                    animationSpec = tween(
+                        if (reduceMotion) 0 else OpenNowMotion.DurationStandard,
+                        easing = OpenNowMotion.EasingStandard,
+                    ),
+                ) + slideInVertically(
+                    initialOffsetY = { if (reduceMotion) 0 else it / 18 },
+                    animationSpec = tween(
+                        if (reduceMotion) 0 else OpenNowMotion.DurationStandard,
+                        easing = OpenNowMotion.EasingStandard,
+                    ),
+                ),
+            ) {
+                if (ad != null && mediaUrl != null) {
+                    QueueAdPanel(
+                        ad = ad,
+                        mediaUrl = mediaUrl,
+                        viewModel = viewModel,
+                        game = game,
+                        queueCopy = queueCopy,
+                        queuePosition = visibleQueuePosition,
+                        error = state.error,
+                        playbackKey = session?.sessionId.orEmpty(),
+                        compact = useLandscapeAdLayout,
+                        onMinimize = viewModel::minimizeStreamLaunch,
+                        onCancel = viewModel::stopStream,
+                        modifier = Modifier
+                            .fillMaxWidth(if (useLandscapeAdLayout) 0.72f else 1f)
+                            .widthIn(max = if (useLandscapeAdLayout) 900.dp else 620.dp),
+                    )
+                } else {
+                    QueueStatusPanel(
+                        game = game,
+                        queueCopy = queueCopy,
+                        queuePosition = visibleQueuePosition,
+                        error = state.error,
+                        compact = false,
+                        onMinimize = viewModel::minimizeStreamLaunch,
+                        onCancel = viewModel::stopStream,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
     }
@@ -162,59 +192,75 @@ private fun QueueAmbientBackdrop(
     queuePosition: Int?,
     modifier: Modifier = Modifier,
 ) {
-    val transition = rememberInfiniteTransition(label = "queue-ambient")
-    val driftA by transition.animateFloat(
-        initialValue = -1f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 11000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "queue-ambient-drift-a",
-    )
-    val driftB by transition.animateFloat(
-        initialValue = 1f,
-        targetValue = -1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 14000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "queue-ambient-drift-b",
-    )
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 16000, easing = LinearEasing),
-        ),
-        label = "queue-ambient-phase",
-    )
-    val shimmer by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 5200, easing = LinearEasing),
-        ),
-        label = "queue-ambient-shimmer",
-    )
-    val orbADim by transition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 0.72f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 8200, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "queue-ambient-orb-a-dim",
-    )
-    val orbBDim by transition.animateFloat(
-        initialValue = 0.26f,
-        targetValue = 0.56f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 9800, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "queue-ambient-orb-b-dim",
-    )
+    val reduceMotion = LocalReduceMotion.current
+    val driftA: State<Float>
+    val driftB: State<Float>
+    val phase: State<Float>
+    val shimmer: State<Float>
+    val orbADim: State<Float>
+    val orbBDim: State<Float>
+    if (reduceMotion) {
+        driftA = remember { mutableFloatStateOf(0f) }
+        driftB = remember { mutableFloatStateOf(0f) }
+        phase = remember { mutableFloatStateOf(0f) }
+        shimmer = remember { mutableFloatStateOf(0f) }
+        orbADim = remember { mutableFloatStateOf(0.52f) }
+        orbBDim = remember { mutableFloatStateOf(0.4f) }
+    } else {
+        val transition = rememberInfiniteTransition(label = "queue-ambient")
+        driftA = transition.animateFloat(
+            initialValue = -1f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 11000, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "queue-ambient-drift-a",
+        )
+        driftB = transition.animateFloat(
+            initialValue = 1f,
+            targetValue = -1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 14000, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "queue-ambient-drift-b",
+        )
+        phase = transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 16000, easing = LinearEasing),
+            ),
+            label = "queue-ambient-phase",
+        )
+        shimmer = transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 5200, easing = LinearEasing),
+            ),
+            label = "queue-ambient-shimmer",
+        )
+        orbADim = transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 0.72f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 8200, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "queue-ambient-orb-a-dim",
+        )
+        orbBDim = transition.animateFloat(
+            initialValue = 0.26f,
+            targetValue = 0.56f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 9800, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "queue-ambient-orb-b-dim",
+        )
+    }
 
     BoxWithConstraints(
         modifier
@@ -230,27 +276,30 @@ private fun QueueAmbientBackdrop(
             ),
     ) {
         val baseSize = minOf(maxWidth, maxHeight)
+        val density = LocalDensity.current
+        val widthPx = with(density) { maxWidth.toPx() }
+        val heightPx = with(density) { maxHeight.toPx() }
         QueueAmbientOrb(
             color = accent,
             size = baseSize * 0.92f,
-            alpha = orbADim,
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .offset(
-                    x = maxWidth * (-0.22f + 0.10f * driftA),
-                    y = maxHeight * (0.02f + 0.08f * driftB),
-                ),
+                .graphicsLayer {
+                    translationX = widthPx * (-0.22f + 0.10f * driftA.value)
+                    translationY = heightPx * (0.02f + 0.08f * driftB.value)
+                    alpha = orbADim.value.coerceIn(0f, 1f)
+                },
         )
         QueueAmbientOrb(
             color = Color(0xff2bdcff),
             size = baseSize * 0.7f,
-            alpha = orbBDim,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .offset(
-                    x = maxWidth * (0.15f + 0.08f * driftB),
-                    y = maxHeight * (0.10f + 0.07f * driftA),
-                ),
+                .graphicsLayer {
+                    translationX = widthPx * (0.15f + 0.08f * driftB.value)
+                    translationY = heightPx * (0.10f + 0.07f * driftA.value)
+                    alpha = orbBDim.value.coerceIn(0f, 1f)
+                },
         )
         QueueSignalField(
             accent = accent,
@@ -271,14 +320,12 @@ private fun QueueAmbientBackdrop(
 private fun QueueAmbientOrb(
     color: Color,
     size: Dp,
-    alpha: Float,
     modifier: Modifier = Modifier,
 ) {
     Box(
         modifier
             .size(size)
             .blur(64.dp)
-            .graphicsLayer(alpha = alpha.coerceIn(0f, 1f))
             .background(
                 Brush.radialGradient(
                     listOf(
@@ -296,15 +343,17 @@ private fun QueueAmbientOrb(
 private fun QueueSignalField(
     accent: Color,
     queuePosition: Int?,
-    phase: Float,
-    shimmer: Float,
+    phase: State<Float>,
+    shimmer: State<Float>,
     modifier: Modifier = Modifier,
 ) {
     val heat = queueUrgency(queuePosition)
     Canvas(modifier) {
+        val phaseValue = phase.value
+        val shimmerValue = shimmer.value
         val lineCount = 9
         val spacing = size.height / lineCount
-        val offset = shimmer * spacing
+        val offset = shimmerValue * spacing
         for (index in -1..lineCount) {
             val y = index * spacing + offset
             drawLine(
@@ -316,8 +365,8 @@ private fun QueueSignalField(
         }
         repeat(12) { index ->
             val lane = index + 1
-            val x = ((lane * 0.173f + phase * (0.08f + lane * 0.006f)) % 1f) * size.width
-            val y = ((lane * 0.291f + shimmer * (0.12f + lane * 0.004f)) % 1f) * size.height
+            val x = ((lane * 0.173f + phaseValue * (0.08f + lane * 0.006f)) % 1f) * size.width
+            val y = ((lane * 0.291f + shimmerValue * (0.12f + lane * 0.004f)) % 1f) * size.height
             drawCircle(
                 color = accent.copy(alpha = 0.05f + heat * 0.04f),
                 radius = (1.5f + (index % 4)) * density,
@@ -353,27 +402,35 @@ private fun AnimatedQueueStatusText(
     var numberTo by remember { mutableStateOf(queuePosition.toString()) }
     val heat = queueUrgency(queuePosition)
     val hotQueue = queuePosition < 10
-    val transition = rememberInfiniteTransition(label = "queue-status-glow")
-    val glow by transition.animateFloat(
-        initialValue = 0.55f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (hotQueue) 520 else 1100, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "queue-status-glow-alpha",
-    )
-    val moleculePhase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = (190 - heat * 95).roundToInt().coerceIn(92, 190),
-                easing = LinearEasing,
+    val reduceMotion = LocalReduceMotion.current
+    val glow: State<Float>
+    val moleculePhase: State<Float>
+    if (reduceMotion) {
+        glow = remember { mutableFloatStateOf(0.72f) }
+        moleculePhase = remember { mutableFloatStateOf(0f) }
+    } else {
+        val transition = rememberInfiniteTransition(label = "queue-status-glow")
+        glow = transition.animateFloat(
+            initialValue = 0.55f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = if (hotQueue) 520 else 1100, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse,
             ),
-        ),
-        label = "queue-status-molecule-phase",
-    )
+            label = "queue-status-glow-alpha",
+        )
+        moleculePhase = transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(
+                    durationMillis = (190 - heat * 95).roundToInt().coerceIn(92, 190),
+                    easing = LinearEasing,
+                ),
+            ),
+            label = "queue-status-molecule-phase",
+        )
+    }
     val statusColor by animateColorAsState(
         targetValue = queueUrgencyColor(queuePosition),
         animationSpec = tween(durationMillis = 240),
@@ -406,21 +463,10 @@ private fun AnimatedQueueStatusText(
     val moleculeCagePx = with(LocalDensity.current) {
         (if (hotQueue) (0.45f + heat * 1.45f).dp else 0.dp).toPx()
     }
-    val shakeX = if (hotQueue) {
-        (sin(moleculePhase * 31.415928f) * 0.64f + sin(moleculePhase * 106.81416f) * 0.36f) * moleculeCagePx
-    } else {
-        0f
-    }
-    val shakeY = if (hotQueue) {
-        (sin(moleculePhase * 43.982296f) * 0.55f + sin(moleculePhase * 81.68141f) * 0.45f) * moleculeCagePx * 0.55f
-    } else {
-        0f
-    }
     val parts = queueStatusParts(queueCopy, queuePosition)
     val textStyle = (if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleMedium)
         .copy(fontWeight = FontWeight.Normal)
-    val numberPhase = numberProgress.value
-    val numberAnimating = numberPhase < 1f
+    val numberAnimating = numberTrigger > 0 && numberFrom != numberTo
     val numberTravelPx = with(LocalDensity.current) { (if (compact) 18.dp else 22.dp).toPx() }
 
     Row(
@@ -439,18 +485,20 @@ private fun AnimatedQueueStatusText(
             previousNumber = numberFrom,
             targetNumber = numberTo,
             animating = numberAnimating,
-            phase = numberPhase,
+            phaseProvider = { numberProgress.value },
             travelPx = numberTravelPx,
             color = statusColor,
             style = textStyle.copy(
                 shadow = Shadow(
-                    color = statusColor.copy(alpha = heat * (0.38f + 0.42f * glow)),
+                    color = statusColor.copy(alpha = heat * 0.68f),
                     offset = Offset(0f, 0f),
-                    blurRadius = 18f + heat * 18f,
+                    blurRadius = 18f + heat * 14f,
                 ),
             ),
-            shakeX = shakeX,
-            shakeY = shakeY,
+            glow = glow,
+            moleculePhase = moleculePhase,
+            moleculeCagePx = moleculeCagePx,
+            heat = heat,
         )
         Text(
             parts.suffix,
@@ -467,12 +515,14 @@ private fun AnimatedQueueNumber(
     previousNumber: String,
     targetNumber: String,
     animating: Boolean,
-    phase: Float,
+    phaseProvider: () -> Float,
     travelPx: Float,
     color: Color,
     style: TextStyle,
-    shakeX: Float,
-    shakeY: Float,
+    glow: State<Float>,
+    moleculePhase: State<Float>,
+    moleculeCagePx: Float,
+    heat: Float,
 ) {
     val fromNumber = if (animating) previousNumber else currentNumber
     val toNumber = if (animating) targetNumber else currentNumber
@@ -481,10 +531,22 @@ private fun AnimatedQueueNumber(
     Row(
         modifier = Modifier
             .clipToBounds()
-            .graphicsLayer(
-                translationX = shakeX,
-                translationY = shakeY,
-            ),
+            .graphicsLayer {
+                val phase = moleculePhase.value
+                translationX = if (moleculeCagePx > 0f) {
+                    (sin(phase * 31.415928f) * 0.64f + sin(phase * 106.81416f) * 0.36f) * moleculeCagePx
+                } else {
+                    0f
+                }
+                translationY = if (moleculeCagePx > 0f) {
+                    (sin(phase * 43.982296f) * 0.55f + sin(phase * 81.68141f) * 0.45f) * moleculeCagePx * 0.55f
+                } else {
+                    0f
+                }
+                val pulse = 1f + heat * 0.012f * glow.value
+                scaleX = pulse
+                scaleY = pulse
+            },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         repeat(slotCount) { slotIndex ->
@@ -494,7 +556,7 @@ private fun AnimatedQueueNumber(
                 fromDigit = fromDigit,
                 toDigit = toDigit,
                 digitChanged = animating && fromDigit != toDigit,
-                phase = phase,
+                phaseProvider = phaseProvider,
                 travelPx = travelPx,
                 color = color,
                 style = style,
@@ -508,7 +570,7 @@ private fun QueueNumberDigitSlot(
     fromDigit: Char?,
     toDigit: Char?,
     digitChanged: Boolean,
-    phase: Float,
+    phaseProvider: () -> Float,
     travelPx: Float,
     color: Color,
     style: TextStyle,
@@ -541,12 +603,13 @@ private fun QueueNumberDigitSlot(
             if (from.isNotEmpty()) {
                 Text(
                     from,
-                    modifier = Modifier.graphicsLayer(
-                        translationY = -travelPx * phase,
-                        scaleX = 1f - phase * 0.03f,
-                        scaleY = 1f - phase * 0.03f,
-                        alpha = 1f - phase,
-                    ),
+                    modifier = Modifier.graphicsLayer {
+                        val phase = phaseProvider()
+                        translationY = -travelPx * phase
+                        scaleX = 1f - phase * 0.03f
+                        scaleY = 1f - phase * 0.03f
+                        alpha = 1f - phase
+                    },
                     color = color,
                     style = style,
                     textAlign = TextAlign.Center,
@@ -555,12 +618,13 @@ private fun QueueNumberDigitSlot(
             if (to.isNotEmpty()) {
                 Text(
                     to,
-                    modifier = Modifier.graphicsLayer(
-                        translationY = travelPx * (1f - phase),
-                        scaleX = 0.97f + phase * 0.03f,
-                        scaleY = 0.97f + phase * 0.03f,
-                        alpha = phase,
-                    ),
+                    modifier = Modifier.graphicsLayer {
+                        val phase = phaseProvider()
+                        translationY = travelPx * (1f - phase)
+                        scaleX = 0.97f + phase * 0.03f
+                        scaleY = 0.97f + phase * 0.03f
+                        alpha = phase
+                    },
                     color = color,
                     style = style,
                     textAlign = TextAlign.Center,

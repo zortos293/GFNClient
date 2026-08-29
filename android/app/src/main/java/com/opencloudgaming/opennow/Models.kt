@@ -496,7 +496,7 @@ data class AppSettings(
     val showFavoriteIconOnGameCards: Boolean = false,
     val expressiveUi: Boolean = true,
     /** Static outlines around game artwork, independent from optional animated border effects. */
-    val liveSelectedOutlines: Boolean = true,
+    val liveSelectedOutlines: Boolean = false,
     /** Animated focus energy using the selected interface accent; never changes the accent itself. */
     val absoluteCinemaEffects: Boolean = false,
     /** Extends Absolute Cinema to pointer hover and non-controller focus surfaces throughout the UI. */

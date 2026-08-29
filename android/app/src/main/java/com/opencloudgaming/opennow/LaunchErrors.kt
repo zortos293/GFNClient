@@ -25,7 +25,11 @@ internal class CloudMatchRequestStatusException(
 internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = null): String {
     val text = error.message ?: return "Launch failed"
     val cloudMatchFailure = error.cloudMatchRequestStatusException()
+    val terminalSession = error.terminalSessionStatusException()
     return when {
+        terminalSession != null ->
+            "The cloud provider ended this session (status ${terminalSession.status}). " +
+                "OpenNOW did not stop it or start a replacement queue."
         cloudMatchFailure?.isFreeTierEntitlementError() == true ->
             "Your GeForce NOW account is on the Free tier. This game requires a Priority or Ultimate membership."
         cloudMatchFailure?.isLimitedModeStreamingError() == true -> limitedModeStreamingMessage(gameTitle)
@@ -33,6 +37,15 @@ internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = 
             "Game is patching or under maintenance. Try again when NVIDIA finishes updating it."
         else -> text
     }
+}
+
+private fun Throwable.terminalSessionStatusException(): TerminalSessionStatusException? {
+    var current: Throwable? = this
+    while (current != null) {
+        if (current is TerminalSessionStatusException) return current
+        current = current.cause?.takeUnless { it === current }
+    }
+    return null
 }
 
 private fun Throwable.cloudMatchRequestStatusException(): CloudMatchRequestStatusException? {

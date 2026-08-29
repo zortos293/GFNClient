@@ -73,4 +73,26 @@ class ExternalMousePointerCaptureTest {
             ),
         )
     }
+
+    @Test
+    fun routesOnlyCapturedMouseEventsWhileStreaming() {
+        assertTrue(
+            shouldRouteCapturedAndroidMousePointer(
+                streamActive = true,
+                mouseLikePointer = true,
+            ),
+        )
+        assertFalse(
+            shouldRouteCapturedAndroidMousePointer(
+                streamActive = false,
+                mouseLikePointer = true,
+            ),
+        )
+        assertFalse(
+            shouldRouteCapturedAndroidMousePointer(
+                streamActive = true,
+                mouseLikePointer = false,
+            ),
+        )
+    }
 }

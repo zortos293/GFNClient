@@ -391,119 +391,6 @@ internal class StreamLivenessWatchdog(
     }
 }
 
-internal enum class RuntimeQualityRecoveryReason {
-    NetworkDegraded,
-    DecoderOverloaded,
-}
-
-/**
- * Detects sustained playable-but-bad video without trusting the smoothed overlay percentage.
- *
- * Runtime stats arrive about once per second. Network recovery uses only the current raw packet
- * delta, so a stale rolling-window value cannot force a reconnect. Decoder recovery is separate
- * and requires both a persistent output deficit and decode time near or above the frame budget.
- */
-internal class RuntimeQualityRecoveryWatchdog(
-    private val samplesBeforeRecovery: Int = RUNTIME_QUALITY_BAD_SAMPLES_BEFORE_RECOVERY,
-    private val networkLossThresholdPct: Double = RUNTIME_NETWORK_LOSS_THRESHOLD_PCT,
-    private val minimumPacketSample: Long = RUNTIME_NETWORK_MINIMUM_PACKET_SAMPLE,
-    private val decoderOutputRatioThreshold: Double = RUNTIME_DECODER_OUTPUT_RATIO_THRESHOLD,
-) {
-    private var degradedNetworkSamples = 0
-    private var overloadedDecoderSamples = 0
-
-    init {
-        require(samplesBeforeRecovery > 0)
-        require(networkLossThresholdPct in 0.0..100.0)
-        require(minimumPacketSample > 0L)
-        require(decoderOutputRatioThreshold in 0.0..1.0)
-    }
-
-    fun reset() {
-        degradedNetworkSamples = 0
-        overloadedDecoderSamples = 0
-    }
-
-    fun observe(
-        stats: StreamRuntimeStats,
-        requestedFps: Int,
-        recoveryEligible: Boolean,
-    ): RuntimeQualityRecoveryReason? {
-        if (!recoveryEligible) {
-            reset()
-            return null
-        }
-
-        val lost = stats.packetsLostDelta?.takeIf { it >= 0L }
-        val received = stats.packetsReceivedDelta?.takeIf { it >= 0L }
-        val packetSample = if (lost != null && received != null) lost + received else 0L
-        val rawLossPct = if (lost != null && packetSample >= minimumPacketSample) {
-            lost.toDouble() / packetSample.toDouble() * 100.0
-        } else {
-            null
-        }
-        if (rawLossPct != null && rawLossPct >= networkLossThresholdPct) {
-            degradedNetworkSamples += 1
-            overloadedDecoderSamples = 0
-            if (degradedNetworkSamples >= samplesBeforeRecovery) {
-                reset()
-                return RuntimeQualityRecoveryReason.NetworkDegraded
-            }
-            return null
-        }
-
-        degradedNetworkSamples = 0
-        val receivedFps = stats.receivedFps
-        val decodedFps = stats.decodedFps
-        val decodeMs = stats.decodeMs
-        val minimumReceivedFps = maxOf(RUNTIME_DECODER_MINIMUM_RECEIVED_FPS, requestedFps / 3)
-        val frameBudgetMs = 1_000.0 / requestedFps.coerceAtLeast(1)
-        val decoderOverloaded = receivedFps != null &&
-            decodedFps != null &&
-            decodeMs != null &&
-            receivedFps >= minimumReceivedFps &&
-            decodedFps < receivedFps * decoderOutputRatioThreshold &&
-            decodeMs >= frameBudgetMs * RUNTIME_DECODER_BUDGET_RATIO
-        if (decoderOverloaded) {
-            overloadedDecoderSamples += 1
-            if (overloadedDecoderSamples >= samplesBeforeRecovery) {
-                reset()
-                return RuntimeQualityRecoveryReason.DecoderOverloaded
-            }
-        } else {
-            overloadedDecoderSamples = 0
-        }
-        return null
-    }
-}
-
-internal fun StreamSettings.runtimeQualityRecoveryProfile(
-    reason: RuntimeQualityRecoveryReason,
-): StreamSettings = when (reason) {
-    RuntimeQualityRecoveryReason.NetworkDegraded -> copy(
-        fps = minOf(fps, RUNTIME_NETWORK_FPS_CAP),
-        maxBitrateMbps = minOf(maxBitrateMbps, RUNTIME_NETWORK_BITRATE_CAP_MBPS),
-        colorQuality = ColorQuality.EightBit420,
-        hdrEnabled = false,
-        streamSharpeningEnabled = false,
-    ).withCodecColorCompatibility()
-    RuntimeQualityRecoveryReason.DecoderOverloaded -> androidSafeVideoFallback().copy(
-        fps = minOf(fps, RUNTIME_DECODER_FPS_CAP),
-        maxBitrateMbps = minOf(maxBitrateMbps, RUNTIME_DECODER_BITRATE_CAP_MBPS),
-    )
-}
-
-private const val RUNTIME_QUALITY_BAD_SAMPLES_BEFORE_RECOVERY = 6
-private const val RUNTIME_NETWORK_LOSS_THRESHOLD_PCT = 5.0
-private const val RUNTIME_NETWORK_MINIMUM_PACKET_SAMPLE = 100L
-private const val RUNTIME_NETWORK_FPS_CAP = 30
-private const val RUNTIME_NETWORK_BITRATE_CAP_MBPS = 12
-private const val RUNTIME_DECODER_OUTPUT_RATIO_THRESHOLD = 0.98
-private const val RUNTIME_DECODER_BUDGET_RATIO = 0.95
-private const val RUNTIME_DECODER_MINIMUM_RECEIVED_FPS = 15
-private const val RUNTIME_DECODER_FPS_CAP = 30
-private const val RUNTIME_DECODER_BITRATE_CAP_MBPS = 25
-
 internal data class StreamRecoveryTiming(
     val keyframeAfterMs: Long,
     val keyframeIntervalMs: Long,
@@ -1119,7 +1006,7 @@ internal class TouchMouseState {
             // The reanchor series is order-sensitive: the host must clamp through the top-left
             // boundary before moving to the target. The unordered loss-tolerant channel could
             // deliver these out of order and clamp the cursor back to 0,0, so keep it reliable.
-            if (!client.sendRawMouseMove(delta.dx, delta.dy)) {
+            if (!client.sendRawMouseMove(delta.dx, delta.dy, partiallyReliable = false)) {
                 virtualCursor.forget()
                 return false
             }

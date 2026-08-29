@@ -62,6 +62,7 @@ class AndroidTvUiBehaviorTest {
         assertEquals(Color.White, style.color)
         assertEquals(Color.White, style.secondaryColor)
         assertFalse(style.enabled)
+        assertFalse(style.gameCardBordersEnabled)
         assertFalse(style.absoluteCinemaActive)
         assertFalse(style.absoluteCinemaEverywhere)
     }
@@ -503,9 +504,10 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun storeRailSkeletonIncludesThePartiallyVisibleNextCard() {
-        assertEquals(4, storeRailVisibleCardCount(360f, 96f, 10f))
-        assertEquals(3, storeRailVisibleCardCount(360f, 140f, 10f))
+    fun storeRailSkeletonOnlyIncludesWholeCards() {
+        assertEquals(3, storeRailVisibleCardCount(360f, 96f, 10f))
+        assertEquals(2, storeRailVisibleCardCount(360f, 140f, 10f))
+        assertEquals(3, storeRailVisibleCardCount(308f, 96f, 10f))
     }
 
     @Test

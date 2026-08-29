@@ -132,6 +132,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -148,6 +149,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -223,8 +226,8 @@ internal fun HomeScreen(
     val scope = rememberCoroutineScope()
     val haptics = LocalOpenNowHaptics.current
     val selectGameWithHaptic: (GameInfo) -> Unit = { game ->
-        haptics?.play(HapticCue.Activate)
         viewModel.selectGame(game)
+        haptics?.play(HapticCue.Activate)
     }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -349,6 +352,16 @@ internal fun HomeScreen(
                                 settings = state.settings,
                                 tvProfile = tvProfile,
                                 storeLayout = !resultsOnly,
+                                storeRailCount = if (resultsOnly) {
+                                    0
+                                } else {
+                                    storeStartRailGroups(
+                                        games = visibleGames,
+                                        libraryGames = state.libraryGames,
+                                        favoriteIds = state.settings.favoriteGameIds,
+                                        queuedGameKeys = state.queuedGameKeys,
+                                    ).visibleGroupCount.coerceAtLeast(1)
+                                },
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -533,8 +546,8 @@ internal fun LibraryScreen(
 ) {
     val haptics = LocalOpenNowHaptics.current
     val selectGameWithHaptic: (GameInfo) -> Unit = { game ->
-        haptics?.play(HapticCue.Activate)
         viewModel.selectGame(game)
+        haptics?.play(HapticCue.Activate)
     }
     val orderedGames = remember(state.libraryGames, state.settings.favoriteGameIds, state.librarySortId) {
         sortLibraryGames(
@@ -638,6 +651,7 @@ internal fun LibraryScreen(
                     RefreshingGamesPlaceholder(
                         settings = state.settings,
                         tvProfile = tvProfile,
+                        topContentPadding = OpenNowSpacing.xs,
                         modifier = Modifier.weight(1f),
                     )
                 } else {
@@ -988,12 +1002,16 @@ private fun RefreshingGamesPlaceholder(
     settings: AppSettings,
     tvProfile: Boolean,
     storeLayout: Boolean = false,
+    storeRailCount: Int = 0,
+    topContentPadding: Dp? = null,
     modifier: Modifier = Modifier,
 ) {
     GameGridSkeleton(
         settings = settings,
         tvProfile = tvProfile,
         storeLayout = storeLayout,
+        storeRailCount = storeRailCount,
+        topContentPadding = topContentPadding,
         modifier = modifier,
     )
 }
@@ -1062,6 +1080,8 @@ private fun GameGridSkeleton(
     settings: AppSettings,
     tvProfile: Boolean,
     storeLayout: Boolean,
+    storeRailCount: Int,
+    topContentPadding: Dp?,
     modifier: Modifier = Modifier,
 ) {
     val compact = settings.compactGameCards
@@ -1113,13 +1133,19 @@ private fun GameGridSkeleton(
     ) {
         BoxWithConstraints(modifier.fillMaxSize()) {
             val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
-            val placeholderItems = remember(gridSpec.estimatedColumns, storeLayout) {
-                List(gridSpec.estimatedColumns * if (storeLayout) 4 else 3) { it }
+            val contentPadding = gridSpec.contentPadding.withTop(
+                when {
+                    storeLayout && landscapeLayout && !tvProfile -> 0.dp
+                    else -> topContentPadding
+                },
+            )
+            val placeholderItems = remember(gridSpec.columnCount, storeLayout) {
+                List(catalogSkeletonPlaceholderCount(gridSpec.columnCount, storeLayout)) { it }
             }
             LazyVerticalGrid(
                 modifier = Modifier.fillMaxSize(),
                 columns = gridSpec.cells,
-                contentPadding = gridSpec.contentPadding,
+                contentPadding = contentPadding,
                 horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
                 verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
                 userScrollEnabled = false,
@@ -1129,11 +1155,22 @@ private fun GameGridSkeleton(
                         StoreStartRailsSkeleton(
                             settings = settings,
                             tvProfile = tvProfile,
+                            railCount = storeRailCount,
+                        )
+                    }
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        SkeletonSectionHeader(
+                            modifier = Modifier.padding(
+                                top = OpenNowSpacing.lg,
+                                bottom = OpenNowSpacing.sm,
+                            ),
                         )
                     }
                 }
                 gridItems(placeholderItems, key = { it }) {
                     GameCardSkeleton(
+                        expressiveUi = settings.expressiveUi,
+                        tvProfile = tvProfile,
                         squareCard = gridSpec.squareCards,
                         thumbnailFavoriteOverlay = shouldShowCatalogFavoriteIcon(settings),
                         showCardTitles = !artworkOnly && shouldShowCatalogCardTitles(
@@ -1151,15 +1188,28 @@ private fun GameGridSkeleton(
 private fun StoreStartRailsSkeleton(
     settings: AppSettings,
     tvProfile: Boolean,
+    railCount: Int,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val showFeaturedHero = shouldShowStoreHero(
+        tvProfile = tvProfile,
+        landscape = landscapeLayout,
+        landscapeEnabled = settings.landscapeNewGamesHero,
+    )
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(top = 2.dp, bottom = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(top = if (landscapeLayout) 0.dp else 2.dp, bottom = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.lg),
     ) {
-        repeat(2) {
+        if (showFeaturedHero) {
+            StoreHeroSkeleton(
+                settings = settings,
+                tvProfile = tvProfile,
+                landscapeLayout = landscapeLayout,
+            )
+        }
+        repeat(railCount.coerceAtLeast(1)) {
             StoreRailSectionSkeleton(
                 expressiveUi = settings.expressiveUi,
                 tvProfile = tvProfile,
@@ -1167,6 +1217,95 @@ private fun StoreStartRailsSkeleton(
                 cardScale = settings.posterSizeScale,
                 showFavoriteIcon = shouldShowCatalogFavoriteIcon(settings),
             )
+        }
+    }
+}
+
+/** Mirrors the configured Coming next hero so the first loaded frame does not reshape the Store. */
+@Composable
+private fun StoreHeroSkeleton(
+    settings: AppSettings,
+    tvProfile: Boolean,
+    landscapeLayout: Boolean,
+) {
+    val shape = RoundedCornerShape(if (settings.expressiveUi) 24.dp else 16.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = if (landscapeLayout && !tvProfile) 0.dp else 6.dp),
+        verticalArrangement = Arrangement.spacedBy(
+            if (landscapeLayout && !tvProfile) OpenNowSpacing.sm else OpenNowSpacing.md,
+        ),
+    ) {
+        SkeletonSectionHeader(
+            showSubtitle = true,
+            reserveTrailingAction = landscapeLayout && !tvProfile,
+        )
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(heroAspectRatio(tvProfile, landscapeLayout))
+                .border(
+                    2.dp,
+                    storeHeroBorderColor(LocalGameCardBordersEnabled.current),
+                    shape,
+                ),
+            shape = shape,
+            color = Panel,
+            tonalElevation = 0.dp,
+            shadowElevation = 1.dp,
+        ) {
+            Box(Modifier.fillMaxSize().clip(shape)) {
+                LoadingShimmer(Modifier.fillMaxSize())
+                Column(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth(0.56f)
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    SkeletonLine(widthFraction = 1f, height = 18.dp)
+                    SkeletonLine(widthFraction = 0.52f, height = 10.dp)
+                }
+                if (shouldShowCatalogFavoriteIcon(settings)) {
+                    SkeletonCircle(
+                        size = 38.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(14.dp),
+                    )
+                }
+                LoadingShimmer(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(14.dp)
+                        .width(58.dp)
+                        .height(19.dp)
+                        .clip(RoundedCornerShape(999.dp)),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkeletonSectionHeader(
+    modifier: Modifier = Modifier,
+    showSubtitle: Boolean = false,
+    reserveTrailingAction: Boolean = false,
+) {
+    Row(
+        modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CatalogSectionHeaderText(
+            title = null,
+            subtitle = null,
+            showSubtitle = showSubtitle,
+            modifier = Modifier.weight(1f),
+        )
+        if (reserveTrailingAction) {
+            Spacer(Modifier.size(48.dp))
         }
     }
 }
@@ -1179,28 +1318,32 @@ private fun StoreRailSectionSkeleton(
     cardScale: Float,
     showFavoriteIcon: Boolean,
 ) {
-    val spacing = 10.dp
+    val spacing = OpenNowSpacing.md
+    val contentInset = OpenNowSpacing.ScreenEdge
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SkeletonLine(widthFraction = 0.34f, height = 15.dp)
+        SkeletonSectionHeader()
         BoxWithConstraints(
             Modifier
-                .fillMaxWidth()
+                .horizontalBleed(contentInset)
                 .clipToBounds(),
         ) {
             val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout, cardScale)
             val visibleCount = storeRailVisibleCardCount(
-                availableWidthDp = maxWidth.value,
+                availableWidthDp = (maxWidth - contentInset * 2).coerceAtLeast(1.dp).value,
                 cardWidthDp = cardWidth.value,
                 spacingDp = spacing.value,
             )
             Row(
-                Modifier.fillMaxWidth(),
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = contentInset),
                 horizontalArrangement = Arrangement.spacedBy(spacing),
             ) {
                 repeat(visibleCount) {
                     StoreRailGameCardSkeleton(
                         width = cardWidth,
                         expressiveUi = expressiveUi,
+                        tvProfile = tvProfile,
                         portraitCard = !tvProfile,
                         showFavoriteIcon = showFavoriteIcon,
                     )
@@ -1214,6 +1357,7 @@ private fun StoreRailSectionSkeleton(
 private fun StoreRailGameCardSkeleton(
     width: Dp,
     expressiveUi: Boolean,
+    tvProfile: Boolean,
     portraitCard: Boolean,
     showFavoriteIcon: Boolean,
 ) {
@@ -1221,9 +1365,10 @@ private fun StoreRailGameCardSkeleton(
     Surface(
         modifier = Modifier
             .width(width)
+            .padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp)
             .aspectRatio(if (portraitCard) GAME_BOX_ART_ASPECT_RATIO else 1f)
             .border(
-                1.dp,
+                2.dp,
                 catalogCardBorderColor(
                     LocalActiveSelectionColor.current,
                     LocalGameCardBordersEnabled.current,
@@ -1252,40 +1397,74 @@ private fun StoreRailGameCardSkeleton(
 /** Mirrors [GameCard]'s layout exactly, so nothing shifts when real content replaces it. */
 @Composable
 private fun GameCardSkeleton(
+    expressiveUi: Boolean,
+    tvProfile: Boolean,
     squareCard: Boolean,
     thumbnailFavoriteOverlay: Boolean,
     showCardTitles: Boolean,
 ) {
-    val cardShape = RoundedCornerShape(OpenNowRadius.md)
-    Column(Modifier.fillMaxWidth()) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(
-                    if (squareCard) Modifier.aspectRatio(1f)
-                    else Modifier.aspectRatio(GAME_BOX_ART_ASPECT_RATIO),
-                ),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
-            shape = cardShape,
-        ) {
-            Box(Modifier.fillMaxSize()) {
-                LoadingShimmer(Modifier.fillMaxSize())
-                if (thumbnailFavoriteOverlay) {
-                    SkeletonCircle(
-                        size = 34.dp,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(6.dp),
-                    )
+    val cardShape = RoundedCornerShape(if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp),
+    ) {
+        Box(Modifier.catalogCardArtworkSize(squareCard)) {
+            Card(
+                modifier = Modifier.matchParentSize(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
+                shape = cardShape,
+            ) {
+                Box(Modifier.fillMaxSize()) {
+                    LoadingShimmer(Modifier.fillMaxSize())
+                    if (thumbnailFavoriteOverlay) {
+                        SkeletonCircle(
+                            size = 34.dp,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(6.dp),
+                        )
+                    }
                 }
             }
         }
         if (showCardTitles) {
+            CatalogCardCaption(title = null)
+        }
+    }
+}
+
+/** One artwork measurement path for loaded recommendation cards and their loading skeletons. */
+private fun Modifier.catalogCardArtworkSize(squareCard: Boolean): Modifier =
+    fillMaxWidth().aspectRatio(if (squareCard) 1f else GAME_BOX_ART_ASPECT_RATIO)
+
+private const val CATALOG_CARD_TITLE_LINES = 2
+
+/**
+ * Uses the real title text measurement even while loading, so font scale and line height cannot
+ * make a loaded recommendation card taller than the skeleton it replaces.
+ */
+@Composable
+private fun CatalogCardCaption(title: String?) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = OpenNowSpacing.sm),
+    ) {
+        Text(
+            text = title ?: " ",
+            color = if (title == null) Color.Transparent else TextPrimary,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = CATALOG_CARD_TITLE_LINES,
+            minLines = CATALOG_CARD_TITLE_LINES,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (title == null) {
             Column(
                 Modifier
-                    .fillMaxWidth()
-                    .padding(top = OpenNowSpacing.sm),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .matchParentSize()
+                    .padding(vertical = 5.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
             ) {
                 SkeletonLine(widthFraction = 0.86f)
                 SkeletonLine(widthFraction = 0.52f)
@@ -1295,9 +1474,13 @@ private fun GameCardSkeleton(
 }
 
 @Composable
-private fun SkeletonLine(widthFraction: Float, height: Dp = 9.dp) {
+private fun SkeletonLine(
+    widthFraction: Float,
+    height: Dp = 9.dp,
+    modifier: Modifier = Modifier,
+) {
     LoadingShimmer(
-        Modifier
+        modifier
             .fillMaxWidth(widthFraction)
             .height(height)
             .clip(RoundedCornerShape(999.dp)),
@@ -1395,8 +1578,8 @@ private fun GameGrid(
             tvProfile = tvProfile,
         )
         val contentPadding = gridSpec.contentPadding.withTop(topContentPadding)
-        val firstRowGameIds = remember(games, gridSpec.estimatedColumns) {
-            games.take(gridSpec.estimatedColumns).mapTo(mutableSetOf()) { it.id }
+        val firstRowGameIds = remember(games, gridSpec.columnCount) {
+            games.take(gridSpec.columnCount).mapTo(mutableSetOf()) { it.id }
         }
         CatalogImageLoadingAnimationProvider(tvProfile, imageLoadingAnimationsEnabled) {
             CatalogFocusScope(enabled = tvProfile) {
@@ -1514,8 +1697,8 @@ private fun StoreGameGrid(
         val contentPadding = gridSpec.contentPadding.withTop(
             if (showDiscoverySections && landscapeLayout && !tvProfile) 0.dp else null,
         )
-        val firstRowGameIds = remember(games, gridSpec.estimatedColumns) {
-            games.take(gridSpec.estimatedColumns).mapTo(mutableSetOf()) { it.id }
+        val firstRowGameIds = remember(games, gridSpec.columnCount) {
+            games.take(gridSpec.columnCount).mapTo(mutableSetOf()) { it.id }
         }
         CatalogImageLoadingAnimationProvider(tvProfile, imageLoadingAnimationsEnabled) {
             CatalogFocusScope(enabled = tvProfile) {
@@ -1810,25 +1993,59 @@ private fun SectionHeader(
         modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
+        CatalogSectionHeaderText(
+            title = title,
+            subtitle = subtitle,
+            showSubtitle = !subtitle.isNullOrBlank(),
+            modifier = Modifier.weight(1f),
+        )
+        trailing?.invoke()
+    }
+}
+
+/** Real and loading section headers share the same text metrics and therefore the same height. */
+@Composable
+private fun CatalogSectionHeaderText(
+    title: String?,
+    subtitle: String?,
+    showSubtitle: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        Box(Modifier.fillMaxWidth()) {
             Text(
-                title,
-                color = TextPrimary,
+                text = title ?: " ",
+                color = if (title == null) Color.Transparent else TextPrimary,
                 style = MaterialTheme.typography.titleLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (!subtitle.isNullOrBlank()) {
+            if (title == null) {
+                SkeletonLine(
+                    widthFraction = 0.34f,
+                    height = 15.dp,
+                    modifier = Modifier.align(Alignment.CenterStart),
+                )
+            }
+        }
+        if (showSubtitle) {
+            Box(Modifier.fillMaxWidth()) {
                 Text(
-                    subtitle,
-                    color = TextMuted,
+                    text = subtitle ?: " ",
+                    color = if (subtitle == null) Color.Transparent else TextMuted,
                     style = MaterialTheme.typography.labelMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (subtitle == null) {
+                    SkeletonLine(
+                        widthFraction = 0.48f,
+                        height = 9.dp,
+                        modifier = Modifier.align(Alignment.CenterStart),
+                    )
+                }
             }
         }
-        trailing?.invoke()
     }
 }
 
@@ -1907,6 +2124,14 @@ private fun StoreComingNextCarousel(
             val selected = featured.id == selectedGameId
             val selectedOutline = shouldShowActiveSelectionOutline(selected, LocalActiveSelectionEnabled.current)
             val shape = RoundedCornerShape(if (settings.expressiveUi) 24.dp else 16.dp)
+            val transitionRegistry = LocalGameDetailsTransitionRegistry.current
+            val transitionBounds = remember(featured.id) { arrayOfNulls<Rect>(1) }
+            val selectFromHero = {
+                transitionBounds[0]?.let {
+                    transitionRegistry?.record(featured.id, it, GameDetailsTransitionKind.Hero)
+                }
+                onSelect(featured)
+            }
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -1933,6 +2158,7 @@ private fun StoreComingNextCarousel(
                 Surface(
                     modifier = Modifier
                         .matchParentSize()
+                        .onGloballyPositioned { transitionBounds[0] = it.boundsInWindow() }
                         .then(
                             upFocusRequester?.let { requester ->
                                 Modifier.focusProperties { up = requester }
@@ -1966,7 +2192,7 @@ private fun StoreComingNextCarousel(
                                     onPlay = { onPlay(featured) },
                                 ) -> true
                                 isTvActivateKey(event) -> {
-                                    onSelect(featured)
+                                    selectFromHero()
                                     true
                                 }
                                 else -> false
@@ -1974,7 +2200,7 @@ private fun StoreComingNextCarousel(
                         }
                         .focusable()
                         .combinedClickable(
-                            onClick = { onSelect(featured) },
+                            onClick = selectFromHero,
                             onLongClick = { onChooseStore(featured) },
                             onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
                         ),
@@ -2252,12 +2478,21 @@ private fun StoreRailGameCard(
         label = "rail-card-scale",
     )
     val dimAlpha = rememberCatalogCardAlpha(focused = focused, tvProfile = tvProfile)
+    val transitionRegistry = LocalGameDetailsTransitionRegistry.current
+    val transitionBounds = remember(game.id) { arrayOfNulls<Rect>(1) }
+    val selectFromCard = {
+        transitionBounds[0]?.let {
+            transitionRegistry?.record(game.id, it, GameDetailsTransitionKind.Card)
+        }
+        onSelect(game)
+    }
     Box(
         Modifier
             .width(width)
             .padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp)
             .aspectRatio(if (tvProfile) 1f else GAME_BOX_ART_ASPECT_RATIO)
             .catalogCardTransform(scale = cardScale, alpha = dimAlpha)
+            .onGloballyPositioned { transitionBounds[0] = it.boundsInWindow() }
             .semantics(mergeDescendants = true) {
                 contentDescription = game.title
                 role = Role.Button
@@ -2291,7 +2526,7 @@ private fun StoreRailGameCard(
                             onPlay = { onPlay(game) },
                         ) -> true
                         isTvActivateKey(event) -> {
-                            onSelect(game)
+                            selectFromCard()
                             true
                         }
                         else -> handleDpadFocusMove(event, focusManager)
@@ -2301,7 +2536,7 @@ private fun StoreRailGameCard(
                 .combinedClickable(
                     interactionSource = interaction,
                     indication = null,
-                    onClick = { onSelect(game) },
+                    onClick = selectFromCard,
                     onLongClick = { onChooseStore(game) },
                     onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
                 ),
@@ -2356,6 +2591,8 @@ internal data class StoreStartRailGroups(
 ) {
     val allGames: List<GameInfo> get() = continuePlaying + inQueue + favorites
     val isEmpty: Boolean get() = continuePlaying.isEmpty() && inQueue.isEmpty() && favorites.isEmpty()
+    val visibleGroupCount: Int
+        get() = listOf(continuePlaying, inQueue, favorites).count { it.isNotEmpty() }
 }
 
 internal fun storeStartRailGroups(
@@ -2462,8 +2699,8 @@ internal fun shouldInitiallyFocusGameDetailsPlay(tvProfile: Boolean): Boolean = 
 
 private data class GameGridSpec(
     val cells: GridCells,
-    /** Only used to size skeleton placeholder runs; the real column count is the grid's to decide. */
-    val estimatedColumns: Int,
+    /** Shared by loaded cards, skeleton rows, focus routing, and image request sizing. */
+    val columnCount: Int,
     val horizontalSpacing: Dp,
     val verticalSpacing: Dp,
     val contentPadding: PaddingValues,
@@ -2575,16 +2812,7 @@ private fun storeRailCardWidth(
 internal fun scaledCatalogCardWidthDp(baseCardWidthDp: Float, cardScale: Float): Float =
     baseCardWidthDp * cardScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE)
 
-/**
- * Cell widths the grid aims for at `posterSizeScale == 1`. These are minimums fed to
- * [GridCells.Adaptive], not column counts: the grid fits as many as will hold and shares the
- * remainder out evenly.
- *
- * The previous implementation picked a column count from a table of hardcoded dp breakpoints, so a
- * 360dp budget phone and a 411dp Pixel both got exactly 3 columns — cards ended up 15% wider on one
- * than the other, and gutters never adapted at all. Foldables, tablets, DeX and split-screen were
- * all served by the same four buckets.
- */
+/** Target widths at `posterSizeScale == 1`; the resolved count still adapts continuously to width. */
 private val GRID_CELL_WIDTH_PORTRAIT = 96.dp
 private val GRID_CELL_WIDTH_LANDSCAPE = 112.dp
 private val GRID_CELL_WIDTH_TV = 158.dp
@@ -2592,6 +2820,53 @@ private val GRID_CELL_WIDTH_TV = 158.dp
 /** Compact mode shrinks the target cell rather than switching to a separate size table. */
 private const val COMPACT_CELL_WIDTH_FACTOR = 0.88f
 private val CATALOG_CONTROLLER_FOCUS_INSET = 8.dp
+
+internal data class CatalogGridMetrics(
+    val targetCellWidthDp: Float,
+    val columnCount: Int,
+)
+
+/** Always produces complete placeholder rows for the exact resolved recommendation column count. */
+internal fun catalogSkeletonPlaceholderCount(columnCount: Int, storeLayout: Boolean): Int =
+    columnCount.coerceAtLeast(1) * if (storeLayout) 4 else 3
+
+/**
+ * Resolves the catalogue grid once for both real content and its skeleton.
+ *
+ * Keeping this as one settings-aware calculation is important: allowing [GridCells.Adaptive] to
+ * resolve the loaded grid while a separate estimate sizes the skeleton can leave a partial final
+ * row whenever density rounding or a card-size setting makes those decisions differ.
+ */
+internal fun catalogGridMetrics(
+    availableWidthDp: Float,
+    compact: Boolean,
+    landscapeLayout: Boolean,
+    posterSizeScale: Float,
+    handheldLayout: Boolean,
+): CatalogGridMetrics {
+    val horizontalSpacingDp = if (compact) OpenNowSpacing.sm.value else OpenNowSpacing.GridGutter.value
+    val horizontalPaddingDp = OpenNowSpacing.ScreenEdge.value
+    val baseCellWidthDp = when {
+        !handheldLayout -> GRID_CELL_WIDTH_TV.value
+        landscapeLayout -> GRID_CELL_WIDTH_LANDSCAPE.value
+        else -> GRID_CELL_WIDTH_PORTRAIT.value
+    }
+    val targetCellWidthDp = (
+        baseCellWidthDp *
+            posterSizeScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE) *
+            if (compact) COMPACT_CELL_WIDTH_FACTOR else 1f
+        ).coerceIn(64f, 240f)
+    val usableWidthDp = (availableWidthDp - horizontalPaddingDp * 2f)
+        .coerceAtLeast(targetCellWidthDp)
+    val columnCount = kotlin.math.floor(
+        (usableWidthDp + horizontalSpacingDp) / (targetCellWidthDp + horizontalSpacingDp),
+    ).toInt().coerceIn(1, 12)
+
+    return CatalogGridMetrics(
+        targetCellWidthDp = targetCellWidthDp,
+        columnCount = columnCount,
+    )
+}
 
 private fun gameGridSpec(
     maxWidth: androidx.compose.ui.unit.Dp,
@@ -2604,25 +2879,19 @@ private fun gameGridSpec(
     val verticalSpacing = if (compact) OpenNowSpacing.md else OpenNowSpacing.GridRowGap
     val horizontalPadding = OpenNowSpacing.ScreenEdge
 
-    val baseCellWidth = when {
-        !handheldLayout -> GRID_CELL_WIDTH_TV
-        landscapeLayout -> GRID_CELL_WIDTH_LANDSCAPE
-        else -> GRID_CELL_WIDTH_PORTRAIT
-    }
-    // posterSizeScale is persisted user state and keeps its existing meaning: larger scale means
-    // larger cards, which now falls out of a wider target cell instead of a divided column count.
-    val scale = settings.posterSizeScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE)
-    val cellWidth = (baseCellWidth * scale * if (compact) COMPACT_CELL_WIDTH_FACTOR else 1f)
-        .coerceIn(64.dp, 240.dp)
-
-    val available = (maxWidth - horizontalPadding * 2).coerceAtLeast(cellWidth)
-    val estimatedColumns = ((available + horizontalSpacing) / (cellWidth + horizontalSpacing))
-        .toInt()
-        .coerceIn(1, 12)
+    val metrics = catalogGridMetrics(
+        availableWidthDp = maxWidth.value,
+        compact = compact,
+        landscapeLayout = landscapeLayout,
+        posterSizeScale = settings.posterSizeScale,
+        handheldLayout = handheldLayout,
+    )
 
     return GameGridSpec(
-        cells = GridCells.Adaptive(minSize = cellWidth),
-        estimatedColumns = estimatedColumns,
+        // Fixed uses the exact count resolved above but still shares remaining width evenly, which
+        // is the same responsive presentation as Adaptive without a second independent decision.
+        cells = GridCells.Fixed(metrics.columnCount),
+        columnCount = metrics.columnCount,
         horizontalSpacing = horizontalSpacing,
         verticalSpacing = verticalSpacing,
         contentPadding = PaddingValues(
@@ -2646,8 +2915,8 @@ private fun catalogGridCardImageRequestWidth(
     val direction = LayoutDirection.Ltr
     val horizontalPadding = gridSpec.contentPadding.calculateStartPadding(direction) +
         gridSpec.contentPadding.calculateEndPadding(direction)
-    val gaps = gridSpec.horizontalSpacing * (gridSpec.estimatedColumns - 1).coerceAtLeast(0)
-    val cardWidth = ((availableWidth - horizontalPadding - gaps) / gridSpec.estimatedColumns)
+    val gaps = gridSpec.horizontalSpacing * (gridSpec.columnCount - 1).coerceAtLeast(0)
+    val cardWidth = ((availableWidth - horizontalPadding - gaps) / gridSpec.columnCount)
         .coerceAtLeast(1.dp)
     val cardWidthPx = with(density) { cardWidth.roundToPx() }
     return catalogCardImageRequestWidth(cardWidthPx, tvProfile)
@@ -2683,7 +2952,7 @@ internal fun storeRailVisibleCardCount(
     availableWidthDp: Float,
     cardWidthDp: Float,
     spacingDp: Float,
-): Int = kotlin.math.ceil(
+): Int = kotlin.math.floor(
     (availableWidthDp + spacingDp) / (cardWidthDp.coerceAtLeast(1f) + spacingDp),
 ).toInt().coerceAtLeast(1)
 
@@ -2749,6 +3018,14 @@ private fun GameCard(
         label = "game-card-scale",
     )
     val dimAlpha = rememberCatalogCardAlpha(focused = focused, tvProfile = tvProfile)
+    val transitionRegistry = LocalGameDetailsTransitionRegistry.current
+    val transitionBounds = remember(game.id) { arrayOfNulls<Rect>(1) }
+    val selectFromCard = {
+        transitionBounds[0]?.let {
+            transitionRegistry?.record(game.id, it, GameDetailsTransitionKind.Card)
+        }
+        onSelect(game)
+    }
 
     Column(
         Modifier
@@ -2762,17 +3039,11 @@ private fun GameCard(
                 role = Role.Button
             },
     ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .then(
-                    if (squareCard) Modifier.aspectRatio(1f)
-                    else Modifier.aspectRatio(GAME_BOX_ART_ASPECT_RATIO),
-                ),
-        ) {
+        Box(Modifier.catalogCardArtworkSize(squareCard)) {
             Card(
                 modifier = Modifier
                     .matchParentSize()
+                    .onGloballyPositioned { transitionBounds[0] = it.boundsInWindow() }
                     .then(
                         upFocusRequester?.let { requester ->
                             Modifier.focusProperties { up = requester }
@@ -2798,7 +3069,7 @@ private fun GameCard(
                                 onPlay = { onPlay(game) },
                             ) -> true
                             isTvActivateKey(event) -> {
-                                onSelect(game)
+                                selectFromCard()
                                 true
                             }
                             else -> handleDpadFocusMove(event, focusManager)
@@ -2817,7 +3088,7 @@ private fun GameCard(
                         .combinedClickable(
                             interactionSource = interaction,
                             indication = null,
-                            onClick = { onSelect(game) },
+                            onClick = selectFromCard,
                             onLongClick = { onChooseStore(game) },
                             onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
                         ),
@@ -2853,22 +3124,7 @@ private fun GameCard(
             )
         }
         if (showCaption) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = OpenNowSpacing.sm),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    game.title,
-                    color = TextPrimary,
-                    style = MaterialTheme.typography.titleMedium,
-                    // minLines keeps every row in the grid aligned regardless of title length.
-                    maxLines = 2,
-                    minLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            CatalogCardCaption(title = game.title)
         }
     }
 }
@@ -3112,6 +3368,32 @@ internal fun GameDetailsSheet(
     onPlayOnTv: (GameInfo) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val transitionRegistry = LocalGameDetailsTransitionRegistry.current
+    val transitionOrigin = transitionRegistry?.originFor(game.id)
+    val cardTransitionOrigin = transitionOrigin
+        ?.takeIf { it.kind == GameDetailsTransitionKind.Card }
+        ?.bounds
+    val reduceMotion = LocalReduceMotion.current
+    val containerProgress = remember(game.id) {
+        Animatable(if (cardTransitionOrigin == null || reduceMotion) 1f else 0f)
+    }
+    LaunchedEffect(game.id, cardTransitionOrigin, reduceMotion) {
+        if (cardTransitionOrigin == null || reduceMotion) {
+            containerProgress.snapTo(1f)
+        } else {
+            containerProgress.snapTo(0f)
+            containerProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = OpenNowMotion.DurationStandard,
+                    easing = OpenNowMotion.EasingStandard,
+                ),
+            )
+        }
+    }
+    DisposableEffect(game.id, transitionRegistry) {
+        onDispose { transitionRegistry?.clear(game.id) }
+    }
     val gameFocusRequester = remember(game.id) { FocusRequester() }
     val playFocusRequester = remember(game.id) { FocusRequester() }
     LaunchedEffect(game.id, fullScreen) {
@@ -3188,14 +3470,39 @@ internal fun GameDetailsSheet(
             }
         }
     }
-    Box(
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .lockedFocusGroup()
-            .background(Color.Black.copy(alpha = 0.72f))
             .clickable(onClick = onDismiss),
         contentAlignment = Alignment.BottomCenter,
     ) {
+        val targetHeightPx = constraints.maxHeight.toFloat() * if (fullScreen) 1f else 0.92f
+        val targetBounds = Rect(
+            left = 0f,
+            top = constraints.maxHeight.toFloat() - targetHeightPx,
+            right = constraints.maxWidth.toFloat(),
+            bottom = constraints.maxHeight.toFloat(),
+        )
+        val surfaceShape = if (fullScreen) {
+            RoundedCornerShape(0.dp)
+        } else {
+            RoundedCornerShape(topStart = OpenNowRadius.xl, topEnd = OpenNowRadius.xl)
+        }
+        // Reading Animatable state inside graphicsLayer invalidates only the render layer. Reading
+        // it in composition used to rebuild the complete details tree on every 120 Hz frame.
+        Box(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer {
+                    alpha = if (cardTransitionOrigin == null) {
+                        0.72f
+                    } else {
+                        0.28f + (0.44f * containerProgress.value)
+                    }
+                }
+                .background(Color.Black),
+        )
         Surface(
             modifier = Modifier
                 .then(
@@ -3214,8 +3521,24 @@ internal fun GameDetailsSheet(
                             )
                     },
                 )
+                .graphicsLayer {
+                    if (cardTransitionOrigin != null) {
+                        val transform = gameDetailsContainerTransform(
+                            source = cardTransitionOrigin,
+                            target = targetBounds,
+                            progress = containerProgress.value,
+                        )
+                        transformOrigin = TransformOrigin(0f, 0f)
+                        scaleX = transform.scaleX
+                        scaleY = transform.scaleY
+                        translationX = transform.translationX
+                        translationY = transform.translationY
+                        clip = true
+                        shape = surfaceShape
+                    }
+                }
                 .clickable(onClick = {}),
-            shape = if (fullScreen) RoundedCornerShape(0.dp) else RoundedCornerShape(topStart = OpenNowRadius.xl, topEnd = OpenNowRadius.xl),
+            shape = surfaceShape,
             color = Panel,
             tonalElevation = 8.dp,
         ) {
@@ -3351,6 +3674,7 @@ private fun GameDetailsLandscapeContent(
             Box(
                 Modifier
                     .fillMaxSize()
+                    .gameDetailsArtworkEntrance(game.id)
                     .border(
                         width = if (gameFocused) 3.dp else 1.dp,
                         color = catalogCardBorderColor(
@@ -3568,6 +3892,7 @@ private fun GameDetailsScrollableContent(
                     Box(
                         Modifier
                             .fillMaxSize()
+                            .gameDetailsArtworkEntrance(game.id)
                             .border(
                                 width = if (gameFocused) 3.dp else 1.dp,
                                 color = catalogCardBorderColor(
@@ -3751,14 +4076,18 @@ private fun LongPressPlayButton(
 ) {
     val controllerFocusEnabled = LocalControllerFocusEnabled.current
     var focused by remember { mutableStateOf(false) }
-    val hoverInteraction = remember { MutableInteractionSource() }
-    val hovered by hoverInteraction.collectIsHoveredAsState()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val pressed by interaction.collectIsPressedAsState()
     val controllerFocused = focused && controllerFocusEnabled
     val shape = RoundedCornerShape(999.dp)
     val accent = MaterialTheme.colorScheme.primary
-    val focusScale by animateFloatAsState(
-        targetValue = gameDetailsPlayFocusScale(controllerFocused),
-        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+    val focusScale = animateFloatAsState(
+        targetValue = if (pressed) 0.95f else gameDetailsPlayFocusScale(controllerFocused),
+        animationSpec = tween(
+            durationMillis = OpenNowMotion.DurationFast,
+            easing = OpenNowMotion.EasingStandard,
+        ),
         label = "game-details-play-focus-scale",
     )
     val containerColor by animateColorAsState(
@@ -3768,8 +4097,8 @@ private fun LongPressPlayButton(
     )
     Box(
         modifier = modifier.graphicsLayer {
-            scaleX = focusScale
-            scaleY = focusScale
+            scaleX = focusScale.value
+            scaleY = focusScale.value
         },
     ) {
         Surface(
@@ -3781,7 +4110,7 @@ private fun LongPressPlayButton(
                         ?: Modifier,
                 )
                 .onFocusChanged { focusState -> focused = focusState.isFocused }
-                .hoverable(hoverInteraction)
+                .hoverable(interaction)
                 .onPreviewKeyEvent { event ->
                     if (isTvActivateKey(event)) {
                         onClick()
@@ -3792,6 +4121,8 @@ private fun LongPressPlayButton(
                 }
                 .focusable()
                 .combinedClickable(
+                    interactionSource = interaction,
+                    indication = null,
                     onClick = onClick,
                     onLongClick = onLongClick,
                     onLongClickLabel = stringResource(R.string.store_selector_play_long_press),

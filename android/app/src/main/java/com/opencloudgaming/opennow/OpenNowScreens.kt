@@ -422,7 +422,7 @@ internal val LocalActiveSelectionColor = staticCompositionLocalOf { Color.White 
 internal val LocalActiveSelectionSecondaryColor = staticCompositionLocalOf { Color.White }
 /** Flat selected fills and icon tints. See [ActiveSelectionEffectStyle.tintColor]. */
 internal val LocalSelectionTintColor = staticCompositionLocalOf { Color.White }
-internal val LocalGameCardBordersEnabled = staticCompositionLocalOf { true }
+internal val LocalGameCardBordersEnabled = staticCompositionLocalOf { false }
 internal val LocalActiveSelectionEnabled = staticCompositionLocalOf { true }
 internal val LocalAbsoluteCinemaEffects = staticCompositionLocalOf { false }
 internal val LocalAbsoluteCinemaEverywhere = staticCompositionLocalOf { false }
@@ -534,6 +534,7 @@ fun OpenNowApp(
     }
     val musicControlsEnabled = state.settings.streamIntroMusic || state.settings.queueReadyMusic
     val streamActive = state.page == AppPage.Stream || state.streamStatus != "idle"
+    val gameDetailsTransitionRegistry = remember { GameDetailsTransitionRegistry() }
     var launchIntroStarted by remember { mutableStateOf(false) }
     var launchMusicMuted by remember { mutableStateOf(introStartsMutedOnLaunch) }
     var launchMusicPlaying by remember { mutableStateOf(false) }
@@ -686,6 +687,7 @@ fun OpenNowApp(
         CompositionLocalProvider(
             LocalTvLoadingProfile provides state.androidTvProfile,
             LocalControllerFocusEnabled provides controllerFocusEnabled,
+            LocalGameDetailsTransitionRegistry provides gameDetailsTransitionRegistry,
         ) {
             Box(
                 Modifier
@@ -1201,10 +1203,9 @@ private fun MainShell(
                     }
                 }
                 state.selectedGame?.takeIf { !inStream && !modalPickerOpen }?.let { game ->
-                    ControllerModalDialog(onDismissRequest = viewModel::clearSelectedGame) {
-                        // Selection haptics fire on the tap. Present details immediately so the
-                        // tactile response and the surface arrival read as one interaction instead
-                        // of a buzz followed by a separate 200-300 ms entrance animation.
+                    ControllerModalOverlay(onDismissRequest = viewModel::clearSelectedGame) {
+                        // Keep details in the app's window so the activated artwork and destination
+                        // banner share coordinates and the first visible frame follows the haptic.
                         GameDetailsSheet(
                             game = game,
                             favorite = game.id in state.settings.favoriteGameIds,
@@ -1251,6 +1252,29 @@ private fun MainShell(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ControllerModalOverlay(
+    onDismissRequest: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .zIndex(10f)
+            .onPreviewKeyEvent { event ->
+                if (event.key == Key.ButtonB || event.key == Key.Back || event.key == Key.Escape) {
+                    if (event.type == KeyEventType.KeyUp) onDismissRequest()
+                    true
+                } else {
+                    false
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
     }
 }
 

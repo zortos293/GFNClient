@@ -298,7 +298,6 @@ class NativeStreamClient(
     var liveBitrateLimitKbps: Int? = null
     private var videoSafeFallbackApplied = false
     private var stableMediaStallRestarts = 0
-    private var runtimeQualityFallbackApplied = false
     private var transportHasStableMedia = false
     private var consecutiveTransportProgressSamples = 0
     private var sessionRecoveryRequested = false
@@ -360,20 +359,22 @@ class NativeStreamClient(
     private var gamepadStateBurstFlushJob: Job? = null
     private val externalMouseMotionAccumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
     private val gyroscopeMouseMotionAccumulator = MouseMotionAccumulator()
+    private val forwardedPhysicalInput = ForwardedPhysicalInputState()
     private var externalMouseMotionDeviceId = Int.MIN_VALUE
     private var externalMouseMotionSource = 0
     private var inputDropLogged = false
     private var externalMouseEventLogged = false
     private var externalMouseMoveSentLogged = false
+    private var externalMouseCapturedMoveSentLogged = false
     private var externalMouseAbsoluteJumpLogged = false
     private var hardwareKeyboardEventLogged = false
     private var physicalGamepadAxisLogged = false
     private var lastStatsSample: StreamStatsSample? = null
     private val processCpuSampler = ProcessCpuSampler()
     private val packetLossWindow = StreamPacketLossWindow()
+    private val packetLossRecoveryGate = StreamPacketLossRecoveryGate()
     private var androidTvProfile = initialAndroidTvProfile
     private var livenessWatchdog = newStreamLivenessWatchdog(androidTvProfile)
-    private val runtimeQualityWatchdog = RuntimeQualityRecoveryWatchdog()
     private var firstVideoFrameWatchdog = FirstVideoFrameWatchdog(
         timeoutMs = firstVideoFrameRecoveryTimeoutMs(androidTvProfile),
     )
@@ -532,7 +533,7 @@ class NativeStreamClient(
                             // Accept the decoder's new size and give the existing transport a fresh
                             // liveness window instead of interpreting the change as a stream crash.
                             livenessWatchdog.markConnected(SystemClock.elapsedRealtime())
-                            runtimeQualityWatchdog.reset()
+                            packetLossRecoveryGate.reset()
                             firstVideoFrameWatchdog.markRendered()
                             recordStreamDiagnostic(
                                 "decoded resolution change accepted from=${transition.previousWidth}x${transition.previousHeight} " +
@@ -812,7 +813,6 @@ class NativeStreamClient(
         transientSignalingFailures = 0
         videoSafeFallbackApplied = false
         stableMediaStallRestarts = 0
-        runtimeQualityFallbackApplied = false
         sessionRecoveryRequested = false
         bitrateUpdateJob?.cancel()
         bitrateUpdateJob = null
@@ -821,8 +821,8 @@ class NativeStreamClient(
         processCpuSampler.reset()
         ProcessCpuDiagnostics.beginStream()
         packetLossWindow.reset()
+        packetLossRecoveryGate.reset()
         livenessWatchdog.reset()
-        runtimeQualityWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         onStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
@@ -844,13 +844,12 @@ class NativeStreamClient(
         reconnectAttempts = 0
         transientSignalingFailures = 0
         stableMediaStallRestarts = 0
-        runtimeQualityFallbackApplied = false
         sessionRecoveryRequested = false
         bitrateUpdateJob?.cancel()
         bitrateUpdateJob = null
         liveBitrateLimitKbps = null
+        packetLossRecoveryGate.reset()
         livenessWatchdog.reset()
-        runtimeQualityWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         closeTransport(clearInputState = true)
         emitState("Stopped")
@@ -960,9 +959,11 @@ class NativeStreamClient(
         gyroscopeMouseMotionAccumulator.reset()
         externalMouseMotionDeviceId = Int.MIN_VALUE
         externalMouseMotionSource = 0
+        forwardedPhysicalInput.reset()
         inputDropLogged = false
         externalMouseEventLogged = false
         externalMouseMoveSentLogged = false
+        externalMouseCapturedMoveSentLogged = false
         externalMouseAbsoluteJumpLogged = false
         hardwareKeyboardEventLogged = false
         physicalGamepadAxisLogged = false
@@ -972,6 +973,9 @@ class NativeStreamClient(
     }
 
     fun dispatchKey(event: KeyEvent): Boolean {
+        // Before the WebRTC input channel opens, leave keyboard events available to Android and
+        // Compose. Consuming them here makes queue/desktop UI look completely unresponsive.
+        if (!hasOpenInputChannel()) return false
         if (event.isGamepadEvent() && dispatchGamepadKey(event)) {
             return true
         }
@@ -1013,6 +1017,16 @@ class NativeStreamClient(
             return false
         }
         val sent = sendReliableInput(packet)
+        if (hardwareKeyboard && (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP)) {
+            forwardedPhysicalInput.recordKey(
+                deviceId = event.deviceId,
+                keyCode = event.keyCode,
+                scanCode = event.scanCode,
+                payload = key,
+                pressed = event.action == KeyEvent.ACTION_DOWN,
+                sent = sent,
+            )
+        }
         if (hardwareKeyboard && !sent) {
             NativeInputDiagnostics.add("hardware keyboard consumed without send key=${event.keyCode} ${inputChannelStateSummary()}")
         }
@@ -1020,6 +1034,8 @@ class NativeStreamClient(
     }
 
     fun dispatchMotion(event: MotionEvent): Boolean {
+        // Mouse/controller events must fall through to native UI until cloud input is ready.
+        if (!hasOpenInputChannel()) return false
         if (event.isGamepadMotionEvent()) {
             return dispatchJoystick(event)
         }
@@ -1030,14 +1046,14 @@ class NativeStreamClient(
     }
 
     /**
-     * Mouse packets carry relative deltas, so every packet must arrive in order. A later delta does
-     * not replace a dropped one; losing either axis permanently shortens the gesture and makes the
-     * cursor stutter or drift away from the client's position model.
+     * GFN negotiates mouse movement as loss-tolerant HID input. Prefer that low-latency channel
+     * for live pointer motion and fall back to reliable automatically when it is unavailable.
+     * Ordered synthetic sequences can opt out explicitly.
      */
-    fun sendRawMouseMove(dx: Int, dy: Int): Boolean {
+    fun sendRawMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
         return sendInput(
             inputEncoder.encodeMouseMove(dx, dy),
-            partiallyReliable = false,
+            partiallyReliable = partiallyReliable,
         )
     }
 
@@ -1047,7 +1063,7 @@ class NativeStreamClient(
         return sendReliableInput(packet)
     }
 
-    fun sendTouchMouseMove(dx: Int, dy: Int): Boolean {
+    fun sendTouchMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
         var adjustedDx = dx * settings.mouseSensitivity
         var adjustedDy = dy * settings.mouseSensitivity
         if (settings.mouseAcceleration > 1) {
@@ -1060,7 +1076,7 @@ class NativeStreamClient(
         return sendBurstLimitedMouseMove(
             dx = adjustedDx.roundToInt(),
             dy = adjustedDy.roundToInt(),
-            partiallyReliable = false,
+            partiallyReliable = partiallyReliable,
         )
     }
 
@@ -1157,18 +1173,28 @@ class NativeStreamClient(
             MotionEvent.ACTION_HOVER_MOVE,
             MotionEvent.ACTION_MOVE,
             -> {
-                if (event.hasRelativeAxisMotion()) {
+                if (event.isRelativeMousePointer()) {
+                    // Android pointer capture reports SOURCE_MOUSE_RELATIVE deltas through X/Y.
+                    // Prefer that documented route on API 37 desktop mode even when the device
+                    // also exposes optional AXIS_RELATIVE values.
+                    val sent = sendExternalMouseMotionSamples(event, useRelativeAxes = false)
+                    if (sent && !externalMouseCapturedMoveSentLogged) {
+                        externalMouseCapturedMoveSentLogged = true
+                        NativeInputDiagnostics.add(
+                            "external mouse captured move sent source=${event.source} device=${event.deviceId} " +
+                                "dx=${event.x} dy=${event.y}",
+                        )
+                    }
+                    if (sent && !externalMouseMoveSentLogged) {
+                        externalMouseMoveSentLogged = true
+                        NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=capturedRelative")
+                    }
+                    mousePositionValid = false
+                } else if (event.hasRelativeAxisMotion()) {
                     val sent = sendExternalMouseMotionSamples(event, useRelativeAxes = true)
                     if (sent && !externalMouseMoveSentLogged) {
                         externalMouseMoveSentLogged = true
                         NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relative")
-                    }
-                    mousePositionValid = false
-                } else if (event.isRelativeMousePointer()) {
-                    val sent = sendExternalMouseMotionSamples(event, useRelativeAxes = false)
-                    if (sent && !externalMouseMoveSentLogged) {
-                        externalMouseMoveSentLogged = true
-                        NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relativePosition")
                     }
                     mousePositionValid = false
                 } else if (mousePositionValid && mouseLastDeviceId == event.deviceId && mouseLastSource == event.source) {
@@ -1204,7 +1230,7 @@ class NativeStreamClient(
                 mouseSuppressNextAbsoluteDelta = true
                 rememberMousePosition(event)
                 flushPendingMouseMove()
-                sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.primaryMouseButton()))
+                sendExternalMouseButton(event.primaryMouseButton(), pressed = true)
             }
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_CANCEL,
@@ -1212,13 +1238,13 @@ class NativeStreamClient(
                 mousePositionValid = false
                 mouseSuppressNextAbsoluteDelta = true
                 flushPendingMouseMove()
-                sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.primaryMouseButton()))
+                sendExternalMouseButton(event.primaryMouseButton(), pressed = false)
             }
             MotionEvent.ACTION_BUTTON_PRESS -> {
                 mouseSuppressNextAbsoluteDelta = true
                 rememberMousePosition(event)
                 flushPendingMouseMove()
-                val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()))
+                val handled = sendExternalMouseButton(event.actionButton.toGfnMouseButton(), pressed = true)
                 if (!handled) {
                     NativeInputDiagnostics.add("external mouse button consumed without send action=press button=${event.actionButton} ${inputChannelStateSummary()}")
                 }
@@ -1228,7 +1254,7 @@ class NativeStreamClient(
                 mousePositionValid = false
                 mouseSuppressNextAbsoluteDelta = true
                 flushPendingMouseMove()
-                val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()))
+                val handled = sendExternalMouseButton(event.actionButton.toGfnMouseButton(), pressed = false)
                 if (!handled) {
                     NativeInputDiagnostics.add("external mouse button consumed without send action=release button=${event.actionButton} ${inputChannelStateSummary()}")
                 }
@@ -1243,6 +1269,43 @@ class NativeStreamClient(
             }
         }
         return true
+    }
+
+    private fun sendExternalMouseButton(button: Int, pressed: Boolean): Boolean {
+        val sent = sendReliableInput(
+            inputEncoder.encodeMouseButton(
+                if (pressed) InputEncoder.INPUT_MOUSE_BUTTON_DOWN else InputEncoder.INPUT_MOUSE_BUTTON_UP,
+                button,
+            ),
+        )
+        forwardedPhysicalInput.recordMouseButton(button = button, pressed = pressed, sent = sent)
+        return sent
+    }
+
+    /** Releases input whose platform UP event can be lost when a desktop window loses focus. */
+    fun releasePhysicalInputForLifecycle(reason: String) {
+        val pressed = forwardedPhysicalInput.takeReleaseSnapshot()
+        if (pressed.isEmpty) return
+        flushPendingMouseMove()
+        var queued = 0
+        pressed.keys.forEach { payload ->
+            if (
+                sendReliableInput(
+                    inputEncoder.encodeKeyUp(payload.copy(modifiers = 0, timestampUs = timestampUs())),
+                )
+            ) {
+                queued += 1
+            }
+        }
+        pressed.mouseButtons.forEach { button ->
+            if (sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, button))) {
+                queued += 1
+            }
+        }
+        NativeInputDiagnostics.add(
+            "physical input lifecycle release reason=$reason keys=${pressed.keys.size} " +
+                "mouseButtons=${pressed.mouseButtons.size} queued=$queued ${inputChannelStateSummary()}",
+        )
     }
 
     private fun MotionEvent.hasRelativeAxisMotion(): Boolean {
@@ -1786,9 +1849,9 @@ class NativeStreamClient(
         lastIceState = null
         lastStatsSample = null
         packetLossWindow.reset()
+        packetLossRecoveryGate.reset()
         transportHasStableMedia = false
         consecutiveTransportProgressSamples = 0
-        runtimeQualityWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         emitStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
@@ -1833,9 +1896,9 @@ class NativeStreamClient(
         resetGamepadStateBurstLimiter()
         lastStatsSample = null
         packetLossWindow.reset()
+        packetLossRecoveryGate.reset()
         lastIceState = null
         livenessWatchdog.reset()
-        runtimeQualityWatchdog.reset()
         val closingSignaling = signaling
         val closingRenderer = renderer
         val closingRendererSinkAttached = rendererSinkLifecycle.requestDetach()
@@ -3005,16 +3068,23 @@ class NativeStreamClient(
             connected,
         )
         updateTransportRecoveryProgress(livenessWatchdog.latestObservationProgressed)
-        val qualityRecovery = runtimeQualityWatchdog.observe(
+        val requestPostLossKeyframe = packetLossRecoveryGate.observe(
             stats = snapshot.stats,
-            requestedFps = settings.fps,
             recoveryEligible = connected &&
                 transportHasStableMedia &&
                 iceRecoveryJob?.isActive != true &&
                 !sessionRecoveryRequested,
         )
-        if (qualityRecovery != null && requestRuntimeQualityFallback(qualityRecovery, snapshot.stats)) {
-            return
+        if (requestPostLossKeyframe && action == StreamLivenessAction.None) {
+            signaling?.requestKeyframe(
+                reason = "packet_loss_recovered",
+                backlogFrames = 0,
+                attempt = 1,
+            )
+            NativeInputDiagnostics.add(
+                "post-loss keyframe requested rawLost=${snapshot.stats.packetsLostDelta} " +
+                    "rawReceived=${snapshot.stats.packetsReceivedDelta} displayedLoss=${snapshot.stats.packetLossPct}",
+            )
         }
         if (
             rendererSinkLifecycle.isAttachRequested() &&
@@ -3105,91 +3175,6 @@ class NativeStreamClient(
         }
         transportHasStableMedia = true
         reconnectAttempts = 0
-    }
-
-    private fun requestRuntimeQualityFallback(
-        reason: RuntimeQualityRecoveryReason,
-        stats: StreamRuntimeStats,
-    ): Boolean {
-        if (runtimeQualityFallbackApplied) return false
-        val currentSettings = settings
-        val fallback = currentSettings.runtimeQualityRecoveryProfile(reason)
-        if (fallback == currentSettings) {
-            runtimeQualityFallbackApplied = true
-            recordStreamDiagnostic("runtime quality already at stable profile; transport unchanged reason=$reason")
-            return false
-        }
-
-        runtimeQualityFallbackApplied = true
-        liveBitrateLimitKbps = fallback.maxBitrateMbps * 1_000
-        val diagnosticReason = when (reason) {
-            RuntimeQualityRecoveryReason.NetworkDegraded -> "sustained raw packet loss"
-            RuntimeQualityRecoveryReason.DecoderOverloaded -> "sustained decoder overload"
-        }
-        NativeInputDiagnostics.add(
-            "$diagnosticReason recovery displayedLoss=${stats.packetLossPct} " +
-                "rawLost=${stats.packetsLostDelta} rawReceived=${stats.packetsReceivedDelta} " +
-                "ping=${stats.pingMs} receivedFps=${stats.receivedFps} decodedFps=${stats.decodedFps} " +
-                "decodeMs=${stats.decodeMs} codec=${fallback.codec} resolution=${fallback.resolution} " +
-                "fps=${fallback.fps} bitrate=${fallback.maxBitrateMbps}",
-        )
-        val message = when (reason) {
-            RuntimeQualityRecoveryReason.NetworkDegraded ->
-                "Packet loss stayed high; reconnecting at 30 FPS with a lower bitrate"
-            RuntimeQualityRecoveryReason.DecoderOverloaded ->
-                "The decoder could not keep up; reconnecting with a 30 FPS H264 profile"
-        }
-        val restarted = restartTransportWithProfile(
-            updatedSettings = fallback,
-            diagnosticReason = diagnosticReason,
-            stateMessage = "Reconnecting stream with stable profile",
-        )
-        if (restarted) {
-            if (fallback.codec == VideoCodec.H264) videoSafeFallbackApplied = true
-            emitVideoTransportFallbackApplied(message, fallback)
-        }
-        return restarted
-    }
-
-    /** Replaces a stable transport once with a measured recovery profile, keeping the cloud session. */
-    private fun restartTransportWithProfile(
-        updatedSettings: StreamSettings,
-        diagnosticReason: String,
-        stateMessage: String,
-    ): Boolean {
-        val currentSession = session ?: return false
-        val previousSettings = settings
-        if (updatedSettings == previousSettings) return false
-        if (sessionRecoveryRequested || iceRecoveryJob?.isActive == true) {
-            settings = updatedSettings
-            recordStreamDiagnostic("quality profile queued for active recovery reason=$diagnosticReason")
-            return false
-        }
-
-        val hadStableMedia = transportHasStableMedia
-        settings = updatedSettings
-        transportGeneration += 1
-        val generation = transportGeneration
-        recordStreamDiagnostic(
-            "transport quality restart reason=$diagnosticReason generation=$generation " +
-                "from=${previousSettings.resolution}/${previousSettings.fps}/${previousSettings.codec}/${previousSettings.maxBitrateMbps}Mbps " +
-                "to=${updatedSettings.resolution}/${updatedSettings.fps}/${updatedSettings.codec}/${updatedSettings.maxBitrateMbps}Mbps",
-        )
-        emitState(stateMessage)
-        closeTransport(clearInputState = false)
-        firstVideoFrameWatchdog.reset()
-        val settleDelayMs = advancedCodecRestartSettleDelayMs(previousSettings.codec, hadStableMedia)
-        if (settleDelayMs == 0L) {
-            startTransport(currentSession, updatedSettings, generation)
-        } else {
-            iceRecoveryJob = scope.launch {
-                delay(settleDelayMs)
-                if (generation != transportGeneration || session?.sessionId != currentSession.sessionId) return@launch
-                iceRecoveryJob = null
-                startTransport(currentSession, updatedSettings, generation)
-            }
-        }
-        return true
     }
 
     private fun requestSafeVideoFallback(
@@ -3717,6 +3702,10 @@ class NativeStreamClient(
             reliableInputState == DataChannel.State.OPEN -> reliableInput
             else -> null
         }
+
+    private fun hasOpenInputChannel(): Boolean =
+        reliableInputState == DataChannel.State.OPEN ||
+            partiallyReliableInputState == DataChannel.State.OPEN
 
     private fun inputChannelStateSummary(): String =
         "reliable=${reliableInputState?.name ?: "none"} partial=${partiallyReliableInputState?.name ?: "none"}"

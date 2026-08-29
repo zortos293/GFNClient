@@ -245,7 +245,7 @@ object NativeStreamInputRouter {
 
     fun detach(next: NativeStreamClient) {
         if (client === next) {
-            releaseTouchMouseForLifecycle()
+            releaseInputForLifecycle("stream-detached")
             client = null
             touchMouseState.forgetCursorPosition()
             decodedStreamResolution = 0 to 0
@@ -253,12 +253,9 @@ object NativeStreamInputRouter {
         }
     }
 
-    /**
-     * The system interrupted the touch session — entering PiP, or the activity going to background.
-     * Releases any button we are holding so it cannot stick down on the host. The next direct tap
-     * establishes its own origin, so lifecycle changes cannot leave a stale click offset behind.
-     */
-    fun releaseTouchMouseForLifecycle() {
+    /** Releases held touch, mouse, and keyboard input when focus or lifecycle changes. */
+    fun releaseInputForLifecycle(reason: String) {
+        client?.releasePhysicalInputForLifecycle(reason)
         touchMouseState.reset(client)
         releaseAllNativeTouches()
         nativeTouchDownPoints.clear()
@@ -374,6 +371,7 @@ object NativeStreamInputRouter {
             releaseAllNativeTouches()
             nativeTouchDownPoints.clear()
             touchMouseState.reset(client)
+            client?.releasePhysicalInputForLifecycle("stream-ui-opened")
         }
         streamUiActive = active
     }
@@ -710,8 +708,7 @@ object NativeStreamInputRouter {
         if (streamUiActive) return false
         val current = client ?: return false
         if (event.shouldConsumeAsStreamKeyboard()) {
-            current.dispatchKey(event)
-            return true
+            return current.dispatchKey(event)
         }
         return current.dispatchKey(event)
     }

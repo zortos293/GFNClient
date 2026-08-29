@@ -9,6 +9,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -24,6 +26,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -79,12 +82,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.opencloudgaming.opennow.ui.controls.ControlActionRow
+import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.OpenNowMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -313,6 +319,7 @@ internal fun SettingsScreen(
     val categories = remember(state.settings.developerOptionsUnlocked) {
         settingsCategories(state.settings.developerOptionsUnlocked)
     }
+    val reduceMotion = LocalReduceMotion.current
     val platformBringIntoViewSpec = LocalBringIntoViewSpec.current
     val density = LocalDensity.current
     val focusTopClearancePx = with(density) { SettingsFocusTopClearance.toPx() }
@@ -442,6 +449,7 @@ internal fun SettingsScreen(
                     }
                     SettingsRouteContent(
                         targetState = selectedCategory,
+                        reduceMotion = reduceMotion,
                     ) { category ->
                         SettingsBody(
                             state = state,
@@ -491,6 +499,7 @@ internal fun SettingsScreen(
                     item {
                         SettingsRouteContent(
                             targetState = selectedCategory,
+                            reduceMotion = reduceMotion,
                         ) { category ->
                             SettingsBody(
                                 state = state,
@@ -513,13 +522,57 @@ internal fun SettingsScreen(
     }
 }
 
-/** Replaces the old settings route immediately without creating a page-sized hardware layer. */
+/**
+ * Slides only the incoming Settings route using layout placement.
+ *
+ * The outgoing route is discarded immediately, so two control-heavy Settings trees are never
+ * measured or drawn together. Unlike the former alpha/translation implementation, this does not
+ * create a page-sized RenderNode animation layer.
+ */
 @Composable
 private fun SettingsRouteContent(
     targetState: SettingsCategory?,
+    reduceMotion: Boolean,
     content: @Composable (SettingsCategory?) -> Unit,
 ) {
-    content(targetState)
+    var initialized by remember { mutableStateOf(false) }
+    var previousDepth by remember { mutableStateOf(settingsRouteDepth(targetState)) }
+    var direction by remember { mutableStateOf(1f) }
+    val animateEntrance = initialized && !reduceMotion
+    val progress = remember(targetState, reduceMotion) {
+        Animatable(if (animateEntrance) 0f else 1f)
+    }
+    val slideDistancePx = with(LocalDensity.current) { 28.dp.toPx() }
+
+    LaunchedEffect(targetState, reduceMotion) {
+        val nextDepth = settingsRouteDepth(targetState)
+        direction = if (nextDepth < previousDepth) -1f else 1f
+        previousDepth = nextDepth
+        if (!initialized) {
+            initialized = true
+        } else if (!reduceMotion) {
+            progress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = OpenNowMotion.DurationStandard,
+                    easing = OpenNowMotion.EasingEmphasizedDecel,
+                ),
+            )
+        }
+    }
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .offset {
+                IntOffset(
+                    x = (direction * slideDistancePx * (1f - progress.value)).roundToInt(),
+                    y = 0,
+                )
+            },
+    ) {
+        content(targetState)
+    }
 }
 
 @Composable

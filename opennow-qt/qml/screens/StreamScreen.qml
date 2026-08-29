@@ -94,10 +94,12 @@ FocusScope {
                 spacing: 12
                 Repeater {
                     model: [
-                        root.profile.resolution || (ShellStore.settings.resolution || "1920x1080"),
-                        String(root.profile.fps || ShellStore.settings.fps || 60) + " FPS",
-                        root.profile.codec || String(ShellStore.settings.codec || "Auto").toUpperCase(),
-                        root.session.gpuType || "GFN GPU"
+                        root.profile.resolution || ShellStore.settings.resolution || "—",
+                        root.profile.fps || ShellStore.settings.fps
+                            ? String(root.profile.fps || ShellStore.settings.fps) + " FPS" : "—",
+                        root.profile.codec || ShellStore.settings.codec
+                            ? String(root.profile.codec || ShellStore.settings.codec).toUpperCase() : "—",
+                        root.session.gpuType || "—"
                     ]
                     GlassPanel {
                         required property string modelData
@@ -119,7 +121,7 @@ FocusScope {
                     Column {
                         width: parent.width * 0.42
                         Text { text: qsTr("SERVER"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Black; font.letterSpacing: 1.2 }
-                        Text { width: parent.width; elide: Text.ElideMiddle; text: root.session.serverLocation || root.session.zone || qsTr("Automatic"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14 }
+                        Text { width: parent.width; elide: Text.ElideMiddle; text: root.session.serverLocation || root.session.zone || "—"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14 }
                     }
                 }
             }

@@ -10,12 +10,9 @@ FocusScope {
     property bool hoverExpanded: false
     readonly property bool overlayOpen: !collapsed || hoverExpanded
     readonly property bool compact: !overlayOpen
-    readonly property bool consoleModeOn: {
-        const win = Window.window
-        if (win)
-            return Boolean(win.forceConsole || win.desktopSurfaceActive === false)
-        return ShellStore.settings.launchInConsoleMode === true
-    }
+    readonly property bool consoleModeOn: DesktopTokens.consoleModeOn(Window.window)
+    readonly property bool consoleModePending: DesktopTokens.consoleModePending(Window.window)
+    readonly property bool friendsAvailable: Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
     signal routeRequested(string route)
     signal consoleModeRequested()
     signal collapseRequested(bool collapsed)
@@ -306,21 +303,12 @@ FocusScope {
                             anchors.rightMargin: 10
                             anchors.verticalCenter: parent.verticalCenter
                             visible: navButton.modelData.route === "friends" && !navButton.selected
-                            spacing: 8
-                            Text {
-                                visible: !root.compact
-                                text: "3"
-                                color: "#66FFFFFF"
-                                font.family: DesktopTokens.monoFont
-                                font.pixelSize: 10
-                                font.weight: Font.DemiBold
-                                font.letterSpacing: 0.4
-                            }
                             Rectangle {
                                 width: 6
                                 height: 6
                                 radius: 3
-                                color: DesktopTokens.green
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: root.friendsAvailable ? DesktopTokens.green : DesktopTokens.textFaint
                             }
                         }
                         Rectangle {
@@ -461,7 +449,13 @@ FocusScope {
                 width: parent.width
                 height: 44
                 padding: 0
+                enabled: !root.consoleModePending
+                opacity: root.consoleModePending ? 0.7 : 1
                 Accessible.name: qsTr("Console mode")
+                Accessible.description: root.consoleModePending
+                    ? qsTr("Switching surfaces")
+                    : (root.consoleModeOn ? qsTr("Console mode is on") : qsTr("Console mode is off"))
+                Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
                 background: Rectangle {
                     radius: 11
                     color: consoleModeButton.hovered || consoleModeButton.activeFocus ? "#0CFFFFFF" : "transparent"
@@ -480,7 +474,7 @@ FocusScope {
                         visible: !root.compact
                         spacing: 2
                         Text {
-                            text: qsTr("Console mode")
+                            text: root.consoleModePending ? qsTr("Console mode…") : qsTr("Console mode")
                             color: DesktopTokens.textHigh
                             font.family: DesktopTokens.bodyFont
                             font.pixelSize: 13
@@ -492,10 +486,18 @@ FocusScope {
                                 width: 5
                                 height: 5
                                 radius: 3
-                                color: root.consoleModeOn ? DesktopTokens.mint : DesktopTokens.ledAmber
+                                color: root.consoleModePending ? DesktopTokens.amber
+                                    : root.consoleModeOn ? DesktopTokens.mint : DesktopTokens.ledAmber
+                                SequentialAnimation on opacity {
+                                    running: root.consoleModePending
+                                    loops: Animation.Infinite
+                                    NumberAnimation { to: 0.25; duration: 420 }
+                                    NumberAnimation { to: 1; duration: 420 }
+                                }
                             }
                             Text {
-                                text: root.consoleModeOn ? qsTr("CONSOLE ON") : qsTr("GAMEPAD READY")
+                                text: root.consoleModePending ? qsTr("SWITCHING…")
+                                    : root.consoleModeOn ? qsTr("CONSOLE ON") : qsTr("GAMEPAD READY")
                                 color: DesktopTokens.textMuted
                                 font.family: DesktopTokens.monoFont
                                 font.pixelSize: 9
@@ -522,6 +524,7 @@ FocusScope {
                             height: 13
                             radius: 999
                             color: root.consoleModeOn ? DesktopTokens.focus : "#CCFFFFFF"
+                            Behavior on x { NumberAnimation { duration: DesktopTokens.quickDuration; easing.type: Easing.OutCubic } }
                         }
                     }
                     Rectangle {
@@ -531,7 +534,8 @@ FocusScope {
                         height: 7
                         radius: 4
                         visible: root.compact
-                        color: DesktopTokens.ledAmber
+                        color: root.consoleModePending ? DesktopTokens.amber
+                            : root.consoleModeOn ? DesktopTokens.mint : DesktopTokens.ledAmber
                     }
                 }
                 onClicked: root.consoleModeRequested()
@@ -560,7 +564,7 @@ FocusScope {
                         Text {
                             anchors.centerIn: parent
                             text: ShellStore.signedIn && ShellStore.authSession.user
-                                ? String(ShellStore.authSession.user.displayName || "Z").charAt(0).toUpperCase()
+                                ? String(ShellStore.authSession.user.displayName || "?").charAt(0).toUpperCase()
                                 : "Z"
                             color: DesktopTokens.textHigh
                             font.family: DesktopTokens.bodyFont

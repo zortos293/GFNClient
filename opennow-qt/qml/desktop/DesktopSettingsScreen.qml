@@ -30,21 +30,21 @@ FocusScope {
         { kind: "item", label: "Console mode", page: 9 },
         { kind: "item", label: "Shortcuts", page: 10 },
         { kind: "item", label: "About", page: 11 },
-        { kind: "version", label: String(ShellStore.updaterState.currentVersion || "1.0.0") }
+        { kind: "version", label: String(ShellStore.updaterState.currentVersion || Qt.application.version || qsTr("unknown")) }
     ]
     readonly property var pageTitles: ["Profile", "Subscription", "Linked stores", "Stream", "Audio", "Controllers", "Network", "Interface", "Themes", "Console mode", "Shortcuts", "About"]
     readonly property var pageSubtitles: [
-        "Who you are inside OpenNOW and what your friends can see.",
-        "Your GeForce NOW plan decides resolution, frame rate and session length.",
+        "Your NVIDIA identity and the profiles saved on this device.",
+        "Entitlements reported by your GeForce NOW account.",
         "Link a store once and its cloud-ready games show up in your library.",
         "Defaults for every session. Any game can override these from its details page.",
-        "Output, microphone and party voice for every session.",
+        "Output and microphone behavior for every session.",
         "Pads, glyphs and what happens when one wakes up.",
-        "Region, transport and how OpenNOW behaves when the link gets rough.",
+        "Region, bitrate and proxy settings used by OpenNOW.",
         "How the desktop shell looks, starts and notifies you.",
-        "Installed themes, custom backgrounds and the theme store.",
+        "Built-in palettes for the OpenNOW shell.",
         "The gamepad-first shell inside the same app — for the TV or the Deck.",
-        "Every binding in the desktop shell and in-stream. Click a key to rebind.",
+        "Current desktop, console and in-stream bindings.",
         "Build, updates and the fine print."
     ]
     readonly property var pageComponents: [profilePage, subscriptionPage, storesPage, streamPage, audioPage, controllersPage, networkPage, interfacePage, themesPage, consolePage, shortcutsPage, aboutPage]
@@ -116,17 +116,6 @@ FocusScope {
         return email.charAt(0) + "•••••" + email.slice(at)
     }
 
-    function tierMatches(cardName) {
-        const tier = liveTierBadge()
-        if (cardName === "Free")
-            return tier === "FREE" || tier === ""
-        if (cardName === "Performance")
-            return tier.indexOf("PRIORITY") >= 0 || tier.indexOf("PERFORMANCE") >= 0
-        if (cardName === "Ultimate")
-            return tier.indexOf("ULTIMATE") >= 0
-        return false
-    }
-
     function regionGroup(name) {
         const n = String(name || "").toLowerCase()
         if (n.indexOf("us ") === 0 || n.indexOf("us-") === 0 || n.indexOf("ca ") === 0 || n.indexOf("canada") >= 0 || n.indexOf("north america") >= 0)
@@ -196,12 +185,13 @@ FocusScope {
     function planChips() {
         const sub = ShellStore.subscription
         if (!sub)
-            return [qsTr("Sign in to load entitlements")]
+            return [ShellStore.signedIn ? qsTr("Entitlements unavailable") : qsTr("Sign in to load entitlements")]
         const chips = []
         const resolutions = sub.entitledResolutions || []
         for (let i = 0; i < Math.min(4, resolutions.length); ++i) {
             const item = resolutions[i]
             const width = Number(item.width || 0)
+            const height = Number(item.height || 0)
             const fps = Number(item.fps || 0)
             if (width >= 3840)
                 chips.push("4K" + (fps ? " · " + fps + " FPS" : ""))
@@ -209,15 +199,15 @@ FocusScope {
                 chips.push("1440P" + (fps ? " · " + fps + " FPS" : ""))
             else if (width >= 1920)
                 chips.push("1080P" + (fps ? " · " + fps + " FPS" : ""))
-            else if (width > 0)
-                chips.push(width + "P" + (fps ? " · " + fps + " FPS" : ""))
+            else if (height > 0)
+                chips.push(height + "P" + (fps ? " · " + fps + " FPS" : ""))
         }
         if (sub.isUnlimited)
             chips.push(qsTr("UNLIMITED"))
         else if (sub.remainingHours !== undefined && sub.remainingHours !== null)
             chips.push(qsTr("%1 h left").arg(Math.max(0, Math.round(Number(sub.remainingHours)))))
         if (chips.length === 0)
-            chips.push(String(sub.membershipTier || qsTr("Free")).toUpperCase())
+            chips.push(String(sub.membershipTier || qsTr("Unavailable")).toUpperCase())
         return chips
     }
 
@@ -260,8 +250,10 @@ FocusScope {
     function storeDescription(account) {
         if (account.displayName)
             return account.displayName
+        if (account.isConnected && account.syncedGames !== undefined && account.syncedGames !== null)
+            return qsTr("%1 cloud-ready games synced").arg(account.syncedGames)
         if (account.isConnected)
-            return qsTr("%1 cloud-ready games synced").arg(account.syncedGames || 0)
+            return qsTr("Connected through your NVIDIA account")
         return qsTr("Link this store on NVIDIA to add its games to your library")
     }
 
@@ -279,16 +271,16 @@ FocusScope {
         return [
             {kind:"heading", label:"16:9 STANDARD"},
             {kind:"choice", label:"720p", detail:"1280×720", value:"1280x720"},
-            {kind:"choice", label:"1080p", detail:"1920×1080 · up to 240", value:"1920x1080"},
-            {kind:"choice", label:"1440p", detail:"2560×1440 · up to 240", value:"2560x1440"},
-            {kind:"choice", label:"4K", detail:"3840×2160 · up to 120", value:"3840x2160"},
+            {kind:"choice", label:"1080p", detail:"1920×1080", value:"1920x1080"},
+            {kind:"choice", label:"1440p", detail:"2560×1440", value:"2560x1440"},
+            {kind:"choice", label:"4K", detail:"3840×2160", value:"3840x2160"},
             {kind:"heading", label:"16:10 WIDESCREEN"},
             {kind:"choice", label:"720p · WXGA · WSXGA", detail:"1280×800 → 1680×1050", value:"1680x1050"},
             {kind:"choice", label:"1200p · 1600p · 4K", detail:"1920×1200 → 3840×2400", value:"2560x1600"},
             {kind:"heading", label:"21:9 ULTRAWIDE"},
             {kind:"choice", label:"UW 1080p · UW 1440p", detail:"2560×1080 · 3440×1440", value:"3440x1440"},
             {kind:"heading", label:"32:9 SUPER ULTRAWIDE"},
-            {kind:"choice", label:"Super ultrawide", detail:"5120×1440 · up to 120", value:"5120x1440"}
+            {kind:"choice", label:"Super ultrawide", detail:"5120×1440", value:"5120x1440"}
         ]
     }
 
@@ -471,7 +463,7 @@ FocusScope {
                             Text { text: root.profileName(); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 20; font.weight: Font.Black }
                             Rectangle {
                                 width: tier.implicitWidth + 12; height: 20; radius: 5; color: Qt.rgba(0.55,0.40,1,0.20)
-                                Text { id: tier; anchors.centerIn: parent; text: root.liveTierBadge() || qsTr("FREE"); color: "#C7B5FF"; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
+                                Text { id: tier; anchors.centerIn: parent; text: root.liveTierBadge() || "—"; color: "#C7B5FF"; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
                             }
                         }
                         Text { text: root.profileSubtitle(); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 }
@@ -488,13 +480,13 @@ FocusScope {
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
                 DesktopSettingsRow { width: parent.width; title: qsTr("NVIDIA account"); description: qsTr("Bring your own account · OpenNOW never stores your password"); value: root.maskedEmail(); DesktopSettingsButton { text: qsTr("Manage"); compact: true; onClicked: AppController.navigate(ShellStore.signedIn ? "accounts" : "sign-in") } }
-                DesktopSettingsRow { width: parent.width; title: qsTr("This device"); description: qsTr("Name shown in session history"); value: qsTr("This PC") }
+                DesktopSettingsRow { width: parent.width; title: qsTr("This device"); description: qsTr("Profiles and settings are stored locally"); value: qsTr("Current device") }
                 DesktopSettingsRow { width: parent.width; title: qsTr("Saved profiles"); description: qsTr("Profiles stored in the OS credential store on this PC"); value: qsTr("%1 saved").arg(ShellStore.savedAccounts.length); showDivider: false; DesktopSettingsButton { text: qsTr("Review"); compact: true; onClicked: AppController.navigate("accounts") } }
             }
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
                 DesktopSettingsRow { width: parent.width; rowHeight: 58; title: "Show what I am playing"; description: "Friends see the game and how long you have been in it"; DesktopSettingsToggle { checked: root.boolSetting("discordRichPresence", false); onValueChangedByUser: value => root.setSetting("discordRichPresence", value) } }
-                DesktopSettingsRow { width: parent.width; rowHeight: 58; title: "Let friends ask to join"; description: "Requests appear as an overlay you can dismiss with Esc"; DesktopSettingsToggle { checked: true } }
+                DesktopSettingsRow { width: parent.width; rowHeight: 58; title: qsTr("GeForce NOW invitations"); description: qsTr("NVIDIA does not expose invitation services to third-party clients"); value: qsTr("UNAVAILABLE") }
                 DesktopSettingsRow { width: parent.width; rowHeight: 58; title: "Crash reports"; description: "Off by default · OpenNOW ships no analytics or trackers"; showDivider: false; DesktopSettingsToggle { checked: ShellStore.settings.errorReportingConsent === "granted"; onValueChangedByUser: value => root.setSetting("errorReportingConsent", value ? "granted" : "denied") } }
             }
             DesktopSettingsPanel {
@@ -506,7 +498,6 @@ FocusScope {
                         Text { text: "Auth tokens, library cache and themes live in ~/.opennow · nothing leaves this device"; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 }
                     }
                     Row { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 10
-                        DesktopSettingsButton { text: "Open folder" }
                         DesktopSettingsButton { text: "Sign out"; danger: true; onClicked: ShellStore.logout() }
                     }
                 }
@@ -524,7 +515,7 @@ FocusScope {
                     width: parent.width; height: 86
                     Column { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; spacing: 7
                         Text { text: "CURRENT PLAN"; color: "#BBA2FF"; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold; font.letterSpacing: 1.1 }
-                        Text { text: root.liveTierBadge() || qsTr("Free"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 28; font.weight: Font.Black }
+                        Text { text: root.liveTierBadge() || "—"; color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 28; font.weight: Font.Black }
                         Row { spacing: 7
                             Repeater { model: root.planChips()
                                 delegate: Rectangle { required property var modelData; width: chip.implicitWidth + 14; height: 22; radius: 6; color: Qt.rgba(1,1,1,0.07); border.width: 1; border.color: Qt.rgba(1,1,1,0.10); Text { id: chip; anchors.centerIn: parent; text: modelData; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold } }
@@ -542,23 +533,12 @@ FocusScope {
             }
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                Column { width: parent.width; spacing: 12
-                    Row { width: parent.width
-                        Column { width: parent.width - 220; spacing: 2
-                            Text { text: "What each tier unlocks in OpenNOW"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }
-                            Text { text: "Stream settings adapt automatically — locked options are dimmed, never hidden"; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 }
-                        }
-                        Text { width: 220; text: "READ FROM YOUR ACCOUNT"; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight }
+                Item { width: parent.width; height: 50
+                    Column { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; spacing: 4
+                        Text { text: qsTr("Entitlements reported by NVIDIA"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }
+                        Text { text: root.planChips().join(" · "); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
                     }
-                    Row { width: parent.width; spacing: 10
-                        Repeater { model: [{n:"Free", lines:"1080p · 60 fps\nBasic rig\n1 h sessions\nStandard queue"},{n:"Performance", lines:"1440p · 60 fps\nRTX rig · RT on\n6 h sessions\nPriority queue"},{n:"Ultimate", lines:"4K · 120 fps\n1080p · 240 fps\n8 h sessions\nUltrawide · HDR"}]
-                            delegate: Rectangle { required property var modelData; readonly property bool yours: root.tierMatches(modelData.n); width: (parent.width - 20) / 3; height: 130; radius: 12; color: yours ? Qt.rgba(0.55,0.42,0.86,0.15) : Qt.rgba(1,1,1,0.035); border.width: 1; border.color: yours ? Qt.rgba(0.65,0.52,0.94,0.34) : Qt.rgba(1,1,1,0.10)
-                                Text { x: 14; y: 12; text: modelData.n; color: parent.yours ? Theme.label : Theme.textMuted; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black }
-                                Text { visible: parent.yours; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 14; text: qsTr("YOURS"); color: "#C7B5FF"; font.family: Theme.monoFont; font.pixelSize: 8; font.weight: Font.Bold }
-                                Text { x: 14; y: 43; text: modelData.lines; color: parent.yours ? Qt.rgba(1,1,1,0.88) : Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 10; font.weight: Font.Medium; lineHeight: 1.85 }
-                            }
-                        }
-                    }
+                    Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: ShellStore.subscription ? qsTr("LIVE ACCOUNT DATA") : qsTr("UNAVAILABLE"); color: ShellStore.subscription ? DesktopTokens.green : Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
                 }
             }
             DesktopSettingsPanel {
@@ -581,7 +561,7 @@ FocusScope {
                     Column { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; spacing: 2
                         Row { spacing: 8
                             Text { text: "Library sync"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 13; font.weight: Font.Bold }
-                            Text { text: ShellStore.gameAccountsState === "ready" ? qsTr("LIVE") : qsTr("LOADING"); color: DesktopTokens.green; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
+                            Text { text: ShellStore.gameAccountsState === "ready" ? qsTr("LIVE") : ShellStore.gameAccountsState === "error" ? qsTr("UNAVAILABLE") : qsTr("LOADING"); color: ShellStore.gameAccountsState === "ready" ? DesktopTokens.green : Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
                         }
                         Text { text: qsTr("%1 stores from your NVIDIA account").arg((ShellStore.gameAccounts || []).length); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 }
                     }
@@ -639,23 +619,23 @@ FocusScope {
             width: contentFlick.width; spacing: 14
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 44; title: "Display"; description: "Where OpenNOW opens the stream window"; value: "MONITOR 1 · 2560×1440 · 144 HZ" }
+                DesktopSettingsRow { width: parent.width; rowHeight: 44; title: qsTr("Display"); description: qsTr("The native stream window opens on the current display"); value: qsTr("CURRENT DISPLAY") }
                 DesktopSettingsRow { width: parent.width; rowHeight: 64; title: "Resolution"; description: "Exact stream size, grouped by aspect ratio"
-                    DesktopSettingsButton { id: resolutionButton; menu: true; text: root.valueSetting("resolution", "2560x1440") === "2560x1440" ? "1440p (16:9) · 2560×1440" : String(root.valueSetting("resolution", "1920x1080")).replace("x", "×"); compact: true; onClicked: root.openChoices(resolutionButton, "resolution", root.resolutionItems(), "MATCHES MONITOR 1 · 144 HZ") }
+                    DesktopSettingsButton { id: resolutionButton; menu: true; text: String(root.valueSetting("resolution", "1920x1080")).replace("x", "×"); compact: true; onClicked: root.openChoices(resolutionButton, "resolution", root.resolutionItems()) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 64; title: "Frame rate"; description: "Only rates your plan and resolution allow · 4K caps at 120"
-                    DesktopSettingsSegmented { options: ["AUTO","30","60","90","120","144","165","240"]; optionWidth: 44; selectedIndex: Math.max(0, [0,30,60,90,120,144,165,240].indexOf(Number(root.valueSetting("fps", 120)))); onSelected: (index, value) => root.setSetting("fps", value === "AUTO" ? 0 : Number(value)) }
+                DesktopSettingsRow { width: parent.width; rowHeight: 64; title: "Frame rate"; description: "Requested frame rate for new sessions"
+                    DesktopSettingsSegmented { options: ["AUTO","30","60","90","120","144","165","240"]; optionWidth: 44; selectedIndex: Math.max(0, [0,30,60,90,120,144,165,240].indexOf(Number(root.valueSetting("fps", 60)))); onSelected: (index, value) => root.setSetting("fps", value === "AUTO" ? 0 : Number(value)) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "HDR"; description: "Display reports HDR10 support"; showDivider: false
+                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "10-bit color"; description: "Request a 10-bit stream when the session supports it"; showDivider: false
                     DesktopSettingsToggle { checked: String(root.valueSetting("colorQuality", "8bit_420")).indexOf("10bit") === 0; onValueChangedByUser: value => root.setSetting("colorQuality", value ? "10bit_420" : "8bit_420") }
                 }
             }
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 64; title: "Bitrate ceiling"; description: "Measured line speed 187 Mbps"; showDivider: true
+                DesktopSettingsRow { width: parent.width; rowHeight: 64; title: qsTr("Bitrate ceiling"); description: qsTr("Maximum requested stream bitrate"); showDivider: true
                     DesktopSettingsSlider { from: 10; to: 200; stepSize: 5; value: Number(root.valueSetting("maxBitrateMbps", 75)); suffix: " Mbps"; onMoved: value => root.setSetting("maxBitrateMbps", Math.round(value)) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 64; title: "Codec"; description: "AV1 saves about 30% bandwidth at the same quality"
+                DesktopSettingsRow { width: parent.width; rowHeight: 64; title: "Codec"; description: "Automatic chooses from codecs reported by the native streamer"
                     DesktopSettingsButton { id: codecButton; menu: true; text: String(root.valueSetting("codec", "auto")).toUpperCase() + (String(root.valueSetting("codec", "auto")).toLowerCase() === "av1" ? " · RECOMMENDED" : ""); compact: true; onClicked: root.openChoices(codecButton, "codec", root.choices([{kind:"choice",label:"Automatic",detail:"Best available",value:"auto"},{kind:"choice",label:"AV1",detail:"Recommended",value:"av1"},{kind:"choice",label:"H.265",detail:"Efficient",value:"h265"},{kind:"choice",label:"H.264",detail:"Compatible",value:"h264"}])) }
                 }
                 DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "Reflex low latency"; description: "Requested per session when the game supports it"; showDivider: false
@@ -668,42 +648,23 @@ FocusScope {
     Component {
         id: audioPage
         Column {
-            id: audioPageRoot
             width: contentFlick.width; spacing: 14
-            property real gameVolume: 78
-            property bool nightMode: false
-            property string channels: "5.1"
-            property bool pushToTalk: true
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Output device"; description: "Follows your system default unless you pin one here"; value: "SYSTEM DEFAULT · HD 560S" }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Channels"; description: "Surround needs Ultimate and a game that supports it"
-                    DesktopSettingsSegmented { options: ["STEREO","5.1","7.1"]; optionWidth: 54; selectedIndex: ["STEREO","5.1","7.1"].indexOf(audioPageRoot.channels); onSelected: (index, value) => audioPageRoot.channels = value }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Game volume"; description: "Applied to the stream, independent of your system mixer"
-                    DesktopSettingsSlider { from: 0; to: 100; value: audioPageRoot.gameVolume; onMoved: value => audioPageRoot.gameVolume = value }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "Night mode compression"; description: "Tames explosions so dialogue stays audible at low volume"; showDivider: false
-                    DesktopSettingsToggle { checked: audioPageRoot.nightMode; onValueChangedByUser: value => audioPageRoot.nightMode = value }
-                }
+                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: qsTr("Output device"); description: qsTr("The native streamer follows your operating system output"); value: qsTr("SYSTEM DEFAULT") }
+                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: qsTr("Game volume"); description: qsTr("Use the system mixer or the game's own audio settings"); value: qsTr("SYSTEM MIXER"); showDivider: false }
             }
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Microphone"; description: "Sent to the game so in-game voice chat works"
-                    DesktopSettingsButton { id: micButton; text: root.valueSetting("microphoneDeviceId", "SHURE MV7 · USB"); compact: true; onClicked: root.openChoices(micButton, "microphoneDeviceId", root.choices([{kind:"choice",label:"System default",value:""},{kind:"choice",label:"Shure MV7 · USB",value:"SHURE MV7 · USB"}])) }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Input level"; description: "Say something — the meter should sit in the middle"
-                    Row { spacing: 4; Repeater { model: [7,12,18,24,19,13,8,4]; delegate: Rectangle { required property int index; width: 4; height: modelData; color: index < 5 ? DesktopTokens.green : Qt.rgba(1,1,1,0.15); radius: 2; anchors.bottom: parent.bottom } } }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "Push to talk"; description: "Held keys are never forwarded to the game"; showDivider: false; value: "MOUSE 4"
-                    DesktopSettingsToggle { checked: audioPageRoot.pushToTalk; onValueChangedByUser: value => { audioPageRoot.pushToTalk = value; root.setSetting("microphoneMode", value ? "voice-activity" : "disabled") } }
+                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: qsTr("Microphone device"); description: qsTr("An empty device uses the operating system default"); value: String(root.valueSetting("microphoneDeviceId", "")) || qsTr("SYSTEM DEFAULT") }
+                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: qsTr("Microphone upstream"); description: qsTr("Voice activity is sent only while a supported stream is running"); showDivider: false
+                    DesktopSettingsToggle { checked: String(root.valueSetting("microphoneMode", "disabled")) === "voice-activity"; onValueChangedByUser: value => root.setSetting("microphoneMode", value ? "voice-activity" : "disabled") }
                 }
             }
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
                 Item { width: parent.width; height: 30
-                    Text { anchors.left: parent.left; anchors.right: testAudio.left; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "●   Audio rides the same NVST transport as video, so it inherits your bitrate ceiling. Stereo at 128 kbps is the safe pick on flaky Wi-Fi."; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; elide: Text.ElideRight }
-                    DesktopSettingsButton { id: testAudio; anchors.right: parent.right; text: "Test audio"; compact: true }
+                    Text { anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Audio format and channel count are negotiated with the active GeForce NOW session."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; elide: Text.ElideRight }
                 }
             }
         }
@@ -712,53 +673,32 @@ FocusScope {
     Component {
         id: controllersPage
         Column {
-            id: controllersPageRoot
             width: contentFlick.width; spacing: 14
-            property string glyphs: "AUTO"
-            property real rumble: 100
-            property real deadzone: 12
-            property bool guideStats: true
-            property bool switchOnPadWake: false
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                Row { width: parent.width; height: 24
-                    Text { text: "Detected pads"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 13; font.weight: Font.Bold }
-                    Text { width: parent.width - 100; text: "HOT-PLUG · NO RESTART NEEDED"; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 8; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight }
-                }
-                Repeater { model: [{name:"Xbox Wireless Controller",desc:"Player 1 · Bluetooth · battery 74% · firmware 5.17",glyph:"XBOX GLYPHS",state:"● ACTIVE",active:true},{name:"DualSense Edge",desc:"Player 2 · USB-C · idle for 12 minutes",glyph:"PS GLYPHS"}]
-                    delegate: Rectangle { required property var modelData; width: parent.width; height: 62; radius: 11; color: modelData.active ? Qt.rgba(0.25,0.38,0.68,0.15) : Qt.rgba(1,1,1,0.025); border.width: 1; border.color: modelData.active ? Qt.rgba(0.35,0.56,0.95,0.28) : Qt.rgba(1,1,1,0.08)
-                        Rectangle { x: 14; anchors.verticalCenter: parent.verticalCenter; width: 34; height: 34; radius: 9; color: Qt.rgba(1,1,1,0.07); DesktopGlyph { anchors.centerIn: parent; width: 20; height: 14; icon: "desktop-gamepad.svg" } }
-                        Column { x: 62; anchors.verticalCenter: parent.verticalCenter; spacing: 2; Text { text: modelData.name; color: modelData.active ? Theme.label : Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold } Text { text: modelData.desc; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 } }
-                        Row { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                            Text { text: modelData.glyph; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold; anchors.verticalCenter: parent.verticalCenter }
-                            Text { visible: Boolean(modelData.state); text: modelData.state || ""; color: DesktopTokens.green; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold; anchors.verticalCenter: parent.verticalCenter }
-                            DesktopSettingsButton { text: "Test"; compact: true; primary: Boolean(modelData.active) }
-                        }
-                    }
+                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: qsTr("Connected controllers"); description: qsTr("Controllers are detected through SDL without restarting OpenNOW"); value: qsTr("%1 CONNECTED").arg(AppController.controllerCount); showDivider: false
+                    DesktopSettingsToggle { checked: root.boolSetting("controllerMode", true); onValueChangedByUser: value => root.setSetting("controllerMode", value) }
                 }
             }
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Switch to console mode when a pad wakes up"; description: "Same app, gamepad-first shell · a keypress switches back"
-                    DesktopSettingsToggle { checked: controllersPageRoot.switchOnPadWake; onValueChangedByUser: value => controllersPageRoot.switchOnPadWake = value }
+                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: qsTr("Switch to console mode when a pad wakes up"); description: qsTr("Open the gamepad-first shell when a controller becomes active")
+                    DesktopSettingsToggle { checked: root.boolSetting("switchToConsoleOnPad", true); onValueChangedByUser: value => root.setSetting("switchToConsoleOnPad", value) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Button glyphs"; description: "Used in hints, the overlay and the console shell"
-                    DesktopSettingsSegmented { options: ["AUTO","XBOX","PLAYSTATION","STEAM"]; optionWidth: 64; selectedIndex: ["AUTO","XBOX","PLAYSTATION","STEAM"].indexOf(controllersPageRoot.glyphs); onSelected: (index, value) => controllersPageRoot.glyphs = value }
+                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: qsTr("Return to desktop on pointer input"); description: qsTr("Mouse movement leaves console mode after the current input hold")
+                    DesktopSettingsToggle { checked: root.boolSetting("leaveConsoleOnPointer", true); onValueChangedByUser: value => root.setSetting("leaveConsoleOnPointer", value) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Rumble strength"; description: "Forwarded over NVST · adaptive triggers pass through untouched"
-                    DesktopSettingsSlider { from: 0; to: 100; value: controllersPageRoot.rumble; onMoved: value => controllersPageRoot.rumble = value }
+                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: qsTr("Gyroscope controls"); description: qsTr("Forward supported motion input to the active stream")
+                    DesktopSettingsToggle { checked: root.boolSetting("enableGyroscopeControls", false); onValueChangedByUser: value => root.setSetting("enableGyroscopeControls", value) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Stick deadzone"; description: "Only affects OpenNOW menus — games get raw input"
-                    DesktopSettingsSlider { from: 0; to: 40; value: controllersPageRoot.deadzone; onMoved: value => controllersPageRoot.deadzone = value }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "Guide button opens the stats overlay"; description: "Xbox or PlayStation button · same panel as F3 on keyboard"; showDivider: false; value: "GUIDE"
-                    DesktopSettingsToggle { checked: controllersPageRoot.guideStats; onValueChangedByUser: value => controllersPageRoot.guideStats = value }
+                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: qsTr("Steam controller compatibility"); description: qsTr("Use the compatibility path for Steam-managed controllers"); showDivider: false
+                    DesktopSettingsToggle { checked: root.boolSetting("steamControllerCompatibilityMode", false); onValueChangedByUser: value => root.setSetting("steamControllerCompatibilityMode", value) }
                 }
             }
             DesktopSettingsPanel { width: parent.width; padding: 18
                 Item { width: parent.width; height: 30
-                    Text { anchors.left: parent.left; anchors.right: inputTest.left; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "●   Remapping happens in the game, not here. OpenNOW forwards raw pad state so anti-cheat and in-game bindings keep working."; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; elide: Text.ElideRight }
-                    DesktopSettingsButton { id: inputTest; anchors.right: parent.right; text: "Open input tester"; compact: true; onClicked: AppController.navigate("joining") }
+                    Text { anchors.left: parent.left; anchors.right: inputTest.left; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: qsTr("OpenNOW forwards controller input to the native streamer; game bindings remain in the game."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; elide: Text.ElideRight }
+                    DesktopSettingsButton { id: inputTest; anchors.right: parent.right; text: qsTr("Controller order"); compact: true; onClicked: AppController.navigate("joining") }
                 }
             }
         }
@@ -767,9 +707,7 @@ FocusScope {
     Component {
         id: networkPage
         Column {
-            id: networkPageRoot
             width: contentFlick.width; spacing: 14
-            property bool reconnect: true
             Component.onCompleted: {
                 ShellStore.refreshRegions()
                 ShellStore.pingRegions()
@@ -783,21 +721,17 @@ FocusScope {
                 DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Bandwidth ceiling"; description: "Hard cap for the stream · useful on shared or metered lines"
                     DesktopSettingsSlider { from: 10; to: 200; stepSize: 5; value: Number(root.valueSetting("maxBitrateMbps", 75)); suffix: " Mbps"; onMoved: value => root.setSetting("maxBitrateMbps", Math.round(value)) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Reconnect automatically"; description: "Keeps the rig warm for 90 s and resumes where you left off"
-                    DesktopSettingsToggle { checked: networkPageRoot.reconnect; onValueChangedByUser: value => networkPageRoot.reconnect = value }
-                }
                 DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Proxy"; description: "Applies to API calls only · the stream always goes direct"; showDivider: false
-                    TextField { width: 280; height: 34; text: String(root.valueSetting("sessionProxyUrl", "socks5://127.0.0.1:1080")); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 10; onEditingFinished: root.setSetting("sessionProxyUrl", text); background: Rectangle { radius: 9; color: Qt.rgba(1,1,1,0.04); border.width: 1; border.color: parent.activeFocus ? DesktopTokens.focus : Qt.rgba(1,1,1,0.12) } }
+                    TextField { width: 280; height: 34; text: String(root.valueSetting("sessionProxyUrl", "")); placeholderText: qsTr("http://proxy.example:8080"); color: Theme.label; placeholderTextColor: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 10; onEditingFinished: root.setSetting("sessionProxyUrl", text); background: Rectangle { radius: 9; color: Qt.rgba(1,1,1,0.04); border.width: 1; border.color: parent.activeFocus ? DesktopTokens.focus : Qt.rgba(1,1,1,0.12) } }
                     DesktopSettingsToggle { checked: root.boolSetting("sessionProxyEnabled", false); onValueChangedByUser: value => root.setSetting("sessionProxyEnabled", value) }
                 }
             }
             DesktopSettingsPanel { width: parent.width; padding: 18
                 Item { width: parent.width; height: 34
                     Column { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; spacing: 2
-                        Row { spacing: 8; Text { text: "Transport"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 13; font.weight: Font.Bold } Text { text: "NVST · UDP 49000–49200"; color: DesktopTokens.green; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold } }
-                        Text { text: "Native NVST is the only path OpenNOW uses. If UDP is blocked the session fails fast instead of silently degrading."; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 }
+                        Row { spacing: 8; Text { text: qsTr("Transport"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 13; font.weight: Font.Bold } Text { text: String(ShellStore.streamer && ShellStore.streamer.transport || qsTr("NEGOTIATED PER SESSION")).toUpperCase(); color: DesktopTokens.green; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold } }
+                        Text { text: qsTr("The active GeForce NOW session selects the transport and endpoints used by the native streamer."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 }
                     }
-                    DesktopSettingsButton { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "Check ports"; compact: true }
                 }
             }
         }
@@ -806,28 +740,9 @@ FocusScope {
     Component {
         id: interfacePage
         Column {
-            id: interfacePageRoot
             width: contentFlick.width; spacing: 10
-            property bool startAtLogin: false
-            property string openOn: "HOME"
-            property bool keepInTray: true
-            property string sidebarMode: "EXPANDED"
-            property string density: "COMFORTABLE"
-            property bool hardwareAcceleration: true
-            property bool notifyQueue: true
-            property bool notifyFriends: false
-            property bool notifyBuilds: true
             DesktopSettingsPanel {
                 width: parent.width; padding: 16
-                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Start OpenNOW when I log in"; description: "Starts minimized in the tray, ready in about a second"
-                    DesktopSettingsToggle { checked: interfacePageRoot.startAtLogin; onValueChangedByUser: value => interfacePageRoot.startAtLogin = value }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Open on"; description: "Where the window lands after launch"
-                    DesktopSettingsSegmented { options: ["HOME","LIBRARY","LAST PAGE"]; optionWidth: 72; selectedIndex: ["HOME","LIBRARY","LAST PAGE"].indexOf(interfacePageRoot.openOn); onSelected: (index,value) => interfacePageRoot.openOn = value }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Closing the window keeps OpenNOW in the tray"; description: "A running session is never killed by closing the window"
-                    DesktopSettingsToggle { checked: interfacePageRoot.keepInTray; onValueChangedByUser: value => interfacePageRoot.keepInTray = value }
-                }
                 DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Language"; description: "Community translated through Crowdin · 14 languages"; showDivider: false
                     DesktopSettingsButton { id: languageButton; text: String(root.valueSetting("appLanguage", "en")).toLowerCase() === "en" ? "ENGLISH (UK)" : String(root.valueSetting("appLanguage", "system")).toUpperCase(); compact: true; onClicked: root.openChoices(languageButton, "appLanguage", root.choices([{kind:"choice",label:"System",value:"system"},{kind:"choice",label:"English (UK)",value:"en"},{kind:"choice",label:"Nederlands",value:"nl"},{kind:"choice",label:"Deutsch",value:"de"},{kind:"choice",label:"Français",value:"fr"},{kind:"choice",label:"Türkçe",value:"tr"}])) }
                 }
@@ -835,28 +750,16 @@ FocusScope {
             DesktopSettingsPanel {
                 width: parent.width; padding: 16
                 DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Sidebar"; description: "Collapsed shows icons only and expands on hover · Ctrl B toggles"
-                    DesktopSettingsSegmented { options: ["EXPANDED","COLLAPSED","REMEMBER"]; optionWidth: 83; selectedIndex: ["EXPANDED","COLLAPSED","REMEMBER"].indexOf(interfacePageRoot.sidebarMode); onSelected: (index,value) => interfacePageRoot.sidebarMode = value }
+                    DesktopSettingsToggle { checked: root.boolSetting("desktopRailCollapsed", true); onValueChangedByUser: value => root.setSetting("desktopRailCollapsed", value) }
                 }
                 DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Grid density"; description: "Cover size in Library and Store"
-                    DesktopSettingsSegmented { options: ["DENSE","COMFORTABLE","LARGE"]; optionWidth: 74; selectedIndex: ["DENSE","COMFORTABLE","LARGE"].indexOf(interfacePageRoot.density); onSelected: (index,value) => { interfacePageRoot.density = value; root.setSetting("posterSizeScale", value === "DENSE" ? 0.9 : value === "LARGE" ? 1.25 : 1.05) } }
+                    DesktopSettingsSegmented { options: ["DENSE","COMFORTABLE","LARGE"]; optionWidth: 74; selectedIndex: Number(root.valueSetting("posterSizeScale", 1.05)) < 1 ? 0 : Number(root.valueSetting("posterSizeScale", 1.05)) > 1.1 ? 2 : 1; onSelected: (index,value) => root.setSetting("posterSizeScale", value === "DENSE" ? 0.9 : value === "LARGE" ? 1.25 : 1.05) }
                 }
                 DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Reduce motion"; description: "Cuts parallax and cover animations · follows your OS by default"
                     DesktopSettingsToggle { checked: root.boolSetting("reducedMotion", false); onValueChangedByUser: value => root.setSetting("reducedMotion", value) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Hardware acceleration"; description: "Needs a restart · turn off only if the shell flickers"; showDivider: false
-                    DesktopSettingsToggle { checked: interfacePageRoot.hardwareAcceleration; onValueChangedByUser: value => interfacePageRoot.hardwareAcceleration = value }
-                }
-            }
-            DesktopSettingsPanel {
-                width: parent.width; padding: 16
-                DesktopSettingsRow { width: parent.width; rowHeight: 48; title: "Tell me when a queued session is ready"
-                    DesktopSettingsToggle { checked: interfacePageRoot.notifyQueue; onValueChangedByUser: value => interfacePageRoot.notifyQueue = value }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 48; title: "Tell me when a friend starts playing"
-                    DesktopSettingsToggle { checked: interfacePageRoot.notifyFriends; onValueChangedByUser: value => interfacePageRoot.notifyFriends = value }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 48; title: "Tell me when a new OpenNOW build lands"; showDivider: false
-                    DesktopSettingsToggle { checked: interfacePageRoot.notifyBuilds; onValueChangedByUser: value => interfacePageRoot.notifyBuilds = value }
+                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: qsTr("Translucent interface"); description: qsTr("Use translucent shell surfaces when supported"); showDivider: false
+                    DesktopSettingsToggle { checked: root.boolSetting("translucentUI", false); onValueChangedByUser: value => root.setSetting("translucentUI", value) }
                 }
             }
         }
@@ -892,57 +795,13 @@ FocusScope {
                     }
                 }
             }
-            DesktopSettingsPanel {
-                width: parent.width; padding: 18
-                Row { width: parent.width; height: 30
-                    Text { text: "Installed"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }
-                    Text { width: parent.width - 180; text: "5 THEMES · 1 UPDATE"; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 8; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
-                    DesktopSettingsButton { width: 126; text: "Open theme store"; compact: true; onClicked: AppController.navigate("theme-store") }
-                }
-                Row { width: parent.width; height: 124; spacing: 10
-                    Repeater { model: [{n:"Aurora",c:"#3D315C",a:"#56E6A5",s:"USE",id:"aurora"},{n:"Nocturne",c:"#222329",a:"#7FD4FF",s:"USE",id:"nocturne"},{n:"Sunset",c:"#6A3939",a:"#FF8A80",s:"UPDATE",id:"hibiscus"},{n:"Mint",c:"#164B3C",a:"#56E6A5",s:"USE",id:"phosphor"},{n:"+\nNew theme",c:"transparent",a:"#FFFFFF",s:"FROM CURRENT",id:""}]
-                        delegate: Button { id: themeCard; required property var modelData; readonly property bool inUse: modelData.id !== "" && modelData.id === String(root.valueSetting("themePack","nocturne")); width: (parent.width - 40) / 5; height: 116; hoverEnabled: true; onClicked: { if (modelData.id !== "") root.setSetting("themePack", modelData.id) }
-                            background: Rectangle { radius: 11; color: Qt.rgba(1,1,1,0.025); border.width: 1; border.color: themeCard.inUse ? DesktopTokens.focus : Qt.rgba(1,1,1,0.13) }
-                            contentItem: Item {
-                                Rectangle { id: swatch; visible: modelData.id !== ""; x: 8; y: 8; width: parent.width - 16; height: 76; radius: 7; color: modelData.c; gradient: Gradient { GradientStop { position: 0; color: Qt.lighter(modelData.c,1.25) } GradientStop { position: 1; color: Qt.darker(modelData.c,1.2) } }
-                                    Rectangle { x: 3; y: 3; width: 17; height: 70; radius: 5; color: Qt.darker(modelData.c, 1.6)
-                                        Column { x: 5; y: 8; spacing: 6
-                                            Repeater { model: 3; delegate: Rectangle { required property int index; width: 7; height: 2; radius: 1; color: index === 0 ? themeCard.modelData.a : Qt.rgba(1,1,1,0.4) } }
-                                        }
-                                    }
-                                    Rectangle { x: 24; y: 3; width: swatch.width - 27; height: 32; radius: 4; color: Qt.rgba(1,1,1,0.12)
-                                        Rectangle { x: 5; y: 13; width: 22; height: 3; radius: 1.5; color: modelData.a }
-                                        Rectangle { x: 5; y: 19; width: 14; height: 2; radius: 1; color: Qt.rgba(1,1,1,0.35) }
-                                    }
-                                    Rectangle { x: 24; y: 39; width: swatch.width - 27; height: 34; radius: 4; color: Qt.rgba(0,0,0,0.2)
-                                        Column { x: 5; y: 6; spacing: 6
-                                            Repeater { model: 3; delegate: Rectangle { width: swatch.width - 40; height: 4; radius: 2; color: Qt.rgba(1,1,1,0.14) } }
-                                        }
-                                    }
-                                }
-                                Text { anchors.left: parent.left; anchors.leftMargin: 10; anchors.bottom: parent.bottom; anchors.bottomMargin: 8; width: parent.width - 20; text: modelData.n; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: modelData.id === "" ? Text.AlignHCenter : Text.AlignLeft }
-                                Text { visible: modelData.id !== ""; anchors.right: parent.right; anchors.rightMargin: 10; anchors.bottom: parent.bottom; anchors.bottomMargin: 9; text: themeCard.inUse ? qsTr("IN USE") : modelData.s; color: themeCard.inUse ? DesktopTokens.focus : modelData.s === "UPDATE" ? Theme.yellow : Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 7; font.weight: Font.Bold }
-                            }
-                        }
-                    }
-                }
-            }
-            DesktopSettingsPanel { width: parent.width; padding: 18
-                Item { width: parent.width; height: 36
-                    Column { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; spacing: 2; Text { text: "Theme folder"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 13; font.weight: Font.Bold } Text { text: "~/.opennow/themes · drop a folder with theme.json and it appears here instantly"; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 10 } }
-                    Row { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 10; DesktopSettingsButton { text: "Open folder" } DesktopSettingsButton { text: "Import theme" } }
-                }
-            }
         }
     }
 
     Component {
         id: consolePage
         Column {
-            id: consolePageRoot
             width: contentFlick.width; spacing: 14
-            property real safeArea: 3
-            property string uiScale: "COUCH"
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
                 Item { width: parent.width; height: Math.max(120, consoleCopy.implicitHeight + 48)
@@ -969,8 +828,7 @@ FocusScope {
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         width: 158; spacing: 8
-                        DesktopSettingsButton { width: 158; text: qsTr("Switch now"); suffix: "F10"; primary: true; onClicked: root.requestConsoleMode(true) }
-                        DesktopSettingsButton { width: 158; text: qsTr("Preview on this screen"); onClicked: root.requestConsoleMode(true) }
+                        DesktopSettingsButton { width: 158; text: ShellStore.consoleSurfaceRequestId === "" ? qsTr("Switch now") : qsTr("Switching…"); suffix: "F10"; primary: true; enabled: ShellStore.consoleSurfaceRequestId === ""; onClicked: ShellStore.requestConsoleSurface(true) }
                     }
                 }
             }
@@ -979,10 +837,7 @@ FocusScope {
                 DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Start in console mode"; description: "Remember this choice for the next time OpenNOW launches"
                     DesktopSettingsToggle {
                         checked: root.boolSetting("launchInConsoleMode", false)
-                        onValueChangedByUser: value => {
-                            root.setSetting("launchInConsoleMode", value)
-                            root.requestConsoleMode(value)
-                        }
+                        onValueChangedByUser: value => root.setSetting("launchInConsoleMode", value)
                     }
                 }
                 DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Enter console mode when a gamepad is the only input"; description: "Ignored while a mouse has moved in the last 30 seconds"
@@ -994,11 +849,8 @@ FocusScope {
                 DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Go fullscreen in console mode"; description: "Recommended on a TV · hides the window chrome entirely"
                     DesktopSettingsToggle { checked: root.boolSetting("autoFullScreen", false); onValueChangedByUser: value => root.setSetting("autoFullScreen", value) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "TV safe area"; description: "Pulls the UI inwards on sets that overscan"
-                    DesktopSettingsSlider { from: 0; to: 10; stepSize: 1; value: consolePageRoot.safeArea; onMoved: value => consolePageRoot.safeArea = value }
-                }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "UI scale"; description: "Deck defaults to compact, a 55\" TV wants couch"; showDivider: false
-                    DesktopSettingsSegmented { options: ["COMPACT","COUCH","LARGE"]; optionWidth: 66; selectedIndex: ["COMPACT","COUCH","LARGE"].indexOf(consolePageRoot.uiScale); onSelected: (index,value) => consolePageRoot.uiScale = value }
+                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: qsTr("Controller profile picker"); description: qsTr("Choose a saved profile when console mode starts"); showDivider: false
+                    DesktopSettingsToggle { checked: root.boolSetting("consoleProfilePickerOnLaunch", true); onValueChangedByUser: value => root.setSetting("consoleProfilePickerOnLaunch", value) }
                 }
             }
             DesktopSettingsPanel { width: parent.width; padding: 18
@@ -1018,7 +870,7 @@ FocusScope {
                 width: parent.width; padding: 16
                 Row { width: parent.width; height: 34; spacing: 12
                     TextField { width: parent.width - 262; height: 34; placeholderText: "⌕  Search a command or press a key to find its binding"; color: Theme.label; placeholderTextColor: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; background: Rectangle { radius: 9; color: Qt.rgba(1,1,1,0.04); border.width: 1; border.color: parent.activeFocus ? DesktopTokens.focus : Qt.rgba(1,1,1,0.10) } }
-                    Text { width: 148; height: 34; text: "3 CHANGED FROM DEFAULT"; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 8; font.weight: Font.Bold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    Text { width: 148; height: 34; text: qsTr("CURRENT BINDINGS"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 8; font.weight: Font.Bold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     DesktopSettingsButton { width: 90; text: "Reset all"; compact: true; onClicked: ShellStore.resetSettings() }
                 }
             }
@@ -1027,7 +879,7 @@ FocusScope {
                 Repeater {
                     model: [
                         {h:"APP", rows:[{l:"Command palette",k:"Ctrl  K"},{l:"Search this page",k:"/"},{l:"Collapse or expand the sidebar",k:"Ctrl  B"},{l:"Switch to console mode",k:"F10"},{l:"Settings",k:"Ctrl  ,"},{l:"Quit OpenNOW",k:"Ctrl  Q"}]},
-                        {h:"IN STREAM", rows:[{l:"Session menu",k:"Esc"},{l:"Stats overlay · minimal then expanded",k:"F3"},{l:"Toggle fullscreen",k:"F11"},{l:"Grab or release the mouse",k:"Ctrl  G"},{l:"Screenshot the stream",k:"F12"},{l:"End the session",k:"Ctrl  Shift  Q"}]},
+                        {h:"IN STREAM", rows:[{l:"Session menu",k:"Esc"},{l:"Stats overlay",k:String(root.valueSetting("shortcutToggleStats","Ctrl+N"))},{l:"Toggle fullscreen",k:String(root.valueSetting("shortcutToggleFullscreen","F10"))},{l:"Grab or release the mouse",k:String(root.valueSetting("shortcutTogglePointerLock","F8"))},{l:"Screenshot the stream",k:String(root.valueSetting("shortcutScreenshot","F11"))},{l:"End the session",k:String(root.valueSetting("shortcutStopStream","Ctrl+Shift+Q"))}]},
                         {h:"LIBRARY AND STORE", rows:[{l:"Move through covers",k:"Arrows"},{l:"Play or resume",k:"Enter"},{l:"Game details",k:"Space"},{l:"Toggle favourite",k:"F"},{l:"Context menu",k:"Shift  F10"}]},
                         {h:"GAMEPAD · CONSOLE MODE", rows:[{l:"Select · back",k:"A · B"},{l:"Details · favourite",k:"X · Y"},{l:"Switch tab",k:"LB · RB"},{l:"Stats overlay",k:"Guide"}]}
                     ]
@@ -1055,8 +907,8 @@ FocusScope {
                 Item { width: parent.width; height: 54
                     Row { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; spacing: 16
                         Image { width: 44; height: 24; anchors.verticalCenter: parent.verticalCenter; source: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"; fillMode: Image.PreserveAspectFit; smooth: false }
-                        Column { anchors.verticalCenter: parent.verticalCenter; spacing: 3; Text { text: "OpenNOW " + String(ShellStore.updaterState.currentVersion || "1.0.0"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 22; font.weight: Font.Black } Text { text: qsTr("Qt Quick · NVST native transport"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 10; font.weight: Font.Bold } }
-                        Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("UP TO DATE"); color: DesktopTokens.green; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
+                        Column { anchors.verticalCenter: parent.verticalCenter; spacing: 3; Text { text: "OpenNOW " + String(ShellStore.updaterState.currentVersion || qsTr("unknown")); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 22; font.weight: Font.Black } Text { text: qsTr("Qt Quick · native streaming runtime"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 10; font.weight: Font.Bold } }
+                        Text { anchors.verticalCenter: parent.verticalCenter; text: String(ShellStore.updaterState.status || qsTr("idle")).toUpperCase(); color: ShellStore.updaterState.status === "available" ? DesktopTokens.amber : DesktopTokens.green; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
                     }
                     Row { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 10
                         DesktopSettingsButton { id: updateChannelButton; menu: true; text: String(root.valueSetting("updateChannel","stable")).toUpperCase() + " CHANNEL"; onClicked: root.openChoices(updateChannelButton,"updateChannel",root.choices([{kind:"choice",label:"Stable",value:"stable"},{kind:"choice",label:"Nightly",value:"nightly"}])) }
@@ -1066,11 +918,8 @@ FocusScope {
             }
             Row { width: parent.width; spacing: 14
                 DesktopSettingsPanel { width: parent.width - 340; padding: 18
-                    Row { width: parent.width; Text { text: "What changed in 1.0.0"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold } Text { width: parent.width - 160; text: "28 AUG 2026"; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 8; font.weight: Font.Bold; horizontalAlignment: Text.AlignRight } }
-                    Repeater { model: ["Native NVST transport is now the only stream path. Reverse-engineered handshake shaves 18 ms off the old embedded route.","Collapsible sidebar, command palette and a full desktop shell that shares state with console mode.","Theme store with custom gradient backgrounds and live previews.","F3 stats overlay rebuilt: minimal bar plus an expanded panel with frametime and latency graphs."]
-                        delegate: Text { required property int index; required property var modelData; width: parent.width; height: 46; text: ["●","●","●","●"][index] + "  " + modelData; color: index === 0 ? DesktopTokens.green : index === 1 ? DesktopTokens.focus : index === 2 ? Theme.violet : Theme.yellow; font.family: Theme.bodyFont; font.pixelSize: 11; wrapMode: Text.WordWrap }
-                    }
-                    Text { text: "Read the full release notes  ↗"; color: DesktopTokens.focus; font.family: Theme.bodyFont; font.pixelSize: 12; font.weight: Font.Bold }
+                    Text { width: parent.width; text: ShellStore.releaseHighlights.title || qsTr("Release notes"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }
+                    Text { width: parent.width; height: 178; text: ShellStore.releaseHighlights.bodyMarkdown || ShellStore.updaterState.message || qsTr("Check for updates to load verified release information from GitHub."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; wrapMode: Text.WordWrap; elide: Text.ElideRight }
                 }
                 DesktopSettingsPanel { width: 326; padding: 18
                     Text { text: "Project"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }

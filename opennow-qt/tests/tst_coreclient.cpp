@@ -54,6 +54,16 @@ private slots:
         QCOMPARE(events.first().at(0).toString(), QStringLiteral("catalog.changed"));
         QCOMPARE(events.first().at(1).toJsonObject().value(QStringLiteral("revision")).toInt(), 2);
 
+        client.request(QStringLiteral("test.streamer-event"));
+        QTRY_COMPARE_WITH_TIMEOUT(events.size(), 2, 2'000);
+        QCOMPARE(events.last().at(0).toString(), QStringLiteral("streamer.changed"));
+        const auto streamer = events.last().at(1).toJsonObject();
+        QCOMPARE(streamer.value(QStringLiteral("status")).toString(), QStringLiteral("streaming"));
+        QCOMPARE(streamer.value(QStringLiteral("firstFrameLatencyMs")).toInt(), 37);
+        QCOMPARE(streamer.value(QStringLiteral("mediaBackend")).toString(), QStringLiteral("ffmpeg"));
+        QCOMPARE(streamer.value(QStringLiteral("deviceRecoveryCount")).toInt(), 2);
+        QCOMPARE(streamer.value(QStringLiteral("queueDropCount")).toInt(), 4);
+
         const auto errorId = client.request(QStringLiteral("test.error"));
         QTRY_VERIFY_WITH_TIMEOUT(!failures.isEmpty(), 2'000);
         QCOMPARE(failures.last().at(0).toString(), errorId);

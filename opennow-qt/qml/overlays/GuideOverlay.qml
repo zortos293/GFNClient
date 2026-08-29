@@ -118,11 +118,11 @@ FocusScope {
                 width: 420; spacing: 14
                 PosterTile { width: 200; height: 200; title: root.game.title; artwork: root.game.heroImageUrl || root.game.imageUrl || "" }
                 Text { width: parent.width; elide: Text.ElideRight; text: root.game.title; color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 30; font.weight: Font.Black }
-                Text { text: (root.profile.resolution || ShellStore.settings.resolution || qsTr("Auto")) + " · " + qsTr("%1 FPS").arg(root.profile.fps || ShellStore.settings.fps || 60) + " · " + (root.profile.codec || ShellStore.settings.codec || qsTr("Auto")).toUpperCase(); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14 }
+                Text { text: (root.profile.resolution || ShellStore.settings.resolution || "—") + " · " + (root.profile.fps || ShellStore.settings.fps ? qsTr("%1 FPS").arg(root.profile.fps || ShellStore.settings.fps) : "—") + " · " + String(root.profile.codec || ShellStore.settings.codec || "—").toUpperCase(); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14 }
                 Row {
                     spacing: 8
                     Repeater {
-                        model: [root.elapsedLabel() + "\nSESSION", (root.session.zone || root.session.serverLocation || "AUTO") + "\nREGION", (ShellStore.settings.maxBitrateMbps || 75) + "\nMBPS"]
+                        model: [root.elapsedLabel() + "\nSESSION", (root.session.zone || root.session.serverLocation || "—") + "\nREGION", (ShellStore.settings.maxBitrateMbps ? ShellStore.settings.maxBitrateMbps : "—") + "\nMBPS"]
                         GlassPanel { required property string modelData; width: 128; height: 66; panelRadius: 18; strong: true; Text { anchors.centerIn: parent; text: I18n.source(modelData, I18n.revision); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Bold; horizontalAlignment: Text.AlignHCenter } }
                     }
                 }

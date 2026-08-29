@@ -65,7 +65,7 @@ FocusScope {
                 Text {
                     id: versionLabel
                     anchors.centerIn: parent
-                    text: Qt.application.version || "1.0.0"
+                    text: Qt.application.version || qsTr("unknown")
                     color: "#A3FFFFFF"
                     font.family: DesktopTokens.monoFont
                     font.pixelSize: 9

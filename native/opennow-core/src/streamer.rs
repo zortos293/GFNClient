@@ -2278,15 +2278,33 @@ fn wait_for_child(
 }
 
 fn write_child(stdin: &mut ChildStdin, message: &Value) -> Result<(), StreamerError> {
-    serde_json::to_writer(&mut *stdin, message).map_err(|error| internal(error.to_string()))?;
-    stdin.write_all(b"\n").map_err(|error| StreamerError {
-        code: "streamer_io_failed",
-        message: error.to_string(),
+    serde_json::to_writer(&mut *stdin, message).map_err(|error| {
+        error
+            .io_error_kind()
+            .map(|kind| child_io_error(kind, error.to_string()))
+            .unwrap_or_else(|| internal(error.to_string()))
     })?;
-    stdin.flush().map_err(|error| StreamerError {
-        code: "streamer_io_failed",
-        message: error.to_string(),
-    })
+    stdin
+        .write_all(b"\n")
+        .map_err(|error| child_io_error(error.kind(), error.to_string()))?;
+    stdin
+        .flush()
+        .map_err(|error| child_io_error(error.kind(), error.to_string()))
+}
+
+fn child_io_error(kind: ErrorKind, message: String) -> StreamerError {
+    let code = if matches!(
+        kind,
+        ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::UnexpectedEof
+    ) {
+        "streamer_exited"
+    } else {
+        "streamer_io_failed"
+    };
+    StreamerError { code, message }
 }
 
 fn wait_or_kill(child: &mut Child) {

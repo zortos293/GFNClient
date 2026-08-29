@@ -19,32 +19,78 @@ FocusScope {
     readonly property var live: ShellStore.streamer || ({})
     readonly property var session: ShellStore.activeSession || ({})
     readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
-    readonly property int streamFps: Math.round(Number(live.framesPerSecond || live.fps || 118))
-    readonly property int gameFps: Math.round(Number(live.gameFramesPerSecond || profile.fps || 120))
-    readonly property int latency: Math.round(Number(live.latencyMs || live.roundTripLatencyMs || 18))
-    readonly property int latencyP99: Math.round(Number(live.latencyP99Ms || 24))
-    readonly property int ping: Math.round(Number(live.pingMs || session.latencyMs || 9))
-    readonly property real jitter: Number(live.jitterMs || 1.2)
-    readonly property int bitrate: Math.round(Number(live.bitrateMbps || live.receiveBitrateMbps || 72))
-    readonly property int peakBitrate: Math.round(Number(live.peakBitrateMbps || 94))
-    readonly property real loss: Number(live.packetLossPercent || 0)
-    readonly property int dropped: Math.round(Number(live.droppedFrames || live.queueDropCount || 3))
-    readonly property string region: String(session.regionName || session.region || session.serverRegionId || ShellStore.settings.region || "").toUpperCase()
+    readonly property bool liveTelemetryAvailable: ["starting", "negotiating", "connecting", "streaming", "error"]
+        .indexOf(String(live.status || "")) >= 0
+
+    function liveNumber(value) {
+        return value === undefined || value === null || isNaN(Number(value)) ? null : Number(value)
+    }
+    function firstAvailable(primary, fallback) {
+        return primary === undefined || primary === null ? fallback : primary
+    }
+    function liveValue(value) {
+        return root.liveTelemetryAvailable ? value : undefined
+    }
+    function liveText(value) {
+        const number = root.liveNumber(value)
+        return number === null ? "—" : String(Math.round(number))
+    }
+    function liveFixed(value, decimals) {
+        const number = root.liveNumber(value)
+        return number === null ? "—" : number.toFixed(decimals)
+    }
+    function withUnit(text, unit) {
+        return text === "—" ? "—" : text + unit
+    }
+    function secondaryText(value, suffix) {
+        return value === "—" ? "" : value + suffix
+    }
+
+    readonly property string streamFps: root.liveText(root.liveValue(root.firstAvailable(live.framesPerSecond, live.fps)))
+    readonly property string gameFps: root.liveText(root.firstAvailable(root.liveValue(live.gameFramesPerSecond), profile.fps))
+    readonly property string latency: root.liveText(root.liveValue(root.firstAvailable(live.latencyMs, live.roundTripLatencyMs)))
+    readonly property string latencyP99: root.liveText(root.liveValue(live.latencyP99Ms))
+    readonly property string ping: root.liveText(root.firstAvailable(root.liveValue(live.pingMs), session.latencyMs))
+    readonly property string jitter: root.liveFixed(root.liveValue(live.jitterMs), 1)
+    readonly property string bitrate: root.liveText(root.liveValue(root.firstAvailable(live.bitrateMbps, live.receiveBitrateMbps)))
+    readonly property string peakBitrate: root.liveText(root.liveValue(live.peakBitrateMbps))
+    readonly property string loss: root.liveFixed(root.liveValue(live.packetLossPercent), 2)
+    readonly property string dropped: root.liveText(root.liveValue(root.firstAvailable(live.droppedFrames, live.queueDropCount)))
+    readonly property string firstFrame: root.liveText(root.liveValue(live.firstFrameLatencyMs))
+    readonly property string decoderErrors: root.liveText(root.liveValue(live.decoderErrorCount))
+    readonly property string outputErrors: root.liveText(root.liveValue(live.outputErrorCount))
+
+    readonly property string region: String(session.regionName || session.region || session.serverRegionId || "").toUpperCase()
     readonly property string rig: String(session.rigName || session.gpuName || "").toUpperCase()
-    readonly property string codec: String(live.codec || profile.codec || ShellStore.settings.codec || "AV1").toUpperCase()
-    readonly property int outputHeight: Number(profile.height || ShellStore.settings.resolutionHeight || 1440)
-    readonly property int refreshRate: Number(profile.fps || profile.frameRate || ShellStore.settings.frameRate || 120)
-    readonly property bool hdr: Boolean(profile.hdr || ShellStore.settings.hdr)
-    readonly property var frameBars: [8,10,7,11,9,12,8,9,13,10,8,12,9,11,8,14,9,10,8,11,9,12,10,9]
-    readonly property var latencyBars: [7,8,7,9,8,10,9,8,11,9,8,10,12,9,8,11,10,9,13,10,9,11,10,8]
+    readonly property string codec: String(root.liveValue(live.codec) || profile.codec || "").toUpperCase()
+    readonly property string transport: String(root.liveValue(live.transport) || "").toUpperCase()
+    readonly property string mediaBackend: String(root.liveValue(live.mediaBackend) || "").toUpperCase()
+    readonly property int outputHeight: Number(profile.height || 0)
+    readonly property int refreshRate: Number(profile.fps || profile.frameRate || 0)
+    readonly property bool hdr: Boolean(profile.hdr)
+
+    readonly property string outputText: (root.outputHeight > 0 ? root.outputHeight + "p" : "—")
+        + " · " + (root.refreshRate > 0 ? root.refreshRate + " Hz" : "—")
+        + (root.hdr ? " · HDR" : "")
 
     function elapsedText() {
-        const elapsed = ShellStore.streamStartedAtMs > 0 ? Math.max(0, nowMs - ShellStore.streamStartedAtMs) : 6130000
-        const total = Math.floor(elapsed / 1000)
+        if (ShellStore.streamStartedAtMs <= 0)
+            return "—"
+        const total = Math.floor(Math.max(0, nowMs - ShellStore.streamStartedAtMs) / 1000)
         const h = Math.floor(total / 3600)
         const m = Math.floor((total % 3600) / 60)
         const s = total % 60
         return h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
+    }
+
+    function metricRows() {
+        return [
+            { label: "FPS", main: root.streamFps, secondary: root.secondaryText(root.gameFps, " game") },
+            { label: qsTr("LATENCY"), main: root.withUnit(root.latency, " ms"), secondary: root.secondaryText(root.latencyP99, " ms p99") },
+            { label: qsTr("PING"), main: root.withUnit(root.ping, " ms"), secondary: root.secondaryText(root.jitter, " ms jitter") },
+            { label: qsTr("BITRATE"), main: root.withUnit(root.bitrate, " Mbps"), secondary: root.secondaryText(root.peakBitrate, " Mbps peak") },
+            { label: qsTr("LOSS"), main: root.withUnit(root.loss, "%"), secondary: root.secondaryText(root.dropped, " dropped") }
+        ]
     }
 
     Rectangle {
@@ -72,14 +118,14 @@ FocusScope {
             Row {
                 spacing: 3
                 Text { text: root.ping; color: DesktopTokens.green; font.family: DesktopTokens.monoFont; font.pixelSize: 13; font.weight: Font.Bold }
-                Text { anchors.baseline: parent.children[0].baseline; text: "ms"; color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold }
+                Text { anchors.baseline: parent.children[0].baseline; visible: root.ping !== "—"; text: "ms"; color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold }
             }
             Rectangle { width: 1; height: 14; anchors.verticalCenter: parent.verticalCenter; color: "#24FFFFFF" }
-            Text { anchors.verticalCenter: parent.verticalCenter; text: root.region; color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 0.5 }
+            Text { anchors.verticalCenter: parent.verticalCenter; text: root.region.length ? root.region : "—"; color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 0.5 }
             Rectangle { width: 1; height: 14; anchors.verticalCenter: parent.verticalCenter; color: "#24FFFFFF" }
-            Text { anchors.verticalCenter: parent.verticalCenter; text: root.codec; color: DesktopTokens.focus; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
+            Text { anchors.verticalCenter: parent.verticalCenter; text: root.codec.length ? root.codec : "—"; color: DesktopTokens.focus; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
             Rectangle { width: 1; height: 14; anchors.verticalCenter: parent.verticalCenter; color: "#24FFFFFF" }
-            Text { anchors.verticalCenter: parent.verticalCenter; text: root.bitrate + " Mbps"; color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
+            Text { anchors.verticalCenter: parent.verticalCenter; text: root.withUnit(root.bitrate, " Mbps"); color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
         }
         HoverHandler { cursorShape: Qt.PointingHandCursor }
         TapHandler { id: compactTap; onTapped: root.cycleRequested() }
@@ -124,7 +170,7 @@ FocusScope {
                 x: 13
                 anchors.verticalCenter: parent.verticalCenter
                 width: 165
-                text: root.region + " · " + root.rig
+                text: (root.region.length ? root.region : "—") + " · " + (root.rig.length ? root.rig : "—")
                 color: DesktopTokens.textHigh
                 font.family: DesktopTokens.monoFont
                 font.pixelSize: 10
@@ -150,13 +196,7 @@ FocusScope {
             width: parent.width - 24
             spacing: 0
             Repeater {
-                model: [
-                    { label: "FPS", main: root.streamFps, secondary: root.gameFps + " game" },
-                    { label: qsTr("LATENCY"), main: root.latency + " ms", secondary: root.latencyP99 + " ms p99" },
-                    { label: qsTr("PING"), main: root.ping + " ms", secondary: root.jitter.toFixed(1) + " ms jitter" },
-                    { label: qsTr("BITRATE"), main: root.bitrate + " Mbps", secondary: root.peakBitrate + " Mbps peak" },
-                    { label: qsTr("LOSS"), main: root.loss.toFixed(2) + "%", secondary: root.dropped + " dropped" }
-                ]
+                model: root.metricRows()
                 delegate: Item {
                     id: streamRow
                     required property var modelData
@@ -164,7 +204,7 @@ FocusScope {
                     height: 24
                     Text { width: 64; anchors.verticalCenter: parent.verticalCenter; text: streamRow.modelData.label; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 0.6 }
                     Text { x: 66; width: 100; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: streamRow.modelData.main; color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
-                    Text { anchors.right: parent.right; width: 88; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: streamRow.modelData.secondary; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.DemiBold }
+                    Text { anchors.right: parent.right; width: 88; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; visible: streamRow.modelData.secondary.length > 0; text: streamRow.modelData.secondary; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.DemiBold }
                 }
             }
         }
@@ -177,8 +217,8 @@ FocusScope {
             spacing: 0
             Repeater {
                 model: [
-                    { label: qsTr("CODEC"), main: root.codec + " 10-bit", secondary: qsTr("NVDEC hw") },
-                    { label: qsTr("OUTPUT"), main: root.outputHeight + "p", secondary: root.refreshRate + " Hz" + (root.hdr ? " · HDR" : "") }
+                    { label: qsTr("CODEC"), main: root.codec.length ? root.codec : "—" },
+                    { label: qsTr("OUTPUT"), main: root.outputText }
                 ]
                 delegate: Item {
                     id: videoRow
@@ -186,61 +226,47 @@ FocusScope {
                     width: parent.width
                     height: 24
                     Text { width: 64; anchors.verticalCenter: parent.verticalCenter; text: videoRow.modelData.label; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 0.6 }
-                    Text { x: 66; width: 100; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: videoRow.modelData.main; color: DesktopTokens.focus; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
-                    Text { anchors.right: parent.right; width: 88; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: videoRow.modelData.secondary; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.DemiBold }
+                    Text { x: 66; width: 180; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: videoRow.modelData.main; color: DesktopTokens.focus; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold; elide: Text.ElideRight }
                 }
             }
         }
 
+        Rectangle { x: 12; y: 240; width: parent.width - 24; height: 1; color: "#17FFFFFF" }
         Item {
             x: 12
-            y: 240
+            y: 250
             width: parent.width - 24
-            height: 55
-            Text { text: qsTr("FRAME TIME"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 0.6 }
-            Row {
-                y: 15
-                height: 24
-                spacing: 3
-                Repeater {
-                    model: root.frameBars
-                    delegate: Rectangle {
-                        required property int modelData
-                        anchors.bottom: parent.bottom
-                        width: 8
-                        height: Math.max(3, modelData)
-                        radius: 1.5
-                        color: modelData > 12 ? DesktopTokens.amber : "#667FD4FF"
-                    }
-                }
+            height: 40
+            Text { text: qsTr("TRANSPORT"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 0.6 }
+            Text {
+                y: 14
+                width: parent.width
+                text: (root.transport.length ? root.transport : "—")
+                    + (root.mediaBackend.length ? " · " + root.mediaBackend : "")
+                color: DesktopTokens.textHigh
+                font.family: DesktopTokens.monoFont
+                font.pixelSize: 10
+                font.weight: Font.Bold
+                elide: Text.ElideRight
             }
-            Text { x: 0; y: 43; text: qsTr("min 6.9"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 7 }
-            Text { anchors.right: parent.right; y: 43; text: qsTr("max 21.4 ms"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 7 }
         }
         Item {
             x: 12
-            y: 302
+            y: 296
             width: parent.width - 24
-            height: 45
-            Text { text: qsTr("LATENCY"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 0.6 }
-            Row {
-                y: 15
-                height: 19
-                spacing: 3
-                Repeater {
-                    model: root.latencyBars
-                    delegate: Rectangle {
-                        required property int modelData
-                        anchors.bottom: parent.bottom
-                        width: 8
-                        height: Math.max(3, modelData)
-                        radius: 1.5
-                        color: "#6656E6A5"
-                    }
-                }
+            height: 40
+            Text { text: qsTr("DIAGNOSTICS"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 0.6 }
+            Text {
+                y: 14
+                width: parent.width
+                text: qsTr("First frame %1 · decoder errors %2 · output errors %3")
+                    .arg(root.withUnit(root.firstFrame, " ms")).arg(root.decoderErrors).arg(root.outputErrors)
+                color: DesktopTokens.textHigh
+                font.family: DesktopTokens.monoFont
+                font.pixelSize: 10
+                font.weight: Font.Bold
+                elide: Text.ElideRight
             }
-            Text { x: 0; y: 36; text: qsTr("min 15"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 7 }
-            Text { anchors.right: parent.right; y: 36; text: qsTr("max 24 ms"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 7 }
         }
         Rectangle { x: 12; y: 356; width: parent.width - 24; height: 1; color: "#17FFFFFF" }
         Text { x: 12; y: 369; text: qsTr("F3 · PS · XB — CYCLE"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 7; font.weight: Font.Bold; font.letterSpacing: 0.35 }

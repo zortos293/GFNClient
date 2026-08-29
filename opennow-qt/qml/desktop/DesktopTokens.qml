@@ -71,4 +71,20 @@ QtObject {
     function decodeArtworkUrl(url) {
         return String(url || "").split(";f=webp").join(";f=jpg")
     }
+
+    function consoleModeOn(win) {
+        return win
+            ? Boolean(win.forceConsole || win.desktopSurfaceActive === false)
+            : ShellStore.settings.launchInConsoleMode === true
+    }
+    function consoleModeTargetOn(win) {
+        return win
+            ? !Boolean(win.targetDesktopSurface)
+            : ShellStore.settings.launchInConsoleMode === true
+    }
+    function consoleModePending(win) {
+        return ShellStore.consoleSurfaceRequestId !== "" || Boolean(win
+            && win.targetDesktopSurface !== undefined
+            && win.targetDesktopSurface !== win.desktopSurfaceActive)
+    }
 }

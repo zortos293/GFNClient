@@ -6,12 +6,14 @@ Item {
     property string artwork: ShellStore.catalogGames.length
         ? DesktopTokens.artworkUrl(ShellStore.catalogGames[0], true) : ""
     property bool signIn: false
-    readonly property string resolvedArtwork: {
-        if (root.artwork !== "")
-            return root.artwork
-        if (root.signIn)
-            return "qrc:/qt/qml/OpenNOW/res/brand/signin-hero.jpg"
-        return ""
+    readonly property string normalizedArtwork: root.artwork !== ""
+        ? DesktopTokens.decodeArtworkUrl(root.artwork)
+        : root.signIn ? "qrc:/qt/qml/OpenNOW/res/brand/signin-hero.jpg" : ""
+
+    ArtworkSource {
+        id: artworkSource
+        sourceUrl: root.normalizedArtwork
+        active: root.visible
     }
 
     Rectangle { anchors.fill: parent; color: root.signIn ? Theme.shell : DesktopTokens.shell }
@@ -24,7 +26,7 @@ Item {
             width: parent.width
             height: parent.height * (root.signIn ? 1.18 : 1)
             y: root.signIn ? -parent.height * 0.12 : 0
-            source: root.resolvedArtwork
+            source: artworkSource.resolvedUrl
             asynchronous: true
             cache: true
             fillMode: Image.PreserveAspectCrop

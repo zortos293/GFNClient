@@ -86,7 +86,7 @@ Item {
                 Text {
                     id: badgeText
                     anchors.centerIn: parent
-                    text: qsTr("FREE FOR ULTIMATE")
+                    text: qsTr("GEFORCE NOW CATALOG")
                     color: DesktopTokens.green
                     font.family: Theme.monoFont
                     font.pixelSize: 9
@@ -97,7 +97,7 @@ Item {
 
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("ENDS SUNDAY 23:59")
+                text: root.games.length ? qsTr("%1 FEATURED GAMES").arg(root.games.length) : qsTr("LIVE CATALOG")
                 color: Qt.rgba(1, 1, 1, 0.60)
                 font.family: Theme.monoFont
                 font.pixelSize: 10
@@ -108,7 +108,7 @@ Item {
 
         Text {
             width: parent.width
-            text: qsTr("Claim four games this week")
+            text: qsTr("Featured on GeForce NOW")
             color: "#FFFFFF"
             font.family: Theme.displayFont
             font.pixelSize: 30
@@ -118,7 +118,7 @@ Item {
 
         Text {
             width: parent.width
-            text: qsTr("Claimed games stay in your library and stream instantly — no download, no install. Linked Steam, Epic and GOG purchases show up here too.")
+            text: qsTr("Browse games returned by NVIDIA for your region. Link supported stores to see which titles are ready in your account library.")
             color: Qt.rgba(1, 1, 1, 0.72)
             font.family: Theme.bodyFont
             font.pixelSize: 13
@@ -143,7 +143,7 @@ Item {
             focusPolicy: Qt.NoFocus
             hoverEnabled: true
             Accessible.name: text
-            text: qsTr("Claim all four")
+            text: qsTr("View featured")
             onHoveredChanged: if (hovered) root.actionPointed(0)
             onClicked: root.claimRequested()
             background: Rectangle {
@@ -171,7 +171,7 @@ Item {
             focusPolicy: Qt.NoFocus
             hoverEnabled: true
             Accessible.name: text
-            text: qsTr("See what's included")
+            text: qsTr("Browse catalog")
             onHoveredChanged: if (hovered) root.actionPointed(1)
             onClicked: root.includedRequested()
             background: Rectangle {

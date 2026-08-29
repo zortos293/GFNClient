@@ -17,6 +17,8 @@
 #include <QTimer>
 #include <QDir>
 #include <QFileInfo>
+#include <QVariant>
+#include <QVariantMap>
 #include <QQmlError>
 #include <QQuickItem>
 #include <QQuickWindow>
@@ -119,6 +121,11 @@ int main(int argc, char *argv[])
     if (arguments.contains(u"--reduced-motion"_s)) {
         controller.setReducedMotion(true);
     }
+    const auto smokeTest = arguments.contains(u"--smoke-test"_s);
+    const auto smokeConsolePersistenceRollback = smokeTest
+        && arguments.contains(u"--smoke-console-persistence-rollback"_s);
+    const auto smokeStreamerEvent = smokeTest
+        && arguments.contains(u"--smoke-streamer-event"_s);
 
     const auto performanceReportIndex = arguments.indexOf(u"--performance-report"_s);
     const auto performanceMode = performanceReportIndex >= 0
@@ -143,6 +150,21 @@ int main(int argc, char *argv[])
         u"LaunchModeOverride"_s,
         arguments.contains(u"--desktop"_s) ? u"desktop"_s
             : arguments.contains(u"--console"_s) ? u"console"_s : QString{});
+    engine.rootContext()->setContextProperty(u"SmokeTestMode"_s, smokeTest);
+    engine.rootContext()->setContextProperty(
+        u"SmokeTestGame"_s,
+        smokeTest ? QVariantMap{
+            {u"title"_s, u"Smoke Test Game"_s},
+            {u"publisherName"_s, u"OpenNOW Test Fixture"_s},
+            {u"genres"_s, QStringList{u"Fixture"_s}},
+            {u"selectedVariantIndex"_s, 0},
+            {u"variants"_s, QVariantList{
+                QVariantMap{{u"id"_s, u"1001"_s}, {u"store"_s, u"Steam"_s}, {u"inLibrary"_s, true}},
+                QVariantMap{{u"id"_s, u"1002"_s}, {u"store"_s, u"Epic Games Store"_s}, {u"inLibrary"_s, false}},
+                QVariantMap{{u"id"_s, u"1003"_s}, {u"store"_s, u"Xbox"_s}, {u"inLibrary"_s, true}},
+            }},
+            {u"availableStores"_s, QStringList{u"Steam"_s, u"Epic Games Store"_s, u"Xbox"_s}},
+        } : QVariantMap{});
     QObject::connect(&localization, &Localization::localeChanged,
                      &engine, &QQmlApplicationEngine::retranslate);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
@@ -194,9 +216,9 @@ int main(int argc, char *argv[])
         });
     }
 
-    const auto smokeTest = arguments.contains(u"--smoke-test"_s);
     const auto coreIndex = arguments.indexOf(u"--core"_s);
-    if (!smokeTest && !performanceMode && coreIndex >= 0 && coreIndex + 1 < arguments.size()) {
+    if ((!smokeTest || smokeConsolePersistenceRollback || smokeStreamerEvent) && !performanceMode
+            && coreIndex >= 0 && coreIndex + 1 < arguments.size()) {
         coreClient.start(arguments.at(coreIndex + 1));
     } else if (!smokeTest && !performanceMode) {
         const auto bundledCore = QDir(QCoreApplication::applicationDirPath()).filePath(
@@ -258,38 +280,171 @@ int main(int argc, char *argv[])
     } else {
         const auto screenshotIndex = arguments.indexOf(u"--screenshot"_s);
         if (screenshotIndex >= 0 && screenshotIndex + 1 < arguments.size()) {
-        const auto screenshotPath = arguments.at(screenshotIndex + 1);
-        QTimer::singleShot(1'000, &application,
-                           [&application, &engine, &qmlWarningOccurred, screenshotPath] {
-            if (engine.rootObjects().isEmpty() || qmlWarningOccurred) {
-                application.exit(EXIT_FAILURE);
-                return;
-            }
-            auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
-            const auto saved = window && window->grabWindow().save(screenshotPath);
-            application.exit(saved ? EXIT_SUCCESS : EXIT_FAILURE);
-        });
-        } else if (smokeTest) {
-        QTimer::singleShot(500, &application, [&application, &engine, &qmlWarningOccurred] {
-            auto *window = engine.rootObjects().isEmpty()
-                ? nullptr
-                : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
-            const auto *focused = window ? window->activeFocusItem() : nullptr;
-            const auto failed = !window || qmlWarningOccurred || !focused
-                || !focused->isVisible() || !focused->isEnabled();
-            if (failed) {
-                if (!window) {
-                    qCritical("QML smoke test did not create a window");
-                } else if (!focused) {
-                    qCritical("QML smoke test lost active focus");
-                } else {
-                    qCritical("QML smoke test focus target is not usable: %s (visible=%d, enabled=%d)",
-                              focused->metaObject()->className(), focused->isVisible(),
-                              focused->isEnabled());
+            const auto screenshotPath = arguments.at(screenshotIndex + 1);
+            QTimer::singleShot(1'000, &application,
+                               [&application, &engine, &qmlWarningOccurred, screenshotPath] {
+                if (engine.rootObjects().isEmpty() || qmlWarningOccurred) {
+                    application.exit(EXIT_FAILURE);
+                    return;
                 }
-            }
-            application.exit(failed ? EXIT_FAILURE : EXIT_SUCCESS);
-        });
+                auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+                const auto saved = window && window->grabWindow().save(screenshotPath);
+                application.exit(saved ? EXIT_SUCCESS : EXIT_FAILURE);
+            });
+        } else if (smokeStreamerEvent) {
+            auto *window = engine.rootObjects().isEmpty()
+                ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+            if (!window) return EXIT_FAILURE;
+            const auto requested = std::make_shared<bool>(false);
+            auto *timer = new QTimer(&application);
+            timer->setInterval(20);
+            QObject::connect(timer, &QTimer::timeout, &application,
+                             [&application, &coreClient, window, timer, requested,
+                              &qmlWarningOccurred] {
+                if (qmlWarningOccurred) {
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                if (!*requested) {
+                    if (coreClient.state() != u"ready"_s) return;
+                    if (coreClient.request(u"test.streamer-event"_s).isEmpty()) {
+                        qCritical("Could not request the streamer event fixture");
+                        application.exit(EXIT_FAILURE);
+                        return;
+                    }
+                    *requested = true;
+                    return;
+                }
+                const auto snapshot = window->property("streamerSnapshotForSmokeTest").toMap();
+                if (snapshot.value(u"status"_s).toString() == u"streaming"_s
+                        && snapshot.value(u"firstFrameLatencyMs"_s).toInt() == 37
+                        && snapshot.value(u"mediaBackend"_s).toString() == u"ffmpeg"_s
+                        && snapshot.value(u"deviceRecoveryCount"_s).toInt() == 2
+                        && snapshot.value(u"queueDropCount"_s).toInt() == 4) {
+                    timer->stop();
+                    application.exit(EXIT_SUCCESS);
+                }
+            });
+            timer->start();
+            QTimer::singleShot(3'000, &application, [&application] {
+                qCritical("Flat streamer event smoke test timed out");
+                application.exit(EXIT_FAILURE);
+            });
+        } else if (smokeConsolePersistenceRollback) {
+            auto *window = engine.rootObjects().isEmpty()
+                ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+            if (!window) return EXIT_FAILURE;
+            const auto phase = std::make_shared<int>(0);
+            auto *timer = new QTimer(&application);
+            timer->setInterval(20);
+            QObject::connect(timer, &QTimer::timeout, &application,
+                             [&application, window, timer, phase, &qmlWarningOccurred] {
+                if (qmlWarningOccurred) {
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                if (*phase == 0) {
+                    if (!window->property("settingsLoadedForSmokeTest").toBool()) return;
+                    const auto invoked = QMetaObject::invokeMethod(
+                        window, "requestConsoleSurface", Q_ARG(QVariant, QVariant(true)));
+                    if (!invoked || window->property("desktopSurfaceActive").toBool()) {
+                        qCritical("Console mode did not switch the rendered surface immediately");
+                        application.exit(EXIT_FAILURE);
+                        return;
+                    }
+                    *phase = 1;
+                    return;
+                }
+                if (*phase == 1) {
+                    if (!window->property("consoleModePersistedForSmokeTest").toBool()
+                            || window->property("modePersistenceBusyForSmokeTest").toBool()) return;
+                    const auto invoked = QMetaObject::invokeMethod(
+                        window, "requestConsoleSurface", Q_ARG(QVariant, QVariant(false)));
+                    if (!invoked || !window->property("desktopSurfaceActive").toBool()) {
+                        qCritical("Desktop mode did not switch the rendered surface immediately");
+                        application.exit(EXIT_FAILURE);
+                        return;
+                    }
+                    *phase = 2;
+                    return;
+                }
+                if (*phase == 2) {
+                    if (window->property("consoleModePersistedForSmokeTest").toBool()
+                            || window->property("modePersistenceBusyForSmokeTest").toBool()) return;
+                    const auto consoleInvoked = QMetaObject::invokeMethod(
+                        window, "requestConsoleSurface", Q_ARG(QVariant, QVariant(true)));
+                    const auto desktopInvoked = QMetaObject::invokeMethod(
+                        window, "requestConsoleSurface", Q_ARG(QVariant, QVariant(false)));
+                    if (!consoleInvoked || !desktopInvoked
+                            || !window->property("desktopSurfaceActive").toBool()) {
+                        qCritical("Rapid mode requests did not preserve the latest rendered surface");
+                        application.exit(EXIT_FAILURE);
+                        return;
+                    }
+                    *phase = 3;
+                    return;
+                }
+                if (*phase == 3) {
+                    if (window->property("consoleModePersistedForSmokeTest").toBool()
+                            || window->property("modePersistenceBusyForSmokeTest").toBool()) return;
+                    const auto invoked = QMetaObject::invokeMethod(
+                        window, "requestConsoleSurface", Q_ARG(QVariant, QVariant(true)));
+                    if (!invoked || window->property("desktopSurfaceActive").toBool()) {
+                        qCritical("Console mode did not switch after rapid request coalescing");
+                        application.exit(EXIT_FAILURE);
+                        return;
+                    }
+                    *phase = 4;
+                    return;
+                }
+                if (*phase == 4) {
+                    if (!window->property("consoleModePersistedForSmokeTest").toBool()
+                            || window->property("modePersistenceBusyForSmokeTest").toBool()) return;
+                    const auto invoked = QMetaObject::invokeMethod(
+                        window, "requestConsoleSurface", Q_ARG(QVariant, QVariant(false)));
+                    if (!invoked || !window->property("desktopSurfaceActive").toBool()) {
+                        qCritical("Desktop mode did not switch before persistence rollback");
+                        application.exit(EXIT_FAILURE);
+                        return;
+                    }
+                    *phase = 5;
+                    return;
+                }
+                const auto error = window->property("modePersistenceErrorForSmokeTest").toString();
+                if (!window->property("desktopSurfaceActive").toBool()
+                        && window->property("consoleModePersistedForSmokeTest").toBool()
+                        && !window->property("modePersistenceBusyForSmokeTest").toBool()
+                        && error.contains(u"previous mode was restored"_s, Qt::CaseInsensitive)) {
+                        timer->stop();
+                        application.exit(EXIT_SUCCESS);
+                }
+            });
+            timer->start();
+            QTimer::singleShot(3'000, &application, [&application] {
+                qCritical("Console mode persistence rollback smoke test timed out");
+                application.exit(EXIT_FAILURE);
+            });
+        } else if (smokeTest) {
+            QTimer::singleShot(500, &application, [&application, &engine, &qmlWarningOccurred] {
+                auto *window = engine.rootObjects().isEmpty()
+                    ? nullptr
+                    : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+                const auto *focused = window ? window->activeFocusItem() : nullptr;
+                const auto failed = !window || qmlWarningOccurred || !focused
+                    || !focused->isVisible() || !focused->isEnabled();
+                if (failed) {
+                    if (!window) {
+                        qCritical("QML smoke test did not create a window");
+                    } else if (!focused) {
+                        qCritical("QML smoke test lost active focus");
+                    } else {
+                        qCritical("QML smoke test focus target is not usable: %s (visible=%d, enabled=%d)",
+                                  focused->metaObject()->className(), focused->isVisible(),
+                                  focused->isEnabled());
+                    }
+                }
+                application.exit(failed ? EXIT_FAILURE : EXIT_SUCCESS);
+            });
         }
     }
 

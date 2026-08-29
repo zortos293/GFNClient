@@ -33,7 +33,18 @@ FocusScope {
     readonly property int heightPx: Number(profile.height || ShellStore.settings.resolutionHeight || 0)
     readonly property int fps: Number(profile.fps || profile.frameRate || ShellStore.settings.fps || ShellStore.settings.frameRate || 0)
     readonly property string codec: String(profile.codec || ShellStore.settings.codec || "").toUpperCase()
-    readonly property int bitrate: Math.round(Number(profile.bitrateMbps || ShellStore.settings.maxBitrate || 0))
+    readonly property int bitrate: Math.round(Number(profile.bitrateMbps || ShellStore.settings.maxBitrateMbps || 0))
+    readonly property string membershipTier: String(ShellStore.subscription
+        && ShellStore.subscription.membershipTier || "").toUpperCase()
+    readonly property string rigName: String(session.rigName || session.gpuName || "").toUpperCase()
+    readonly property string sessionArtwork: DesktopTokens.decodeArtworkUrl(
+        String(root.game.heroImageUrl || root.game.imageUrl || ""))
+
+    ArtworkSource {
+        id: sessionArtworkSource
+        sourceUrl: root.sessionArtwork
+        active: root.visible
+    }
 
     function resolutionLabel() {
         if (heightPx >= 2160) return "2160P"
@@ -65,7 +76,7 @@ FocusScope {
 
     Image {
         anchors.fill: parent
-        source: String(root.game.heroImageUrl || root.game.imageUrl || "")
+        source: sessionArtworkSource.resolvedUrl
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         cache: true
@@ -185,7 +196,8 @@ FocusScope {
                 anchors.right: parent.right
                 anchors.top: parent.top
                 anchors.topMargin: 8
-                text: root.failed ? qsTr("ACTION NEEDED") : root.activeStep >= 3 ? qsTr("ALMOST THERE") : qsTr("ABOUT 6 SECONDS LEFT")
+                text: root.failed ? qsTr("ACTION NEEDED")
+                    : root.activeStep >= 3 ? qsTr("OPENING STREAM") : qsTr("IN PROGRESS")
                 color: DesktopTokens.textFaint
                 font.family: DesktopTokens.monoFont
                 font.pixelSize: 9
@@ -349,7 +361,9 @@ FocusScope {
         spacing: 5
         Text {
             anchors.right: parent.right
-            text: qsTr("SESSION %1").arg(String(root.session.sessionId || "8D2A-7F19").slice(0, 9).toUpperCase())
+            text: root.session.sessionId
+                ? qsTr("SESSION %1").arg(String(root.session.sessionId).slice(0, 9).toUpperCase())
+                : qsTr("SESSION PENDING")
             color: DesktopTokens.textFaint
             font.family: DesktopTokens.monoFont
             font.pixelSize: 9
@@ -358,7 +372,9 @@ FocusScope {
         }
         Text {
             anchors.right: parent.right
-            text: qsTr("ULTIMATE · PRIORITY RIG")
+            text: root.membershipTier && root.rigName
+                ? root.membershipTier + " · " + root.rigName
+                : root.membershipTier || root.rigName || qsTr("WAITING FOR RIG ASSIGNMENT")
             color: DesktopTokens.textMuted
             font.family: DesktopTokens.monoFont
             font.pixelSize: 9

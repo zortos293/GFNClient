@@ -181,14 +181,14 @@ FocusScope {
 
     function themeMeta(id) {
         const packs = {
-            aurora: { name: qsTr("Aurora"), blurb: qsTr("Cool teal shell with a mint focus ring.") },
-            nocturne: { name: qsTr("Carbon"), blurb: qsTr("Near-black nocturne shell with a sky focus ring.") },
-            kraft: { name: qsTr("Kraft"), blurb: qsTr("Warm brown shell with a brass focus ring.") },
-            phosphor: { name: qsTr("Mint"), blurb: qsTr("Deep green shell with a phosphor focus ring.") },
-            hibiscus: { name: qsTr("Sunset"), blurb: qsTr("Wine shell with a rose focus ring.") },
-            chapel: { name: qsTr("Chapel"), blurb: qsTr("Violet night shell with a gold focus ring.") },
-            bone: { name: qsTr("Bone"), blurb: qsTr("Light paper shell for daytime use.") },
-            cobalt: { name: qsTr("Cobalt"), blurb: qsTr("Light blue-white shell with a cobalt focus ring.") }
+            aurora: { name: qsTr("Aurora"), blurb: qsTr("Cool teal shell with a mint focus ring."), accent: "#56E6A5" },
+            nocturne: { name: qsTr("Nocturne"), blurb: qsTr("Near-black nocturne shell with a sky focus ring."), accent: "#7FD4FF" },
+            kraft: { name: qsTr("Kraft"), blurb: qsTr("Warm brown shell with a brass focus ring."), accent: "#C6A46A" },
+            phosphor: { name: qsTr("Mint"), blurb: qsTr("Deep green shell with a phosphor focus ring."), accent: "#56E6A5" },
+            hibiscus: { name: qsTr("Sunset"), blurb: qsTr("Wine shell with a rose focus ring."), accent: "#FF8A80" },
+            chapel: { name: qsTr("Chapel"), blurb: qsTr("Violet night shell with a gold focus ring."), accent: "#FFD166" },
+            bone: { name: qsTr("Bone"), blurb: qsTr("Light paper shell for daytime use."), accent: "#C6A46A" },
+            cobalt: { name: qsTr("Cobalt"), blurb: qsTr("Light blue-white shell with a cobalt focus ring."), accent: "#7FD4FF" }
         }
         return packs[id] || { name: String(id || qsTr("Theme")), blurb: qsTr("Installed theme pack.") }
     }
@@ -219,6 +219,32 @@ FocusScope {
         if (chips.length === 0)
             chips.push(String(sub.membershipTier || qsTr("Free")).toUpperCase())
         return chips
+    }
+
+    function storeLetter(account) {
+        const provider = String(account.provider || account.label || "").trim()
+        return provider ? provider.charAt(0).toUpperCase() : ""
+    }
+
+    function storeIcon(account) {
+        const provider = String(account.provider || account.label || "").toLowerCase()
+        const base = "qrc:/qt/qml/OpenNOW/res/icons/"
+        if (provider.indexOf("steam") >= 0) return base + "store-steam.svg"
+        if (provider.indexOf("epic") >= 0) return base + "store-epic.svg"
+        if (provider.indexOf("ubisoft") >= 0 || provider.indexOf("uplay") >= 0) return base + "store-ubisoft.svg"
+        if (provider.indexOf("battle") >= 0) return base + "store-battlenet.svg"
+        return base + "desktop-nav-store.svg"
+    }
+
+    function storeAccent(account) {
+        const provider = String(account.provider || account.label || "").toLowerCase()
+        if (provider.indexOf("steam") >= 0) return Theme.cartSteam
+        if (provider.indexOf("epic") >= 0) return Theme.cartEpic
+        if (provider.indexOf("ubisoft") >= 0 || provider.indexOf("uplay") >= 0) return Theme.cartUbisoft
+        if (provider.indexOf("xbox") >= 0) return Theme.cartXbox
+        if (provider.indexOf("gog") >= 0) return Theme.cartGog
+        if (provider.indexOf("battle") >= 0) return Theme.cartBattlenet
+        return Qt.rgba(1, 1, 1, 0.08)
     }
 
     function storeStatus(account) {
@@ -574,6 +600,9 @@ FocusScope {
                         readonly property var status: root.storeStatus(modelData)
                         width: parent.width
                         rowHeight: 62
+                        leadingLetter: root.storeLetter(modelData)
+                        leadingIcon: root.storeIcon(modelData)
+                        leadingColor: root.storeAccent(modelData)
                         title: modelData.label || modelData.provider
                         description: root.storeDescription(modelData)
                         showDivider: index < (ShellStore.gameAccounts || []).length - 1
@@ -698,7 +727,7 @@ FocusScope {
                 }
                 Repeater { model: [{name:"Xbox Wireless Controller",desc:"Player 1 · Bluetooth · battery 74% · firmware 5.17",glyph:"XBOX GLYPHS",state:"● ACTIVE",active:true},{name:"DualSense Edge",desc:"Player 2 · USB-C · idle for 12 minutes",glyph:"PS GLYPHS"}]
                     delegate: Rectangle { required property var modelData; width: parent.width; height: 62; radius: 11; color: modelData.active ? Qt.rgba(0.25,0.38,0.68,0.15) : Qt.rgba(1,1,1,0.025); border.width: 1; border.color: modelData.active ? Qt.rgba(0.35,0.56,0.95,0.28) : Qt.rgba(1,1,1,0.08)
-                        Rectangle { x: 14; anchors.verticalCenter: parent.verticalCenter; width: 34; height: 34; radius: 9; color: Qt.rgba(1,1,1,0.07); Text { anchors.centerIn: parent; text: "◉"; color: Theme.textMuted; font.pixelSize: 15 } }
+                        Rectangle { x: 14; anchors.verticalCenter: parent.verticalCenter; width: 34; height: 34; radius: 9; color: Qt.rgba(1,1,1,0.07); DesktopGlyph { anchors.centerIn: parent; width: 20; height: 14; icon: "desktop-gamepad.svg" } }
                         Column { x: 62; anchors.verticalCenter: parent.verticalCenter; spacing: 2; Text { text: modelData.name; color: modelData.active ? Theme.label : Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold } Text { text: modelData.desc; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 } }
                         Row { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; spacing: 8
                             Text { text: modelData.glyph; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold; anchors.verticalCenter: parent.verticalCenter }
@@ -778,7 +807,7 @@ FocusScope {
         id: interfacePage
         Column {
             id: interfacePageRoot
-            width: contentFlick.width; spacing: 14
+            width: contentFlick.width; spacing: 10
             property bool startAtLogin: false
             property string openOn: "HOME"
             property bool keepInTray: true
@@ -789,44 +818,44 @@ FocusScope {
             property bool notifyFriends: false
             property bool notifyBuilds: true
             DesktopSettingsPanel {
-                width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Start OpenNOW when I log in"; description: "Starts minimized in the tray, ready in about a second"
+                width: parent.width; padding: 16
+                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Start OpenNOW when I log in"; description: "Starts minimized in the tray, ready in about a second"
                     DesktopSettingsToggle { checked: interfacePageRoot.startAtLogin; onValueChangedByUser: value => interfacePageRoot.startAtLogin = value }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Open on"; description: "Where the window lands after launch"
+                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Open on"; description: "Where the window lands after launch"
                     DesktopSettingsSegmented { options: ["HOME","LIBRARY","LAST PAGE"]; optionWidth: 72; selectedIndex: ["HOME","LIBRARY","LAST PAGE"].indexOf(interfacePageRoot.openOn); onSelected: (index,value) => interfacePageRoot.openOn = value }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Closing the window keeps OpenNOW in the tray"; description: "A running session is never killed by closing the window"
+                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Closing the window keeps OpenNOW in the tray"; description: "A running session is never killed by closing the window"
                     DesktopSettingsToggle { checked: interfacePageRoot.keepInTray; onValueChangedByUser: value => interfacePageRoot.keepInTray = value }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Language"; description: "Community translated through Crowdin · 14 languages"; showDivider: false
+                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Language"; description: "Community translated through Crowdin · 14 languages"; showDivider: false
                     DesktopSettingsButton { id: languageButton; text: String(root.valueSetting("appLanguage", "en")).toLowerCase() === "en" ? "ENGLISH (UK)" : String(root.valueSetting("appLanguage", "system")).toUpperCase(); compact: true; onClicked: root.openChoices(languageButton, "appLanguage", root.choices([{kind:"choice",label:"System",value:"system"},{kind:"choice",label:"English (UK)",value:"en"},{kind:"choice",label:"Nederlands",value:"nl"},{kind:"choice",label:"Deutsch",value:"de"},{kind:"choice",label:"Français",value:"fr"},{kind:"choice",label:"Türkçe",value:"tr"}])) }
                 }
             }
             DesktopSettingsPanel {
-                width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Sidebar"; description: "Collapsed shows icons only and expands on hover · Ctrl B toggles"
+                width: parent.width; padding: 16
+                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Sidebar"; description: "Collapsed shows icons only and expands on hover · Ctrl B toggles"
                     DesktopSettingsSegmented { options: ["EXPANDED","COLLAPSED","REMEMBER"]; optionWidth: 83; selectedIndex: ["EXPANDED","COLLAPSED","REMEMBER"].indexOf(interfacePageRoot.sidebarMode); onSelected: (index,value) => interfacePageRoot.sidebarMode = value }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Grid density"; description: "Cover size in Library and Store"
+                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Grid density"; description: "Cover size in Library and Store"
                     DesktopSettingsSegmented { options: ["DENSE","COMFORTABLE","LARGE"]; optionWidth: 74; selectedIndex: ["DENSE","COMFORTABLE","LARGE"].indexOf(interfacePageRoot.density); onSelected: (index,value) => { interfacePageRoot.density = value; root.setSetting("posterSizeScale", value === "DENSE" ? 0.9 : value === "LARGE" ? 1.25 : 1.05) } }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Reduce motion"; description: "Cuts parallax and cover animations · follows your OS by default"
+                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Reduce motion"; description: "Cuts parallax and cover animations · follows your OS by default"
                     DesktopSettingsToggle { checked: root.boolSetting("reducedMotion", false); onValueChangedByUser: value => root.setSetting("reducedMotion", value) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Hardware acceleration"; description: "Needs a restart · turn off only if the shell flickers"; showDivider: false
+                DesktopSettingsRow { width: parent.width; rowHeight: 52; title: "Hardware acceleration"; description: "Needs a restart · turn off only if the shell flickers"; showDivider: false
                     DesktopSettingsToggle { checked: interfacePageRoot.hardwareAcceleration; onValueChangedByUser: value => interfacePageRoot.hardwareAcceleration = value }
                 }
             }
             DesktopSettingsPanel {
-                width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "Tell me when a queued session is ready"
+                width: parent.width; padding: 16
+                DesktopSettingsRow { width: parent.width; rowHeight: 48; title: "Tell me when a queued session is ready"
                     DesktopSettingsToggle { checked: interfacePageRoot.notifyQueue; onValueChangedByUser: value => interfacePageRoot.notifyQueue = value }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "Tell me when a friend starts playing"
+                DesktopSettingsRow { width: parent.width; rowHeight: 48; title: "Tell me when a friend starts playing"
                     DesktopSettingsToggle { checked: interfacePageRoot.notifyFriends; onValueChangedByUser: value => interfacePageRoot.notifyFriends = value }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "Tell me when a new OpenNOW build lands"; showDivider: false
+                DesktopSettingsRow { width: parent.width; rowHeight: 48; title: "Tell me when a new OpenNOW build lands"; showDivider: false
                     DesktopSettingsToggle { checked: interfacePageRoot.notifyBuilds; onValueChangedByUser: value => interfacePageRoot.notifyBuilds = value }
                 }
             }
@@ -836,16 +865,18 @@ FocusScope {
     Component {
         id: themesPage
         Column {
+            id: themesPageRoot
             width: contentFlick.width; spacing: 14
+            readonly property var activeTheme: root.themeMeta(String(ShellStore.settings.themePack || "nocturne"))
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
                 Row {
                     width: parent.width
                     height: 114
                     spacing: 18
-                    Rectangle { width: 212; height: 100; radius: 12; color: Theme.shell; border.width: 1; border.color: DesktopTokens.focus
+                    Rectangle { width: 212; height: 100; radius: 12; color: Theme.shell; border.width: 1; border.color: themesPageRoot.activeTheme.accent
                         Row { x: 50; y: 34; spacing: 7
-                            Repeater { model: [Theme.focus, Theme.violet, Theme.mint]; delegate: Rectangle { required property var modelData; width: 44; height: 56; radius: 6; color: modelData } }
+                            Repeater { model: [themesPageRoot.activeTheme.accent, Qt.darker(themesPageRoot.activeTheme.accent, 1.35), Qt.lighter(themesPageRoot.activeTheme.accent, 1.4)]; delegate: Rectangle { required property var modelData; width: 44; height: 56; radius: 6; color: modelData } }
                         }
                     }
                     Column {
@@ -869,12 +900,28 @@ FocusScope {
                     DesktopSettingsButton { width: 126; text: "Open theme store"; compact: true; onClicked: AppController.navigate("theme-store") }
                 }
                 Row { width: parent.width; height: 124; spacing: 10
-                    Repeater { model: [{n:"Aurora",c:"#3D315C",s:"IN USE",id:"aurora"},{n:"Carbon",c:"#222329",s:"USE",id:"nocturne"},{n:"Sunset",c:"#6A3939",s:"UPDATE",id:"hibiscus"},{n:"Mint",c:"#164B3C",s:"USE",id:"phosphor"},{n:"+\nNew theme",c:"transparent",s:"FROM CURRENT",id:""}]
-                        delegate: Button { required property var modelData; width: (parent.width - 40) / 5; height: 116; hoverEnabled: true; onClicked: { if (modelData.id !== "") root.setSetting("themePack", modelData.id) }
-                            background: Rectangle { radius: 11; color: Qt.rgba(1,1,1,0.025); border.width: 1; border.color: modelData.id === String(root.valueSetting("themePack","aurora")) ? DesktopTokens.focus : Qt.rgba(1,1,1,0.13) }
-                            contentItem: Item { Rectangle { visible: modelData.id !== ""; x: 8; y: 8; width: parent.width - 16; height: 76; radius: 7; color: modelData.c; gradient: Gradient { GradientStop { position: 0; color: Qt.lighter(modelData.c,1.25) } GradientStop { position: 1; color: Qt.darker(modelData.c,1.2) } } }
+                    Repeater { model: [{n:"Aurora",c:"#3D315C",a:"#56E6A5",s:"USE",id:"aurora"},{n:"Nocturne",c:"#222329",a:"#7FD4FF",s:"USE",id:"nocturne"},{n:"Sunset",c:"#6A3939",a:"#FF8A80",s:"UPDATE",id:"hibiscus"},{n:"Mint",c:"#164B3C",a:"#56E6A5",s:"USE",id:"phosphor"},{n:"+\nNew theme",c:"transparent",a:"#FFFFFF",s:"FROM CURRENT",id:""}]
+                        delegate: Button { id: themeCard; required property var modelData; readonly property bool inUse: modelData.id !== "" && modelData.id === String(root.valueSetting("themePack","nocturne")); width: (parent.width - 40) / 5; height: 116; hoverEnabled: true; onClicked: { if (modelData.id !== "") root.setSetting("themePack", modelData.id) }
+                            background: Rectangle { radius: 11; color: Qt.rgba(1,1,1,0.025); border.width: 1; border.color: themeCard.inUse ? DesktopTokens.focus : Qt.rgba(1,1,1,0.13) }
+                            contentItem: Item {
+                                Rectangle { id: swatch; visible: modelData.id !== ""; x: 8; y: 8; width: parent.width - 16; height: 76; radius: 7; color: modelData.c; gradient: Gradient { GradientStop { position: 0; color: Qt.lighter(modelData.c,1.25) } GradientStop { position: 1; color: Qt.darker(modelData.c,1.2) } }
+                                    Rectangle { x: 3; y: 3; width: 17; height: 70; radius: 5; color: Qt.darker(modelData.c, 1.6)
+                                        Column { x: 5; y: 8; spacing: 6
+                                            Repeater { model: 3; delegate: Rectangle { required property int index; width: 7; height: 2; radius: 1; color: index === 0 ? themeCard.modelData.a : Qt.rgba(1,1,1,0.4) } }
+                                        }
+                                    }
+                                    Rectangle { x: 24; y: 3; width: swatch.width - 27; height: 32; radius: 4; color: Qt.rgba(1,1,1,0.12)
+                                        Rectangle { x: 5; y: 13; width: 22; height: 3; radius: 1.5; color: modelData.a }
+                                        Rectangle { x: 5; y: 19; width: 14; height: 2; radius: 1; color: Qt.rgba(1,1,1,0.35) }
+                                    }
+                                    Rectangle { x: 24; y: 39; width: swatch.width - 27; height: 34; radius: 4; color: Qt.rgba(0,0,0,0.2)
+                                        Column { x: 5; y: 6; spacing: 6
+                                            Repeater { model: 3; delegate: Rectangle { width: swatch.width - 40; height: 4; radius: 2; color: Qt.rgba(1,1,1,0.14) } }
+                                        }
+                                    }
+                                }
                                 Text { anchors.left: parent.left; anchors.leftMargin: 10; anchors.bottom: parent.bottom; anchors.bottomMargin: 8; width: parent.width - 20; text: modelData.n; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: modelData.id === "" ? Text.AlignHCenter : Text.AlignLeft }
-                                Text { visible: modelData.id !== ""; anchors.right: parent.right; anchors.rightMargin: 10; anchors.bottom: parent.bottom; anchors.bottomMargin: 9; text: modelData.s; color: modelData.s === "UPDATE" ? Theme.yellow : modelData.s === "IN USE" ? DesktopTokens.focus : Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 7; font.weight: Font.Bold }
+                                Text { visible: modelData.id !== ""; anchors.right: parent.right; anchors.rightMargin: 10; anchors.bottom: parent.bottom; anchors.bottomMargin: 9; text: themeCard.inUse ? qsTr("IN USE") : modelData.s; color: themeCard.inUse ? DesktopTokens.focus : modelData.s === "UPDATE" ? Theme.yellow : Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 7; font.weight: Font.Bold }
                             }
                         }
                     }
@@ -898,16 +945,30 @@ FocusScope {
             property string uiScale: "COUCH"
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                Row { width: parent.width; height: 120; spacing: 18
-                    Rectangle { width: 212; height: 120; radius: 12; color: Theme.shell; border.width: 1; border.color: Qt.rgba(0.6,0.5,1,0.25)
-                        Row { x: 12; y: 34; spacing: 7; Repeater { model: [Theme.focus, Theme.violet, Theme.mint]; delegate: Rectangle { required property var modelData; width: 50; height: 56; radius: 7; color: modelData } }
+                Item { width: parent.width; height: Math.max(120, consoleCopy.implicitHeight + 48)
+                    Rectangle { id: consolePreview
+                        x: 0; y: (parent.height - height) / 2
+                        width: Math.min(212, Math.max(160, parent.width * 0.26)); height: 120
+                        radius: 12; color: Theme.shell; border.width: 1; border.color: Qt.rgba(0.6,0.5,1,0.25)
+                        Row { x: (parent.width - 164) / 2; y: 34; spacing: 7; Repeater { model: [Theme.focus, Theme.violet, Theme.mint]; delegate: Rectangle { required property var modelData; width: 50; height: 56; radius: 7; color: modelData } } }
                         Text { x: 12; y: 96; text: "A  PLAY   B  BACK"; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 7; font.weight: Font.Bold }
                     }
-                    Column { width: parent.width - 212 - 158 - 36; anchors.verticalCenter: parent.verticalCenter; spacing: 9
+                    Column {
+                        id: consoleCopy
+                        anchors.left: consolePreview.right
+                        anchors.leftMargin: 18
+                        anchors.right: consoleActions.left
+                        anchors.rightMargin: 18
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 9
                         Row { spacing: 10; Text { text: qsTr("One app, two shells"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 20; font.weight: Font.Black } Text { text: qsTr("GAMEPAD READY"); color: DesktopTokens.green; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold; anchors.verticalCenter: parent.verticalCenter } }
                         Text { width: parent.width; wrapMode: Text.WordWrap; text: qsTr("Console mode swaps the desktop chrome for big art, focus rings and glyph hints. Same session, same settings, same themes — nothing restarts and a running stream keeps going."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; lineHeight: 1.45 }
                     }
-                    Column { width: 158; anchors.verticalCenter: parent.verticalCenter; spacing: 8
+                    Column {
+                        id: consoleActions
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 158; spacing: 8
                         DesktopSettingsButton { width: 158; text: qsTr("Switch now"); suffix: "F10"; primary: true; onClicked: root.requestConsoleMode(true) }
                         DesktopSettingsButton { width: 158; text: qsTr("Preview on this screen"); onClicked: root.requestConsoleMode(true) }
                     }
@@ -947,7 +1008,6 @@ FocusScope {
                 }
             }
         }
-    }
     }
 
     Component {

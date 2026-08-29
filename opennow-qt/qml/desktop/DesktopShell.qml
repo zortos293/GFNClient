@@ -115,10 +115,8 @@ FocusScope {
         width: root.width - root.contentInset
         height: root.height
         z: 20
-        color: "#99060912"
-        opacity: sidebar.overlayOpen ? 1 : 0
-        visible: opacity > 0
-        Behavior on opacity { NumberAnimation { duration: DesktopTokens.motionDuration; easing.type: Easing.OutCubic } }
+        color: "transparent"
+        visible: sidebar.overlayOpen
         TapHandler { onTapped: sidebar.closeOverlay() }
     }
 

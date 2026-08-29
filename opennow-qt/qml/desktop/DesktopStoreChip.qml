@@ -48,15 +48,12 @@ Button {
             font.weight: root.selected ? Font.ExtraBold : Font.DemiBold
         }
 
-        Text {
+        DesktopGlyph {
             anchors.verticalCenter: parent.verticalCenter
             visible: root.hasMenu
-            text: "⌄"
-            color: Qt.rgba(1, 1, 1, 0.54)
-            font.family: Theme.bodyFont
-            font.pixelSize: 13
-            font.weight: Font.Bold
-            y: -1
+            width: 10
+            height: 6
+            icon: "desktop-chevron-down.svg"
         }
     }
 }

@@ -1,6 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">
-  <path d="M2 5.2H14" stroke="#FFFFFF" stroke-opacity="0.8" stroke-width="1.4" stroke-linecap="round"/>
-  <path d="M2 10.8H14" stroke="#FFFFFF" stroke-opacity="0.8" stroke-width="1.4" stroke-linecap="round"/>
-  <circle cx="6" cy="5.2" r="1.8" fill="#0A0E15" stroke="#FFFFFF" stroke-opacity="0.8" stroke-width="1.4"/>
-  <circle cx="10.4" cy="10.8" r="1.8" fill="#0A0E15" stroke="#FFFFFF" stroke-opacity="0.8" stroke-width="1.4"/>
+<!-- @license lucide-static v1.31.0 - ISC -->
+<svg
+  class="lucide lucide-sliders-horizontal"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="#FFFFFF" opacity="0.8"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M10 5H3" />
+  <path d="M12 19H3" />
+  <path d="M14 3v4" />
+  <path d="M16 17v4" />
+  <path d="M21 12h-9" />
+  <path d="M21 19h-5" />
+  <path d="M21 5h-7" />
+  <path d="M8 10v4" />
+  <path d="M8 12H3" />
 </svg>

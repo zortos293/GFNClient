@@ -1,4 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 12" fill="none">
-  <rect x="0.9" y="5" width="8.2" height="6.2" rx="1.6" stroke="#FFD166" stroke-width="1.3"/>
-  <path d="M2.9 5V3.4a2.1 2.1 0 0 1 4.2 0V5" stroke="#FFD166" stroke-width="1.3" stroke-linecap="round"/>
+<!-- @license lucide-static v1.31.0 - ISC -->
+<svg
+  class="lucide lucide-lock-keyhole"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="#FFD166"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <circle cx="12" cy="16" r="1" />
+  <rect x="3" y="10" width="18" height="12" rx="2" />
+  <path d="M7 10V7a5 5 0 0 1 10 0v3" />
 </svg>

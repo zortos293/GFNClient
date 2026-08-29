@@ -28,6 +28,16 @@ the complete OpenH264-LICENSE.txt is packaged beside this notice.
 
 https://github.com/cisco/openh264
 
+Lucide
+======
+
+The Qt desktop shell uses Lucide 1.31.0 icons, recolored to match the OpenNOW
+interface. Lucide is available under the ISC license, with icons derived from
+Feather also covered by the MIT license. The complete Lucide-LICENSE.txt is
+packaged beside this notice.
+
+https://lucide.dev/
+
 Opus
 ====
 

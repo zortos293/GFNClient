@@ -8,6 +8,7 @@ FocusScope {
     signal closeRequested()
     signal routeRequested(string route)
     anchors.fill: parent
+    onVisibleChanged: if (visible) field.forceActiveFocus()
 
     readonly property var actions: [
         { icon: "desktop-nav-home.svg", name: qsTr("Go to Home"), detail: qsTr("Open your desktop"), route: "home", key: "1" },
@@ -47,7 +48,6 @@ FocusScope {
                 font.weight: Font.DemiBold
                 background: Item {}
                 onTextChanged: root.query = text
-                Component.onCompleted: forceActiveFocus()
             }
             Rectangle {
                 anchors.right: parent.right; anchors.rightMargin: 18; anchors.verticalCenter: parent.verticalCenter

@@ -1,4 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none">
-  <path d="M6 2V10" stroke="#0B0F1A" stroke-width="1.7" stroke-linecap="round"/>
-  <path d="M2 6H10" stroke="#0B0F1A" stroke-width="1.7" stroke-linecap="round"/>
+<!-- @license lucide-static v1.31.0 - ISC -->
+<svg
+  class="lucide lucide-plus"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="#0B0F1A"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M5 12h14" />
+  <path d="M12 5v14" />
 </svg>

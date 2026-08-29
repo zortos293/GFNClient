@@ -501,7 +501,7 @@ impl GfnService {
             .unwrap_or(true);
         let persistence = if persist {
             match self.vault.save(&session) {
-                Ok(()) => "os-credential-store",
+                Ok(()) => "local-store",
                 Err(error) => {
                     eprintln!("auth: session remains memory-only: {error}");
                     "memory-only"
@@ -537,7 +537,7 @@ impl GfnService {
                     Ok(session) => {
                         let mut state = self.state.lock().expect("GFN state poisoned");
                         state.persistence_state = if session.is_some() {
-                            "os-credential-store"
+                            "local-store"
                         } else {
                             "none"
                         }
@@ -679,7 +679,7 @@ impl GfnService {
         let mut state = self.state.lock().expect("GFN state poisoned");
         state.session = next_session.clone();
         state.persistence_state = if next_session.is_some() {
-            "os-credential-store"
+            "local-store"
         } else {
             "none"
         }
@@ -785,7 +785,7 @@ impl GfnService {
         {
             let mut state = self.state.lock().expect("GFN state poisoned");
             state.session = Some(session);
-            state.persistence_state = "os-credential-store".to_owned();
+            state.persistence_state = "local-store".to_owned();
         }
         let result = self.session()?;
         Ok(
@@ -817,7 +817,7 @@ impl GfnService {
             let mut state = self.state.lock().expect("GFN state poisoned");
             state.session = next;
             state.persistence_state = if state.session.is_some() {
-                "os-credential-store"
+                "local-store"
             } else {
                 "none"
             }
@@ -1487,7 +1487,7 @@ impl GfnService {
         };
         let persistence = if persist {
             match self.vault.save(&session) {
-                Ok(()) => "os-credential-store",
+                Ok(()) => "local-store",
                 Err(error) => {
                     eprintln!("auth: refreshed session remains memory-only: {error}");
                     "memory-only"

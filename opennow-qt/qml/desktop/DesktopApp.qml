@@ -54,16 +54,9 @@ FocusScope {
     }
     function toggleConsoleMode() {
         const win = Window.window
-        const currentlyConsole = Boolean(win && (win.forceConsole || !win.desktopSurfaceActive))
-        const enable = !currentlyConsole
-        if (win && typeof win.requestConsoleSurface === "function")
-            win.requestConsoleSurface(enable)
-        else {
-            ShellStore.applySetting("launchInConsoleMode", enable)
-            ShellStore.setSetting("launchInConsoleMode", enable)
-        }
-        if (enable && !ShellStore.signedIn)
-            AppController.navigate("sign-in")
+        const currentlyConsole = Boolean(win && (win.forceConsole || win.desktopSurfaceActive === false))
+            || ShellStore.settings.launchInConsoleMode === true
+        ShellStore.requestConsoleSurface(!currentlyConsole)
     }
 
     DesktopSignInScreen {
@@ -158,17 +151,7 @@ FocusScope {
         DesktopSettingsScreen {
             selectedSection: root.settingsSection(root.route)
             onSelectedSectionChanged: root.settingsSubtitle = pageTitles[selectedSection]
-            onRequestConsoleMode: enabled => {
-                const win = Window.window
-                if (win && typeof win.requestConsoleSurface === "function")
-                    win.requestConsoleSurface(enabled)
-                else {
-                    ShellStore.applySetting("launchInConsoleMode", enabled)
-                    ShellStore.setSetting("launchInConsoleMode", enabled)
-                }
-                if (enabled && !ShellStore.signedIn)
-                    AppController.navigate("sign-in")
-            }
+            onRequestConsoleMode: enabled => ShellStore.requestConsoleSurface(enabled)
             Component.onCompleted: root.settingsSubtitle = pageTitles[selectedSection]
         }
     }

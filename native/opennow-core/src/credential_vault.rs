@@ -48,9 +48,14 @@ impl CredentialVault {
 
     pub fn save(&self, session: &AuthSession) -> Result<(), String> {
         let encoded = serde_json::to_string(session).map_err(|error| error.to_string())?;
-        credential(&session.user.user_id)?
-            .set_password(&encoded)
-            .map_err(|error| format!("OS credential store rejected the session: {error}"))?;
+        self.write_session_file(&session.user.user_id, encoded.as_bytes())?;
+        if let Err(error) = credential(&session.user.user_id).and_then(|entry| {
+            entry
+                .set_password(&encoded)
+                .map_err(|error| format!("OS credential store rejected the session: {error}"))
+        }) {
+            eprintln!("auth: OS credential store skipped ({error}); session kept in the local store");
+        }
 
         let mut metadata = self.read_metadata();
         metadata.active_user_id = Some(session.user.user_id.clone());
@@ -71,11 +76,8 @@ impl CredentialVault {
         } else {
             metadata.accounts.push(identity);
         }
-        self.write_metadata(&metadata).map_err(|error| {
-            let _ = credential(&session.user.user_id)
-                .and_then(|entry| entry.delete_credential().map_err(|error| error.to_string()));
-            format!("Could not save account metadata: {error}")
-        })
+        self.write_metadata(&metadata)
+            .map_err(|error| format!("Could not save account metadata: {error}"))
     }
 
     pub fn migrate_legacy_electron_sessions(&self) -> Result<usize, String> {
@@ -125,7 +127,7 @@ impl CredentialVault {
 
     pub fn load_active(&self) -> Result<Option<AuthSession>, String> {
         let metadata = self.read_metadata();
-        let candidates = candidate_user_ids(&metadata);
+        let candidates = self.discovered_user_ids();
         if candidates.is_empty() {
             return Ok(None);
         }
@@ -151,6 +153,9 @@ impl CredentialVault {
     }
 
     pub fn load(&self, user_id: &str) -> Result<Option<AuthSession>, String> {
+        if let Some(session) = self.load_session_file(user_id)? {
+            return Ok(Some(session));
+        }
         let encoded = match credential(user_id)?.get_password() {
             Ok(value) => value,
             Err(keyring::Error::NoEntry) => return Ok(None),
@@ -160,10 +165,9 @@ impl CredentialVault {
                 ));
             }
         };
-        let session = serde_json::from_str::<AuthSession>(&encoded)
-            .map_err(|error| format!("Saved session is invalid: {error}"))?;
-        if session.user.user_id != user_id {
-            return Err("Saved credential identity does not match account metadata".to_owned());
+        let session = decode_session(&encoded, user_id)?;
+        if let Err(error) = self.write_session_file(user_id, encoded.as_bytes()) {
+            eprintln!("auth: could not mirror keychain session to the local store: {error}");
         }
         Ok(Some(session))
     }
@@ -199,6 +203,7 @@ impl CredentialVault {
                 ));
             }
         }
+        let _ = fs::remove_file(self.session_file(user_id));
         let mut metadata = self.read_metadata();
         metadata.accounts.retain(|item| item.user_id != user_id);
         if metadata.active_user_id.as_deref() == Some(user_id) {
@@ -222,6 +227,68 @@ impl CredentialVault {
             .map_err(|error| error.to_string())
     }
 
+    fn data_dir(&self) -> &Path {
+        self.metadata_path.parent().unwrap_or_else(|| Path::new("."))
+    }
+
+    fn sessions_dir(&self) -> PathBuf {
+        self.data_dir().join("sessions")
+    }
+
+    fn session_file(&self, user_id: &str) -> PathBuf {
+        self.sessions_dir().join(format!("{}.json", sanitize_user_id(user_id)))
+    }
+
+    fn write_session_file(&self, user_id: &str, encoded: &[u8]) -> Result<(), String> {
+        let directory = self.sessions_dir();
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("Could not create the local session store: {error}"))?;
+        let path = self.session_file(user_id);
+        let temporary = path.with_extension("json.tmp");
+        write_private_file(&temporary, encoded)
+            .and_then(|_| fs::rename(&temporary, &path))
+            .map_err(|error| format!("Could not write the local session store: {error}"))
+    }
+
+    fn load_session_file(&self, user_id: &str) -> Result<Option<AuthSession>, String> {
+        let bytes = match fs::read(self.session_file(user_id)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!("Could not read the local session store: {error}"));
+            }
+        };
+        let encoded = String::from_utf8(bytes)
+            .map_err(|error| format!("Saved session is invalid: {error}"))?;
+        Ok(Some(decode_session(&encoded, user_id)?))
+    }
+
+    fn discovered_user_ids(&self) -> Vec<String> {
+        let mut ids = candidate_user_ids(&self.read_metadata());
+        let Ok(entries) = fs::read_dir(self.sessions_dir()) else {
+            return ids;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            let Ok(session) = serde_json::from_slice::<AuthSession>(&bytes) else {
+                continue;
+            };
+            if session.user.user_id.is_empty() {
+                continue;
+            }
+            if !ids.iter().any(|id| id == &session.user.user_id) {
+                ids.push(session.user.user_id);
+            }
+        }
+        ids
+    }
+
     fn read_metadata(&self) -> Metadata {
         fs::read_to_string(&self.metadata_path)
             .ok()
@@ -240,6 +307,28 @@ impl CredentialVault {
         write_private_file(&temporary, &data)?;
         fs::rename(temporary, &self.metadata_path)
     }
+}
+
+fn sanitize_user_id(user_id: &str) -> String {
+    user_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn decode_session(encoded: &str, user_id: &str) -> Result<AuthSession, String> {
+    let session = serde_json::from_str::<AuthSession>(encoded)
+        .map_err(|error| format!("Saved session is invalid: {error}"))?;
+    if session.user.user_id != user_id {
+        return Err("Saved credential identity does not match account metadata".to_owned());
+    }
+    Ok(session)
 }
 
 fn candidate_user_ids(metadata: &Metadata) -> Vec<String> {
@@ -327,6 +416,43 @@ mod tests {
         let path = std::env::temp_dir().join(format!("opennow-vault-{}", std::process::id()));
         let vault = CredentialVault::new(path.clone());
         assert!(vault.load_active().unwrap().is_none());
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn sample_session(user_id: &str) -> AuthSession {
+        serde_json::from_value(serde_json::json!({
+            "provider": {
+                "idpId": "idp", "code": "NVIDIA", "displayName": "NVIDIA",
+                "streamingServiceUrl": "https://example.invalid/", "priority": 0
+            },
+            "tokens": {
+                "accessToken": "access", "refreshToken": "refresh",
+                "expiresAt": 9_999_999_999_999u64, "authClientId": "client"
+            },
+            "user": {
+                "userId": user_id, "displayName": "Player",
+                "membershipTier": "free"
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn save_and_load_roundtrip_uses_local_session_file() {
+        let path = std::env::temp_dir().join(format!(
+            "opennow-vault-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        let vault = CredentialVault::new(path.clone());
+        vault.save(&sample_session("user-file")).unwrap();
+        let loaded = vault.load_active().unwrap().expect("session file should restore");
+        assert_eq!(loaded.user.user_id, "user-file");
+        assert!(path.join("sessions").join("user-file.json").exists());
         let _ = fs::remove_dir_all(path);
     }
 

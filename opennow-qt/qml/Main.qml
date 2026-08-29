@@ -124,6 +124,8 @@ ApplicationWindow {
         ShellStore.setSetting("launchInConsoleMode", enabled)
         if (!enabled)
             window.consoleHeldByPad = false
+        if (ShellStore.signedIn && AppController.route === "sign-in")
+            AppController.navigate("home")
         if (modeInitialized && window.desktopSurfaceActive !== window.targetDesktopSurface)
             modeTransition.restart()
     }
@@ -278,6 +280,7 @@ ApplicationWindow {
         Connections {
             target: ShellStore
             function onStreamerChanged() { window.syncStreamWindowVisibility() }
+            function onConsoleSurfaceRequested(enabled) { window.requestConsoleSurface(enabled) }
             function onSettingsChanged() {
                 window.syncInputOwnership()
                 if (window.geometryRestored || !ShellStore.settings.windowWidth)
@@ -362,22 +365,42 @@ ApplicationWindow {
         opacity: 0
         visible: opacity > 0
         z: 2000
-        Text {
+        Column {
             anchors.centerIn: parent
-            text: window.targetDesktopSurface ? qsTr("DESKTOP MODE") : qsTr("CONSOLE MODE")
-            color: Theme.label
-            font.family: Theme.monoFont
-            font.pixelSize: 13
-            font.weight: Font.Bold
-            font.letterSpacing: 2
+            spacing: 10
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: window.targetDesktopSurface ? qsTr("COMPUTER MODE") : qsTr("CONSOLE MODE")
+                color: Theme.label
+                font.family: Theme.displayFont
+                font.pixelSize: 28
+                font.weight: Font.Black
+                font.letterSpacing: 1.2
+            }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: ShellStore.signedIn
+                    ? qsTr("Keeping you signed in")
+                    : qsTr("Switching shell")
+                color: Theme.textMuted
+                font.family: Theme.bodyFont
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
+            }
         }
     }
     SequentialAnimation {
         id: modeTransition
-        NumberAnimation { target: modeCurtain; property: "opacity"; to: 1; duration: AppController.reducedMotion ? 0 : 110; easing.type: Easing.OutCubic }
-        PauseAnimation { duration: AppController.reducedMotion ? 0 : 55 }
-        ScriptAction { script: window.desktopSurfaceActive = window.targetDesktopSurface }
-        NumberAnimation { target: modeCurtain; property: "opacity"; to: 0; duration: AppController.reducedMotion ? 0 : 260; easing.type: Easing.OutCubic }
+        NumberAnimation { target: modeCurtain; property: "opacity"; to: 1; duration: AppController.reducedMotion ? 0 : 240; easing.type: Easing.OutCubic }
+        PauseAnimation { duration: AppController.reducedMotion ? 0 : 160 }
+        ScriptAction {
+            script: {
+                window.desktopSurfaceActive = window.targetDesktopSurface
+                if (ShellStore.signedIn && AppController.route === "sign-in")
+                    AppController.navigate("home")
+            }
+        }
+        NumberAnimation { target: modeCurtain; property: "opacity"; to: 0; duration: AppController.reducedMotion ? 0 : 380; easing.type: Easing.OutCubic }
     }
     onTargetDesktopSurfaceChanged: {
         if (modeInitialized)

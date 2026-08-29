@@ -22,6 +22,7 @@ QtObject {
     property string sessionPersistence: "none"
     property bool authRestorePending: true
     property bool pendingStaySignedIn: true
+    signal consoleSurfaceRequested(bool enabled)
     property var subscription: null
     property var regions: []
     property var regionPingResults: ({})
@@ -150,9 +151,9 @@ QtObject {
     readonly property bool signedIn: authSession !== null
     readonly property string sessionPersistenceMessage: {
         if (sessionPersistence === "unavailable")
-            return qsTr("The OS keychain is unavailable. Saved NVIDIA sessions cannot be restored until it is available.")
+            return qsTr("A saved NVIDIA session could not be opened. Sign in once more to store it on this PC.")
         if (sessionPersistence === "memory-only")
-            return qsTr("This session is memory-only. The OS keychain could not save it, so you may need to sign in again after quitting.")
+            return qsTr("This session is memory-only and will not last after you quit.")
         return ""
     }
     readonly property bool streamBusy: streamCreateRequestId !== "" || streamStopRequestId !== ""
@@ -1232,6 +1233,10 @@ QtObject {
     function logoutAll() {
         if (ready && logoutAllRequestId === "")
             logoutAllRequestId = CoreClient.request("auth.accounts.logoutAll", {})
+    }
+
+    function requestConsoleSurface(enabled) {
+        root.consoleSurfaceRequested(Boolean(enabled))
     }
 
     function setSetting(key, value) {

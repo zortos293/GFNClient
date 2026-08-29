@@ -1,4 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18" fill="none">
-  <path d="M7.15 2.35h3.7l.55 1.85 1.75.7 1.8-.55 1.85 3.2-1.25 1.45.15 1.85 1.1 1.6-1.85 3.2-1.8-.5-1.5 1.25-.55 1.9H7.15l-.55-1.9-1.5-1.25-1.8.5-1.85-3.2 1.1-1.6.15-1.85-1.25-1.45 1.85-3.2 1.8.55 1.75-.7.55-1.85Z" stroke="#7FD4FF" stroke-width="1.5" stroke-linejoin="round"/>
-  <circle cx="9" cy="9" r="2.15" stroke="#7FD4FF" stroke-width="1.5"/>
+<!-- @license lucide-static v1.31.0 - ISC -->
+<svg
+  class="lucide lucide-settings"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="#7FD4FF"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
+  <circle cx="12" cy="12" r="3" />
 </svg>

@@ -1,5 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14" fill="none">
-  <circle cx="7" cy="7" r="5.9" stroke="#FFFFFF" stroke-opacity="0.322" stroke-width="1.3"/>
-  <path d="M7 6.2v4" stroke="#FFFFFF" stroke-opacity="0.541" stroke-width="1.4" stroke-linecap="round"/>
-  <circle cx="7" cy="4.1" r="0.8" fill="#FFFFFF" fill-opacity="0.541"/>
+<!-- @license lucide-static v1.31.0 - ISC -->
+<svg
+  class="lucide lucide-info"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="#FFFFFF" opacity="0.541"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <circle cx="12" cy="12" r="10" />
+  <path d="M12 16v-4" />
+  <path d="M12 8h.01" />
 </svg>

@@ -89,7 +89,7 @@ FocusScope {
             sourceComponent: root.contentForRoute(root.route)
             opacity: 1
             onLoaded: {
-                if (shell.visible && item && item.forceActiveFocus)
+                if (shell.visible && root.route !== "game-detail" && !root.commandOpen && item && item.forceActiveFocus)
                     Qt.callLater(() => item.forceActiveFocus())
             }
             Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
@@ -101,6 +101,7 @@ FocusScope {
         visible: root.sessionStartingVisible
         focus: visible
         z: 80
+        onVisibleChanged: if (visible) forceActiveFocus()
         onCancelRequested: ShellStore.stopStreamingSession()
     }
 
@@ -161,14 +162,18 @@ FocusScope {
         function onRouteChanged() {
             root.commandOpen = false
             root.searchText = ""
+            if (root.route !== "game-detail" && shell.visible && pageLoader.item)
+                Qt.callLater(() => pageLoader.item.forceActiveFocus())
         }
     }
     onSignInVisibleChanged: Qt.callLater(() => {
         if (root.signInVisible)
             desktopSignIn.forceActiveFocus()
-        else if (pageLoader.item)
+        else if (shell.visible && pageLoader.item)
             pageLoader.item.forceActiveFocus()
     })
+    onCommandOpenChanged: if (!commandOpen && shell.visible && pageLoader.item)
+        Qt.callLater(() => pageLoader.item.forceActiveFocus())
     Component.onCompleted: Qt.callLater(() => {
         if (root.signInVisible)
             desktopSignIn.forceActiveFocus()

@@ -144,9 +144,11 @@ FocusScope {
         }
     }
     Text {
+        id: libraryHint
         anchors.right: parent.right
         anchors.rightMargin: 24
         anchors.verticalCenter: filterRow.verticalCenter
+        visible: root.width - 24 - libraryHint.implicitWidth > 40 + filterRow.width
         text: qsTr("RIGHT-CLICK A GAME FOR ACTIONS")
         color: DesktopTokens.textFaint
         font.family: DesktopTokens.monoFont

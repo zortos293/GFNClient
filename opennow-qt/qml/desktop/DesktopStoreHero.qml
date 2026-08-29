@@ -16,6 +16,9 @@ Item {
     width: 1160
     height: 224
 
+    readonly property int artCardCount: Math.max(0, Math.min(root.games.length, 4, Math.floor((root.width - 420) / 130)))
+    readonly property int artRowWidth: root.artCardCount * 130 - 12
+
     Rectangle {
         id: heroMask
         anchors.fill: parent
@@ -66,7 +69,7 @@ Item {
     Column {
         x: 22
         y: 22
-        width: 530
+        width: Math.min(530, Math.max(300, root.width - root.artRowWidth - 60))
         spacing: 12
 
         Row {
@@ -114,7 +117,7 @@ Item {
         }
 
         Text {
-            width: 440
+            width: parent.width
             text: qsTr("Claimed games stay in your library and stream instantly — no download, no install. Linked Steam, Epic and GOG purchases show up here too.")
             color: Qt.rgba(1, 1, 1, 0.72)
             font.family: Theme.bodyFont
@@ -190,12 +193,13 @@ Item {
     }
 
     Row {
-        x: 629
+        anchors.right: parent.right
+        anchors.rightMargin: 22
         y: 23
         spacing: 12
 
         Repeater {
-            model: Math.min(4, root.games.length)
+            model: root.artCardCount
 
             Item {
                 required property int index

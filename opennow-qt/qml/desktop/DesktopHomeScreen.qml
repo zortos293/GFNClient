@@ -524,7 +524,8 @@ FocusScope {
     Component.onCompleted: {
         root.focusZone = 0
         root.focusIndex = Math.max(0, Math.min(5, ShellStore.focusIndex("desktop-home")))
-        Qt.callLater(root.forceActiveFocus)
+        if (root.active)
+            Qt.callLater(root.forceActiveFocus)
     }
     onFocusIndexChanged: ShellStore.rememberFocus("desktop-home", focusIndex)
 }

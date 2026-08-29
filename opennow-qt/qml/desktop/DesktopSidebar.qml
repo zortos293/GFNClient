@@ -325,9 +325,9 @@ FocusScope {
                         }
                         Rectangle {
                             anchors.right: parent.right
-                            anchors.rightMargin: root.compact ? (parent.width - 4) / 2 : 10
+                            anchors.rightMargin: 10
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: navButton.selected
+                            visible: navButton.selected && !root.compact
                             width: 4
                             height: 16
                             radius: 999

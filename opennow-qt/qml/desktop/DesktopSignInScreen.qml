@@ -238,7 +238,7 @@ FocusScope {
                                 }
                             }
                         }
-                        Component.onCompleted: forceActiveFocus()
+                        Component.onCompleted: if (root.visible) forceActiveFocus()
                         onClicked: root.providerOpen = !root.providerOpen
                     }
                     Text {

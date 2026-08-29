@@ -11,6 +11,7 @@ Button {
     property int glyphSize: 16
     property int cornerRadius: 10
     height: 36
+    implicitWidth: Math.max(68, contentRow.implicitWidth + leftPadding + rightPadding)
     leftPadding: 14
     rightPadding: 14
     focusPolicy: Qt.StrongFocus
@@ -38,7 +39,10 @@ Button {
         }
     }
     contentItem: Item {
+        implicitWidth: contentRow.implicitWidth
+        implicitHeight: contentRow.implicitHeight
         Row {
+            id: contentRow
             anchors.centerIn: parent
             spacing: root.glyph !== "" ? 11 : 8
             DesktopGlyph {

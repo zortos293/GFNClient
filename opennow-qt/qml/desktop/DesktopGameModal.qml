@@ -8,6 +8,7 @@ FocusScope {
     signal closeRequested()
     signal playRequested()
     focus: visible
+    onVisibleChanged: if (visible) Qt.callLater(() => primaryAction.forceActiveFocus())
 
     readonly property int gutter: DesktopTokens.px(32)
     readonly property int dialogWidth: Math.min(DesktopTokens.px(896), Math.max(DesktopTokens.px(640), parent.width - gutter * 2))
@@ -338,6 +339,7 @@ FocusScope {
             anchors.topMargin: DesktopTokens.px(18)
             spacing: DesktopTokens.px(10)
             DesktopButton {
+                id: primaryAction
                 width: DesktopTokens.px(156)
                 height: DesktopTokens.px(40)
                 primary: true
@@ -345,7 +347,6 @@ FocusScope {
                 glyphSize: DesktopTokens.px(12)
                 text: root.hasPlayed ? qsTr("Resume") : qsTr("Play")
                 shortcutText: qsTr("ENTER")
-                Component.onCompleted: forceActiveFocus()
                 onClicked: root.playRequested()
             }
             DesktopButton {

@@ -9,12 +9,48 @@ Item {
     property string value: ""
     property int rowHeight: DesktopTokens.rowHeight
     property bool showDivider: true
+    property string leadingLetter: ""
+    property url leadingIcon: ""
+    property color leadingColor: Qt.rgba(1, 1, 1, 0.06)
+    readonly property bool hasLeading: leadingLetter !== "" || leadingIcon.toString() !== ""
     default property alias trailing: trailingSlot.data
 
     implicitHeight: rowHeight
 
+    Rectangle {
+        id: leadingTile
+        visible: root.hasLeading
+        x: 0
+        anchors.verticalCenter: parent.verticalCenter
+        width: 36
+        height: 36
+        radius: 10
+        color: root.leadingColor
+        border.width: 1
+        border.color: Qt.rgba(1, 1, 1, 0.14)
+        Image {
+            anchors.centerIn: parent
+            width: 19
+            height: 19
+            source: root.leadingIcon
+            sourceSize: Qt.size(width, height)
+            fillMode: Image.PreserveAspectFit
+            visible: root.leadingIcon.toString() !== ""
+        }
+        Text {
+            anchors.centerIn: parent
+            text: root.leadingLetter
+            visible: root.leadingIcon.toString() === ""
+            color: Theme.label
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: 16
+            font.weight: Font.Black
+        }
+    }
+
     Column {
         anchors.left: parent.left
+        anchors.leftMargin: root.hasLeading ? 50 : 0
         anchors.right: trailingSlot.left
         anchors.rightMargin: 20
         anchors.verticalCenter: parent.verticalCenter

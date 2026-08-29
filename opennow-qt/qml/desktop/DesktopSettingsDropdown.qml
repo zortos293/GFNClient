@@ -49,8 +49,13 @@ Item {
     }
 
     function dismiss() {
+        const wasOpen = root.opened
         opened = false
         closeTimer.restart()
+        if (wasOpen && anchorItem) {
+            const anchor = anchorItem
+            Qt.callLater(() => { if (anchor) anchor.forceActiveFocus() })
+        }
     }
 
     Timer {
@@ -88,7 +93,6 @@ Item {
             contentHeight: Math.max(choiceColumn.implicitHeight, root.menuContentHeight)
             clip: true
             boundsBehavior: Flickable.StopAtBounds
-            focus: true
             Keys.onEscapePressed: event => { root.dismiss(); event.accepted = true }
 
             Column {

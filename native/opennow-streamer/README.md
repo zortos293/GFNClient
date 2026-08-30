@@ -2,7 +2,7 @@
 
 This workspace is the clean replacement for the former GStreamer-based native streamer.
 
-The workspace owns the local process protocol, lifecycle state machine, standards-based WebRTC transport, media output path, microphone upstream and source-stream Matroska recording. OpenH264, Opus, SDL, and the Linux FFmpeg codec stack are compiled into the executable; GStreamer and external codec processes are not used.
+The workspace owns the local process protocol, lifecycle state machine, GeForce NOW RTSPS/NVST negotiation, standards-based WebRTC transport, media sockets, media output path, microphone upstream and source-stream Matroska recording. The UI supplies a complete CloudMatch session context once; the streamer reserves its own bundle/Mjolnir sockets and performs OPTIONS, DESCRIBE, SETUP, ANNOUNCE, PLAY, keepalive, and TEARDOWN itself. OpenH264, Opus, SDL, and the Linux FFmpeg codec stack are compiled into the executable; GStreamer and external codec processes are not used.
 
 The executable retains the versioned JSON-lines process contract used by OpenNOW while the app shell is migrated away from Electron. It does not load or redistribute NVIDIA client libraries.
 

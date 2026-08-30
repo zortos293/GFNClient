@@ -54,7 +54,9 @@ impl CredentialVault {
                 .set_password(&encoded)
                 .map_err(|error| format!("OS credential store rejected the session: {error}"))
         }) {
-            eprintln!("auth: OS credential store skipped ({error}); session kept in the local store");
+            eprintln!(
+                "auth: OS credential store skipped ({error}); session kept in the local store"
+            );
         }
 
         let mut metadata = self.read_metadata();
@@ -137,7 +139,9 @@ impl CredentialVault {
                 Ok(Some(session)) => {
                     if metadata.active_user_id.as_deref() != Some(user_id.as_str()) {
                         if let Err(error) = self.set_active(user_id) {
-                            eprintln!("auth: recovered account could not be marked active: {error}");
+                            eprintln!(
+                                "auth: recovered account could not be marked active: {error}"
+                            );
                         }
                     }
                     return Ok(Some(session));
@@ -228,7 +232,9 @@ impl CredentialVault {
     }
 
     fn data_dir(&self) -> &Path {
-        self.metadata_path.parent().unwrap_or_else(|| Path::new("."))
+        self.metadata_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
     }
 
     fn sessions_dir(&self) -> PathBuf {
@@ -236,7 +242,8 @@ impl CredentialVault {
     }
 
     fn session_file(&self, user_id: &str) -> PathBuf {
-        self.sessions_dir().join(format!("{}.json", sanitize_user_id(user_id)))
+        self.sessions_dir()
+            .join(format!("{}.json", sanitize_user_id(user_id)))
     }
 
     fn write_session_file(&self, user_id: &str, encoded: &[u8]) -> Result<(), String> {
@@ -450,7 +457,10 @@ mod tests {
         fs::create_dir_all(&path).unwrap();
         let vault = CredentialVault::new(path.clone());
         vault.save(&sample_session("user-file")).unwrap();
-        let loaded = vault.load_active().unwrap().expect("session file should restore");
+        let loaded = vault
+            .load_active()
+            .unwrap()
+            .expect("session file should restore");
         assert_eq!(loaded.user.user_id, "user-file");
         assert!(path.join("sessions").join("user-file.json").exists());
         let _ = fs::remove_dir_all(path);

@@ -65,9 +65,12 @@ const GFN_SRTCP_SALT_LABEL: u8 = 0x05;
 const SRTCP_ENCRYPTED_FLAG: u32 = 0x8000_0000;
 const RTCP_SENDER_SSRC: u32 = 0x4f4e_4f57; // "ONOW"
 const SRTCP_RR_INTERVAL: Duration = Duration::from_secs(1);
-// Start recovery promptly without retransmitting the same tiny range on every poll. Four
-// milliseconds still fits inside the reorder grace period while avoiding self-inflicted bursts.
-const RTCP_RECOVERY_INTERVAL: Duration = Duration::from_millis(10);
+// Poll at the official retry cadence so a 4 ms NACK retry is not silently rounded
+// up to the old 10 ms control-loop interval.
+const RTCP_RECOVERY_INTERVAL: Duration = Duration::from_millis(4);
+const NACK_RETRY_INTERVAL: Duration = Duration::from_millis(4);
+const NACK_TRACKING_TIMEOUT: Duration = Duration::from_millis(52);
+const MAX_NACK_ATTEMPTS: u8 = 3;
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(250);
 const MAX_PENDING_NACK_RANGES: usize = 16;
 const MAX_PENDING_FRAME_ACKS: usize = 512;
@@ -101,7 +104,7 @@ const MAX_REORDER_WINDOW: usize = 2_048;
 // Cloud packet reordering plus RTCP-over-SCTP NACK round trips can exceed one or two frame times.
 // Keep the wait exceptional and bounded, but long enough for a retransmission to beat an IDR
 // reset. This adds latency only while a sequence gap is open; the normal path still drains at once.
-const MJOLNIR_REORDER_DEQUEUE_TIMEOUT: Duration = Duration::from_millis(150);
+const MJOLNIR_REORDER_DEQUEUE_TIMEOUT: Duration = Duration::from_millis(52);
 // The replay filter must be at least as deep as the reorder/NACK window. The old 64-packet bitmap
 // rejected valid retransmissions after roughly 10 ms on a high-bitrate stream, guaranteeing that
 // every NACK eventually degraded into a keyframe reset.
@@ -313,6 +316,15 @@ struct CompletedFrameFeedback {
     accepted_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingNackRange {
+    first: u64,
+    last: u64,
+    requested_at: Instant,
+    last_sent_at: Option<Instant>,
+    attempts: u8,
+}
+
 #[derive(Debug)]
 pub struct NvstFeedbackState {
     /// Bound video stream SSRC (0 until the first packet is authenticated).
@@ -326,7 +338,7 @@ pub struct NvstFeedbackState {
     /// Set when the receiver hits unrecoverable loss and needs a fresh keyframe.
     keyframe_needed: AtomicBool,
     /// Missing extended RTP sequence ranges awaiting RFC 4585 generic NACK.
-    pending_nacks: Mutex<VecDeque<(u64, u64)>>,
+    pending_nacks: Mutex<VecDeque<PendingNackRange>>,
     completed_frames: AtomicU32,
     completed_frame_bytes: AtomicU64,
     last_completed_rtp_timestamp: AtomicU32,
@@ -396,7 +408,7 @@ impl NvstFeedbackState {
         self.keyframe_needed.store(true, Ordering::Release);
     }
 
-    fn request_nack(&self, first_missing_index: u64, last_missing_index: u64) {
+    fn request_nack(&self, first_missing_index: u64, last_missing_index: u64, now: Instant) {
         if first_missing_index > last_missing_index {
             return;
         }
@@ -404,16 +416,31 @@ impl NvstFeedbackState {
             .pending_nacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((_, queued_last)) = pending.back_mut()
-            && first_missing_index <= queued_last.saturating_add(1)
-        {
-            *queued_last = (*queued_last).max(last_missing_index);
+        if let Some(queued) = pending.iter_mut().find(|queued| {
+            first_missing_index <= queued.last.saturating_add(1)
+                && last_missing_index.saturating_add(1) >= queued.first
+        }) {
+            let first = queued.first.min(first_missing_index);
+            let last = queued.last.max(last_missing_index);
+            if first != queued.first || last != queued.last {
+                queued.first = first;
+                queued.last = last;
+                queued.requested_at = now;
+                queued.last_sent_at = None;
+                queued.attempts = 0;
+            }
             return;
         }
         if pending.len() == MAX_PENDING_NACK_RANGES {
             pending.pop_front();
         }
-        pending.push_back((first_missing_index, last_missing_index));
+        pending.push_back(PendingNackRange {
+            first: first_missing_index,
+            last: last_missing_index,
+            requested_at: now,
+            last_sent_at: None,
+            attempts: 0,
+        });
     }
 
     fn resolve_nack(&self, received_index: u64) -> bool {
@@ -423,17 +450,26 @@ impl NvstFeedbackState {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut updated = VecDeque::with_capacity(pending.len().saturating_add(1));
         let mut resolved = false;
-        while let Some((first, last)) = pending.pop_front() {
-            if received_index < first || received_index > last {
-                updated.push_back((first, last));
+        while let Some(range) = pending.pop_front() {
+            if received_index < range.first || received_index > range.last {
+                updated.push_back(range);
                 continue;
             }
-            resolved = true;
-            if first < received_index {
-                updated.push_back((first, received_index - 1));
+            // A naturally reordered packet can fill the gap before feedback
+            // leaves the client. Remove it either way, but count it as a NACK
+            // recovery only after at least one request was actually sent.
+            resolved |= range.last_sent_at.is_some();
+            if range.first < received_index {
+                updated.push_back(PendingNackRange {
+                    last: received_index - 1,
+                    ..range
+                });
             }
-            if received_index < last {
-                updated.push_back((received_index + 1, last));
+            if received_index < range.last {
+                updated.push_back(PendingNackRange {
+                    first: received_index + 1,
+                    ..range
+                });
             }
         }
         *pending = updated;
@@ -541,18 +577,65 @@ impl NvstFeedbackState {
         self.keyframe_needed.swap(false, Ordering::AcqRel)
     }
 
-    fn take_nack(&self) -> Option<(u64, u64)> {
+    fn take_nack(&self, now: Instant) -> Option<(u64, u64)> {
         let mut pending = self
             .pending_nacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (first, last) = pending.pop_front()?;
-        let send_last =
-            last.min(first.saturating_add((MAX_NACK_PACKET_COUNT.saturating_sub(1)) as u64));
-        if send_last < last {
-            pending.push_front((send_last + 1, last));
+        pending.retain(|range| {
+            now.saturating_duration_since(range.requested_at) < NACK_TRACKING_TIMEOUT
+        });
+        let index = pending.iter().position(|range| {
+            range.attempts < MAX_NACK_ATTEMPTS
+                && range.last_sent_at.is_none_or(|last_sent| {
+                    now.saturating_duration_since(last_sent) >= NACK_RETRY_INTERVAL
+                })
+        })?;
+        let mut range = pending.remove(index)?;
+        let send_last = range.last.min(
+            range
+                .first
+                .saturating_add((MAX_NACK_PACKET_COUNT.saturating_sub(1)) as u64),
+        );
+        if send_last < range.last {
+            pending.insert(
+                index,
+                PendingNackRange {
+                    first: send_last + 1,
+                    last: range.last,
+                    requested_at: range.requested_at,
+                    last_sent_at: None,
+                    attempts: 0,
+                },
+            );
+            range.last = send_last;
         }
-        Some((first, send_last))
+        range.last_sent_at = Some(now);
+        range.attempts = range.attempts.saturating_add(1);
+        let result = (range.first, range.last);
+        pending.insert(index, range);
+        Some(result)
+    }
+
+    fn mark_nack_send_failed(&self, first: u64, last: u64) {
+        let mut pending = self
+            .pending_nacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(range) = pending
+            .iter_mut()
+            .find(|range| range.first == first && range.last == last)
+        {
+            range.last_sent_at = None;
+            range.attempts = range.attempts.saturating_sub(1);
+        }
+    }
+
+    fn clear_nacks(&self) {
+        self.pending_nacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 }
 
@@ -2816,7 +2899,12 @@ impl FecBlock {
                 NvstUnsupportedFeature::FecRepair,
             ));
         }
-        let template = self.shards[..self.layout.data_shards]
+        // The RTP envelope is transport framing, not protected video data. A received parity
+        // packet therefore provides an equally valid envelope template. This matters for the
+        // common 1-data/2-parity layout: if that one data packet is lost, parity is all we have
+        // and the block is still fully recoverable.
+        let template = self
+            .shards
             .iter()
             .flatten()
             .next()
@@ -3398,7 +3486,7 @@ impl NvstVideoReceiver {
         if let Some((first_missing_index, last_missing_index)) = result.nack {
             self.config
                 .feedback
-                .request_nack(first_missing_index, last_missing_index);
+                .request_nack(first_missing_index, last_missing_index, now);
         }
         if let Some(reason) = result.dropped {
             if matches!(reason, NvstDropReason::StaleRtpPacket { .. }) {
@@ -3410,6 +3498,7 @@ impl NvstVideoReceiver {
             self.packet_gap_recoveries += 1;
             self.assembler.reset();
             self.next_frame_contiguous = false;
+            self.config.feedback.clear_nacks();
             // A sequence gap breaks the decoder's reference chain; ask (via the
             // bundle's rtcp1 channel) for a fresh keyframe to recover.
             self.config.feedback.request_keyframe();
@@ -3444,6 +3533,24 @@ impl NvstVideoReceiver {
                     NvstUnsupportedFeature::FecRepair,
                 )));
                 continue;
+            }
+            if nv_packet.is_start_of_frame()
+                && self
+                    .assembler
+                    .current_frame
+                    .is_some_and(|current| current != nv_packet.frame_index)
+            {
+                // A new SOF before EOF means the previous reference frame was
+                // incomplete even when RTP sequence numbers were continuous.
+                // Never let the following P-frame look contiguous to the decoder.
+                self.assembler.reset();
+                self.last_stream_packet_index = None;
+                self.next_frame_contiguous = false;
+                self.config.feedback.clear_nacks();
+                self.config.feedback.request_keyframe();
+                events.push(NvstReceiveEvent::Dropped(
+                    NvstDropReason::FrameDiscontinuity,
+                ));
             }
             let same_frame_continuation = !nv_packet.is_start_of_frame()
                 && self.assembler.current_frame == Some(nv_packet.frame_index);
@@ -3811,7 +3918,7 @@ pub enum NvstUdpReceiverError {
     Spawn(#[source] std::io::Error),
     #[error("NVST receive worker is no longer running")]
     Closed,
-    #[error("failed to prepare NVST WebRTC bundle: {0}")]
+    #[error("failed to prepare NVST control/audio bundle: {0}")]
     WebrtcBundle(String),
 }
 
@@ -4357,7 +4464,7 @@ fn prepare_nvst_webrtc_bundle(
             .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
     }
     eprintln!(
-        "NVST WebRTC bundle armed (local={}, peer={}, remoteFingerprintBytes={})",
+        "NVST control/audio bundle armed (local={}, peer={}, remoteFingerprintBytes={})",
         physical_local,
         bundle_peer,
         fingerprint.len()
@@ -4417,10 +4524,21 @@ fn matches_audio_track(track: &NvstAudioTrack, payload_type: u8, ssrc: u32) -> b
     matches_payload_type && track.ssrc.is_none_or(|expected| expected == ssrc)
 }
 
-fn extract_red_opus_primary(payload: &[u8]) -> Option<&[u8]> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RedOpusBlock<'a> {
+    timestamp_offset: u16,
+    payload: &'a [u8],
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RedOpusPayload<'a> {
+    redundant: Vec<RedOpusBlock<'a>>,
+    primary: &'a [u8],
+}
+
+fn parse_red_opus(payload: &[u8]) -> Option<RedOpusPayload<'_>> {
     let mut header_offset = 0_usize;
-    let mut redundant_payload_bytes = 0_usize;
-    let mut redundant_blocks = 0_usize;
+    let mut headers = Vec::new();
     loop {
         let header = *payload.get(header_offset)?;
         let payload_type = header & 0x7f;
@@ -4428,22 +4546,39 @@ fn extract_red_opus_primary(payload: &[u8]) -> Option<&[u8]> {
             if payload_type != GFN_OPUS_PAYLOAD_TYPE {
                 return None;
             }
-            let primary_offset = header_offset
-                .checked_add(1)?
-                .checked_add(redundant_payload_bytes)?;
-            let primary = payload.get(primary_offset..)?;
+            let mut block_offset = header_offset.checked_add(1)?;
+            let mut redundant = Vec::with_capacity(headers.len());
+            for (timestamp_offset, block_len) in headers {
+                let block_end = block_offset.checked_add(block_len)?;
+                let block = payload.get(block_offset..block_end)?;
+                if block.is_empty() || block.len() > MAX_OPUS_PACKET_BYTES {
+                    return None;
+                }
+                redundant.push(RedOpusBlock {
+                    timestamp_offset,
+                    payload: block,
+                });
+                block_offset = block_end;
+            }
+            let primary = payload.get(block_offset..)?;
             return (!primary.is_empty() && primary.len() <= MAX_OPUS_PACKET_BYTES)
-                .then_some(primary);
+                .then_some(RedOpusPayload { redundant, primary });
         }
-        if redundant_blocks == MAX_REDUNDANT_AUDIO_BLOCKS {
+        if payload_type != GFN_OPUS_PAYLOAD_TYPE || headers.len() == MAX_REDUNDANT_AUDIO_BLOCKS {
             return None;
         }
         let header_bytes = payload.get(header_offset..header_offset.checked_add(4)?)?;
+        let timestamp_offset =
+            (u16::from(header_bytes[1]) << 6) | (u16::from(header_bytes[2]) >> 2);
         let block_len = (usize::from(header_bytes[2] & 0x03) << 8) | usize::from(header_bytes[3]);
-        redundant_payload_bytes = redundant_payload_bytes.checked_add(block_len)?;
-        redundant_blocks += 1;
+        headers.push((timestamp_offset, block_len));
         header_offset = header_offset.checked_add(4)?;
     }
+}
+
+#[cfg(test)]
+fn extract_red_opus_primary(payload: &[u8]) -> Option<&[u8]> {
+    parse_red_opus(payload).map(|red| red.primary)
 }
 
 fn finish_nvst_input_handshake(
@@ -4550,6 +4685,7 @@ fn run_nvst_webrtc_bundle(
     let mut control_keepalive_at = next_control_keepalive(Instant::now());
     let mut input_timeout_reported = false;
     let mut last_audio_sequence: Option<(u32, u16)> = None;
+    let mut audio_discontinuity_pending = false;
     loop {
         loop {
             match commands.try_recv() {
@@ -4837,7 +4973,7 @@ fn run_nvst_webrtc_bundle(
                 && let Some(channel_id) = rtcp_channel
                 && let Some(mut channel) = rtc.channel(channel_id)
             {
-                if let Some((first_missing_index, last_missing_index)) = feedback.take_nack() {
+                if let Some((first_missing_index, last_missing_index)) = feedback.take_nack(now) {
                     let nack = build_rtcp_nack(
                         rtcp_sender_ssrc,
                         media_ssrc,
@@ -4849,7 +4985,7 @@ fn run_nvst_webrtc_bundle(
                             "NVST rtcp1 NACK sent for mediaSsrc={media_ssrc} missing={first_missing_index}..={last_missing_index}"
                         );
                     } else {
-                        feedback.request_nack(first_missing_index, last_missing_index);
+                        feedback.mark_nack_send_failed(first_missing_index, last_missing_index);
                     }
                 }
             }
@@ -5105,23 +5241,18 @@ fn run_nvst_webrtc_bundle(
                         });
                         if is_audio {
                             let audio = audio_track.as_ref().expect("audio track checked above");
-                            let payload = if outer_payload_type == GFN_RED_PAYLOAD_TYPE {
-                                let Some(primary) = extract_red_opus_primary(&packet.payload)
-                                else {
-                                    let _ = event_sender.send(NvstReceiveEvent::Dropped(
-                                        NvstDropReason::MalformedRedAudio,
-                                    ));
-                                    continue;
-                                };
-                                Arc::from(primary)
-                            } else {
-                                packet.payload
-                            };
                             let audio_ssrc = *packet.header.ssrc;
-                            let contiguous = last_audio_sequence.is_none_or(|(ssrc, previous)| {
-                                ssrc != audio_ssrc
-                                    || previous.wrapping_add(1) == packet.header.sequence_number
-                            });
+                            let missing_packets = last_audio_sequence
+                                .filter(|(ssrc, _)| *ssrc == audio_ssrc)
+                                .map(|(_, previous)| {
+                                    packet.header.sequence_number.wrapping_sub(previous)
+                                })
+                                .filter(|delta| {
+                                    (2..=u16::try_from(MAX_REDUNDANT_AUDIO_BLOCKS + 1)
+                                        .unwrap_or(u16::MAX))
+                                        .contains(delta)
+                                })
+                                .map_or(0, |delta| usize::from(delta - 1));
                             last_audio_sequence = Some((audio_ssrc, packet.header.sequence_number));
                             let received_at_us = packet
                                 .timestamp
@@ -5129,30 +5260,77 @@ fn run_nvst_webrtc_bundle(
                                 .as_micros()
                                 .try_into()
                                 .unwrap_or(u64::MAX);
-                            let frame = EncodedMediaFrame {
+                            let mut frames = Vec::with_capacity(missing_packets.saturating_add(1));
+                            let (primary, recovered_packets) =
+                                if outer_payload_type == GFN_RED_PAYLOAD_TYPE {
+                                    let Some(red) = parse_red_opus(&packet.payload) else {
+                                        let _ = event_sender.send(NvstReceiveEvent::Dropped(
+                                            NvstDropReason::MalformedRedAudio,
+                                        ));
+                                        audio_discontinuity_pending = true;
+                                        continue;
+                                    };
+                                    let recover_count = missing_packets.min(red.redundant.len());
+                                    for block in red
+                                        .redundant
+                                        .iter()
+                                        .skip(red.redundant.len().saturating_sub(recover_count))
+                                    {
+                                        frames.push(EncodedMediaFrame {
+                                            mid: audio.mid.clone(),
+                                            codec: "opus".to_owned(),
+                                            payload: Arc::from(block.payload),
+                                            rtp_timestamp: u64::from(
+                                                packet.header.timestamp.wrapping_sub(u32::from(
+                                                    block.timestamp_offset,
+                                                )),
+                                            ),
+                                            clock_rate_hz: audio.clock_rate_hz,
+                                            channels: Some(audio.channels),
+                                            received_at_us,
+                                            keyframe: false,
+                                            contiguous: true,
+                                        });
+                                    }
+                                    (Arc::from(red.primary), recover_count)
+                                } else {
+                                    (packet.payload, 0)
+                                };
+                            frames.push(EncodedMediaFrame {
                                 mid: audio.mid.clone(),
                                 codec: "opus".to_owned(),
-                                payload,
+                                payload: primary,
                                 rtp_timestamp: u64::from(packet.header.timestamp),
                                 clock_rate_hz: audio.clock_rate_hz,
                                 channels: Some(audio.channels),
                                 received_at_us,
                                 keyframe: false,
-                                contiguous,
-                            };
-                            if let Err(error) = deliver_media_frame(&media_consumer, frame) {
-                                if matches!(error, TransportError::MediaConsumerBackpressured) {
-                                    // Audio is real-time data. If the decoder briefly falls
-                                    // behind, discard this packet and keep the transport alive;
-                                    // queued audio is more harmful than a short concealment gap.
-                                    continue;
+                                contiguous: missing_packets == 0
+                                    || recovered_packets == missing_packets,
+                            });
+                            for (index, mut frame) in frames.into_iter().enumerate() {
+                                if audio_discontinuity_pending
+                                    && (recovered_packets == 0 || index > 0)
+                                {
+                                    frame.contiguous = false;
                                 }
-                                let _ = event_sender.send(NvstReceiveEvent::Dropped(
-                                    NvstDropReason::MediaConsumerClosed,
-                                ));
-                                rtc.disconnect();
-                                forward_optional(&event_sender, receiver.stop());
-                                return;
+                                match deliver_media_frame(&media_consumer, frame) {
+                                    Ok(()) => audio_discontinuity_pending = false,
+                                    Err(TransportError::MediaConsumerBackpressured) => {
+                                        // Mark the next accepted packet discontinuous so the
+                                        // Opus decoder performs PLC instead of clicking across
+                                        // a packet that vanished between transport and decode.
+                                        audio_discontinuity_pending = true;
+                                    }
+                                    Err(_) => {
+                                        let _ = event_sender.send(NvstReceiveEvent::Dropped(
+                                            NvstDropReason::MediaConsumerClosed,
+                                        ));
+                                        rtc.disconnect();
+                                        forward_optional(&event_sender, receiver.stop());
+                                        return;
+                                    }
+                                }
                             }
                         } else {
                             for event in receiver.process_mjolnir_payload(
@@ -5755,7 +5933,7 @@ mod tests {
 
         let red_payload = [
             0x80 | GFN_OPUS_PAYLOAD_TYPE,
-            0x00,
+            0x0f,
             0x00,
             0x03,
             GFN_OPUS_PAYLOAD_TYPE,
@@ -5769,6 +5947,15 @@ mod tests {
             extract_red_opus_primary(&red_payload),
             Some(&[0xf8, 0xff][..])
         );
+        let red = parse_red_opus(&red_payload).expect("RED payload");
+        assert_eq!(
+            red.redundant,
+            [RedOpusBlock {
+                timestamp_offset: 960,
+                payload: &[0x11, 0x22, 0x33],
+            }]
+        );
+        assert_eq!(red.primary, &[0xf8, 0xff]);
     }
 
     #[test]
@@ -6591,7 +6778,7 @@ mod tests {
         assert_eq!(frame.frame_index, 9);
         assert!(frame.keyframe);
         assert_eq!(frame.bytes, [0, 0, 0, 1, 0x65, 0xaa, 0xbb]);
-        assert_eq!(feedback.take_nack(), None);
+        assert_eq!(feedback.take_nack(Instant::now()), None);
         assert_eq!(feedback.completed_frame_snapshot(), (1, 7, frame.timestamp));
         assert!(feedback.take_completed_frame().is_none());
         feedback.publish_accepted_frame(7, Instant::now());
@@ -6686,6 +6873,54 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, NvstReceiveEvent::Frame(_)))
         );
+    }
+
+    #[test]
+    fn a_new_sof_after_missing_eof_marks_the_reference_chain_discontinuous() {
+        let config = config();
+        let feedback = config.feedback();
+        let crypto = test_srtp(&config);
+        let incomplete = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(
+                10,
+                FLAG_SOF | FLAG_CONTAINS_PIC_DATA,
+                9,
+                &[0, 0, 1, 0x41, 0xaa],
+            ),
+            0,
+        );
+        let following = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(
+                11,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                10,
+                &[0, 0, 1, 0x41, 0xbb],
+            ),
+            0,
+        );
+        let mut receiver = NvstVideoReceiver::new(config);
+
+        assert!(
+            receiver
+                .process_datagram(peer(), &incomplete, Instant::now())
+                .is_empty()
+        );
+        let events = receiver.process_datagram(peer(), &following, Instant::now());
+        assert!(events.iter().any(|event| matches!(
+            event,
+            NvstReceiveEvent::Dropped(NvstDropReason::FrameDiscontinuity)
+        )));
+        let frame = events
+            .iter()
+            .find_map(|event| match event {
+                NvstReceiveEvent::Frame(frame) => Some(frame),
+                _ => None,
+            })
+            .expect("following frame");
+        assert!(!frame.contiguous);
+        assert!(feedback.take_keyframe_request());
     }
 
     #[test]
@@ -7000,6 +7235,66 @@ mod tests {
     }
 
     #[test]
+    fn fec_block_reconstructs_single_data_shard_from_parity_only() {
+        let base_index = 17_392_u64;
+        let mut data = build_plaintext_rtp_with_fec_blocks(
+            base_index as u16,
+            FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            1_466,
+            0,
+            0,
+            &[0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21],
+        );
+        let extension_start = RtpHeader::parse(&data)
+            .expect("data RTP header")
+            .payload_offset
+            - NV_VIDEO_PACKET_LEN;
+        let fec_word = (data.len() as u32) | (1_u32 << 22) | (2_u32 << 26);
+        data[extension_start + 12..extension_start + 16].copy_from_slice(&fec_word.to_le_bytes());
+
+        let mut parity = Vec::new();
+        for parity_index in 0..2 {
+            let coefficient = nvst_cauchy_coefficient(0, parity_index, 2)
+                .expect("single-data Cauchy coefficient");
+            let mut shard = vec![0_u8; data.len()];
+            gf256_axpy(&mut shard, &data, coefficient);
+            // A parity shard is carried in its own valid RTP envelope. FEC recovery restores
+            // these bytes from the received template before parsing the recovered data packet.
+            shard[..extension_start].copy_from_slice(&data[..extension_start]);
+            shard[2..4]
+                .copy_from_slice(&(base_index as u16 + 1 + parity_index as u16).to_be_bytes());
+            parity.push(shard);
+        }
+
+        let layout = |shard_index| FecPacketLayout {
+            frame_index: 1_466,
+            block_index: 0,
+            last_block_index: 0,
+            shard_index,
+            data_shards: 1,
+            parity_shards: 2,
+        };
+        let packet = |shard_index: usize, plaintext: Vec<u8>| RtpPacket {
+            index: base_index + shard_index as u64,
+            header: RtpHeader::parse(&plaintext).expect("parity RTP header"),
+            plaintext,
+        };
+        let mut block = FecBlock::new(layout(0), base_index);
+        assert_eq!(block.insert(layout(1), packet(1, parity[0].clone())), None);
+        assert!(block.has_enough_shards());
+
+        let (repaired, repaired_count) = block.finish(data.len()).expect("parity-only FEC repair");
+        assert_eq!(repaired_count, 1);
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(repaired[0].index, base_index);
+        assert_eq!(repaired[0].header.sequence_number, base_index as u16);
+        assert_eq!(
+            &repaired[0].plaintext[extension_start..],
+            &data[extension_start..]
+        );
+    }
+
+    #[test]
     fn nvst_cauchy_fec_reconstructs_multiple_missing_data_shards() {
         let data = (0..5_usize)
             .map(|shard| {
@@ -7108,8 +7403,8 @@ mod tests {
         for packet in &packets {
             let _ = receiver.process_datagram(peer(), packet, Instant::now());
         }
-        assert_eq!(feedback.take_nack(), Some((2, 2)));
-        assert_eq!(feedback.take_nack(), None);
+        assert_eq!(feedback.take_nack(Instant::now()), Some((2, 2)));
+        assert_eq!(feedback.take_nack(Instant::now()), None);
     }
 
     #[test]
@@ -7134,17 +7429,21 @@ mod tests {
         let mut reorder = RtpReorderBuffer::new(DEFAULT_REORDER_WINDOW);
         assert_eq!(reorder.push(packet(1), started).ready.len(), 1);
 
-        let waiting = reorder.push(packet(3), started + Duration::from_millis(1));
+        let gap_started = started + Duration::from_millis(1);
+        let waiting = reorder.push(packet(3), gap_started);
         assert_eq!(waiting.nack, Some((2, 2)));
         assert!(waiting.ready.is_empty());
         assert!(waiting.recovery.is_none());
 
-        let still_waiting = reorder.push(packet(4), started + Duration::from_millis(140));
+        let still_waiting = reorder.push(
+            packet(4),
+            gap_started + MJOLNIR_REORDER_DEQUEUE_TIMEOUT - Duration::from_millis(1),
+        );
         assert_eq!(still_waiting.nack, Some((2, 2)));
         assert!(still_waiting.ready.is_empty());
         assert!(still_waiting.recovery.is_none());
 
-        let recovered = reorder.push(packet(5), started + Duration::from_millis(151));
+        let recovered = reorder.push(packet(5), gap_started + MJOLNIR_REORDER_DEQUEUE_TIMEOUT);
         assert_eq!(
             recovered.recovery,
             Some(NvstRecovery::PacketGap {
@@ -7377,17 +7676,51 @@ mod tests {
     #[test]
     fn pending_nack_ranges_are_chunked_without_discarding_tail() {
         let feedback = NvstFeedbackState::default();
-        feedback.request_nack(10, 100);
+        let now = Instant::now();
+        feedback.request_nack(10, 100, now);
         feedback.resolve_nack(12);
-        assert_eq!(feedback.take_nack(), Some((10, 11)));
-        assert_eq!(feedback.take_nack(), Some((13, 76)));
-        assert_eq!(feedback.take_nack(), Some((77, 100)));
-        assert_eq!(feedback.take_nack(), None);
+        assert_eq!(feedback.take_nack(now), Some((10, 11)));
+        assert_eq!(feedback.take_nack(now), Some((13, 76)));
+        assert_eq!(feedback.take_nack(now), Some((77, 100)));
+        assert_eq!(feedback.take_nack(now), None);
 
-        feedback.request_nack(10, 100);
-        assert_eq!(feedback.take_nack(), Some((10, 73)));
-        assert_eq!(feedback.take_nack(), Some((74, 100)));
-        assert_eq!(feedback.take_nack(), None);
+        feedback.clear_nacks();
+        feedback.request_nack(10, 100, now);
+        assert_eq!(feedback.take_nack(now), Some((10, 73)));
+        assert_eq!(feedback.take_nack(now), Some((74, 100)));
+        assert_eq!(feedback.take_nack(now), None);
+    }
+
+    #[test]
+    fn sent_nacks_remain_outstanding_for_resolution_without_immediate_resend() {
+        let feedback = NvstFeedbackState::default();
+        let now = Instant::now();
+        feedback.request_nack(41, 41, now);
+        assert!(!feedback.resolve_nack(41));
+
+        feedback.request_nack(42, 42, now);
+
+        assert_eq!(feedback.take_nack(now), Some((42, 42)));
+        feedback.request_nack(42, 42, now + Duration::from_millis(1));
+        assert_eq!(feedback.take_nack(now + NACK_RETRY_INTERVAL / 2), None);
+        assert!(feedback.resolve_nack(42));
+        assert_eq!(feedback.take_nack(now + NACK_RETRY_INTERVAL), None);
+    }
+
+    #[test]
+    fn nack_retries_are_bounded_and_expire() {
+        let feedback = NvstFeedbackState::default();
+        let now = Instant::now();
+        feedback.request_nack(7, 7, now);
+
+        for attempt in 0..MAX_NACK_ATTEMPTS {
+            assert_eq!(
+                feedback.take_nack(now + NACK_RETRY_INTERVAL * u32::from(attempt)),
+                Some((7, 7))
+            );
+        }
+        assert_eq!(feedback.take_nack(now + NACK_RETRY_INTERVAL * 4), None);
+        assert_eq!(feedback.take_nack(now + NACK_TRACKING_TIMEOUT), None);
     }
 
     #[test]

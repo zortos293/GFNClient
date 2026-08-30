@@ -8,6 +8,18 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+namespace {
+QString fakeCorePath()
+{
+    auto path = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("opennow-fake-core"));
+#ifdef Q_OS_WIN
+    path += QStringLiteral(".exe");
+#endif
+    return path;
+}
+}
+
 class CoreClientTest final : public QObject
 {
     Q_OBJECT
@@ -35,8 +47,7 @@ private slots:
         QSignalSpy responses(&client, &CoreClient::responseReceived);
         QSignalSpy failures(&client, &CoreClient::requestFailed);
         QSignalSpy events(&client, &CoreClient::eventReceived);
-        const auto helper = QDir(QCoreApplication::applicationDirPath()).filePath(
-            QStringLiteral("opennow-fake-core"));
+        const auto helper = fakeCorePath();
 
         QVERIFY(client.start(helper));
         QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
@@ -85,8 +96,7 @@ private slots:
     {
         CoreClient client;
         QSignalSpy failures(&client, &CoreClient::requestFailed);
-        const auto helper = QDir(QCoreApplication::applicationDirPath()).filePath(
-            QStringLiteral("opennow-fake-core"));
+        const auto helper = fakeCorePath();
         QVERIFY(client.start(helper));
         QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
         const auto requestId = client.request(QStringLiteral("test.exit"));
@@ -102,8 +112,7 @@ private slots:
     {
         QTemporaryDir temporary;
         QVERIFY(temporary.isValid());
-        const auto helper = QDir(QCoreApplication::applicationDirPath()).filePath(
-            QStringLiteral("opennow-fake-core"));
+        const auto helper = fakeCorePath();
         const auto delayed = QDir(temporary.path()).filePath(QFileInfo(helper).fileName());
 
         CoreClient client;
@@ -121,8 +130,7 @@ private slots:
     {
         QTemporaryDir temporary;
         QVERIFY(temporary.isValid());
-        const auto helper = QDir(QCoreApplication::applicationDirPath()).filePath(
-            QStringLiteral("opennow-fake-core"));
+        const auto helper = fakeCorePath();
         const auto marker = QDir(temporary.path()).filePath(QStringLiteral("graceful.marker"));
 
         CoreClient client;

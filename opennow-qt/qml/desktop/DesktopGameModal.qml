@@ -37,8 +37,6 @@ FocusScope {
             return false
         return Boolean(game.isInLibrary)
     }
-    readonly property bool hasPlayed: Boolean(root.game && (root.game.lastPlayed || root.game.lastPlayedLabel
-        || (root.selectedVariant && root.selectedVariant.lastPlayedDate)))
     readonly property bool hasRtx: {
         const game = root.game
         if (!game)
@@ -209,7 +207,17 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: "#C9000000"
-        TapHandler { onTapped: root.closeRequested() }
+        // This is a modal input shield as well as a scrim. MouseArea takes the
+        // exclusive mouse grab so the release cannot activate a poster below
+        // after closeRequested changes the route.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            hoverEnabled: true
+            preventStealing: true
+            onClicked: root.closeRequested()
+            onWheel: wheel => wheel.accepted = true
+        }
     }
 
     Rectangle {
@@ -345,7 +353,7 @@ FocusScope {
                 primary: true
                 glyph: "desktop-play.svg"
                 glyphSize: DesktopTokens.px(12)
-                text: root.hasPlayed ? qsTr("Resume") : qsTr("Play")
+                text: qsTr("Start")
                 shortcutText: qsTr("ENTER")
                 onClicked: root.playRequested()
             }
@@ -573,7 +581,7 @@ FocusScope {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: DesktopTokens.px(16)
                 DesktopKeyHint { keyText: "Esc"; label: qsTr("Close") }
-                DesktopKeyHint { keyText: qsTr("Enter"); label: qsTr("Play") }
+                DesktopKeyHint { keyText: qsTr("Enter"); label: qsTr("Start") }
                 DesktopKeyHint { keyText: "F"; label: qsTr("Favourite") }
             }
             Text {

@@ -19,14 +19,23 @@ bool SingleInstance::acquire(const QStringList &arguments)
 {
     const auto name = serverName();
     QLocalSocket peer;
-    peer.connectToServer(name, QIODevice::WriteOnly);
+    peer.connectToServer(name, QIODevice::ReadWrite);
     if (peer.waitForConnected(250)) {
         QJsonArray encodedArguments;
         for (const auto &argument : arguments) encodedArguments.append(argument);
         auto payload = QJsonDocument(encodedArguments).toJson(QJsonDocument::Compact);
         payload.append('\n');
-        peer.write(payload);
-        peer.waitForBytesWritten(500);
+        const auto queued = peer.write(payload);
+        if (queued != payload.size()) {
+            qWarning("Could not queue the single-instance activation payload: %s",
+                     qUtf8Printable(peer.errorString()));
+        }
+        peer.flush();
+        while (peer.bytesToWrite() > 0 && peer.waitForBytesWritten(500)) {
+        }
+        if (!peer.waitForReadyRead(1'000) || peer.readLine().trimmed() != QByteArray("ok")) {
+            qWarning("The primary instance did not acknowledge the activation payload");
+        }
         peer.disconnectFromServer();
         return false;
     }
@@ -45,24 +54,36 @@ void SingleInstance::acceptConnection()
 {
     while (auto *socket = m_server.nextPendingConnection()) {
         socket->setParent(this);
-        connect(socket, &QLocalSocket::readyRead, socket, [this, socket] {
-            auto buffer = socket->property("opennowBuffer").toByteArray();
-            buffer += socket->readAll();
-            qsizetype newline = -1;
-            while ((newline = buffer.indexOf('\n')) >= 0) {
-                const auto document = QJsonDocument::fromJson(buffer.first(newline).trimmed());
-                buffer.remove(0, newline + 1);
-                if (!document.isArray()) continue;
-                QStringList arguments;
-                for (const auto &value : document.array()) {
-                    if (value.isString()) arguments.push_back(value.toString());
-                }
-                emit activationRequested(arguments);
-            }
-            socket->setProperty("opennowBuffer", buffer);
+        connect(socket, &QLocalSocket::readyRead, this,
+                [this, socket] { readConnection(socket); });
+        connect(socket, &QLocalSocket::disconnected, this, [this, socket] {
+            readConnection(socket);
+            socket->deleteLater();
         });
-        connect(socket, &QLocalSocket::disconnected, socket, &QObject::deleteLater);
+        // A short-lived secondary can write and disconnect before newConnection
+        // is dispatched. Consume bytes that were already buffered in that case.
+        readConnection(socket);
     }
+}
+
+void SingleInstance::readConnection(QLocalSocket *socket)
+{
+    auto buffer = socket->property("opennowBuffer").toByteArray();
+    buffer += socket->readAll();
+    qsizetype newline = -1;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+        const auto document = QJsonDocument::fromJson(buffer.first(newline).trimmed());
+        buffer.remove(0, newline + 1);
+        if (!document.isArray()) continue;
+        QStringList arguments;
+        for (const auto &value : document.array()) {
+            if (value.isString()) arguments.push_back(value.toString());
+        }
+        emit activationRequested(arguments);
+        socket->write("ok\n");
+        socket->flush();
+    }
+    socket->setProperty("opennowBuffer", buffer);
 }
 
 QString SingleInstance::serverName()

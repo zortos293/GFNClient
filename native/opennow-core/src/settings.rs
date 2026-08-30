@@ -62,6 +62,7 @@ impl SettingsStore {
             values,
             passthrough,
         };
+        store.migrate_native_fullscreen_shortcut();
         store.normalize();
         Ok(store)
     }
@@ -136,12 +137,7 @@ impl SettingsStore {
                 "auto",
             );
         }
-        normalize_choice(
-            &mut self.values,
-            "transportMode",
-            &["webrtc", "nvst"],
-            "webrtc",
-        );
+        normalize_choice(&mut self.values, "transportMode", &["nvst"], "nvst");
         normalize_choice(
             &mut self.values,
             "codec",
@@ -236,6 +232,38 @@ impl SettingsStore {
         normalize_optional_integer(&mut self.values, "recordingBitrateMbps", 1, 12);
         normalize_bounded_strings(&mut self.values);
         normalize_nested_settings(&mut self.values);
+    }
+
+    fn migrate_native_fullscreen_shortcut(&mut self) {
+        let fullscreen = self
+            .values
+            .get("shortcutToggleFullscreen")
+            .and_then(Value::as_str);
+        let screenshot = self
+            .values
+            .get("shortcutScreenshot")
+            .and_then(Value::as_str);
+        if fullscreen == Some("F10") && screenshot == Some("F11") {
+            self.values.insert(
+                "shortcutToggleFullscreen".to_owned(),
+                Value::String("F11".to_owned()),
+            );
+            self.values.insert(
+                "shortcutScreenshot".to_owned(),
+                Value::String("Ctrl+F11".to_owned()),
+            );
+            if self
+                .values
+                .get("statsOverlayPosition")
+                .and_then(Value::as_str)
+                == Some("bottom-left")
+            {
+                self.values.insert(
+                    "statsOverlayPosition".to_owned(),
+                    Value::String("top-right".to_owned()),
+                );
+            }
+        }
     }
 
     fn save(&self) -> io::Result<()> {
@@ -543,20 +571,20 @@ fn defaults() -> Map<String, Value> {
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
         "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"",
         "nativeCloudGsyncMode":"auto", "nativeD3dFullscreenMode":"auto",
-        "nativeExternalRenderer":false, "transportMode":"webrtc", "showNativeStreamerStats":false,
+        "nativeExternalRenderer":false, "transportMode":"nvst", "showNativeStreamerStats":false,
         "codec":"auto", "fallbackCodec":"auto", "decoderPreference":"auto",
         "encoderPreference":"auto", "colorQuality":"8bit_420", "region":"",
         "sessionProxyEnabled":false, "sessionProxyUrl":"", "clipboardPaste":false,
         "enableGyroscopeControls":false, "steamControllerCompatibilityMode":false,
         "nativeCursorOverlay":true, "mouseSensitivity":1, "mouseAcceleration":1,
         "shortcutToggleStats":"Ctrl+N", "shortcutTogglePointerLock":"F8",
-        "shortcutToggleFullscreen":"F10", "shortcutStopStream":"Ctrl+Shift+Q",
+        "shortcutToggleFullscreen":"F11", "shortcutStopStream":"Ctrl+Shift+Q",
         "shortcutToggleAntiAfk":"Ctrl+Shift+K", "shortcutToggleMicrophone":"Ctrl+Shift+M",
-        "shortcutScreenshot":"F11", "shortcutToggleRecording":"F12",
+        "shortcutScreenshot":"Ctrl+F11", "shortcutToggleRecording":"F12",
         "microphoneMode":"disabled", "microphoneDeviceId":"", "hideStreamButtons":false,
         "showAntiAfkIndicator":true, "antiAfkReminderEveryMinutes":15,
         "antiAfkReminderDurationSeconds":5, "showStatsOnLaunch":false,
-        "statsOverlayPosition":"bottom-left", "hideServerSelector":false,
+        "statsOverlayPosition":"top-right", "hideServerSelector":false,
         "appAccentColor":"green", "appTheme":"auto", "appLanguage":"system", "themePack":"nocturne", "translucentUI":false,
         "showTileLabels":true,
         "controllerMode":true, "controllerModePromptDismissed":false,
@@ -595,10 +623,15 @@ mod tests {
         let directory = env::temp_dir().join(format!("opennow-core-settings-{unique}"));
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(store.all()["launchInConsoleMode"], json!(false));
+        assert_eq!(store.all()["transportMode"], json!("nvst"));
         assert_eq!(store.all()["desktopRailCollapsed"], json!(true));
         assert_eq!(store.all()["switchToConsoleOnPad"], json!(true));
         assert_eq!(store.all()["leaveConsoleOnPointer"], json!(true));
+        assert_eq!(store.all()["shortcutToggleFullscreen"], json!("F11"));
+        assert_eq!(store.all()["shortcutScreenshot"], json!("Ctrl+F11"));
+        assert_eq!(store.all()["statsOverlayPosition"], json!("top-right"));
         assert_eq!(store.set("fps", json!(999)).unwrap(), json!(240));
+        assert_eq!(store.set("maxBitrateMbps", json!(200)).unwrap(), json!(200));
         assert_eq!(
             store.set("launchInConsoleMode", json!(false)).unwrap(),
             json!(false)
@@ -609,6 +642,7 @@ mod tests {
         );
         let loaded = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(loaded.all()["fps"], json!(240));
+        assert_eq!(loaded.all()["maxBitrateMbps"], json!(200));
         assert_eq!(loaded.all()["launchInConsoleMode"], json!(false));
         assert_eq!(loaded.all()["reducedMotion"], json!(true));
         assert!(store.set("notASetting", json!(true)).is_err());
@@ -672,6 +706,28 @@ mod tests {
     }
 
     #[test]
+    fn legacy_f10_f11_pair_migrates_to_native_f11_fullscreen() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-core-f11-migration-{unique}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("settings.json"),
+            r#"{"shortcutToggleFullscreen":"F10","shortcutScreenshot":"F11"}"#,
+        )
+        .unwrap();
+
+        let store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["shortcutToggleFullscreen"], json!("F11"));
+        assert_eq!(store.all()["shortcutScreenshot"], json!("Ctrl+F11"));
+        assert_eq!(store.all()["statsOverlayPosition"], json!("top-right"));
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn existing_legacy_profile_wins_only_when_primary_is_absent() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -682,9 +738,17 @@ mod tests {
         let legacy = root.join("opennow");
 
         fs::create_dir_all(&legacy).unwrap();
+        #[cfg(not(windows))]
         assert_eq!(
             select_existing_data_dir(primary.clone(), [legacy.clone()]),
             legacy
+        );
+        // Windows resolves these two historical spellings to the same directory,
+        // so the preferred spelling is already considered present.
+        #[cfg(windows)]
+        assert_eq!(
+            select_existing_data_dir(primary.clone(), [legacy.clone()]),
+            primary
         );
 
         fs::create_dir_all(&primary).unwrap();
@@ -708,6 +772,7 @@ mod tests {
             serde_json::to_vec_pretty(&json!({
                 "fps": 120,
                 "mouseAcceleration": true,
+                "transportMode": "webrtc",
                 "sessionTimeRemainingDisplay": "both",
                 "futureElectronSetting": {"enabled": true}
             }))
@@ -718,6 +783,7 @@ mod tests {
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(store.all()["fps"], json!(120));
         assert_eq!(store.all()["mouseAcceleration"], json!(100));
+        assert_eq!(store.all()["transportMode"], json!("nvst"));
         assert_eq!(
             store.all()["showSessionTimeRemainingInStatsOverlay"],
             json!(true)
@@ -728,6 +794,7 @@ mod tests {
         let persisted: Value =
             serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
         assert_eq!(persisted["futureElectronSetting"], json!({"enabled": true}));
+        assert_eq!(persisted["transportMode"], json!("nvst"));
         assert_eq!(persisted["sessionTimeRemainingDisplay"], json!("both"));
         assert_eq!(persisted["mouseAcceleration"], json!(100));
         assert_eq!(persisted["codec"], json!("h264"));

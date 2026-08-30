@@ -11,14 +11,32 @@ Row {
     property string suffix: "%"
     property int decimals: 0
     signal moved(real value)
+    signal committed(real value)
     spacing: 14
+
+    Timer {
+        id: commitTimer
+        interval: 150
+        repeat: false
+        onTriggered: root.committed(slider.value)
+    }
 
     Slider {
         id: slider
         width: 200
         height: 28
         live: true
-        onMoved: root.moved(value)
+        onMoved: {
+            root.moved(value)
+            if (!pressed)
+                commitTimer.restart()
+        }
+        onPressedChanged: {
+            if (!pressed) {
+                commitTimer.stop()
+                root.committed(value)
+            }
+        }
         background: Rectangle {
             x: slider.leftPadding
             y: slider.topPadding + slider.availableHeight / 2 - height / 2

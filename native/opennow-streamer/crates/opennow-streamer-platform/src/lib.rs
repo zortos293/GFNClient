@@ -22,9 +22,9 @@ mod windows_raw_input;
 
 pub use media::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedRecordingReceiver,
-    MediaCodec, MediaControl, MediaFeedback, MediaSession, MediaSink, MediaStreamConfig,
-    MediaVideoCodec, PushOutcome, ShortcutChord, StatsOverlayPosition, StreamShortcutAction,
-    StreamShortcutBindings,
+    MediaCodec, MediaColorQuality, MediaControl, MediaFeedback, MediaSession, MediaSink,
+    MediaStreamConfig, MediaVideoCodec, PushOutcome, ShortcutChord, StatsOverlayPosition,
+    StreamRegionLabel, StreamShortcutAction, StreamShortcutBindings,
 };
 pub use microphone::{EncodedMicrophonePacket, EncodedMicrophoneQueue, MicrophoneCapture};
 pub use recording::{RecordingSummary, record_matroska};

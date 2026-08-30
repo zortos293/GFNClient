@@ -257,10 +257,6 @@ FocusScope {
             shortcutEditorMessage = qsTr("Press a letter, number, function key, or navigation key.")
             return
         }
-        if (keyName === "F1") {
-            shortcutEditorMessage = qsTr("F1 is reserved for the in-stream Guide.")
-            return
-        }
         const modifiers = []
         if (event.modifiers & Qt.ControlModifier)
             modifiers.push("Ctrl")
@@ -276,6 +272,10 @@ FocusScope {
         }
         modifiers.push(keyName)
         const chord = modifiers.join("+")
+        if (chord.toLowerCase() === "ctrl+g") {
+            shortcutEditorMessage = qsTr("Ctrl+G is reserved for the in-stream Guide.")
+            return
+        }
         for (let index = 0; index < shortcutKeys.length; ++index) {
             const otherKey = shortcutKeys[index]
             if (otherKey !== shortcutEditorKey && String(ShellStore.settings[otherKey] || "").toLowerCase() === chord.toLowerCase()) {
@@ -332,7 +332,7 @@ FocusScope {
                 {t:"Frame generation", d:"Interpolates after decode — 60 stream FPS presents at 120", v:interpolation.enabled ? Number(interpolation.factor) + "×" : "Off", key:"frameInterpolation", values:[{enabled:false,factor:2,quality:480},{enabled:true,factor:2,quality:480},{enabled:true,factor:3,quality:480}], labels:["Off","2×","3×"], control:"segments", selectedIndex:interpolation.enabled ? (Number(interpolation.factor) === 3 ? 2 : 1) : 0},
                 toggle("Cloud G-Sync", "Variable refresh on G-Sync and FreeSync displays", "enableCloudGsync"),
                 toggle("Stats overlay on launch", "Ctrl+N toggles it in-game", "showStatsOnLaunch"),
-                choice("Stats overlay position", "FPS, RTT, loss and bitrate readout", "statsOverlayPosition", ["bottom-left","bottom-right","top-left","top-right"], ["Bottom-left","Bottom-right","Top-left","Top-right"])
+                choice("Stats overlay position", "FPS, RTT, loss and bitrate readout", "statsOverlayPosition", ["top-right","top-left","bottom-right","bottom-left"], ["Top-right","Top-left","Bottom-right","Bottom-left"])
             ]
         }
         if (root.selectedSection === 2) {
@@ -350,7 +350,7 @@ FocusScope {
                 {t:"Display", d:"Where OpenNOW opens in fullscreen", v:"Monitor 1 · current display"},
                 choice("Resolution", "Exact stream size · up / down to browse, A to pick", "resolution", resolutions, resolutionLabels(resolutions)),
                 choice("Frame rate", "Only rates your membership entitles are selectable", "fps", frameRates, frameRates.map(value => String(value)), "segments"),
-                toggle("Fullscreen on launch", "F10 toggles in-game", "autoFullScreen"),
+                toggle("Fullscreen on launch", "F11 toggles in-game", "autoFullScreen"),
                 {t:"Video shader", d:"Post-process on this device after decode", v:["Off","Sharpen","FidelityFX","CRT"][shaderIndex], key:"videoShader", values:shaderValues, labels:["Off","Sharpen","FidelityFX","CRT"], control:"segments", selectedIndex:shaderIndex},
                 {t:"Stretch to fill", d:"Ignore aspect and fill the window; off keeps black bars", v:"Off", control:"toggle", toggleState:false},
                 choice("Cursor", "Lock the pointer to the game window · F8", "nativeCursorOverlay", [true,false], ["Lock to window","Free"], "segments"),
@@ -384,7 +384,7 @@ FocusScope {
                 ["en-US","en-GB","tr-TR","de-DE","fr-FR","es-ES","es-MX","it-IT","pt-PT","pt-BR","pl-PL","da-DK","nb-NO","sv-SE","fi-FI","ru-RU","ja-JP","ko-KR","zh-CN","zh-TW"],
                 ["English (US)","English (UK)","Turkish Q","German","French","Spanish","Spanish (Latin America)","Italian","Portuguese (Portugal)","Portuguese (Brazil)","Polish","Danish","Norwegian","Swedish","Finnish","Russian","Japanese","Korean","Chinese (Simplified)","Chinese (Traditional)"]))
             rows.push(choice("Game language", "Requested from the game when it supports it", "gameLanguage", ["en_US","en_GB","de_DE","fr_FR","es_ES","it_IT","pt_BR","ja_JP","ko_KR"], ["English (US)","English (UK)","Deutsch","Français","Español","Italiano","Português (BR)","日本語","한국어"]))
-            rows.push({t:"Shortcuts", d:"Stats Ctrl+N · Pointer lock F8 · Fullscreen F10 · Screenshot F11", v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
+            rows.push({t:"Shortcuts", d:"Stats Ctrl+N · Pointer lock F8 · Fullscreen F11 · Screenshot Ctrl+F11", v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
             rows.push(choice("Microphone", "Voice-activated Opus upstream for WebRTC sessions", "microphoneMode", ["disabled","voice-activity"], ["Disabled","Voice activity"]))
             rows.push(choice("Microphone device", "Capture device used for Opus upstream", "microphoneDeviceId", microphoneValues, microphoneLabels))
             rows.push(shortcut("Toggle stats", "Cycle the native performance overlay", "shortcutToggleStats"))
@@ -408,7 +408,7 @@ FocusScope {
             }
             return [
                 choice("Region", ShellStore.regions.length ? qsTr("%1 streaming regions discovered").arg(ShellStore.regions.length) : "Sign in to discover available regions", "region", regionValues, regionLabels),
-                choice("Transport", "WebRTC is lowest latency; NVST uses the classic native protocol", "transportMode", ["webrtc","nvst"], ["WebRTC","Native NVST"], "segments"),
+                {t:"Transport", d:"The separate native streamer owns negotiation and media transport", v:"Native NVST"},
                 {t:"Proxy address", d:"HTTP(S), SOCKS4 or SOCKS5; credentials stay in the protected local settings file", v:root.proxyDisplay(settings.sessionProxyUrl), action:"proxy-url"},
                 toggle("Session proxy", "Use the configured community session proxy", "sessionProxyEnabled"),
                 toggle("L4S", "Request low-latency scalable throughput when available", "enableL4S"),

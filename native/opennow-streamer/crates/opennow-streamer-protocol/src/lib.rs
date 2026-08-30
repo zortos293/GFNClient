@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-pub const PROTOCOL_VERSION: u64 = 4;
+pub const PROTOCOL_VERSION: u64 = 5;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +184,7 @@ pub struct Capabilities {
     pub supports_video_present: bool,
     pub supports_audio_decode: bool,
     pub supports_audio_output: bool,
+    pub supports_owned_nvst_negotiation: bool,
     pub video_backends: Vec<VideoBackendCapability>,
 }
 

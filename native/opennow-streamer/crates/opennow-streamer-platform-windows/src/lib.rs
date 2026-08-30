@@ -14,7 +14,7 @@ use crate::queue::BoundedQueue;
 
 pub use format::{
     AudioFormat, BackendConfig, Bounds, EncodedVideoFrame, ExistingWindow, OwnedWindow, PcmFrame,
-    SurfaceTarget, VideoCodec, VideoFormat, WindowHandle,
+    SurfaceTarget, VideoChromaFormat, VideoCodec, VideoFormat, VideoPixelFormat, WindowHandle,
 };
 pub use queue::PushOutcome;
 
@@ -495,6 +495,9 @@ mod tests {
                 frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
                 frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
                 average_bitrate: 10_000_000,
+                pixel_format: VideoPixelFormat::Nv12,
+                chroma_format: VideoChromaFormat::Cs420,
+                full_range: false,
             }),
             audio_format: Mutex::new(AudioFormat {
                 sample_rate: 48_000,
@@ -613,6 +616,7 @@ mod tests {
             timestamp_100ns: 0,
             duration_100ns: 166_667,
             key_frame: true,
+            reset_decoder: false,
         });
         let audio_outcome = backend.submit_audio(PcmFrame {
             samples: vec![0.0, 0.0],

@@ -614,6 +614,18 @@ impl Worker {
             while self.decoder.wants_input() {
                 if let Some(frame) = self.shared.video.try_pop() {
                     did_work = true;
+                    if frame.reset_decoder
+                        && let Err(error) = self.reset_decoder_for_keyframe()
+                    {
+                        if let Err(error) = self.rebuild_video(Subsystem::VideoDecode, error) {
+                            self.fail(error);
+                            return;
+                        }
+                        // rebuild_video deliberately requests another clean
+                        // keyframe; do not feed this one to a decoder whose
+                        // recovery path failed midway.
+                        continue;
+                    }
                     if let Err(error) = self.decoder.submit(frame) {
                         if let Err(error) = self.rebuild_video(Subsystem::VideoDecode, error) {
                             self.fail(error);
@@ -814,6 +826,20 @@ impl Worker {
             }
             Err(error) => self.recover_video(subsystem, format!("{message}: {error}")),
         }
+    }
+
+    fn reset_decoder_for_keyframe(&mut self) -> Result<(), String> {
+        self.decoder.stop();
+        self.decoded_video.clear();
+        self.presentation_clock
+            .reset(self.config.video.frame_duration_100ns());
+        self.first_frame_presented = false;
+        self.decoder = Decoder::new(&self.graphics, self.config.video, self.decoder_mode)
+            .map_err(|error| format!("recovery-keyframe decoder reset failed: {error}"))?;
+        self.graphics
+            .reconfigure_video(self.config.video)
+            .map_err(|error| format!("recovery-keyframe presenter reset failed: {error}"))?;
+        Ok(())
     }
 
     fn begin_audio_recovery(&mut self, message: String) {

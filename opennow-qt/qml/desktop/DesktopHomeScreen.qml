@@ -149,10 +149,9 @@ FocusScope {
         if (!game)
             return
         root.gameRequested(game)
-        ShellStore.openGame(game)
     }
 
-    function resumeHero() {
+    function startHero() {
         if (!root.heroGame)
             return
         ShellStore.selectedGame = root.heroGame
@@ -169,7 +168,7 @@ FocusScope {
     function activateSelection() {
         if (root.focusZone === 0) {
             if (root.focusIndex === 0)
-                root.resumeHero()
+                root.startHero()
             else if (root.focusIndex === 1)
                 root.openGame(root.heroGame)
             else
@@ -315,11 +314,11 @@ FocusScope {
                             spacing: 9
 
                             Rectangle {
-                                id: resumeButton
+                                id: startButton
                                 width: 158
                                 height: 38
                                 radius: 10
-                                color: resumeTap.pressed ? "#D9FFFFFF" : "#F2FFFFFF"
+                                color: startTap.pressed ? "#D9FFFFFF" : "#F2FFFFFF"
                                 border.width: root.focusZone === 0 && root.focusIndex === 0 && AppController.inputMode !== "pointer" ? 2 : 0
                                 border.color: "#FFFFFF"
 
@@ -327,14 +326,14 @@ FocusScope {
                                     anchors.centerIn: parent
                                     spacing: 8
                                     DesktopGlyph { width: 10; height: 12; icon: "desktop-play.svg" }
-                                    Text { text: qsTr("Resume"); color: "#0B0F1A"; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.ExtraBold }
+                                    Text { text: qsTr("Start"); color: "#0B0F1A"; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.ExtraBold }
                                     Rectangle {
                                         width: 41; height: 19; radius: 5; color: "#1A0B0F1A"
                                         Text { anchors.centerIn: parent; text: qsTr("ENTER"); color: "#B80B0F1A"; font.family: Theme.monoFont; font.pixelSize: 9; font.weight: Font.Bold }
                                     }
                                 }
-                                HoverHandler { id: resumeHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, 0) }
-                                TapHandler { id: resumeTap; onTapped: root.resumeHero() }
+                                HoverHandler { id: startHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, 0) }
+                                TapHandler { id: startTap; onTapped: root.startHero() }
                             }
 
                             Rectangle {
@@ -445,7 +444,7 @@ FocusScope {
                     color: seeJump.hovered ? "#B8FFFFFF" : "#80FFFFFF"
                     font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
                     HoverHandler { id: seeJump; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: { root.routeRequested("library"); AppController.navigate("library") } }
+                    TapHandler { onTapped: root.routeRequested("library") }
                 }
                 Row {
                     y: 30; width: parent.width; spacing: root.railGap
@@ -476,7 +475,7 @@ FocusScope {
                     color: seeFriends.hovered ? "#B8FFFFFF" : "#80FFFFFF"
                     font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
                     HoverHandler { id: seeFriends; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: { root.routeRequested("library"); AppController.navigate("library") } }
+                    TapHandler { onTapped: root.routeRequested("library") }
                 }
                 Row {
                     y: 30; width: parent.width; spacing: root.railGap
@@ -507,7 +506,7 @@ FocusScope {
                     color: seeNew.hovered ? "#B8FFFFFF" : "#80FFFFFF"
                     font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
                     HoverHandler { id: seeNew; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: { root.routeRequested("library"); AppController.navigate("library") } }
+                    TapHandler { onTapped: root.routeRequested("library") }
                 }
                 Row {
                     y: 30; width: parent.width; spacing: root.railGap

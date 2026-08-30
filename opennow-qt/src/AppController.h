@@ -9,6 +9,7 @@ class AppController final : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(QString route READ route NOTIFY routeChanged)
+    Q_PROPERTY(QString backRoute READ backRoute NOTIFY routeChanged)
     Q_PROPERTY(QString overlay READ overlay NOTIFY overlayChanged)
     Q_PROPERTY(bool reducedMotion READ reducedMotion WRITE setReducedMotion NOTIFY reducedMotionChanged)
     Q_PROPERTY(int controllerCount READ controllerCount WRITE setControllerCount NOTIFY controllerCountChanged)
@@ -18,12 +19,14 @@ public:
     explicit AppController(QObject *parent = nullptr);
 
     [[nodiscard]] QString route() const;
+    [[nodiscard]] QString backRoute() const;
     [[nodiscard]] QString overlay() const;
     [[nodiscard]] bool reducedMotion() const;
     [[nodiscard]] int controllerCount() const;
     [[nodiscard]] QString inputMode() const;
 
     Q_INVOKABLE bool navigate(const QString &route);
+    Q_INVOKABLE bool navigateFromLastPrimary(const QString &route);
     Q_INVOKABLE bool showOverlay(const QString &overlay);
     Q_INVOKABLE bool goBack();
     Q_INVOKABLE bool cyclePrimaryRoute(int direction);

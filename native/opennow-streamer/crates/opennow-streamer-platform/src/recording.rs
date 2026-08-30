@@ -655,6 +655,7 @@ fn find_start_code(data: &[u8]) -> Option<(usize, usize)> {
 mod tests {
     use std::sync::Arc;
     use std::sync::mpsc::channel;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use oxideav_core::{NullCodecResolver, ReadSeek};
 
@@ -688,10 +689,14 @@ mod tests {
 
     #[test]
     fn writes_atomic_h264_and_opus_matroska() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
         let directory = std::env::temp_dir().join(format!(
             "opennow-recording-test-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("recording")
+            unique
         ));
         std::fs::create_dir_all(&directory).expect("temporary directory");
         let output = directory.join("capture.mkv");

@@ -633,7 +633,7 @@ FocusScope {
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
                 DesktopSettingsRow { width: parent.width; rowHeight: 64; title: qsTr("Bitrate ceiling"); description: qsTr("Maximum requested stream bitrate"); showDivider: true
-                    DesktopSettingsSlider { from: 10; to: 200; stepSize: 5; value: Number(root.valueSetting("maxBitrateMbps", 75)); suffix: " Mbps"; onMoved: value => root.setSetting("maxBitrateMbps", Math.round(value)) }
+                    DesktopSettingsSlider { from: 10; to: 200; stepSize: 5; value: Number(root.valueSetting("maxBitrateMbps", 75)); suffix: " Mbps"; onCommitted: value => root.setSetting("maxBitrateMbps", Math.round(value)) }
                 }
                 DesktopSettingsRow { width: parent.width; rowHeight: 64; title: "Codec"; description: "Automatic chooses from codecs reported by the native streamer"
                     DesktopSettingsButton { id: codecButton; menu: true; text: String(root.valueSetting("codec", "auto")).toUpperCase() + (String(root.valueSetting("codec", "auto")).toLowerCase() === "av1" ? " · RECOMMENDED" : ""); compact: true; onClicked: root.openChoices(codecButton, "codec", root.choices([{kind:"choice",label:"Automatic",detail:"Best available",value:"auto"},{kind:"choice",label:"AV1",detail:"Recommended",value:"av1"},{kind:"choice",label:"H.265",detail:"Efficient",value:"h265"},{kind:"choice",label:"H.264",detail:"Compatible",value:"h264"}])) }
@@ -719,7 +719,7 @@ FocusScope {
                     DesktopSettingsButton { text: ShellStore.regionPingRequestId === "" ? qsTr("Ping regions") : qsTr("Pinging…"); compact: true; onClicked: ShellStore.pingRegions() }
                 }
                 DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Bandwidth ceiling"; description: "Hard cap for the stream · useful on shared or metered lines"
-                    DesktopSettingsSlider { from: 10; to: 200; stepSize: 5; value: Number(root.valueSetting("maxBitrateMbps", 75)); suffix: " Mbps"; onMoved: value => root.setSetting("maxBitrateMbps", Math.round(value)) }
+                    DesktopSettingsSlider { from: 10; to: 200; stepSize: 5; value: Number(root.valueSetting("maxBitrateMbps", 75)); suffix: " Mbps"; onCommitted: value => root.setSetting("maxBitrateMbps", Math.round(value)) }
                 }
                 DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Proxy"; description: "Applies to API calls only · the stream always goes direct"; showDivider: false
                     TextField { width: 280; height: 34; text: String(root.valueSetting("sessionProxyUrl", "")); placeholderText: qsTr("http://proxy.example:8080"); color: Theme.label; placeholderTextColor: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 10; onEditingFinished: root.setSetting("sessionProxyUrl", text); background: Rectangle { radius: 9; color: Qt.rgba(1,1,1,0.04); border.width: 1; border.color: parent.activeFocus ? DesktopTokens.focus : Qt.rgba(1,1,1,0.12) } }
@@ -879,7 +879,7 @@ FocusScope {
                 Repeater {
                     model: [
                         {h:"APP", rows:[{l:"Command palette",k:"Ctrl  K"},{l:"Search this page",k:"/"},{l:"Collapse or expand the sidebar",k:"Ctrl  B"},{l:"Switch to console mode",k:"F10"},{l:"Settings",k:"Ctrl  ,"},{l:"Quit OpenNOW",k:"Ctrl  Q"}]},
-                        {h:"IN STREAM", rows:[{l:"Session menu",k:"Esc"},{l:"Stats overlay",k:String(root.valueSetting("shortcutToggleStats","Ctrl+N"))},{l:"Toggle fullscreen",k:String(root.valueSetting("shortcutToggleFullscreen","F10"))},{l:"Grab or release the mouse",k:String(root.valueSetting("shortcutTogglePointerLock","F8"))},{l:"Screenshot the stream",k:String(root.valueSetting("shortcutScreenshot","F11"))},{l:"End the session",k:String(root.valueSetting("shortcutStopStream","Ctrl+Shift+Q"))}]},
+                        {h:"IN STREAM", rows:[{l:"Session menu",k:"Esc"},{l:"Stats overlay",k:String(root.valueSetting("shortcutToggleStats","Ctrl+N"))},{l:"Toggle fullscreen",k:String(root.valueSetting("shortcutToggleFullscreen","F11"))},{l:"Grab or release the mouse",k:String(root.valueSetting("shortcutTogglePointerLock","F8"))},{l:"Screenshot the stream",k:String(root.valueSetting("shortcutScreenshot","Ctrl+F11"))},{l:"End the session",k:String(root.valueSetting("shortcutStopStream","Ctrl+Shift+Q"))}]},
                         {h:"LIBRARY AND STORE", rows:[{l:"Move through covers",k:"Arrows"},{l:"Play or resume",k:"Enter"},{l:"Game details",k:"Space"},{l:"Toggle favourite",k:"F"},{l:"Context menu",k:"Shift  F10"}]},
                         {h:"GAMEPAD · CONSOLE MODE", rows:[{l:"Select · back",k:"A · B"},{l:"Details · favourite",k:"X · Y"},{l:"Switch tab",k:"LB · RB"},{l:"Stats overlay",k:"Guide"}]}
                     ]

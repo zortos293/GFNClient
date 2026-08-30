@@ -121,6 +121,16 @@ ApplicationWindow {
         if (AppController.route === "stream")
             ShellStore.setStreamInputPaused(shellOwnsInput)
     }
+
+    function isGuideShortcut(event) {
+        const keyboardModifiers = event.modifiers
+            & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier | Qt.MetaModifier)
+        return (event.key === Qt.Key_G && keyboardModifiers === Qt.ControlModifier)
+            // ControllerInput represents the physical Guide button as a
+            // synthetic F1 event. A real keyboard F1 event switches inputMode
+            // to "keyboard" before it reaches this handler.
+            || (event.key === Qt.Key_F1 && AppController.inputMode === "controller")
+    }
     Timer {
         id: pointerGrace
         interval: 30000
@@ -328,7 +338,7 @@ ApplicationWindow {
                 event.accepted = AppController.overlay.startsWith("guide-")
                     ? AppController.cycleGuidePage(1)
                     : AppController.cyclePrimaryRoute(1)
-            } else if (event.key === Qt.Key_F1) {
+            } else if (window.isGuideShortcut(event)) {
                 event.accepted = AppController.showOverlay(window.desktopSurfaceActive
                     && window.activeRoute === "stream" ? "desktop-stream-menu" : "guide-session")
             } else if (event.key === Qt.Key_F3 && window.desktopSurfaceActive

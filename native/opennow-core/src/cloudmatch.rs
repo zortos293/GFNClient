@@ -52,15 +52,8 @@ impl CloudMatchService {
         let client = client_for_settings(&self.client, settings).map_err(invalid)?;
         let app_id = launch_app_id(params)?;
         let token = session_token(auth);
-        let transport = setting_string(settings, "transportMode", "webrtc");
         let requested_base = requested_streaming_base(params, settings, auth)?;
-        let base = self.resolve_create_base(
-            &client,
-            &requested_base,
-            token,
-            device_id,
-            transport.eq_ignore_ascii_case("nvst"),
-        );
+        let base = self.resolve_create_base(&client, &requested_base, token, device_id, true);
         let body = build_create_body(&app_id, params, settings, device_id);
         let keyboard_layout = setting_string(settings, "keyboardLayout", "en-US");
         let language = setting_string(settings, "gameLanguage", "en_US");
@@ -85,30 +78,28 @@ impl CloudMatchService {
             .unwrap_or_default();
         let mut info = session_info(&payload, &base, &zone, &app_id, device_id)?;
 
-        if transport.eq_ignore_ascii_case("nvst") {
-            if let Some(session_id) = info["sessionId"].as_str() {
-                let mut resume_url = base
-                    .join(&format!("v2/session/{session_id}"))
-                    .map_err(|_| invalid("Invalid CloudMatch resume URL"))?;
-                resume_url
-                    .query_pairs_mut()
-                    .append_pair("keyboardLayout", &keyboard_layout)
-                    .append_pair("languageCode", &language);
-                let resume = json!({
-                    "action": 2,
-                    "data": "RESUME",
-                    "sessionRequestData": build_create_body(&app_id, params, settings, device_id)["sessionRequestData"],
-                    "metaData": null,
-                    "adUpdates": null
-                });
-                // Fresh native sessions remain pollable even if this compatibility
-                // mutation is not accepted by an older CloudMatch pool.
-                let _ = client
-                    .put(resume_url)
-                    .headers(cloudmatch_headers(token, device_id)?)
-                    .json(&resume)
-                    .send();
-            }
+        if let Some(session_id) = info["sessionId"].as_str() {
+            let mut resume_url = base
+                .join(&format!("v2/session/{session_id}"))
+                .map_err(|_| invalid("Invalid CloudMatch resume URL"))?;
+            resume_url
+                .query_pairs_mut()
+                .append_pair("keyboardLayout", &keyboard_layout)
+                .append_pair("languageCode", &language);
+            let resume = json!({
+                "action": 2,
+                "data": "RESUME",
+                "sessionRequestData": build_create_body(&app_id, params, settings, device_id)["sessionRequestData"],
+                "metaData": null,
+                "adUpdates": null
+            });
+            // Fresh native sessions remain pollable even if this compatibility
+            // mutation is not accepted by an older CloudMatch pool.
+            let _ = client
+                .put(resume_url)
+                .headers(cloudmatch_headers(token, device_id)?)
+                .json(&resume)
+                .send();
         }
 
         let active = active_from_info(&info, &base, &zone, &app_id, client)?;
@@ -611,14 +602,11 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     let fps = setting_i64(settings, "fps", 60).clamp(30, 240);
     let bitrate = setting_i64(settings, "maxBitrateMbps", 75).clamp(1, 200) * 1000;
     let codec = codec_wire(&setting_string(settings, "codec", "auto"));
-    let transport = setting_string(settings, "transportMode", "webrtc");
-    let native = transport.eq_ignore_ascii_case("nvst");
-    let (mut bit_depth, mut chroma) =
-        color_quality_wire(&setting_string(settings, "colorQuality", "8bit_420"));
-    if native {
-        bit_depth = 0;
-        chroma = 0;
-    }
+    let requested_color = color_quality_wire(&setting_string(settings, "colorQuality", "8bit_420"));
+    // Keep a manually selected codec fixed. H.264 has no supported 10-bit or
+    // 4:4:4 native profile, so constrain color instead of silently switching
+    // the codec back to Auto/HEVC.
+    let (bit_depth, chroma) = if codec == 1 { (0, 0) } else { requested_color };
     let cloud_gsync = resolved_cloud_gsync(settings);
     let reflex = cloud_gsync || fps >= 120;
     let persistence = setting_bool(settings, "enablePersistingInGameSettings", false)
@@ -628,17 +616,14 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "verticalPixels": height
     })
     .to_string();
-    let mut metadata = vec![
+    let metadata = vec![
         json!({"key":"ClientImeSupport","value":"0"}),
         json!({"key":"SubSessionId","value":random_uuid()}),
         json!({"key":"clientPhysicalResolution","value":physical_resolution}),
         json!({"key":"networkType","value":if cfg!(target_os = "macos") { "WiFi5.0" } else { "Unknown" }}),
         json!({"key":"wssignaling","value":"1"}),
+        json!({"key":"surroundAudioInfo","value":"2"}),
     ];
-    if !native {
-        metadata.push(json!({"key":"GSStreamerType","value":"WebRTC"}));
-    }
-    metadata.push(json!({"key":"surroundAudioInfo","value":"2"}));
     let mut features = json!({
         "reflex":reflex,
         "bitDepth":bit_depth,
@@ -652,20 +637,17 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "prefilterSharpness":0,
         "prefilterNoiseReduction":0,
         "hudStreamingMode":0,
-        "codec":codec
+        "codec":codec,
+        "maxBitrateKbps":bitrate,
+        "vsync":false,
+        "audioChannelCount":2
     });
-    if native {
-        features["mouseMovementFlags"] = json!(0);
-        features["trueHdr"] = json!(false);
-        features["hidDevices"] = Value::Null;
-        features["qosPolicy"] = json!(0);
-        features["touchSupport"] = json!(false);
-    } else {
-        features["maxBitrateKbps"] = json!(bitrate);
-        features["vsync"] = json!(false);
-        features["dynamicStreamingMode"] = json!(3);
-        features["audioChannelCount"] = json!(2);
-    }
+    features["mouseMovementFlags"] = json!(0);
+    features["trueHdr"] = json!(false);
+    features["hidDevices"] = Value::Null;
+    features["qosPolicy"] = json!(0);
+    features["touchSupport"] = json!(false);
+    features["dynamicStreamingMode"] = json!(0);
     json!({"sessionRequestData":{
         "appId":app_id.parse::<i64>().unwrap_or_default(),
         "externalAppId":null,
@@ -702,7 +684,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "clientTimezoneOffset":0,
         "enhancedStreamMode":0,
         "appLaunchMode":app_launch_mode(params),
-        "secureRTSPSupported":native,
+        "secureRTSPSupported":true,
         "partnerCustomData":null,
         "accountLinked":params["accountLinked"].as_bool().unwrap_or(false),
         "enablePersistingInGameSettings":persistence,
@@ -874,10 +856,17 @@ fn negotiated_profile(monitor: &Value, features: &Value) -> Value {
         Some(3) => Some("AV1"),
         _ => None,
     };
-    let color = match (
-        value_i64(&features["bitDepth"]).map(|value| if value == 10 { 1 } else { value }),
-        value_i64(&features["chromaFormat"]).map(|value| if value == 2 { 1 } else { value }),
-    ) {
+    let bit_depth = value_i64(&features["bitDepth"]).and_then(|value| match value {
+        0 | 8 => Some(0),
+        1 | 10 => Some(1),
+        _ => None,
+    });
+    let chroma = value_i64(&features["chromaFormat"]).and_then(|value| match value {
+        0 => Some(0),
+        1..=3 => Some(1),
+        _ => None,
+    });
+    let color = match (bit_depth, chroma) {
         (Some(0), Some(0)) => Some("8bit_420"),
         (Some(0), Some(1)) => Some("8bit_444"),
         (Some(1), Some(0)) => Some("10bit_420"),
@@ -1287,11 +1276,9 @@ fn codec_wire(value: &str) -> i64 {
         "h264" => 1,
         "h265" | "hevc" => 2,
         "av1" => 3,
-        // The native client always has a bundled H.264 software decoder.
-        // Leaving this as server-side automatic negotiation can select AV1 or
-        // HEVC before the local hardware capability is known, producing a
-        // cloud session that this machine cannot attach to.
-        _ => 1,
+        // Zero delegates the final choice to CloudMatch, matching the
+        // official native client. Explicit user choices remain pinned.
+        _ => 0,
     }
 }
 
@@ -1453,14 +1440,116 @@ mod tests {
         assert_eq!(request["internalTitle"], "Portal 2");
         assert_eq!(request["accountLinked"], true);
         assert_eq!(request["appLaunchMode"], 2);
+        assert_eq!(request["secureRTSPSupported"], true);
+        assert!(
+            request["metaData"]
+                .as_array()
+                .expect("metadata")
+                .iter()
+                .all(|entry| entry["key"] != "GSStreamerType")
+        );
+        assert_eq!(
+            request["requestedStreamingFeatures"]["dynamicStreamingMode"],
+            0
+        );
     }
 
     #[test]
-    fn automatic_codec_requests_the_portable_native_h264_baseline() {
-        assert_eq!(codec_wire("auto"), 1);
-        assert_eq!(codec_wire("unknown"), 1);
+    fn automatic_codec_delegates_selection_to_cloudmatch() {
+        assert_eq!(codec_wire("auto"), 0);
+        assert_eq!(codec_wire("unknown"), 0);
+        assert_eq!(codec_wire("h264"), 1);
         assert_eq!(codec_wire("h265"), 2);
         assert_eq!(codec_wire("av1"), 3);
+    }
+
+    #[test]
+    fn native_request_preserves_stream_quality_and_bandwidth() {
+        let body = build_create_body(
+            "12345",
+            &json!({"title":"Portal 2"}),
+            &json!({
+                "resolution":"2560x1440",
+                "fps":120,
+                "maxBitrateMbps":75,
+                "codec":"auto",
+                "colorQuality":"10bit_444",
+                "transportMode":"nvst"
+            }),
+            "device-id",
+        );
+        let features = &body["sessionRequestData"]["requestedStreamingFeatures"];
+        assert_eq!(features["codec"], 0);
+        assert_eq!(features["bitDepth"], 1);
+        assert_eq!(features["chromaFormat"], 1);
+        assert_eq!(features["maxBitrateKbps"], 75_000);
+        assert_eq!(features["dynamicStreamingMode"], 0);
+        assert_eq!(features["audioChannelCount"], 2);
+        assert_eq!(features["vsync"], false);
+    }
+
+    #[test]
+    fn manual_av1_uses_native_nvst_even_with_a_legacy_transport_value() {
+        let body = build_create_body(
+            "12345",
+            &json!({"title":"Portal 2"}),
+            &json!({
+                "codec":"av1",
+                "colorQuality":"10bit_420",
+                "transportMode":"webrtc"
+            }),
+            "device-id",
+        );
+        let request = &body["sessionRequestData"];
+        assert_eq!(request["requestedStreamingFeatures"]["codec"], 3);
+        assert_eq!(request["requestedStreamingFeatures"]["bitDepth"], 1);
+        assert_eq!(request["requestedStreamingFeatures"]["chromaFormat"], 0);
+        assert_eq!(
+            request["requestedStreamingFeatures"]["dynamicStreamingMode"],
+            0
+        );
+        assert_eq!(request["secureRTSPSupported"], true);
+    }
+
+    #[test]
+    fn manual_h265_preserves_codec_and_ten_bit_color_on_native_nvst() {
+        let body = build_create_body(
+            "12345",
+            &json!({"title":"Portal 2"}),
+            &json!({
+                "codec":"h265",
+                "colorQuality":"10bit_420",
+                "transportMode":"nvst"
+            }),
+            "device-id",
+        );
+        let request = &body["sessionRequestData"];
+        assert_eq!(request["requestedStreamingFeatures"]["codec"], 2);
+        assert_eq!(request["requestedStreamingFeatures"]["bitDepth"], 1);
+        assert_eq!(request["requestedStreamingFeatures"]["chromaFormat"], 0);
+        assert_eq!(
+            request["requestedStreamingFeatures"]["dynamicStreamingMode"],
+            0
+        );
+        assert_eq!(request["secureRTSPSupported"], true);
+    }
+
+    #[test]
+    fn manual_h264_stays_fixed_and_constrains_unsupported_color() {
+        let body = build_create_body(
+            "12345",
+            &json!({"title":"Portal 2"}),
+            &json!({
+                "codec":"h264",
+                "colorQuality":"10bit_444",
+                "transportMode":"nvst"
+            }),
+            "device-id",
+        );
+        let features = &body["sessionRequestData"]["requestedStreamingFeatures"];
+        assert_eq!(features["codec"], 1);
+        assert_eq!(features["bitDepth"], 0);
+        assert_eq!(features["chromaFormat"], 0);
     }
 
     #[test]

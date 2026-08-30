@@ -19,7 +19,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
     GetForegroundWindow, GetMessageW, GetWindowLongPtrW, HWND_MESSAGE, MSG, PostMessageW,
     PostQuitMessage, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_DOWN,
-    RI_MOUSE_BUTTON_5_UP, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
+    RI_MOUSE_BUTTON_5_UP, RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
     RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN,
     RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_WHEEL, RegisterClassW, SetWindowLongPtrW, TranslateMessage,
     WM_APP, WM_CLOSE, WM_INPUT, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
@@ -50,6 +50,7 @@ const WM_RAW_INPUT_REREGISTER: u32 = WM_APP + 1;
 struct RawInputState {
     target: AtomicIsize,
     enabled: AtomicBool,
+    relative_motion: AtomicBool,
     pressed_buttons: Mutex<HashSet<u8>>,
     captured_input: Arc<CapturedInputQueue>,
 }
@@ -68,6 +69,7 @@ impl WindowsRawInputController {
         let state = Arc::new(RawInputState {
             target: AtomicIsize::new(target),
             enabled: AtomicBool::new(false),
+            relative_motion: AtomicBool::new(false),
             pressed_buttons: Mutex::new(HashSet::new()),
             captured_input,
         });
@@ -99,18 +101,27 @@ impl WindowsRawInputController {
         self.state.target.store(target, Ordering::Release);
     }
 
-    pub(crate) fn set_enabled(&self, enabled: bool) {
-        let changed = self.state.enabled.swap(enabled, Ordering::AcqRel) != enabled;
-        if changed && enabled {
+    pub(crate) fn set_capture(&self, enabled: bool, relative_motion: bool) {
+        let motion_changed = self
+            .state
+            .relative_motion
+            .swap(relative_motion, Ordering::AcqRel)
+            != relative_motion;
+        let enabled_changed = self.state.enabled.swap(enabled, Ordering::AcqRel) != enabled;
+        if enabled && (enabled_changed || motion_changed) {
             // SDL also uses Raw Input for relative mode. Register our dedicated
             // message window after SDL toggles the mode so motion is delivered
             // directly to this thread rather than SDL's event pump.
             unsafe {
                 let _ = PostMessageW(self.message_window as HWND, WM_RAW_INPUT_REREGISTER, 0, 0);
             }
-        } else if changed {
+        } else if enabled_changed {
             release_pressed_buttons(&self.state);
         }
+    }
+
+    pub(crate) fn release_buttons(&self) {
+        release_pressed_buttons(&self.state);
     }
 }
 
@@ -244,9 +255,7 @@ unsafe fn unregister_raw_mouse() {
 }
 
 unsafe fn process_raw_input(state: &RawInputState, handle: HRAWINPUT) {
-    if !state.enabled.load(Ordering::Acquire)
-        || unsafe { GetForegroundWindow() } as isize != state.target.load(Ordering::Acquire)
-    {
+    if !state.enabled.load(Ordering::Acquire) {
         return;
     }
     let mut raw = MaybeUninit::<RAWINPUT>::uninit();
@@ -268,17 +277,47 @@ unsafe fn process_raw_input(state: &RawInputState, handle: HRAWINPUT) {
         return;
     }
     let mouse = unsafe { raw.data.mouse };
-    if mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0 {
+    let owns_foreground =
+        unsafe { GetForegroundWindow() } as isize == state.target.load(Ordering::Acquire);
+    if owns_foreground
+        && state.relative_motion.load(Ordering::Acquire)
+        && mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0
+    {
+        // SDL continues to own absolute cursor coordinates. This thread owns raw relative
+        // deltas, plus buttons and wheel in both cursor modes.
         push_mouse_delta(&state.captured_input, mouse.lLastX, mouse.lLastY);
     }
 
     let buttons = unsafe { mouse.Anonymous.Anonymous };
-    push_raw_mouse_buttons(state, buttons.usButtonFlags);
-    if u32::from(buttons.usButtonFlags) & RI_MOUSE_WHEEL != 0 {
+    let button_flags = if owns_foreground {
+        buttons.usButtonFlags
+    } else {
+        // A click can transiently move foreground before WM_INPUT delivers the
+        // matching release. Never discard releases for buttons that we already
+        // sent down: doing so leaves both the local de-duplicator and host stuck.
+        buttons.usButtonFlags & raw_mouse_button_up_mask()
+    };
+    push_raw_mouse_buttons(state, button_flags);
+    if owns_foreground && u32::from(buttons.usButtonFlags) & RI_MOUSE_WHEEL != 0 {
         state.captured_input.push(CapturedInput::MouseWheel {
-            delta: buttons.usButtonData as i16,
+            delta_x: 0,
+            delta_y: buttons.usButtonData as i16,
         });
     }
+    if owns_foreground && u32::from(buttons.usButtonFlags) & RI_MOUSE_HWHEEL != 0 {
+        state.captured_input.push(CapturedInput::MouseWheel {
+            delta_x: buttons.usButtonData as i16,
+            delta_y: 0,
+        });
+    }
+}
+
+fn raw_mouse_button_up_mask() -> u16 {
+    (RI_MOUSE_LEFT_BUTTON_UP
+        | RI_MOUSE_MIDDLE_BUTTON_UP
+        | RI_MOUSE_RIGHT_BUTTON_UP
+        | RI_MOUSE_BUTTON_4_UP
+        | RI_MOUSE_BUTTON_5_UP) as u16
 }
 
 fn push_raw_mouse_buttons(state: &RawInputState, flags: u16) {
@@ -304,7 +343,7 @@ fn push_mouse_button(state: &RawInputState, button: u8, pressed: bool) {
     let mut pressed_buttons = state
         .pressed_buttons
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !state.enabled.load(Ordering::Acquire) {
         return;
     }
@@ -324,7 +363,7 @@ fn release_pressed_buttons(state: &RawInputState) {
     let mut pressed_buttons = state
         .pressed_buttons
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for button in pressed_buttons.drain() {
         state.captured_input.push(CapturedInput::MouseButton {
             button,
@@ -361,6 +400,7 @@ mod tests {
         RawInputState {
             target: Default::default(),
             enabled: true.into(),
+            relative_motion: false.into(),
             pressed_buttons: Default::default(),
             captured_input: Arc::new(CapturedInputQueue::default()),
         }
@@ -381,13 +421,17 @@ mod tests {
     }
 
     #[test]
-    fn raw_button_flags_are_forwarded_once_and_released() {
+    fn raw_buttons_keep_one_owner_across_cursor_mode_changes() {
         let state = state();
         push_raw_mouse_buttons(
             &state,
             (RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_RIGHT_BUTTON_DOWN) as u16,
         );
+        // A server cursor update can switch motion between SDL absolute and Raw Input relative,
+        // but button ownership and pressed state remain on this controller.
+        state.relative_motion.store(true, Ordering::Release);
         push_raw_mouse_buttons(&state, RI_MOUSE_LEFT_BUTTON_DOWN as u16);
+        state.relative_motion.store(false, Ordering::Release);
         push_raw_mouse_buttons(&state, RI_MOUSE_LEFT_BUTTON_UP as u16);
 
         assert_eq!(
@@ -421,5 +465,6 @@ mod tests {
                 pressed: false,
             })
         );
+        assert_eq!(state.captured_input.take(), None);
     }
 }

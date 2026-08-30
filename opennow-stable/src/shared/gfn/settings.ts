@@ -201,11 +201,11 @@ export type ShortcutSettings = Pick<Settings, ShortcutSettingKey>;
 export const DEFAULT_SHORTCUT_SETTINGS: Readonly<ShortcutSettings> = Object.freeze({
   shortcutToggleStats: "Ctrl+N",
   shortcutTogglePointerLock: "F8",
-  shortcutToggleFullscreen: "F10",
+  shortcutToggleFullscreen: "F11",
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
-  shortcutScreenshot: "F11",
+  shortcutScreenshot: "Ctrl+F11",
   shortcutToggleRecording: "F12",
 });
 
@@ -315,7 +315,7 @@ export function createDefaultSettings(platform: string): Settings {
     antiAfkReminderEveryMinutes: 15,
     antiAfkReminderDurationSeconds: 5,
     showStatsOnLaunch: false,
-    statsOverlayPosition: "bottom-left",
+    statsOverlayPosition: "top-right",
     hideServerSelector: false,
     appAccentColor: "green",
     appTheme: "auto",

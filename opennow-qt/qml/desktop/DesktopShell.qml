@@ -41,6 +41,16 @@ FocusScope {
         return selected.toUpperCase()
     }
 
+    function activeSessionPrompt() {
+        const session = ShellStore.resumableSession
+        if (!session)
+            return ""
+        const title = ShellStore.sessionGameTitle(session)
+        return title
+            ? qsTr("Active session: %1 · Resume?").arg(title)
+            : qsTr("Active session running · Resume?")
+    }
+
     DesktopBackdrop { anchors.fill: parent }
 
     Item {
@@ -61,8 +71,8 @@ FocusScope {
             TextField {
                 id: search
                 visible: root.searchVisible
-                anchors.right: parent.right
-                anchors.rightMargin: DesktopTokens.px(24)
+                anchors.right: activeSessionButton.visible ? activeSessionButton.left : parent.right
+                anchors.rightMargin: activeSessionButton.visible ? DesktopTokens.px(10) : DesktopTokens.px(24)
                 anchors.verticalCenter: parent.verticalCenter
                 width: DesktopTokens.px(300); height: DesktopTokens.controlHeight
                 leftPadding: DesktopTokens.px(34); rightPadding: DesktopTokens.px(34); topPadding: 0; bottomPadding: 0
@@ -76,6 +86,20 @@ FocusScope {
                 onTextChanged: root.searchText = text
                 DesktopGlyph { x: DesktopTokens.px(11); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(14); height: DesktopTokens.px(14); icon: "desktop-search.svg" }
                 Rectangle { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(8); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(20); height: DesktopTokens.px(20); radius: DesktopTokens.px(6); color: "#1AFFFFFF"; border.width: 1; border.color: DesktopTokens.seam; Text { anchors.centerIn: parent; text: "/"; color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.monoSize } }
+            }
+            DesktopButton {
+                id: activeSessionButton
+                visible: ShellStore.resumableSession !== null && root.route !== "stream"
+                anchors.right: parent.right
+                anchors.rightMargin: DesktopTokens.px(24)
+                anchors.verticalCenter: parent.verticalCenter
+                width: DesktopTokens.px(260)
+                height: DesktopTokens.controlHeight
+                primary: true
+                glyph: "desktop-play.svg"
+                glyphSize: DesktopTokens.px(11)
+                text: root.activeSessionPrompt()
+                onClicked: ShellStore.resumeActiveSession()
             }
         }
 

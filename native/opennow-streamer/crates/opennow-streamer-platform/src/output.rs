@@ -22,7 +22,10 @@ use sdl2::render::{Texture, WindowCanvas};
 use crate::linux_frame_pacing::{FrameSelectionPolicy, LinuxFramePacer};
 #[cfg(target_os = "linux")]
 use crate::linux_xinput::LinuxXInputController;
-use crate::media::{CapturedInput, CapturedInputQueue, MediaStreamConfig, StreamShortcutBindings};
+use crate::media::{
+    CapturedInput, CapturedInputQueue, MediaStreamConfig, StreamShortcutAction,
+    StreamShortcutBindings,
+};
 #[cfg(target_os = "linux")]
 use crate::native_stats_overlay::NativeStatsOverlay;
 use crate::native_surface::NativeSurface;
@@ -36,8 +39,8 @@ use opennow_streamer_platform_linux::DecodedVideoFrame as LinuxDecodedVideoFrame
 #[cfg(target_os = "windows")]
 use opennow_streamer_platform_windows::{
     AudioFormat, BackendConfig, BackendEvent, Bounds, ExistingWindow, OwnedWindow, Subsystem,
-    SurfaceTarget, VideoCodec, VideoFormat, WindowHandle, WindowsBackend, WindowsDecoderMode,
-    WindowsGraphicsApi,
+    SurfaceTarget, VideoChromaFormat, VideoCodec, VideoFormat, VideoPixelFormat, WindowHandle,
+    WindowsBackend, WindowsDecoderMode, WindowsGraphicsApi,
 };
 
 const AUDIO_SAMPLE_RATE: i32 = 48_000;
@@ -461,8 +464,12 @@ impl LinuxHardwareOutput {
             None
         };
         let external_relative_motion = raw_input.is_some();
-        let mut input_capture =
-            SdlInputCapture::new(capture_input, external_relative_motion, stream.shortcuts);
+        let mut input_capture = SdlInputCapture::new(
+            capture_input,
+            external_relative_motion,
+            false,
+            stream.shortcuts,
+        );
         input_capture.enable_gamepads(&sdl);
         Ok(Self {
             presenter: None,
@@ -892,6 +899,7 @@ pub(crate) struct SdlInputCapture {
     focused: bool,
     relative_mouse: bool,
     external_relative_motion: bool,
+    external_mouse_buttons: bool,
     cursor_state: RemoteCursorState,
     cursors: HashMap<(u8, u8), sdl2::mouse::Cursor>,
     game_controller: Option<sdl2::GameControllerSubsystem>,
@@ -928,6 +936,7 @@ impl SdlInputCapture {
     pub(crate) fn new(
         enabled: bool,
         external_relative_motion: bool,
+        external_mouse_buttons: bool,
         shortcuts: StreamShortcutBindings,
     ) -> Self {
         Self {
@@ -940,6 +949,7 @@ impl SdlInputCapture {
             focused: false,
             relative_mouse: false,
             external_relative_motion,
+            external_mouse_buttons,
             // Do not infer hidden-cursor gameplay before the first server
             // update. GFN sends a distinct predefined cursor ID 0 when the
             // game actually wants locked relative input.
@@ -1151,6 +1161,15 @@ impl SdlInputCapture {
                 repeat: false,
                 ..
             } => {
+                if is_native_guide_shortcut(scancode, keymod) {
+                    // Match the GeForce NOW desktop client: Ctrl+G belongs to
+                    // the local stream menu and must never reach the game.
+                    // Tracking it as a pressed shortcut also consumes key-up
+                    // even when Ctrl is released before G.
+                    self.pressed_shortcuts.insert(scancode);
+                    self.captured.push(CapturedInput::Guide);
+                    return;
+                }
                 if let Some(virtual_key) = sdl_virtual_key(scancode)
                     && let Some(action) = self
                         .shortcuts
@@ -1158,10 +1177,6 @@ impl SdlInputCapture {
                 {
                     self.pressed_shortcuts.insert(scancode);
                     self.captured.push(CapturedInput::Shortcut(action));
-                    return;
-                }
-                if scancode == sdl2::keyboard::Scancode::F1 {
-                    self.captured.push(CapturedInput::Guide);
                     return;
                 }
                 let Some(virtual_key) = sdl_virtual_key(scancode) else {
@@ -1181,9 +1196,6 @@ impl SdlInputCapture {
                 ..
             } => {
                 if self.pressed_shortcuts.remove(&scancode) {
-                    return;
-                }
-                if matches!(scancode, sdl2::keyboard::Scancode::F1) {
                     return;
                 }
                 if let Some(virtual_key) = self.pressed_keys.remove(&scancode) {
@@ -1208,8 +1220,6 @@ impl SdlInputCapture {
                     height: absolute.height,
                 });
             }
-            Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
-                if self.relative_mouse && self.external_relative_motion => {}
             Event::MouseButtonDown { mouse_btn, .. } => {
                 // A button event proves this window owns foreground input even
                 // if SDL delivered FocusGained later in the same pump batch.
@@ -1217,7 +1227,8 @@ impl SdlInputCapture {
                 if self.cursor_state == RemoteCursorState::Hidden {
                     self.enable_relative_mouse(sdl, window);
                 }
-                if let Some(button) = sdl_mouse_button(mouse_btn)
+                if !self.external_mouse_buttons
+                    && let Some(button) = sdl_mouse_button(mouse_btn)
                     && self.pressed_buttons.insert(button)
                 {
                     self.captured.push(CapturedInput::MouseButton {
@@ -1227,7 +1238,8 @@ impl SdlInputCapture {
                 }
             }
             Event::MouseButtonUp { mouse_btn, .. } => {
-                if let Some(button) = sdl_mouse_button(mouse_btn)
+                if !self.external_mouse_buttons
+                    && let Some(button) = sdl_mouse_button(mouse_btn)
                     && self.pressed_buttons.remove(&button)
                 {
                     self.captured.push(CapturedInput::MouseButton {
@@ -1236,15 +1248,17 @@ impl SdlInputCapture {
                     });
                 }
             }
-            Event::MouseWheel { .. } if self.relative_mouse && self.external_relative_motion => {}
-            Event::MouseWheel { y, direction, .. } if y != 0 => {
+            Event::MouseWheel {
+                x, y, direction, ..
+            } if !self.external_mouse_buttons && (x != 0 || y != 0) => {
                 let direction = if direction == sdl2::mouse::MouseWheelDirection::Flipped {
                     -1
                 } else {
                     1
                 };
                 self.captured.push(CapturedInput::MouseWheel {
-                    delta: clamp_i16(y.saturating_mul(120).saturating_mul(direction)),
+                    delta_x: clamp_i16(x.saturating_mul(120).saturating_mul(direction)),
+                    delta_y: clamp_i16(y.saturating_mul(120).saturating_mul(direction)),
                 });
             }
             Event::Window {
@@ -1403,6 +1417,16 @@ impl SdlInputCapture {
         sdl.mouse().show_cursor(true);
     }
 
+    fn restore_after_native_modal(&mut self, sdl: &sdl2::Sdl, window: &mut sdl2::video::Window) {
+        if self.cursor_state == RemoteCursorState::Hidden {
+            self.enable_relative_mouse(sdl, window);
+        }
+    }
+
+    fn queue_local_shortcut(&mut self, action: StreamShortcutAction) {
+        self.captured.push(CapturedInput::Shortcut(action));
+    }
+
     pub(crate) fn take(&mut self) -> Vec<CapturedInput> {
         if self.enabled && self.last_gamepad_keepalive.elapsed().as_millis() >= 100 {
             for slot in 0_u8..4 {
@@ -1417,6 +1441,10 @@ impl SdlInputCapture {
 
     pub(crate) const fn relative_mouse_enabled(&self) -> bool {
         self.relative_mouse
+    }
+
+    pub(crate) const fn capture_enabled(&self) -> bool {
+        self.enabled
     }
 }
 
@@ -1572,8 +1600,12 @@ impl SoftwareOutput {
         let external_relative_motion = raw_input.is_some();
         #[cfg(not(target_os = "linux"))]
         let external_relative_motion = false;
-        let mut input_capture =
-            SdlInputCapture::new(capture_input, external_relative_motion, stream.shortcuts);
+        let mut input_capture = SdlInputCapture::new(
+            capture_input,
+            external_relative_motion,
+            false,
+            stream.shortcuts,
+        );
         input_capture.enable_gamepads(&sdl);
 
         Ok(Self {
@@ -2285,6 +2317,27 @@ pub(crate) fn toggle_sdl_fullscreen(window: &mut sdl2::video::Window) -> Result<
     Ok(())
 }
 
+fn is_native_fullscreen_key(
+    scancode: sdl2::keyboard::Scancode,
+    keymod: sdl2::keyboard::Mod,
+) -> bool {
+    scancode == sdl2::keyboard::Scancode::F11 && sdl_modifiers(scancode, keymod) == 0
+}
+
+fn is_native_guide_shortcut(
+    scancode: sdl2::keyboard::Scancode,
+    keymod: sdl2::keyboard::Mod,
+) -> bool {
+    scancode == sdl2::keyboard::Scancode::G && sdl_modifiers(scancode, keymod) == 0x02
+}
+
+fn is_native_stop_shortcut(
+    scancode: sdl2::keyboard::Scancode,
+    keymod: sdl2::keyboard::Mod,
+) -> bool {
+    scancode == sdl2::keyboard::Scancode::Q && sdl_modifiers(scancode, keymod) == 0x03
+}
+
 pub(crate) fn native_input_capture_enabled() -> bool {
     native_input_capture_enabled_value(std::env::var("OPENNOW_NATIVE_INPUT_OWNER").ok().as_deref())
 }
@@ -2509,6 +2562,7 @@ impl ActiveOutput {
                         surface
                             .input_capture
                             .toggle_pointer_lock(&surface.sdl, &mut surface.window);
+                        surface.sync_raw_input();
                         Ok(())
                     }
                 }
@@ -2602,6 +2656,8 @@ struct WindowsExternalSdlSurface {
     stream_size: (u32, u32),
     visible: bool,
     focused: bool,
+    guide_shortcut_held: bool,
+    stop_shortcut_held: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -2664,8 +2720,12 @@ impl WindowsExternalSdlSurface {
             "External SDL stream window ready (native keyboard/mouse capture: {capture_input})"
         );
         let external_relative_motion = raw_input.is_some();
-        let mut input_capture =
-            SdlInputCapture::new(capture_input, external_relative_motion, stream.shortcuts);
+        let mut input_capture = SdlInputCapture::new(
+            capture_input,
+            external_relative_motion,
+            raw_input.is_some(),
+            stream.shortcuts,
+        );
         input_capture.enable_gamepads(&sdl);
         Ok(Self {
             sdl,
@@ -2678,6 +2738,8 @@ impl WindowsExternalSdlSurface {
             stream_size: (stream.width, stream.height),
             visible: false,
             focused: false,
+            guide_shortcut_held: false,
+            stop_shortcut_held: false,
         })
     }
 
@@ -2691,11 +2753,12 @@ impl WindowsExternalSdlSurface {
         let Some(rect) = surface.rect.filter(|_| surface.visible) else {
             self.input_capture.release(&self.sdl, &mut self.window);
             if let Some(raw_input) = self.raw_input.as_ref() {
-                raw_input.set_enabled(false);
+                raw_input.set_capture(false, false);
             }
             self.debug_overlay.hide();
             self.window.hide();
             self.visible = false;
+            self.guide_shortcut_held = false;
             return Ok(());
         };
         let bounds = surface.screen_rect.unwrap_or(rect);
@@ -2715,6 +2778,7 @@ impl WindowsExternalSdlSurface {
         if let Some(raw_input) = self.raw_input.as_ref() {
             raw_input.set_target(self.native_surface.window_handle());
         }
+        self.sync_raw_input();
         if self.focused {
             self.debug_overlay.show_if_enabled();
         }
@@ -2738,8 +2802,32 @@ impl WindowsExternalSdlSurface {
                     ..
                 } if window_id == stream_window_id
             ) {
-                self.focused = false;
-                self.debug_overlay.hide();
+                let foreground =
+                    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
+                        as isize;
+                if self.debug_overlay.owns_window(foreground) {
+                    // Showing a non-activating owned HWND can make SDL publish
+                    // a transient FocusLost for its owner even though Win32
+                    // still reports the streamer window family as foreground.
+                    // Hiding here made every native menu disappear instantly.
+                    self.focused = true;
+                    self.debug_overlay.show_if_enabled();
+                    eprintln!("Ignored synthetic native-overlay focus loss");
+                } else {
+                    self.focused = false;
+                    self.guide_shortcut_held = false;
+                    self.stop_shortcut_held = false;
+                    self.debug_overlay.hide();
+                    self.input_capture.handle_event(
+                        &self.sdl,
+                        &mut self.window,
+                        self.stream_size,
+                        event,
+                    );
+                    if let Some(raw_input) = self.raw_input.as_ref() {
+                        raw_input.release_buttons();
+                    }
+                }
             } else if matches!(
                 event,
                 sdl2::event::Event::Window {
@@ -2750,6 +2838,157 @@ impl WindowsExternalSdlSurface {
             ) {
                 self.focused = true;
                 self.debug_overlay.show_if_enabled();
+                self.input_capture.handle_event(
+                    &self.sdl,
+                    &mut self.window,
+                    self.stream_size,
+                    event,
+                );
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyUp {
+                    scancode: Some(sdl2::keyboard::Scancode::Q),
+                    ..
+                } if self.stop_shortcut_held
+            ) {
+                self.stop_shortcut_held = false;
+                continue;
+            } else if self.debug_overlay.stop_confirmation_visible()
+                && matches!(
+                    event,
+                    sdl2::event::Event::KeyDown {
+                        scancode: Some(
+                            sdl2::keyboard::Scancode::Return | sdl2::keyboard::Scancode::KpEnter
+                        ),
+                        repeat: false,
+                        ..
+                    } | sdl2::event::Event::ControllerButtonDown {
+                        button: sdl2::controller::Button::A,
+                        ..
+                    }
+                )
+            {
+                self.debug_overlay.confirm_stop();
+                self.input_capture
+                    .queue_local_shortcut(StreamShortcutAction::StopStream);
+                continue;
+            } else if self.debug_overlay.stop_confirmation_visible()
+                && matches!(
+                    event,
+                    sdl2::event::Event::KeyDown {
+                        scancode: Some(sdl2::keyboard::Scancode::Escape),
+                        repeat: false,
+                        ..
+                    } | sdl2::event::Event::ControllerButtonDown {
+                        button: sdl2::controller::Button::B,
+                        ..
+                    }
+                )
+            {
+                self.debug_overlay.cancel_stop_confirmation();
+                self.input_capture
+                    .set_input_paused(false, &self.sdl, &mut self.window);
+                self.input_capture
+                    .restore_after_native_modal(&self.sdl, &mut self.window);
+                continue;
+            } else if self.debug_overlay.stop_confirmation_visible()
+                && matches!(
+                    event,
+                    sdl2::event::Event::KeyDown { .. }
+                        | sdl2::event::Event::KeyUp { .. }
+                        | sdl2::event::Event::ControllerButtonDown { .. }
+                        | sdl2::event::Event::ControllerButtonUp { .. }
+                        | sdl2::event::Event::ControllerAxisMotion { .. }
+                )
+            {
+                // The video keeps presenting, but remote input is modal until
+                // the user explicitly answers the destructive confirmation.
+                continue;
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyDown {
+                    scancode: Some(sdl2::keyboard::Scancode::Q),
+                    keymod,
+                    repeat: false,
+                    ..
+                } if is_native_stop_shortcut(sdl2::keyboard::Scancode::Q, keymod)
+            ) {
+                self.stop_shortcut_held = true;
+                self.input_capture
+                    .set_input_paused(true, &self.sdl, &mut self.window);
+                self.debug_overlay.show_stop_confirmation();
+                continue;
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyDown {
+                    scancode: Some(sdl2::keyboard::Scancode::Q),
+                    keymod,
+                    ..
+                } if self.stop_shortcut_held
+                    || is_native_stop_shortcut(sdl2::keyboard::Scancode::Q, keymod)
+            ) {
+                continue;
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyDown {
+                    scancode: Some(sdl2::keyboard::Scancode::G),
+                    keymod,
+                    repeat: false,
+                    ..
+                } if is_native_guide_shortcut(sdl2::keyboard::Scancode::G, keymod)
+            ) {
+                // The native stream owns its guide. Keeping this at the SDL
+                // window boundary prevents the Qt shell from activating and
+                // prevents its overlay path from pausing native input.
+                self.guide_shortcut_held = true;
+                self.debug_overlay.toggle_menu();
+                continue;
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyDown {
+                    scancode: Some(sdl2::keyboard::Scancode::G),
+                    keymod,
+                    ..
+                } if self.guide_shortcut_held
+                    || is_native_guide_shortcut(sdl2::keyboard::Scancode::G, keymod)
+            ) {
+                // Do not leak key-repeat G events to the remote game while the
+                // guide chord is held.
+                continue;
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyUp {
+                    scancode: Some(sdl2::keyboard::Scancode::G),
+                    ..
+                } if self.guide_shortcut_held
+            ) {
+                self.guide_shortcut_held = false;
+                continue;
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyDown {
+                    scancode: Some(sdl2::keyboard::Scancode::F11),
+                    keymod,
+                    repeat: false,
+                    ..
+                } if is_native_fullscreen_key(sdl2::keyboard::Scancode::F11, keymod)
+            ) {
+                // Fullscreen belongs to the local native stream window. Never
+                // tunnel bare F11 to the game or wait for the Qt shell to round
+                // trip it back to this process.
+                if let Err(error) = toggle_sdl_fullscreen(&mut self.window) {
+                    eprintln!("Native F11 fullscreen toggle failed: {error}");
+                }
+                continue;
+            } else if matches!(
+                event,
+                sdl2::event::Event::KeyUp {
+                    scancode: Some(sdl2::keyboard::Scancode::F11),
+                    keymod,
+                    ..
+                } if is_native_fullscreen_key(sdl2::keyboard::Scancode::F11, keymod)
+            ) {
+                continue;
             } else if matches!(
                 event,
                 sdl2::event::Event::KeyDown {
@@ -2777,11 +3016,7 @@ impl WindowsExternalSdlSurface {
                 );
             }
         }
-        if let Some(raw_input) = self.raw_input.as_ref() {
-            raw_input.set_enabled(
-                self.visible && self.focused && self.input_capture.relative_mouse_enabled(),
-            );
-        }
+        self.sync_raw_input();
         self.debug_overlay.update(
             presented_frames,
             dropped_frames,
@@ -2793,12 +3028,14 @@ impl WindowsExternalSdlSurface {
     fn release(&mut self) {
         self.input_capture.release(&self.sdl, &mut self.window);
         if let Some(raw_input) = self.raw_input.as_ref() {
-            raw_input.set_enabled(false);
+            raw_input.set_capture(false, false);
         }
         self.debug_overlay.hide();
         self.window.hide();
         self.visible = false;
         self.focused = false;
+        self.guide_shortcut_held = false;
+        self.stop_shortcut_held = false;
     }
 
     fn take_captured_input(&mut self) -> Vec<CapturedInput> {
@@ -2808,6 +3045,22 @@ impl WindowsExternalSdlSurface {
     fn update_cursor(&mut self, bytes: &[u8]) {
         self.input_capture
             .apply_cursor(&self.sdl, &mut self.window, self.stream_size, bytes);
+        // SDL changes its process-wide Raw Input registration when relative mode changes.
+        // Reclaim it immediately so the first button after a server cursor transition cannot
+        // fall into an ownership gap.
+        self.sync_raw_input();
+    }
+
+    fn sync_raw_input(&self) {
+        if let Some(raw_input) = self.raw_input.as_ref() {
+            // Keep Raw Input registered for the whole visible session. It is the sole button
+            // and wheel owner in both cursor modes; foreground validation still happens on the
+            // Raw Input thread. Only motion switches between SDL absolute and raw relative.
+            raw_input.set_capture(
+                self.visible && self.input_capture.capture_enabled(),
+                self.input_capture.relative_mouse_enabled(),
+            );
+        }
     }
 }
 
@@ -2874,6 +3127,22 @@ impl WindowsOutput {
                         frame_rate_denominator: std::num::NonZeroU32::new(1)
                             .expect("one is non-zero"),
                         average_bitrate: stream.bitrate_bps.max(1),
+                        pixel_format: match (
+                            stream.color_quality.bit_depth(),
+                            stream.color_quality.is_444(),
+                        ) {
+                            (10, true) => VideoPixelFormat::Y410,
+                            (10, false) => VideoPixelFormat::P010,
+                            (_, true) => VideoPixelFormat::Ayuv,
+                            _ => VideoPixelFormat::Nv12,
+                        },
+                        chroma_format: if stream.color_quality.is_444() {
+                            VideoChromaFormat::Cs444
+                        } else {
+                            VideoChromaFormat::Cs420
+                        },
+                        // Official GFN SDR sessions report limited-range BT.709.
+                        full_range: false,
                     },
                     audio: AudioFormat {
                         sample_rate: AUDIO_SAMPLE_RATE as u32,
@@ -2882,7 +3151,9 @@ impl WindowsOutput {
                     surface: initial_surface,
                     video_queue_capacity:
                         opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY,
-                    audio_queue_capacity: 4,
+                    // 10 x 20 ms PCM packets matches the adaptive renderer's
+                    // maximum jitter-buffer target without becoming unbounded.
+                    audio_queue_capacity: 10,
                 },
             )
             .map_err(|error| error.to_string())?,
@@ -3327,6 +3598,48 @@ mod tests {
     }
 
     #[test]
+    fn bare_f11_is_reserved_for_the_native_stream_window() {
+        use sdl2::keyboard::{Mod, Scancode};
+
+        assert!(is_native_fullscreen_key(Scancode::F11, Mod::NOMOD));
+        assert!(!is_native_fullscreen_key(Scancode::F11, Mod::LCTRLMOD));
+        assert!(!is_native_fullscreen_key(Scancode::F10, Mod::NOMOD));
+    }
+
+    #[test]
+    fn ctrl_g_is_reserved_for_the_native_stream_menu() {
+        use sdl2::keyboard::{Mod, Scancode};
+
+        assert!(is_native_guide_shortcut(Scancode::G, Mod::LCTRLMOD));
+        assert!(is_native_guide_shortcut(Scancode::G, Mod::RCTRLMOD));
+        assert!(!is_native_guide_shortcut(Scancode::G, Mod::NOMOD));
+        assert!(!is_native_guide_shortcut(
+            Scancode::G,
+            Mod::LCTRLMOD | Mod::LSHIFTMOD
+        ));
+        assert!(!is_native_guide_shortcut(Scancode::F1, Mod::LCTRLMOD));
+    }
+
+    #[test]
+    fn ctrl_shift_q_is_reserved_for_native_stop_confirmation() {
+        use sdl2::keyboard::{Mod, Scancode};
+
+        assert!(is_native_stop_shortcut(
+            Scancode::Q,
+            Mod::LCTRLMOD | Mod::LSHIFTMOD
+        ));
+        assert!(is_native_stop_shortcut(
+            Scancode::Q,
+            Mod::RCTRLMOD | Mod::RSHIFTMOD
+        ));
+        assert!(!is_native_stop_shortcut(Scancode::Q, Mod::LCTRLMOD));
+        assert!(!is_native_stop_shortcut(
+            Scancode::Q,
+            Mod::LCTRLMOD | Mod::LSHIFTMOD | Mod::LALTMOD
+        ));
+    }
+
+    #[test]
     fn adjacent_sdl_mouse_motion_is_preserved_and_clamped() {
         let mut input = Vec::new();
         push_mouse_motion(&mut input, 10, -20);
@@ -3365,7 +3678,7 @@ mod tests {
 
     #[test]
     fn native_input_capture_waits_for_the_first_server_cursor_mode() {
-        let capture = SdlInputCapture::new(true, false, StreamShortcutBindings::default());
+        let capture = SdlInputCapture::new(true, false, false, StreamShortcutBindings::default());
         assert!(!capture.focused);
         assert!(!capture.relative_mouse);
         assert_eq!(capture.cursor_state, RemoteCursorState::Unknown);

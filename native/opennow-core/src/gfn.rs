@@ -611,10 +611,7 @@ impl GfnService {
                     )
                 }
                 Err(error) => {
-                    eprintln!(
-                        "auth: expired session could not refresh: {}",
-                        error.message
-                    );
+                    eprintln!("auth: expired session could not refresh: {}", error.message);
                     (
                         None,
                         json!({"attempted":true,"outcome":"expired","message":"Saved session expired. Sign in again if this continues."}),
@@ -2042,12 +2039,7 @@ mod tests {
             game["variants"][0]["supportsInGameSettingsPersistence"],
             true
         );
-        assert!(
-            game["imageUrl"]
-                .as_str()
-                .unwrap()
-                .ends_with(";f=jpg;w=900")
-        );
+        assert!(game["imageUrl"].as_str().unwrap().ends_with(";f=jpg;w=900"));
         assert!(game["searchText"].as_str().unwrap().contains("valve"));
         assert!(!gfn_feature_enabled(
             &json!({"key":"IN_GAME_SETTINGS_PERSISTENCE_ENABLED","value":"false"}),

@@ -31,6 +31,11 @@ QString AppController::route() const
     return m_route;
 }
 
+QString AppController::backRoute() const
+{
+    return m_routeHistory.isEmpty() ? QString{} : m_routeHistory.constLast();
+}
+
 QString AppController::overlay() const
 {
     return m_overlay;
@@ -63,6 +68,35 @@ bool AppController::navigate(const QString &route)
     }
 
     m_routeHistory.push_back(m_route);
+    m_route = route;
+    emit routeChanged();
+    return true;
+}
+
+bool AppController::navigateFromLastPrimary(const QString &route)
+{
+    if (!routes().contains(route) || route == m_route) {
+        return false;
+    }
+
+    if (!m_overlay.isEmpty()) {
+        m_overlay.clear();
+        emit overlayChanged();
+    }
+
+    auto routeStack = m_routeHistory;
+    routeStack.push_back(m_route);
+    qsizetype primaryIndex = -1;
+    for (qsizetype index = routeStack.size() - 1; index >= 0; --index) {
+        if (primaryRoutes().contains(routeStack.at(index))) {
+            primaryIndex = index;
+            break;
+        }
+    }
+
+    m_routeHistory = primaryIndex >= 0
+        ? routeStack.mid(0, primaryIndex + 1)
+        : QVector<QString>{u"home"_s};
     m_route = route;
     emit routeChanged();
     return true;

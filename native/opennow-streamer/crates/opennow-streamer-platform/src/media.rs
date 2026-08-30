@@ -22,7 +22,10 @@ use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 const VIDEO_QUEUE_CAPACITY: usize = 2;
 #[cfg(target_os = "macos")]
 const MAC_VIDEO_QUEUE_MAX_CAPACITY: usize = 60;
-const AUDIO_QUEUE_CAPACITY: usize = 4;
+// Ten 20 ms Opus packets cover the official client's 200 ms adaptive ceiling.
+// The queue remains bounded and drop-oldest, so recovery cannot grow latency
+// without limit under a stalled decoder.
+const AUDIO_QUEUE_CAPACITY: usize = 10;
 const OPUS_SAMPLE_RATE: u32 = 48_000;
 const MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL: usize = 5_760;
 const RECORDING_TAP_QUEUE_CAPACITY: usize = 256;
@@ -260,7 +263,7 @@ impl StreamShortcutBindings {
                 ),
                 (
                     StreamShortcutAction::ToggleFullscreen,
-                    read("toggleFullscreen", "F10"),
+                    read("toggleFullscreen", "F11"),
                 ),
                 (
                     StreamShortcutAction::StopStream,
@@ -274,7 +277,10 @@ impl StreamShortcutBindings {
                     StreamShortcutAction::ToggleMicrophone,
                     read("toggleMicrophone", "Ctrl+Shift+M"),
                 ),
-                (StreamShortcutAction::Screenshot, read("screenshot", "F11")),
+                (
+                    StreamShortcutAction::Screenshot,
+                    read("screenshot", "Ctrl+F11"),
+                ),
                 (
                     StreamShortcutAction::ToggleRecording,
                     read("toggleRecording", "F12"),
@@ -305,13 +311,94 @@ impl Default for StreamShortcutBindings {
     }
 }
 
+const STREAM_REGION_CAPACITY: usize = 64;
+
+/// Small copyable label carried with the negotiated media configuration.
+/// Keeping this inline avoids adding allocation or ownership churn to the hot
+/// frame-delivery paths which copy `MediaStreamConfig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamRegionLabel {
+    bytes: [u8; STREAM_REGION_CAPACITY],
+    len: u8,
+}
+
+impl StreamRegionLabel {
+    pub fn new(value: &str) -> Self {
+        let mut bytes = [0_u8; STREAM_REGION_CAPACITY];
+        let mut len = 0_usize;
+        for character in value
+            .trim()
+            .chars()
+            .filter(|character| !character.is_control())
+        {
+            let mut encoded = [0_u8; 4];
+            let encoded = character.encode_utf8(&mut encoded).as_bytes();
+            if len + encoded.len() > STREAM_REGION_CAPACITY {
+                break;
+            }
+            bytes[len..len + encoded.len()].copy_from_slice(encoded);
+            len += encoded.len();
+        }
+        if len == 0 {
+            return Self::default();
+        }
+        Self {
+            bytes,
+            len: len as u8,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("GFN")
+    }
+}
+
+impl Default for StreamRegionLabel {
+    fn default() -> Self {
+        let mut bytes = [0_u8; STREAM_REGION_CAPACITY];
+        bytes[..3].copy_from_slice(b"GFN");
+        Self { bytes, len: 3 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaColorQuality {
+    EightBit420,
+    EightBit444,
+    TenBit420,
+    TenBit444,
+}
+
+impl MediaColorQuality {
+    pub const fn bit_depth(self) -> u8 {
+        match self {
+            Self::EightBit420 | Self::EightBit444 => 8,
+            Self::TenBit420 | Self::TenBit444 => 10,
+        }
+    }
+
+    pub const fn is_444(self) -> bool {
+        matches!(self, Self::EightBit444 | Self::TenBit444)
+    }
+}
+
+impl Default for MediaColorQuality {
+    fn default() -> Self {
+        Self::EightBit420
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaStreamConfig {
     pub codec: MediaVideoCodec,
+    /// Color class accepted by CloudMatch and requested again during NVST setup.
+    pub color_quality: MediaColorQuality,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
     pub bitrate_bps: u32,
+    /// Human-readable location of the server selected for this session.
+    pub server_region: StreamRegionLabel,
     /// CloudMatch accepted Cloud G-SYNC and the host presentation path is VRR-capable.
     pub cloud_gsync: bool,
     /// Start the local performance overlay in its compact mode.
@@ -325,8 +412,8 @@ pub struct MediaStreamConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum StatsOverlayPosition {
     TopLeft,
-    TopRight,
     #[default]
+    TopRight,
     BottomLeft,
     BottomRight,
 }
@@ -335,10 +422,12 @@ impl Default for MediaStreamConfig {
     fn default() -> Self {
         Self {
             codec: MediaVideoCodec::H264,
+            color_quality: MediaColorQuality::default(),
             width: 1920,
             height: 1080,
             fps: 60,
-            bitrate_bps: 10_000_000,
+            bitrate_bps: 75_000_000,
+            server_region: StreamRegionLabel::default(),
             cloud_gsync: false,
             show_stats: false,
             stats_position: StatsOverlayPosition::default(),
@@ -390,7 +479,8 @@ pub enum CapturedInput {
         pressed: bool,
     },
     MouseWheel {
-        delta: i16,
+        delta_x: i16,
+        delta_y: i16,
     },
     Gamepad {
         controller_id: u8,
@@ -1066,6 +1156,9 @@ fn run_windows_video(shared: Arc<SharedPipeline>, maximum_fps: u32) {
         shared.windows_bridge.set_last_video_mid(&frame.mid);
         let timestamp_100ns = media_timestamp_100ns(frame.timestamp, frame.clock_rate_hz);
         let duration_100ns = sample_clock.observe(timestamp_100ns);
+        let reset_decoder = frame.keyframe
+            && (shared.video_desynced.load(Ordering::Acquire)
+                || shared.windows_bridge.keyframe_required());
         match backend.submit_video(EncodedVideoFrame {
             codec: match frame.codec {
                 MediaCodec::H264 => VideoCodec::H264,
@@ -1077,6 +1170,7 @@ fn run_windows_video(shared: Arc<SharedPipeline>, maximum_fps: u32) {
             timestamp_100ns,
             duration_100ns,
             key_frame: frame.keyframe,
+            reset_decoder,
         }) {
             Ok(WindowsPushOutcome::Queued) => {
                 report_video_frame_accepted(&shared, &frame);
@@ -1222,6 +1316,7 @@ struct OpusDecoder {
     decoder: OpusNativeDecoder,
     channels: u8,
     scratch: Vec<f32>,
+    last_frame_samples_per_channel: usize,
 }
 
 impl OpusDecoder {
@@ -1236,6 +1331,10 @@ impl OpusDecoder {
                 decoder,
                 channels,
                 scratch: vec![0.0; MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL * channels as usize],
+                // GFN audio uses 20 ms Opus packets. A discontinuity can
+                // arrive before the first successful decode establishes the
+                // packet duration, so begin with that negotiated baseline.
+                last_frame_samples_per_channel: 960,
             })
             .map_err(|error| format!("Opus decoder initialization failed: {error}"))
     }
@@ -1244,6 +1343,23 @@ impl OpusDecoder {
         let samples_per_channel = self
             .decoder
             .decode_float(encoded, &mut self.scratch, false)
+            .map_err(|error| error.to_string())?;
+        if !encoded.is_empty() {
+            self.last_frame_samples_per_channel = samples_per_channel;
+        }
+        Ok(&self.scratch[..samples_per_channel * self.channels as usize])
+    }
+
+    fn decode_packet_loss(&mut self) -> Result<&[f32], String> {
+        // An empty Opus packet invokes decoder packet-loss concealment. In-band
+        // FEC remains disabled; RFC 2198 recovery is handled by the transport.
+        // Bound the output to the preceding packet duration. Giving libopus
+        // the full 120 ms scratch buffer makes one loss synthesize 120 ms and
+        // creates an audible latency spike.
+        let output_len = self.last_frame_samples_per_channel * self.channels as usize;
+        let samples_per_channel = self
+            .decoder
+            .decode_float(&[], &mut self.scratch[..output_len], false)
             .map_err(|error| error.to_string())?;
         Ok(&self.scratch[..samples_per_channel * self.channels as usize])
     }
@@ -1346,56 +1462,19 @@ fn run_audio_decoder_from(
                 }
             }
         }
-        match decoder.decode(&frame.data) {
-            Ok(samples) => {
-                let stereo;
-                let samples = if configured_channels == 1 {
-                    stereo = samples
-                        .iter()
-                        .flat_map(|sample| [*sample, *sample])
-                        .collect::<Vec<_>>();
-                    stereo.as_slice()
-                } else {
-                    samples
-                };
-                #[cfg(target_os = "windows")]
-                if !shared.windows_bridge.use_software()
-                    && let Some(backend) = shared.windows_bridge.backend()
-                {
-                    use opennow_streamer_platform_windows::{
-                        AudioFormat, PcmFrame, PushOutcome as WindowsPushOutcome,
-                    };
-                    match backend.submit_audio(PcmFrame {
-                        samples: samples.to_vec(),
-                        format: AudioFormat {
-                            sample_rate: OPUS_SAMPLE_RATE,
-                            channels: 2,
-                        },
-                    }) {
-                        Ok(WindowsPushOutcome::DroppedOldest) => {
-                            let _ = shared.feedback.send(MediaFeedback::QueueDropped {
-                                media: "wasapi",
-                                count: 1,
-                            });
-                        }
-                        Ok(WindowsPushOutcome::Queued | WindowsPushOutcome::Paused) => {}
-                        Err(error) => {
-                            let _ = shared.feedback.send(MediaFeedback::DecoderError {
-                                codec: "opus",
-                                message: error.to_string(),
-                            });
-                        }
-                    }
-                    continue;
-                }
-                let dropped = shared.output.push_audio(samples);
-                if dropped > 0 {
-                    let _ = shared.feedback.send(MediaFeedback::QueueDropped {
-                        media: "audio-output",
-                        count: dropped,
+        if !frame.contiguous {
+            match decoder.decode_packet_loss() {
+                Ok(samples) => submit_decoded_audio(&shared, samples.to_vec(), configured_channels),
+                Err(message) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "opus-plc",
+                        message,
                     });
                 }
             }
+        }
+        match decoder.decode(&frame.data) {
+            Ok(samples) => submit_decoded_audio(&shared, samples.to_vec(), configured_channels),
             Err(message) => {
                 let _ = shared.feedback.send(MediaFeedback::DecoderError {
                     codec: "opus",
@@ -1403,6 +1482,54 @@ fn run_audio_decoder_from(
                 });
             }
         }
+    }
+}
+
+fn submit_decoded_audio(shared: &SharedPipeline, samples: Vec<f32>, channels: u8) {
+    let samples = if channels == 1 {
+        samples
+            .into_iter()
+            .flat_map(|sample| [sample, sample])
+            .collect::<Vec<_>>()
+    } else {
+        samples
+    };
+    #[cfg(target_os = "windows")]
+    if !shared.windows_bridge.use_software()
+        && let Some(backend) = shared.windows_bridge.backend()
+    {
+        use opennow_streamer_platform_windows::{
+            AudioFormat, PcmFrame, PushOutcome as WindowsPushOutcome,
+        };
+        match backend.submit_audio(PcmFrame {
+            samples,
+            format: AudioFormat {
+                sample_rate: OPUS_SAMPLE_RATE,
+                channels: 2,
+            },
+        }) {
+            Ok(WindowsPushOutcome::DroppedOldest) => {
+                let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                    media: "wasapi",
+                    count: 1,
+                });
+            }
+            Ok(WindowsPushOutcome::Queued | WindowsPushOutcome::Paused) => {}
+            Err(error) => {
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: "opus",
+                    message: error.to_string(),
+                });
+            }
+        }
+        return;
+    }
+    let dropped = shared.output.push_audio(&samples);
+    if dropped > 0 {
+        let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+            media: "audio-output",
+            count: dropped,
+        });
     }
 }
 
@@ -2352,6 +2479,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stream_region_label_is_copyable_utf8_and_never_empty() {
+        let label = StreamRegionLabel::new("  Montréal (YUL-01)  ");
+        let copied = label;
+        assert_eq!(copied.as_str(), "Montréal (YUL-01)");
+        assert_eq!(StreamRegionLabel::new("\n\t").as_str(), "GFN");
+        assert!(StreamRegionLabel::new(&"x".repeat(100)).as_str().len() <= 64);
+    }
+
+    #[test]
     fn shortcut_chords_parse_supported_keys_and_reject_ambiguous_input() {
         assert_eq!(
             ShortcutChord::parse("Ctrl+Shift+Q"),
@@ -2386,11 +2522,11 @@ mod tests {
             Some(StreamShortcutAction::ToggleStats)
         );
         assert_eq!(
-            bindings.action(0x79, 0),
+            bindings.action(0x7a, 0),
             Some(StreamShortcutAction::ToggleFullscreen)
         );
         assert_eq!(
-            StreamShortcutBindings::default().action(0x7a, 0),
+            StreamShortcutBindings::default().action(0x7a, 0x02),
             Some(StreamShortcutAction::Screenshot)
         );
     }
@@ -2560,6 +2696,12 @@ mod tests {
         let decoded = decoder.decode(&packet[..encoded_len]).expect("decode");
         assert_eq!(decoded.len(), input.len());
         assert!(decoded.iter().any(|sample| sample.abs() > 0.001));
+
+        let concealed = decoder
+            .decode_packet_loss()
+            .expect("packet-loss concealment");
+        assert_eq!(concealed.len(), input.len());
+        assert!(concealed.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]

@@ -263,6 +263,18 @@ if(WIN32)
                     "$<TARGET_FILE_DIR:opennow-qt>/plugins/tls/qopensslbackend.dll"
             COMMENT "Deploying Qt runtime plugins and preferring Windows Schannel TLS")
     endif()
+    # windeployqt intentionally deploys only the production `windows` QPA
+    # plugin. CTest runs the GUI/QML smoke suite with `QT_QPA_PLATFORM=offscreen`,
+    # so keep that test-only plugin beside the deployed application as well.
+    if(TARGET Qt6::QOffscreenIntegrationPlugin)
+        add_custom_command(TARGET opennow-qt POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory
+                    "$<TARGET_FILE_DIR:opennow-qt>/platforms"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "$<TARGET_FILE:Qt6::QOffscreenIntegrationPlugin>"
+                    "$<TARGET_FILE_DIR:opennow-qt>/platforms"
+            COMMENT "Deploying the Qt offscreen platform plugin for CTest")
+    endif()
 endif()
 
 target_compile_definitions(opennow-qt PRIVATE
@@ -392,7 +404,8 @@ if(BUILD_TESTING)
         PREFIX "/locales"
         FILES ${OPENNOW_LOCALE_FILES}
     )
-    add_test(NAME opennow-localization-tests COMMAND opennow-localization-tests)
+    add_test(NAME opennow-localization-tests
+             COMMAND opennow-localization-tests -o -,txt)
 
     qt_add_executable(opennow-qt-tests
         tests/tst_appcontroller.cpp
@@ -401,7 +414,7 @@ if(BUILD_TESTING)
     )
     target_include_directories(opennow-qt-tests PRIVATE src)
     target_link_libraries(opennow-qt-tests PRIVATE Qt6::Test Qt6::Core Qt6::Gui)
-    add_test(NAME opennow-qt-tests COMMAND opennow-qt-tests)
+    add_test(NAME opennow-qt-tests COMMAND opennow-qt-tests -o -,txt)
     set_tests_properties(opennow-qt-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
@@ -414,7 +427,7 @@ if(BUILD_TESTING)
     target_link_libraries(opennow-coreclient-tests PRIVATE Qt6::Test Qt6::Core)
     target_compile_definitions(opennow-coreclient-tests PRIVATE OPENNOW_VERSION="${OPENNOW_BUILD_VERSION}")
     add_dependencies(opennow-coreclient-tests opennow-fake-core)
-    add_test(NAME opennow-coreclient-tests COMMAND opennow-coreclient-tests)
+    add_test(NAME opennow-coreclient-tests COMMAND opennow-coreclient-tests -o -,txt)
 
     qt_add_executable(opennow-singleinstance-tests
         tests/tst_singleinstance.cpp
@@ -423,7 +436,8 @@ if(BUILD_TESTING)
     )
     target_include_directories(opennow-singleinstance-tests PRIVATE src)
     target_link_libraries(opennow-singleinstance-tests PRIVATE Qt6::Test Qt6::Core Qt6::Network)
-    add_test(NAME opennow-singleinstance-tests COMMAND opennow-singleinstance-tests)
+    add_test(NAME opennow-singleinstance-tests
+             COMMAND opennow-singleinstance-tests -o -,txt)
 
     qt_add_executable(opennow-thumbnail-tests
         tests/tst_thumbnailgenerator.cpp
@@ -433,7 +447,7 @@ if(BUILD_TESTING)
     target_include_directories(opennow-thumbnail-tests PRIVATE src)
     target_link_libraries(opennow-thumbnail-tests PRIVATE
         Qt6::Test Qt6::Core Qt6::Gui Qt6::Multimedia)
-    add_test(NAME opennow-thumbnail-tests COMMAND opennow-thumbnail-tests)
+    add_test(NAME opennow-thumbnail-tests COMMAND opennow-thumbnail-tests -o -,txt)
     set_tests_properties(opennow-thumbnail-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 8
@@ -446,15 +460,48 @@ if(BUILD_TESTING)
     target_include_directories(opennow-controllerinput-tests PRIVATE src)
     target_link_libraries(opennow-controllerinput-tests PRIVATE
         Qt6::Test Qt6::Core Qt6::Gui SDL3::SDL3)
-    add_test(NAME opennow-controllerinput-tests COMMAND opennow-controllerinput-tests)
+    add_test(NAME opennow-controllerinput-tests
+             COMMAND opennow-controllerinput-tests -o -,txt)
     set_tests_properties(opennow-controllerinput-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 8
     )
+    if(WIN32)
+        # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
+        # test runners as console programs so CTest captures QtTest failures.
+        set_target_properties(
+            opennow-localization-tests
+            opennow-qt-tests
+            opennow-coreclient-tests
+            opennow-singleinstance-tests
+            opennow-thumbnail-tests
+            opennow-controllerinput-tests
+            PROPERTIES WIN32_EXECUTABLE FALSE)
+
+        # windeployqt follows the application graph and therefore does not copy
+        # Qt6Test.dll. All six unit-test runners share the application output
+        # directory, so deploy the test runtime explicitly and make the runners
+        # depend on it. This keeps a clean build directly runnable by CTest.
+        add_custom_target(opennow-qt-test-runtime ALL
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:Qt6::Test>"
+                "$<TARGET_FILE_DIR:opennow-qt>/"
+            COMMENT "Deploying the Qt Test runtime for CTest")
+        foreach(test_target IN ITEMS
+                opennow-localization-tests
+                opennow-qt-tests
+                opennow-coreclient-tests
+                opennow-singleinstance-tests
+                opennow-thumbnail-tests
+                opennow-controllerinput-tests)
+            add_dependencies(${test_target} opennow-qt-test-runtime)
+        endforeach()
+    endif()
 
     foreach(route home library store theme-store controllers settings settings-account settings-streaming settings-video settings-video-dropdown settings-input settings-network settings-themes settings-advanced settings-advanced-dropdown game-detail game-detail-platform-dropdown sign-in joining inserting stream accounts profile-pin game-accounts persistent-storage media diagnostics updates feedback)
         add_test(NAME "qml-route-${route}"
-                 COMMAND opennow-qt --smoke-test --allow-multiple-instances --route "${route}" --reduced-motion)
+                 COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                         --console --route "${route}" --reduced-motion)
         set_tests_properties("qml-route-${route}" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             TIMEOUT 5

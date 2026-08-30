@@ -49,9 +49,11 @@ The versioned Rust core owns settings, NVIDIA device login and token refresh,
 OS-protected accounts, PINs, catalogs, subscriptions, regions and latency tests,
 account connections, persistent storage, CloudMatch lifecycle/recovery/ads,
 secure signaling, classic NVST, diagnostics, media listing, Discord, telemetry,
-feedback and update discovery. The supervised protocol-v4 native streamer owns
-hardware/software decode, audio, native input and runtime stats/fullscreen
-controls. CPack installs the shell, core and streamer together and can generate
+feedback and update discovery. The supervised protocol-v5 native streamer owns
+the complete NVST negotiation, its media sockets, hardware/software decode,
+audio, native input and runtime stats/fullscreen controls. The Qt shell sends one
+complete CloudMatch session context and never proxies RTSPS or ICE/SRTP state.
+CPack installs the shell, core and streamer together and can generate
 a Linux deb locally, while CI defines a checksum-pinned x64 AppImage build. F11
 saves the exact stream region and F12 records the negotiated H.264/H.265/AV1
 source stream plus Opus audio atomically into Matroska, then generates a media

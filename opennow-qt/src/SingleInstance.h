@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QStringList>
 
+class QLocalSocket;
+
 class SingleInstance final : public QObject
 {
     Q_OBJECT
@@ -20,6 +22,7 @@ signals:
 
 private:
     void acceptConnection();
+    void readConnection(QLocalSocket *socket);
     static QString serverName();
 
     QLocalServer m_server;

@@ -56,7 +56,11 @@ impl DiscordService {
     /// seconds on this. Presence is cosmetic, so an exchange that overruns is
     /// abandoned and left to drain in the background. Only one runs at a time,
     /// so a wedged Discord costs one parked thread rather than one per update.
-    fn exchange(&self, activity: Option<Value>, signature: Option<String>) -> Result<Value, String> {
+    fn exchange(
+        &self,
+        activity: Option<Value>,
+        signature: Option<String>,
+    ) -> Result<Value, String> {
         if self.exchange_running.swap(true, Ordering::SeqCst) {
             return Ok(json!({"connected":false,"busy":true}));
         }

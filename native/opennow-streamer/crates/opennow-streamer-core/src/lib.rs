@@ -9,10 +9,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedMicrophoneQueue,
-    MediaCodec, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl, MediaSession,
-    MediaSink, MediaStreamConfig, MediaVideoCodec, MicrophoneCapture, PushOutcome,
-    RecordingSummary, StatsOverlayPosition, StreamShortcutAction, StreamShortcutBindings,
-    record_matroska, supports_audio_decode, supports_audio_output, video_backends,
+    MediaCodec, MediaColorQuality, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl,
+    MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, MicrophoneCapture, PushOutcome,
+    RecordingSummary, StatsOverlayPosition, StreamRegionLabel, StreamShortcutAction,
+    StreamShortcutBindings, record_matroska, supports_audio_decode, supports_audio_output,
+    video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
@@ -26,6 +27,10 @@ use opennow_streamer_transport::{
     spawn_nvst_udp_receiver_with_socket,
 };
 use serde_json::{Value, json};
+
+mod nvst_rtsp;
+
+use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
 
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
 
@@ -108,6 +113,7 @@ pub struct Engine {
     nvst_mjolnir_transport: Option<NvstUdpReceiverSession>,
     reserved_nvst_bundle: Option<ReservedNvstBundle>,
     nvst_hole_punch_socket: Option<UdpSocket>,
+    nvst_rtsp: Option<ActiveNvstRtspSession>,
     events: Sender<Value>,
     media_consumer: Option<MediaConsumer>,
     media_runtime: Option<MediaRuntime>,
@@ -140,6 +146,7 @@ impl Engine {
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
+            nvst_rtsp: None,
             events,
             media_consumer: None,
             media_runtime: None,
@@ -165,6 +172,7 @@ impl Engine {
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
+            nvst_rtsp: None,
             events,
             media_consumer: Some(media_consumer),
             media_runtime: None,
@@ -190,6 +198,7 @@ impl Engine {
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
+            nvst_rtsp: None,
             events,
             media_consumer: None,
             media_runtime: Some(media_runtime),
@@ -225,10 +234,7 @@ impl Engine {
             "bitrate" | "update-shortcuts" => Err(error(
                 Some(&id),
                 "unsupported-command",
-                format!(
-                    "Native streamer v2 cannot apply the {} command",
-                    command.kind
-                ),
+                format!("Native streamer cannot apply the {} command", command.kind),
             )),
             "stop" => {
                 self.stop(command.reason.as_deref().unwrap_or("stopped"));
@@ -256,7 +262,7 @@ impl Engine {
             return Err(error(
                 Some(&command.id),
                 "protocol-version-mismatch",
-                format!("Native streamer v2 requires protocol {PROTOCOL_VERSION}"),
+                format!("Native streamer requires protocol {PROTOCOL_VERSION}"),
             ));
         }
         let backends = video_backends();
@@ -266,7 +272,7 @@ impl Engine {
             protocol_version: PROTOCOL_VERSION,
             backend: "native",
             fallback_reason: (!media_ready)
-                .then_some("Native streamer v2 requires an in-process decoded media runtime"),
+                .then_some("Native streamer requires an in-process decoded media runtime"),
             supports_offer_answer: media_ready,
             supports_remote_ice: media_ready,
             supports_local_ice: media_ready,
@@ -275,6 +281,7 @@ impl Engine {
             supports_video_present: video_ready,
             supports_audio_decode: media_ready && supports_audio_decode(),
             supports_audio_output: media_ready && supports_audio_output(),
+            supports_owned_nvst_negotiation: media_ready,
             video_backends: backends,
         };
         let mut ready = json!({
@@ -410,7 +417,7 @@ impl Engine {
     }
 
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
-        let context = parse_context(command.context, &command.id)?;
+        let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
         {
             let lifecycle = lock_lifecycle(&self.lifecycle);
@@ -418,6 +425,48 @@ impl Engine {
                 return Err(invalid_state(&command.id, "start", lifecycle.state, "Idle"));
             }
         }
+        let wants_owned_nvst = context
+            .settings
+            .get("transportMode")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("nvst"))
+            && context.nvst_video.is_none();
+        let mut prepared_nvst = if wants_owned_nvst {
+            if self.reserved_nvst_bundle.is_none() {
+                self.reserved_nvst_bundle =
+                    Some(ReservedNvstBundle::reserve().map_err(|error_value| {
+                        error(
+                            Some(&command.id),
+                            "nvst-bind-failed",
+                            format!(
+                                "Native streamer could not reserve its NVST sockets: {error_value}"
+                            ),
+                        )
+                    })?);
+            }
+            let prepared_result = {
+                let bundle = self
+                    .reserved_nvst_bundle
+                    .as_mut()
+                    .expect("NVST reservation created above");
+                prepare_owned_nvst(&context, bundle)
+            };
+            let prepared = match prepared_result {
+                Ok(prepared) => prepared,
+                Err(negotiation_error) => {
+                    self.reserved_nvst_bundle = None;
+                    return Err(error(
+                        Some(&command.id),
+                        negotiation_error.code,
+                        negotiation_error.message,
+                    ));
+                }
+            };
+            context.nvst_video = Some(prepared.handoff.clone());
+            Some(prepared)
+        } else {
+            None
+        };
         let transport_context = serde_json::to_value(&context).map_err(|context_error| {
             error(
                 Some(&command.id),
@@ -464,6 +513,9 @@ impl Engine {
         if let Some(transport) = self.nvst_mjolnir_transport.take() {
             transport.stop();
         }
+        if let Some(mut rtsp) = self.nvst_rtsp.take() {
+            rtsp.shutdown();
+        }
         self.stop_media_resources();
         if let Some(runtime) = self.media_runtime.clone() {
             let (feedback_sender, feedback_receiver) = std::sync::mpsc::channel();
@@ -493,6 +545,18 @@ impl Engine {
             self.media_session = Some(session);
             self.media_worker = Some(media_worker);
             self.media_feedback = Some(feedback_receiver);
+        }
+
+        if let Some(prepared) = prepared_nvst.as_mut()
+            && let Err(negotiation_error) = prepared.announce()
+        {
+            self.stop_media_resources();
+            self.reserved_nvst_bundle = None;
+            return Err(error(
+                Some(&command.id),
+                negotiation_error.code,
+                negotiation_error.message,
+            ));
         }
 
         let mut nvst_events = None;
@@ -657,6 +721,19 @@ impl Engine {
                     "media-worker-failed",
                     "Failed to start NVST lifecycle worker",
                 ));
+            }
+        }
+        if let Some(prepared) = prepared_nvst {
+            match prepared.finish() {
+                Ok(active) => self.nvst_rtsp = Some(active),
+                Err(negotiation_error) => {
+                    self.stop("Native-owned NVST negotiation failed");
+                    return Err(error(
+                        Some(&command.id),
+                        negotiation_error.code,
+                        negotiation_error.message,
+                    ));
+                }
             }
         }
         let _ = self.events.send(event(
@@ -1108,6 +1185,9 @@ impl Engine {
         }
         if let Some(transport) = self.nvst_mjolnir_transport.take() {
             transport.stop();
+        }
+        if let Some(mut rtsp) = self.nvst_rtsp.take() {
+            rtsp.shutdown();
         }
         self.reserved_nvst_bundle = None;
         self.nvst_hole_punch_socket = None;
@@ -2056,11 +2136,11 @@ fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
             packet.extend_from_slice(&timestamp_us.to_be_bytes());
             packet
         }
-        CapturedInput::MouseWheel { delta } => {
+        CapturedInput::MouseWheel { delta_x, delta_y } => {
             let mut packet = Vec::with_capacity(22);
             packet.extend_from_slice(&10_u32.to_le_bytes());
-            packet.extend_from_slice(&0_i16.to_be_bytes());
-            packet.extend_from_slice(&delta.to_be_bytes());
+            packet.extend_from_slice(&delta_x.to_be_bytes());
+            packet.extend_from_slice(&delta_y.to_be_bytes());
             packet.extend_from_slice(&[0; 6]);
             packet.extend_from_slice(&timestamp_us.to_be_bytes());
             packet
@@ -2159,6 +2239,20 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         "AV1" => MediaVideoCodec::Av1,
         _ => MediaVideoCodec::H264,
     };
+    let color_quality_name = context
+        .session
+        .extra
+        .get("negotiatedStreamProfile")
+        .and_then(|profile| profile.get("colorQuality"))
+        .and_then(Value::as_str)
+        .or_else(|| context.settings.get("colorQuality").and_then(Value::as_str))
+        .unwrap_or("8bit_420");
+    let color_quality = match color_quality_name.trim().to_ascii_lowercase().as_str() {
+        "8bit_444" if codec != MediaVideoCodec::H264 => MediaColorQuality::EightBit444,
+        "10bit_420" if codec != MediaVideoCodec::H264 => MediaColorQuality::TenBit420,
+        "10bit_444" if codec != MediaVideoCodec::H264 => MediaColorQuality::TenBit444,
+        _ => MediaColorQuality::EightBit420,
+    };
     let resolution = context
         .session
         .extra
@@ -2188,7 +2282,7 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .get("maxBitrateMbps")
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(10);
+        .unwrap_or(75);
     let requested_cloud_gsync = match context
         .settings
         .get("nativeCloudGsyncMode")
@@ -2227,12 +2321,13 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .settings
         .get("statsOverlayPosition")
         .and_then(Value::as_str)
-        .unwrap_or("bottom-left")
+        .unwrap_or("top-right")
     {
         "top-left" => StatsOverlayPosition::TopLeft,
         "top-right" => StatsOverlayPosition::TopRight,
+        "bottom-left" => StatsOverlayPosition::BottomLeft,
         "bottom-right" => StatsOverlayPosition::BottomRight,
-        _ => StatsOverlayPosition::BottomLeft,
+        _ => StatsOverlayPosition::TopRight,
     };
     let start_fullscreen = context
         .settings
@@ -2241,16 +2336,123 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .unwrap_or(false);
     MediaStreamConfig {
         codec,
+        color_quality,
         width: resolution.0,
         height: resolution.1,
         fps,
         bitrate_bps: bitrate_mbps.saturating_mul(1_000_000).max(1),
+        server_region: stream_region_label(context),
         cloud_gsync,
         show_stats,
         stats_position,
         start_fullscreen,
         shortcuts: StreamShortcutBindings::from_json(&context.shortcuts),
     }
+}
+
+fn stream_region_label(context: &SessionContext) -> StreamRegionLabel {
+    let server_location = context
+        .session
+        .extra
+        .get("serverLocation")
+        .and_then(location_value);
+    let zone = context.session.extra.get("zone").and_then(location_value);
+    let streaming_base = context
+        .session
+        .extra
+        .get("streamingBaseUrl")
+        .and_then(location_value);
+
+    let value = server_location
+        .and_then(format_stream_region)
+        .or_else(|| zone.and_then(format_stream_region))
+        .or_else(|| streaming_base.and_then(format_stream_region))
+        .unwrap_or_else(|| "GFN".to_owned());
+    StreamRegionLabel::new(&value)
+}
+
+fn location_value(value: &Value) -> Option<&str> {
+    value.as_str().or_else(|| {
+        ["displayName", "name", "city", "region", "zone"]
+            .into_iter()
+            .find_map(|key| value.get(key).and_then(Value::as_str))
+    })
+}
+
+fn format_stream_region(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed.contains(['.', ':', '/']) && trimmed.chars().any(char::is_alphabetic) {
+        return Some(trimmed.to_owned());
+    }
+
+    let without_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let hostname = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority)
+        .split(':')
+        .next()
+        .unwrap_or(authority)
+        .trim_matches(['[', ']']);
+    let first_label = hostname.split('.').next().unwrap_or(hostname);
+    let tokens = first_label
+        .split(['-', '_'])
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    const CITIES: [(&str, &str); 24] = [
+        ("ams", "Amsterdam"),
+        ("atl", "Atlanta"),
+        ("chi", "Chicago"),
+        ("dal", "Dallas"),
+        ("fra", "Frankfurt"),
+        ("hel", "Helsinki"),
+        ("kul", "Kuala Lumpur"),
+        ("lax", "Los Angeles"),
+        ("lon", "London"),
+        ("mia", "Miami"),
+        ("mon", "Montreal"),
+        ("nrt", "Tokyo"),
+        ("nyc", "New York"),
+        ("par", "Paris"),
+        ("pdx", "Portland"),
+        ("phx", "Phoenix"),
+        ("sea", "Seattle"),
+        ("sfo", "San Francisco"),
+        ("sof", "Sofia"),
+        ("sto", "Stockholm"),
+        ("syd", "Sydney"),
+        ("tyo", "Tokyo"),
+        ("waw", "Warsaw"),
+        ("zrh", "Zurich"),
+    ];
+    for (index, token) in tokens.iter().enumerate() {
+        if let Some((code, city)) = CITIES
+            .iter()
+            .find(|(code, _)| token.eq_ignore_ascii_case(code))
+        {
+            let server = tokens
+                .get(index + 1)
+                .filter(|candidate| {
+                    candidate
+                        .chars()
+                        .all(|character| character.is_ascii_digit())
+                })
+                .map(|candidate| format!("-{}", candidate))
+                .unwrap_or_default();
+            return Some(format!("{city} ({}{server})", code.to_ascii_uppercase()));
+        }
+    }
+    if first_label.chars().any(char::is_alphabetic) {
+        return Some(first_label.to_ascii_uppercase());
+    }
+    None
 }
 
 fn consume_encoded_media(
@@ -3198,13 +3400,15 @@ mod tests {
             media_stream_config(&context),
             MediaStreamConfig {
                 codec: MediaVideoCodec::H264,
+                color_quality: MediaColorQuality::EightBit420,
                 width: 2560,
                 height: 1440,
                 fps: 120,
                 bitrate_bps: 75_000_000,
+                server_region: StreamRegionLabel::default(),
                 cloud_gsync: true,
                 show_stats: false,
-                stats_position: StatsOverlayPosition::BottomLeft,
+                stats_position: StatsOverlayPosition::TopRight,
                 start_fullscreen: true,
                 shortcuts: StreamShortcutBindings::default(),
             }
@@ -3224,11 +3428,33 @@ mod tests {
         });
         high_fps["session"]["negotiatedStreamProfile"] = json!({
             "codec": "AV1",
-            "fps": 300
+            "fps": 300,
+            "colorQuality": "10bit_444"
         });
         let high_fps: SessionContext = serde_json::from_value(high_fps).expect("context");
         assert_eq!(media_stream_config(&high_fps).codec, MediaVideoCodec::Av1);
         assert_eq!(media_stream_config(&high_fps).fps, 240);
+        assert_eq!(
+            media_stream_config(&high_fps).color_quality,
+            MediaColorQuality::TenBit444
+        );
+
+        let mut located = synthetic_context("located-config", json!([]));
+        located["session"]["serverLocation"] = json!("np-ams-03.cloudmatchbeta.nvidiagrid.net");
+        located["session"]["zone"] = json!("EU Northwest");
+        let located: SessionContext = serde_json::from_value(located).expect("context");
+        assert_eq!(
+            media_stream_config(&located).server_region.as_str(),
+            "Amsterdam (AMS-03)"
+        );
+
+        let mut zone_only = synthetic_context("zone-config", json!([]));
+        zone_only["session"]["zone"] = json!("EU Central");
+        let zone_only: SessionContext = serde_json::from_value(zone_only).expect("context");
+        assert_eq!(
+            media_stream_config(&zone_only).server_region.as_str(),
+            "EU Central"
+        );
 
         let mut rejected_vrr = synthetic_context("rejected-vrr-config", json!([]));
         rejected_vrr["settings"] = json!({ "enableCloudGsync": true });
@@ -3258,7 +3484,7 @@ mod tests {
             ("top-left", StatsOverlayPosition::TopLeft),
             ("bottom-left", StatsOverlayPosition::BottomLeft),
             ("bottom-right", StatsOverlayPosition::BottomRight),
-            ("invalid", StatsOverlayPosition::BottomLeft),
+            ("invalid", StatsOverlayPosition::TopRight),
         ] {
             let mut value = synthetic_context("stats-position-config", json!([]));
             value["settings"] = json!({ "statsOverlayPosition": wire });
@@ -3370,7 +3596,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_nvst_mode_without_handoff_fails_closed() {
+    fn explicit_nvst_mode_without_endpoint_fails_closed() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut engine = Engine::new(sender);
         let mut context = synthetic_context("missing-nvst-session", json!([]));
@@ -3382,7 +3608,7 @@ mod tests {
             "context": context,
         })));
 
-        assert_eq!(responses[0]["code"], "invalid-nvst-handoff");
+        assert_eq!(responses[0]["code"], "missing-rtsps-endpoint");
         assert_eq!(lifecycle_state(&engine), State::Idle);
         assert!(engine.transport.is_none());
         assert!(engine.nvst_transport.is_none());

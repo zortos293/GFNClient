@@ -20,6 +20,8 @@ private slots:
 
     void rejectsUnknownRoutes();
     void closesOverlayBeforeNavigatingBack();
+    void gameDetailsReturnToTheirPrimaryOrigin();
+    void sessionExitDiscardsTransientRouteHistory();
     void cyclesPrimaryRoutesDeterministically();
     void cyclesGuidePagesDeterministically();
     void parsesDirectLaunchArguments();
@@ -45,6 +47,33 @@ void AppControllerTest::closesOverlayBeforeNavigatingBack()
     QCOMPARE(controller.overlay(), QString());
     QCOMPARE(controller.route(), QStringLiteral("library"));
 
+    QVERIFY(controller.goBack());
+    QCOMPARE(controller.route(), QStringLiteral("home"));
+}
+
+void AppControllerTest::gameDetailsReturnToTheirPrimaryOrigin()
+{
+    AppController controller;
+    QVERIFY(controller.navigateFromLastPrimary(QStringLiteral("game-detail")));
+    QCOMPARE(controller.route(), QStringLiteral("game-detail"));
+    QCOMPARE(controller.backRoute(), QStringLiteral("home"));
+
+    QVERIFY(controller.goBack());
+    QCOMPARE(controller.route(), QStringLiteral("home"));
+}
+
+void AppControllerTest::sessionExitDiscardsTransientRouteHistory()
+{
+    AppController controller;
+    QVERIFY(controller.navigate(QStringLiteral("library")));
+    QVERIFY(controller.navigateFromLastPrimary(QStringLiteral("game-detail")));
+    QVERIFY(controller.navigate(QStringLiteral("inserting")));
+    QVERIFY(controller.navigate(QStringLiteral("stream")));
+
+    QVERIFY(controller.navigateFromLastPrimary(QStringLiteral("game-detail")));
+    QCOMPARE(controller.backRoute(), QStringLiteral("library"));
+    QVERIFY(controller.goBack());
+    QCOMPARE(controller.route(), QStringLiteral("library"));
     QVERIFY(controller.goBack());
     QCOMPARE(controller.route(), QStringLiteral("home"));
 }

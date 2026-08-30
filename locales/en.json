@@ -419,6 +419,8 @@
   },
   "session": {
     "active": "Active Session",
+    "activeSessionResumePrompt": "Active session running · Resume?",
+    "activeSessionResumeTitlePrompt": "Active session: %1 · Resume?",
     "current": "Current",
     "control": "Session Control",
     "elapsed": "Elapsed",
@@ -430,6 +432,7 @@
     "resumeActiveCloudSession": "Resume active cloud session",
     "resumeActiveCloudSessionTitle": "Resume active cloud session: {{title}}",
     "resumeCurrentStream": "Resume current stream",
+    "resumingActiveGfnSession": "Resuming your active GeForce NOW session…",
     "readyToLaunch": "Ready To Launch",
     "readyToSwitch": "Ready To Switch",
     "timeWarning": "Session time warning",
@@ -1843,7 +1846,7 @@
       "s_093c59d7": "GeForce NOW could not prepare this session.",
       "s_aedc2ab2": "GeForce NOW game",
       "s_2f703bfe": "GeForce NOW prepared the remote machine. OpenNOW is validating the negotiated media transport.",
-      "s_4b3605c7": "Guide / F1",
+      "s_4b3605c7": "Guide / Ctrl+G",
       "s_f523a20d": "Guide overlay",
       "s_566f1508": "Gyroscope controls",
       "s_9c0852bb": "H.264",
@@ -2173,7 +2176,7 @@
       "s_shortcut_anti_afk_off": "Anti-AFK off",
       "s_shortcut_anti_afk_on": "Anti-AFK on",
       "s_shortcut_conflict": "That shortcut is already assigned.",
-      "s_shortcut_f1_reserved": "F1 is reserved for the in-stream Guide.",
+      "s_shortcut_f1_reserved": "Ctrl+G is reserved for the in-stream Guide.",
       "s_shortcut_key_required": "Press a letter, number, function key, or navigation key.",
       "s_shortcut_pointer_lock": "Pointer lock",
       "s_shortcut_press": "Press a key combination…",
@@ -2578,6 +2581,15 @@
       "s_qt_runtime_210": "Your internet connection is available",
       "s_qt_runtime_211": "Your provider friends list is ready.",
       "s_qt_runtime_212": "http://proxy.example:8080",
-      "s_qt_runtime_213": "✓ Active"
+      "s_qt_runtime_213": "✓ Active",
+      "s_qt_runtime_214": "MEDIA RUNTIME FAILED",
+      "s_qt_runtime_215": "NEGOTIATING TRANSPORT",
+      "s_qt_runtime_216": "CONNECTING TO RIG",
+      "s_qt_runtime_217": "RECONNECTING",
+      "s_qt_runtime_218": "SESSION CLOSED",
+      "s_qt_runtime_219": "HANDING OVER THE STREAM",
+      "s_qt_runtime_220": "Your rig is live. OpenNOW is starting the native media runtime.",
+      "s_qt_runtime_221": "Session menu",
+      "s_qt_runtime_222": "Stream stats"
   }
 }

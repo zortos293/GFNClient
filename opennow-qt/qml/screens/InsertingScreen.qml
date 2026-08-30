@@ -18,7 +18,7 @@ FocusScope {
             Text { anchors.horizontalCenter: parent.horizontalCenter; text: ShellStore.streamState === "error" ? qsTr("Session could not start") : qsTr("Inserting you into the cloud"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 32; font.weight: Font.Black }
             Text { anchors.horizontalCenter: parent.horizontalCenter; text: I18n.source(ShellStore.streamMessage, I18n.revision); color: ShellStore.streamState === "error" ? Theme.coral : Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 17 }
             Text { anchors.horizontalCenter: parent.horizontalCenter; text: root.game.title + (root.session.gpuType ? " · " + root.session.gpuType : ""); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.DemiBold }
-            GlassButton { id: cancelButton; anchors.horizontalCenter: parent.horizontalCenter; width: 220; text: ShellStore.streamState === "error" ? qsTr("Back") : qsTr("Cancel session"); glyph: "B"; onClicked: ShellStore.streamState === "error" ? AppController.navigate("game-detail") : ShellStore.stopStreamingSession(); Component.onCompleted: forceActiveFocus() }
+            GlassButton { id: cancelButton; anchors.horizontalCenter: parent.horizontalCenter; width: 220; text: ShellStore.streamState === "error" ? qsTr("Back") : qsTr("Cancel session"); glyph: "B"; onClicked: ShellStore.streamState === "error" ? AppController.navigateFromLastPrimary("game-detail") : ShellStore.stopStreamingSession(); Component.onCompleted: forceActiveFocus() }
         }
     }
     Keys.onPressed: event => {
@@ -27,7 +27,7 @@ FocusScope {
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
             event.accepted = true
             if (ShellStore.streamState === "error")
-                AppController.navigate("game-detail")
+                AppController.navigateFromLastPrimary("game-detail")
             else
                 ShellStore.stopStreamingSession()
         }

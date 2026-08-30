@@ -81,6 +81,7 @@ QtObject {
     property string providersRequestId: ""
     property string authSessionRequestId: ""
     property string activeSessionRequestId: ""
+    property string remoteSessionDiscoveryRequestId: ""
     property string remoteSessionsRequestId: ""
     property string sessionClaimRequestId: ""
     property bool sessionClaimIsRecovery: false
@@ -180,6 +181,22 @@ QtObject {
         return ""
     }
     readonly property bool streamBusy: streamCreateRequestId !== "" || streamStopRequestId !== ""
+    readonly property var resumableSession: {
+        if (root.activeSession) {
+            const localStatus = Number(root.activeSession.status || 0)
+            const localPhase = String(root.activeSession.phase || "").toLowerCase()
+            if (localStatus === 2 || localStatus === 3
+                    || localPhase === "ready" || localPhase === "streaming")
+                return root.activeSession
+        }
+        const sessions = root.remoteSessions || []
+        for (let index = 0; index < sessions.length; ++index) {
+            const status = Number(sessions[index] && sessions[index].status || 0)
+            if (status === 2 || status === 3)
+                return sessions[index]
+        }
+        return null
+    }
     readonly property string microphoneState: streamer && streamer.microphoneState
         ? String(streamer.microphoneState) : (settings.microphoneMode === "voice-activity" ? "armed" : "disabled")
     readonly property bool microphoneEnabled: Boolean(streamer && streamer.microphoneEnabled)
@@ -205,6 +222,13 @@ QtObject {
         repeat: true
         running: false
         onTriggered: root.pollStreamingSession()
+    }
+
+    property Timer remoteSessionRefreshTimer: Timer {
+        interval: 30000
+        repeat: true
+        running: root.signedIn && AppController.route !== "stream"
+        onTriggered: root.refreshRemoteSessions()
     }
 
     property Timer antiAfkPulseTimer: Timer {
@@ -302,6 +326,70 @@ QtObject {
         }
         streamerDetectionMessage = qsTr("Checking native codec support…")
         streamerDetectRequestId = CoreClient.request("streamer.detect", {}, 15000)
+    }
+
+    function refreshRemoteSessions() {
+        if (!ready || !signedIn || activeSession || remoteSessionDiscoveryRequestId !== ""
+                || remoteSessionsRequestId !== "")
+            return
+        remoteSessionDiscoveryRequestId = CoreClient.request("session.remote.list", {}, 30000)
+    }
+
+    function sessionGameTitle(session) {
+        if (!session)
+            return ""
+        const appId = String(session.appId || "")
+        const games = catalogGames || []
+        for (let gameIndex = 0; gameIndex < games.length; ++gameIndex) {
+            const game = games[gameIndex]
+            if (String(game.launchAppId || "") === appId)
+                return String(game.title || "")
+            const variants = game.variants || []
+            for (let variantIndex = 0; variantIndex < variants.length; ++variantIndex) {
+                if (String(variants[variantIndex] && variants[variantIndex].id || "") === appId)
+                    return String(game.title || "")
+            }
+        }
+        return ""
+    }
+
+    function selectGameForSession(session) {
+        if (!session)
+            return
+        const title = sessionGameTitle(session)
+        if (!title)
+            return
+        const games = catalogGames || []
+        for (let index = 0; index < games.length; ++index) {
+            if (String(games[index].title || "") === title) {
+                selectedGame = games[index]
+                return
+            }
+        }
+    }
+
+    function resumeActiveSession() {
+        const session = resumableSession
+        if (!session || sessionClaimRequestId !== "")
+            return
+        selectGameForSession(session)
+        if (activeSession && String(activeSession.sessionId || "") === String(session.sessionId || "")) {
+            if (AppController.route !== "stream")
+                AppController.navigate("stream")
+            startNativeStreamer()
+            return
+        }
+        conflictSession = session
+        streamState = "resuming"
+        streamMessage = qsTr("Resuming your active GeForce NOW session…")
+        sessionClaimIsRecovery = false
+        sessionClaimRequestId = CoreClient.request("session.claim", {
+            sessionId: session.sessionId,
+            streamingBaseUrl: session.streamingBaseUrl,
+            appId: String(session.appId || "0"),
+            recoveryMode: true
+        }, 35000)
+        AppController.navigate("inserting")
     }
 
     function codecNamesFromCapabilities(capabilities) {
@@ -621,7 +709,7 @@ QtObject {
 
     function openGame(game) {
         selectedGame = game
-        AppController.navigate("game-detail")
+        AppController.navigateFromLastPrimary("game-detail")
     }
 
     function selectGameVariant(index) {
@@ -861,7 +949,7 @@ QtObject {
             conflictSession = null
             streamState = "idle"
             streamMessage = qsTr("")
-            AppController.navigate("game-detail")
+            AppController.navigateFromLastPrimary("game-detail")
             return
         }
         if (choice === "resume") {
@@ -1421,7 +1509,7 @@ QtObject {
         }
         if (!activeSession) {
             streamState = "idle"
-            AppController.navigate("game-detail")
+            AppController.navigateFromLastPrimary("game-detail")
             return
         }
         if (!ready || streamStopRequestId !== "")
@@ -1622,6 +1710,10 @@ QtObject {
                     root.reloadCatalogForSession()
                 if (root.authSession)
                     root.refreshAccountServices()
+                if (root.authSession)
+                    root.refreshRemoteSessions()
+                else
+                    root.remoteSessions = []
                 root.resolveDirectLaunch()
             } else if (requestId === root.catalogRequestId) {
                 root.catalogGames = result.games || []
@@ -1911,6 +2003,9 @@ QtObject {
             } else if (requestId === root.activeSessionRequestId) {
                 root.activeSessionRequestId = ""
                 root.acceptStreamingSession(result.session || null)
+            } else if (requestId === root.remoteSessionDiscoveryRequestId) {
+                root.remoteSessionDiscoveryRequestId = ""
+                root.remoteSessions = result.sessions || []
             } else if (requestId === root.remoteSessionsRequestId) {
                 root.remoteSessionsRequestId = ""
                 root.inspectRemoteSessions(result)
@@ -1919,6 +2014,7 @@ QtObject {
                 root.sessionClaimIsRecovery = false
                 root.pendingLaunchParams = null
                 root.conflictSession = null
+                root.remoteSessions = []
                 root.acceptStreamingSession(result.session || null)
             } else if (requestId === root.streamCreateRequestId) {
                 root.streamCreateRequestId = ""
@@ -1929,6 +2025,7 @@ QtObject {
             } else if (requestId === root.streamStopRequestId) {
                 root.streamStopRequestId = ""
                 const wasForceNewAfterStop = root.forceNewAfterStop
+                root.remoteSessions = []
                 root.acceptStreamingSession(null)
                 if (root.forceNewAfterStop) {
                     root.forceNewAfterStop = false
@@ -1938,7 +2035,7 @@ QtObject {
                     else if (AppController.route === "inserting")
                         AppController.navigate("home")
                 } else if (AppController.route !== "game-detail")
-                    AppController.navigate("game-detail")
+                    AppController.navigateFromLastPrimary("game-detail")
                 if (!wasForceNewAfterStop && Boolean(root.settings.showSessionReport)
                         && root.lastSessionReport)
                     AppController.showOverlay("session-report")
@@ -1982,6 +2079,11 @@ QtObject {
         function onRequestFailed(requestId, code, message) {
             if (root.finishArtworkRequest(requestId, null, true))
                 return
+            if (requestId === root.remoteSessionDiscoveryRequestId) {
+                root.remoteSessionDiscoveryRequestId = ""
+                root.remoteSessions = []
+                return
+            }
             root.lastError = message
             if (requestId === root.consoleSurfaceRequestId) {
                 root.consoleSurfaceRequestId = ""
@@ -2215,6 +2317,10 @@ QtObject {
             else if (name === "auth.session.changed") {
                 root.authSession = payload.session || null
                 root.authState = root.authSession ? "signed-in" : "idle"
+                if (root.authSession)
+                    root.refreshRemoteSessions()
+                else
+                    root.remoteSessions = []
             } else if (name === "session.changed")
                 root.acceptStreamingSession(payload.session || null)
             else if (name === "streamer.changed")

@@ -1,9 +1,8 @@
 use rand::RngCore as _;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::net::{IpAddr, TcpStream};
+use std::net::TcpStream;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -18,9 +17,9 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket, connect};
 use url::Url;
 
-const STREAMER_PROTOCOL_VERSION: u64 = 4;
+const STREAMER_PROTOCOL_VERSION: u64 = 5;
 const CHILD_MESSAGE_LIMIT: usize = 1024 * 1024;
-const CHILD_START_TIMEOUT: Duration = Duration::from_secs(45);
+const CHILD_START_TIMEOUT: Duration = Duration::from_secs(90);
 const CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -330,15 +329,11 @@ impl StreamerService {
             ));
         }
         let session_id = required_string(&session, "sessionId")?.to_owned();
-        let transport = settings["transportMode"].as_str().unwrap_or("webrtc");
         let microphone_mode = settings["microphoneMode"].as_str().unwrap_or("disabled");
         let signaling_url = session["signalingUrl"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        if !transport.eq_ignore_ascii_case("nvst") && !signaling_url.starts_with("wss://") {
-            return Err(invalid("Session signaling endpoint is not secure"));
-        }
         let mut context = streamer_context(session, settings);
         let surface = normalize_surface(params.get("surface"), context_resolution(&context))?;
         context["surface"] = surface;
@@ -372,21 +367,16 @@ impl StreamerService {
             snapshot.stats_toggle_count = 0;
             snapshot.recording_start_count = 0;
             snapshot.recording_stop_count = 0;
-            match (microphone_mode, transport.eq_ignore_ascii_case("nvst")) {
-                ("voice-activity", false) => {
-                    snapshot.microphone_state = "starting".to_owned();
-                    snapshot.microphone_enabled = false;
-                    snapshot.microphone_message =
-                        Some("Microphone capture will start after WebRTC negotiation".to_owned());
-                }
-                ("voice-activity", true) => {
+            match microphone_mode {
+                "voice-activity" => {
                     snapshot.microphone_state = "unavailable".to_owned();
                     snapshot.microphone_enabled = false;
                     snapshot.microphone_message = Some(
-                        "Microphone upstream is available only with WebRTC transport".to_owned(),
+                        "Microphone upstream is not available on the native NVST runtime"
+                            .to_owned(),
                     );
                 }
-                ("push-to-talk", _) => {
+                "push-to-talk" => {
                     snapshot.microphone_state = "unavailable".to_owned();
                     snapshot.microphone_enabled = false;
                     snapshot.microphone_message =
@@ -410,6 +400,10 @@ impl StreamerService {
                     control_rx,
                     Arc::clone(&state),
                 ) {
+                    eprintln!(
+                        "native-streamer worker failed [{}]: {}",
+                        error.code, error.message
+                    );
                     set_error(&state, error.code, error.message);
                 }
             })
@@ -658,6 +652,11 @@ fn streamer_command(executable: &Path, settings: &Value) -> Command {
     let mut command = Command::new(executable);
     command
         .env("OPENNOW_NATIVE_EXTERNAL_RENDERER", "1")
+        // The separate SDL stream window owns foreground keyboard/mouse events.
+        // Keep this paired with EXTERNAL_RENDERER, matching native-streamer-v2;
+        // otherwise the streamer deliberately disables capture to avoid duplicate
+        // events from an embedded UI owner.
+        .env("OPENNOW_NATIVE_INPUT_OWNER", "native")
         .env("OPENNOW_NATIVE_VIDEO_BACKEND", decoder_backend)
         .env("OPENNOW_NATIVE_CURSOR_OVERLAY", cursor_overlay)
         .env("OPENNOW_MOUSE_SENSITIVITY", mouse_sensitivity)
@@ -795,7 +794,7 @@ fn run_worker(
     executable: &Path,
     session_id: &str,
     signaling_url: &str,
-    mut context: Value,
+    context: Value,
     control: Receiver<WorkerCommand>,
     state: Arc<Mutex<Snapshot>>,
 ) -> Result<(), StreamerError> {
@@ -858,14 +857,16 @@ fn run_worker(
         .as_str()
         .is_some_and(|value| value.eq_ignore_ascii_case("nvst"));
     if nvst {
-        let result = run_nvst(
-            session_id,
-            &mut context,
-            &mut stdin,
-            &mut child,
-            &child_rx,
-            &control,
-            &state,
+        if hello["capabilities"]["supportsOwnedNvstNegotiation"].as_bool() != Some(true) {
+            return Err(StreamerError {
+                code: "streamer_protocol_mismatch",
+                message:
+                    "Native streamer does not own NVST negotiation; protocol 5 support is required"
+                        .to_owned(),
+            });
+        }
+        let result = run_owned_nvst_child(
+            &context, &mut stdin, &mut child, &child_rx, &control, &state,
         );
         let _ = write_child(
             &mut stdin,
@@ -909,358 +910,34 @@ fn run_worker(
     result
 }
 
-fn start_child(
-    stdin: &mut ChildStdin,
-    child_rx: &Receiver<Value>,
+fn run_owned_nvst_child(
     context: &Value,
-    state: &Arc<Mutex<Snapshot>>,
-) -> Result<(), StreamerError> {
-    write_child(
-        stdin,
-        &json!({"id":"start","type":"start","context":context}),
-    )?;
-    let started = wait_for_child(child_rx, "start", CHILD_START_TIMEOUT, state)?;
-    if started["type"] != "ok" {
-        return Err(child_error(&started, "Native media startup failed"));
-    }
-    state.lock().expect("streamer state poisoned").transport =
-        started["transport"].as_str().map(ToOwned::to_owned);
-    Ok(())
-}
-
-struct RtspResponse {
-    status: u16,
-    status_text: String,
-    headers: HashMap<String, String>,
-    body: String,
-}
-
-struct RtspClient {
-    socket: WebSocket<MaybeTlsStream<TcpStream>>,
-    cseq: u64,
-    buffer: String,
-}
-
-impl RtspClient {
-    fn connect(endpoint: &str, session_id: &str) -> Result<(Self, String), StreamerError> {
-        let translated = endpoint
-            .replacen("rtsps://", "https://", 1)
-            .replacen("rtsp://", "http://", 1);
-        let parsed = Url::parse(&translated).map_err(|_| invalid("Invalid RTSPS endpoint"))?;
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| invalid("RTSPS endpoint has no host"))?;
-        if !trusted_nvst_host(host) {
-            return Err(invalid("Untrusted RTSPS endpoint"));
-        }
-        let port = parsed.port().unwrap_or(322);
-        let mut wss = Url::parse(&format!("wss://{host}:{port}/rtsp"))
-            .map_err(|_| invalid("Invalid RTSPS WebSocket URL"))?;
-        if host.contains(':') {
-            wss.set_host(Some(host))
-                .map_err(|_| invalid("Invalid RTSPS IPv6 host"))?;
-        }
-        let mut request = wss
-            .as_str()
-            .into_client_request()
-            .map_err(|error| StreamerError {
-                code: "nvst_connect_failed",
-                message: error.to_string(),
-            })?;
-        request.headers_mut().insert(
-            "x-nv-sessionid",
-            HeaderValue::from_str(session_id)
-                .map_err(|_| invalid("Invalid NVST session identity"))?,
-        );
-        request
-            .headers_mut()
-            .insert("content-length", HeaderValue::from_static("0"));
-        let (mut socket, _) = connect(request).map_err(|error| StreamerError {
-            code: "nvst_connect_failed",
-            message: format!("Could not open RTSPS control channel: {error}"),
-        })?;
-        set_read_timeout(&mut socket, Duration::from_secs(20));
-        Ok((
-            Self {
-                socket,
-                cseq: 0,
-                buffer: String::new(),
-            },
-            format!("rtsps://{host}:{port}"),
-        ))
-    }
-
-    fn request(
-        &mut self,
-        method: &str,
-        uri: &str,
-        headers: &[(&str, String)],
-        body: &str,
-    ) -> Result<RtspResponse, StreamerError> {
-        self.cseq += 1;
-        let mut request = format!("{method} {uri} RTSP/1.0\r\nCSeq: {}\r\n", self.cseq);
-        for (name, value) in headers {
-            request.push_str(&format!("{name}: {value}\r\n"));
-        }
-        if !body.is_empty() {
-            request.push_str(&format!("Content-Length: {}\r\n", body.len()));
-        }
-        request.push_str("\r\n");
-        request.push_str(body);
-        self.socket
-            .send(Message::Text(request.into()))
-            .map_err(|error| StreamerError {
-                code: "nvst_rtsp_failed",
-                message: error.to_string(),
-            })?;
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if let Some(response) = take_rtsp_response(&mut self.buffer, self.cseq)? {
-                return Ok(response);
-            }
-            if Instant::now() >= deadline {
-                return Err(StreamerError {
-                    code: "nvst_rtsp_timeout",
-                    message: format!("RTSPS {method} timed out"),
-                });
-            }
-            match self.socket.read() {
-                Ok(Message::Text(text)) => self.buffer.push_str(text.as_str()),
-                Ok(Message::Binary(bytes)) => {
-                    self.buffer.push_str(&String::from_utf8_lossy(&bytes))
-                }
-                Ok(Message::Ping(bytes)) => {
-                    let _ = self.socket.send(Message::Pong(bytes));
-                }
-                Ok(Message::Close(_)) => {
-                    return Err(StreamerError {
-                        code: "nvst_rtsp_failed",
-                        message: "RTSPS control channel closed".to_owned(),
-                    });
-                }
-                Ok(_) => {}
-                Err(tungstenite::Error::Io(error))
-                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-                Err(error) => {
-                    return Err(StreamerError {
-                        code: "nvst_rtsp_failed",
-                        message: error.to_string(),
-                    });
-                }
-            }
-        }
-    }
-}
-
-fn run_nvst(
-    session_id: &str,
-    context: &mut Value,
     stdin: &mut ChildStdin,
     child: &mut Child,
     child_rx: &Receiver<Value>,
     control: &Receiver<WorkerCommand>,
     state: &Arc<Mutex<Snapshot>>,
 ) -> Result<(), StreamerError> {
-    let endpoint = context["session"]["rtspsEndpoints"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .find(|value| value.starts_with("rtsps://") || value.starts_with("rtsp://"))
-        .ok_or_else(|| StreamerError {
-            code: "missing_rtsps_endpoint",
-            message: "CloudMatch did not provide an RTSPS endpoint for NVST".to_owned(),
-        })?;
     {
         let mut snapshot = state.lock().expect("streamer state poisoned");
         snapshot.status = "negotiating".to_owned();
-        snapshot.message = "Negotiating classic NVST media transport…".to_owned();
+        snapshot.message = "Native streamer is negotiating the GeForce NOW session…".to_owned();
     }
-    write_child(stdin, &json!({"id":"nvst-bind","type":"nvst-bind"}))?;
-    let binding = wait_for_child(child_rx, "nvst-bind", CHILD_START_TIMEOUT, state)?;
-    if binding["type"] != "nvst-bound" {
-        return Err(child_error(
-            &binding,
-            "Native NVST socket reservation failed",
-        ));
-    }
-    let client_port = binding["port"]
-        .as_u64()
-        .and_then(|value| u16::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| internal("Native NVST reservation returned no port"))?;
-    let mjolnir_port = binding["mjolnirPort"]
-        .as_u64()
-        .and_then(|value| u16::try_from(value).ok());
-    let local_address = binding["localAddress"].as_str().unwrap_or("0.0.0.0");
-    let local_ufrag = required_child_string(&binding, "iceUsernameFragment")?;
-    let local_password = required_child_string(&binding, "icePassword")?;
-    let local_fingerprint = required_child_string(&binding, "dtlsFingerprint")?;
-    ensure_child_running(child)?;
-
-    let (mut rtsp, rtsp_target) = RtspClient::connect(endpoint, session_id)?;
-    let host = rtsp_target
-        .strip_prefix("rtsps://")
-        .or_else(|| rtsp_target.strip_prefix("rtsp://"))
-        .unwrap_or(&rtsp_target)
-        .to_owned();
-    let common = [
-        ("X-GS-Version", "14.2".to_owned()),
-        ("Host", host),
-        ("x-nv-sessionid", session_id.to_owned()),
-    ];
-    let options = rtsp.request("OPTIONS", &rtsp_target, &common, "")?;
-    ensure_rtsp_ok("OPTIONS", &options)?;
-    let mut describe_headers = common.to_vec();
-    describe_headers.push(("Accept", "application/sdp".to_owned()));
-    describe_headers.push(("x-nv-abtesting", "2".to_owned()));
-    let describe = rtsp.request("DESCRIBE", &rtsp_target, &describe_headers, "")?;
-    ensure_rtsp_ok("DESCRIBE", &describe)?;
-    let rtsp_session = header_value(&describe, "session")
-        .and_then(|value| value.split(';').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| StreamerError {
-            code: "nvst_rtsp_failed",
-            message: "DESCRIBE did not include a session".to_owned(),
-        })?
-        .to_owned();
-    let video_control = media_control(&describe.body, "video").ok_or_else(|| StreamerError {
-        code: "nvst_rtsp_failed",
-        message: "DESCRIBE did not include a video control stream".to_owned(),
-    })?;
-    let video_setup = if video_control
-        .to_ascii_lowercase()
-        .starts_with("streamid=video/")
-        && video_control.matches('/').count() == 1
-    {
-        format!("{video_control}/0")
-    } else {
-        video_control.clone()
-    };
-    let video_uri = resolve_rtsp_uri(&rtsp_target, &video_setup);
-    let ping_version = sdp_attribute(&describe.body, "general.pingVersion")
-        .and_then(|value| value.parse::<u8>().ok())
-        .unwrap_or(6);
-    let remote_ufrag = sdp_attribute(&describe.body, "general.iceUserNameFragmentV2")
-        .or_else(|| sdp_attribute(&describe.body, "general.iceUsernameFragment"));
-    let remote_password = sdp_attribute(&describe.body, "general.icePasswordV2")
-        .or_else(|| sdp_attribute(&describe.body, "general.iceUsernamePwd"));
-    let remote_fingerprint = sdp_attribute(&describe.body, "general.dtlsFingerprintV2")
-        .or_else(|| sdp_attribute(&describe.body, "general.dtlsFingerprint"));
-    let disable_play = sdp_attribute(&describe.body, "general.disablePlay");
-    let native_bundle = sdp_attribute(&describe.body, "general.nativeRtcOnBundlePort");
-    if native_bundle.as_deref() != Some("1") {
-        return Err(StreamerError {
-            code: "nvst_legacy_transport_unsupported",
-            message: "This streaming seat requires the retired multi-socket NVST transport; choose WebRTC or another region"
-                .to_owned(),
-        });
-    }
-    let rtcp_on_sctp = sdp_attribute(&describe.body, "general.rtcpOnSctp").as_deref() == Some("1");
-    let mut setup_headers = common.to_vec();
-    setup_headers.push(("Session", rtsp_session.clone()));
-    setup_headers.push(("x-nv-ping", ping_version.to_string()));
-    setup_headers.push(("Transport", String::new()));
-    let setup = rtsp.request("SETUP", &video_uri, &setup_headers, "")?;
-    ensure_rtsp_ok("SETUP", &setup)?;
-    let transport = header_value(&setup, "transport").unwrap_or_default();
-    let (video_peer_ip, video_peer_port) =
-        parse_video_peer(transport).ok_or_else(|| StreamerError {
-            code: "nvst_rtsp_failed",
-            message: "SETUP did not return the NVST video peer".to_owned(),
-        })?;
-    let ping_payload = header_value(&setup, "x-nv-ping-payload")
-        .unwrap_or("PING")
-        .to_owned();
-    let effective_ping_version = header_value(&setup, "x-nv-ping")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(ping_version);
-    let remote_ufrag = if effective_ping_version == 6 {
-        increment_hex(&ping_payload)
-            .or_else(|| remote_ufrag.clone())
-            .unwrap_or(ping_payload.clone())
-    } else {
-        ping_payload.clone()
-    };
-    let remote_password = remote_password.ok_or_else(|| StreamerError {
-        code: "nvst_rtsp_failed",
-        message: "DESCRIBE did not return NVST ICE credentials".to_owned(),
-    })?;
-    let (aes_key, key_id) = runtime_key(&describe.body).unwrap_or_else(random_runtime_key);
-    let salt = format!("{key_id:024X}");
-    let codec = context["settings"]["codec"]
-        .as_str()
-        .unwrap_or("H264")
-        .to_ascii_uppercase();
-    let mut handoff = json!({
-        "clientUdpPort":client_port,"packetSize":1280,"mjolnirUdpPort":mjolnir_port,
-        "videoPeerIp":video_peer_ip,"videoPeerPort":video_peer_port,
-        "srtpAesKeyHex":aes_key,"srtpKeyId":key_id,"srtpSaltHex":salt,"srtpProfile":"AEAD_AES_256_GCM_8",
-        "pingPayload":ping_payload,"pingVersion":effective_ping_version,
-        "localIceUsernameFragment":local_ufrag,"localIcePassword":local_password,
-        "remoteIceUsernameFragment":remote_ufrag,"remoteIcePassword":remote_password,
-        "localDtlsFingerprint":local_fingerprint,"remoteDtlsFingerprint":remote_fingerprint,
-        "rtcpOnSctp":rtcp_on_sctp,"codec":codec,
-        "audioTrack":{"payloadType":111,"codec":"opus","clockRateHz":48000,"channels":2,"mid":"0"},"timeoutMs":60000
-    });
-    if let Some(media) = context["session"]["mediaConnectionInfo"].as_object()
-        && let (Some(ip), Some(port)) = (
-            media.get("ip").and_then(Value::as_str),
-            media.get("port").and_then(Value::as_u64),
-        )
-    {
-        handoff["bundlePeerIp"] = json!(ip);
-        handoff["bundlePeerPort"] = json!(port);
-    }
-    context["nvstVideo"] = handoff;
     start_child(stdin, child_rx, context, state)?;
+    ensure_child_running(child)?;
     write_surface(stdin, &context["surface"])?;
-    let announce_body = build_nvst_announce(
-        context,
-        NvstAnnounceParams {
-            key: &aes_key,
-            key_id,
-            port: client_port,
-            address: local_address,
-            ufrag: local_ufrag,
-            password: local_password,
-            fingerprint: local_fingerprint,
-            video_port: video_peer_port,
-            rtcp_on_sctp,
-        },
-    );
-    let mut announce_headers = common.to_vec();
-    announce_headers.push(("Session", rtsp_session.clone()));
-    announce_headers.push(("Content-Type", "application/sdp".to_owned()));
-    let announce = rtsp.request("ANNOUNCE", &rtsp_target, &announce_headers, &announce_body)?;
-    ensure_rtsp_ok("ANNOUNCE", &announce)?;
-    if disable_play.as_deref() == Some("0") {
-        let mut play_headers = common.to_vec();
-        play_headers.push(("Session", rtsp_session.clone()));
-        let play = rtsp.request("PLAY", &rtsp_target, &play_headers, "")?;
-        if play.status != 200 && play.status != 455 {
-            return Err(StreamerError {
-                code: "nvst_rtsp_failed",
-                message: format!("PLAY failed: {} {}", play.status, play.status_text),
-            });
-        }
-    }
     {
         let mut snapshot = state.lock().expect("streamer state poisoned");
         snapshot.transport = Some("nvst".to_owned());
         snapshot.status = "streaming".to_owned();
-        snapshot.message = "Classic NVST media transport is active".to_owned();
+        snapshot.message = "Native-owned NVST media transport is active".to_owned();
     }
-    let mut last_ping = Instant::now();
+
     loop {
         if let Ok(command) = control.try_recv() {
             match command {
                 WorkerCommand::Stop(reason) => {
                     let _ = write_child(stdin, &json!({"id":"stop","type":"stop","reason":reason}));
-                    let mut teardown = common.to_vec();
-                    teardown.push(("Session", rtsp_session.clone()));
-                    let _ = rtsp.request("TEARDOWN", &rtsp_target, &teardown, "");
                     return Ok(());
                 }
                 WorkerCommand::InputPaused(paused) => {
@@ -1296,302 +973,27 @@ fn run_nvst(
         while let Ok(message) = child_rx.try_recv() {
             handle_nvst_child_event(&message, state)?;
         }
-        if last_ping.elapsed() >= Duration::from_secs(2) {
-            let _ = rtsp.socket.send(Message::Ping(Vec::new().into()));
-            last_ping = Instant::now();
-        }
         thread::sleep(Duration::from_millis(20));
     }
 }
 
-fn ensure_rtsp_ok(step: &str, response: &RtspResponse) -> Result<(), StreamerError> {
-    if response.status == 200 {
-        Ok(())
-    } else {
-        Err(StreamerError {
-            code: "nvst_rtsp_failed",
-            message: format!(
-                "{step} failed: {} {}",
-                response.status, response.status_text
-            ),
-        })
+fn start_child(
+    stdin: &mut ChildStdin,
+    child_rx: &Receiver<Value>,
+    context: &Value,
+    state: &Arc<Mutex<Snapshot>>,
+) -> Result<(), StreamerError> {
+    write_child(
+        stdin,
+        &json!({"id":"start","type":"start","context":context}),
+    )?;
+    let started = wait_for_child(child_rx, "start", CHILD_START_TIMEOUT, state)?;
+    if started["type"] != "ok" {
+        return Err(child_error(&started, "Native media startup failed"));
     }
-}
-fn header_value<'a>(response: &'a RtspResponse, name: &str) -> Option<&'a str> {
-    response
-        .headers
-        .get(&name.to_ascii_lowercase())
-        .map(String::as_str)
-}
-fn required_child_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, StreamerError> {
-    value[key]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| internal(format!("Native NVST binding omitted {key}")))
-}
-
-fn take_rtsp_response(
-    buffer: &mut String,
-    expected_cseq: u64,
-) -> Result<Option<RtspResponse>, StreamerError> {
-    let Some(header_end) = buffer.find("\r\n\r\n").or_else(|| buffer.find("\n\n")) else {
-        return Ok(None);
-    };
-    let separator = if buffer[header_end..].starts_with("\r\n\r\n") {
-        4
-    } else {
-        2
-    };
-    let header_text = &buffer[..header_end];
-    let content_length = header_text
-        .lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-        })
-        .unwrap_or(0);
-    let total = header_end + separator + content_length;
-    if buffer.len() < total {
-        return Ok(None);
-    }
-    let raw = buffer[..total].to_owned();
-    buffer.drain(..total);
-    let (head, body) = raw.split_at(header_end + separator);
-    let mut lines = head.lines();
-    let status_line = lines.next().unwrap_or_default();
-    let mut parts = status_line.splitn(3, ' ');
-    let _ = parts.next();
-    let status = parts
-        .next()
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| internal("Invalid RTSPS status line"))?;
-    let status_text = parts.next().unwrap_or_default().trim().to_owned();
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
-        }
-    }
-    if headers
-        .get("cseq")
-        .and_then(|value| value.parse::<u64>().ok())
-        != Some(expected_cseq)
-    {
-        return Err(internal("RTSPS response CSeq mismatch"));
-    }
-    Ok(Some(RtspResponse {
-        status,
-        status_text,
-        headers,
-        body: body.to_owned(),
-    }))
-}
-
-fn trusted_nvst_host(host: &str) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    if host == "nvidiagrid.net" || host.ends_with(".nvidiagrid.net") {
-        return true;
-    }
-    host.parse::<IpAddr>().is_ok_and(|ip| match ip {
-        IpAddr::V4(ip) => {
-            !ip.is_private() && !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified()
-        }
-        IpAddr::V6(ip) => !ip.is_loopback() && !ip.is_unicast_link_local() && !ip.is_unspecified(),
-    })
-}
-fn media_control(sdp: &str, kind: &str) -> Option<String> {
-    let mut current = "";
-    for line in sdp.lines().map(str::trim) {
-        if let Some(media) = line.strip_prefix("m=") {
-            current = media.split_whitespace().next().unwrap_or("");
-        } else if current.eq_ignore_ascii_case(kind)
-            && let Some(value) = line.strip_prefix("a=control:")
-            && value != "*"
-            && !value.is_empty()
-        {
-            return Some(value.to_owned());
-        }
-    }
-    None
-}
-fn sdp_attribute(sdp: &str, name: &str) -> Option<String> {
-    let candidates = [
-        format!("a=x-nv-{name}:").to_ascii_lowercase(),
-        format!("a={name}:").to_ascii_lowercase(),
-    ];
-    sdp.lines().map(str::trim).find_map(|line| {
-        let lower = line.to_ascii_lowercase();
-        candidates.iter().find_map(|prefix| {
-            lower.strip_prefix(prefix).and_then(|_| {
-                line.get(prefix.len()..)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToOwned::to_owned)
-            })
-        })
-    })
-}
-fn resolve_rtsp_uri(base: &str, control: &str) -> String {
-    if control.starts_with("rtsps://") || control.starts_with("rtsp://") {
-        control.to_owned()
-    } else {
-        format!(
-            "{}/{}",
-            base.trim_end_matches('/'),
-            control.trim_start_matches('/')
-        )
-    }
-}
-fn parse_video_peer(transport: &str) -> Option<(String, u16)> {
-    let mut ip = None;
-    let mut port = None;
-    for part in transport.split([';', ',']) {
-        let Some((name, value)) = part.trim().split_once('=') else {
-            continue;
-        };
-        if name.eq_ignore_ascii_case("source") {
-            ip = Some(value.trim().to_owned())
-        } else if name.eq_ignore_ascii_case("X-GS-ServerPort") {
-            port = value.trim().split('-').next()?.parse().ok()
-        }
-    }
-    Some((ip?, port?))
-}
-fn increment_hex(value: &str) -> Option<String> {
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let mut bytes = value.as_bytes().to_vec();
-    let mut carry = true;
-    for byte in bytes.iter_mut().rev() {
-        if !carry {
-            break;
-        }
-        let digit = (*byte as char).to_digit(16)?;
-        if digit == 15 {
-            *byte = b'0'
-        } else {
-            *byte = char::from_digit(digit + 1, 16)?.to_ascii_lowercase() as u8;
-            carry = false
-        }
-    }
-    if carry {
-        bytes.insert(0, b'1')
-    }
-    String::from_utf8(bytes).ok()
-}
-fn runtime_key(sdp: &str) -> Option<(String, u32)> {
-    let key = sdp_attribute(sdp, "runtime.encryptionKey")?;
-    if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let raw = sdp_attribute(sdp, "runtime.encryptionKeyId")?
-        .parse::<i64>()
-        .ok()?;
-    Some((key.to_ascii_uppercase(), raw as u32))
-}
-fn random_runtime_key() -> (String, u32) {
-    let mut key = [0_u8; 32];
-    rand::rng().fill_bytes(&mut key);
-    let mut id = [0_u8; 4];
-    rand::rng().fill_bytes(&mut id);
-    (
-        key.iter().map(|byte| format!("{byte:02X}")).collect(),
-        u32::from_be_bytes(id),
-    )
-}
-
-struct NvstAnnounceParams<'a> {
-    key: &'a str,
-    key_id: u32,
-    port: u16,
-    address: &'a str,
-    ufrag: &'a str,
-    password: &'a str,
-    fingerprint: &'a str,
-    video_port: u16,
-    rtcp_on_sctp: bool,
-}
-
-fn build_nvst_announce(context: &Value, params: NvstAnnounceParams<'_>) -> String {
-    let (width, height) = context_resolution(context);
-    let fps = context["settings"]["fps"]
-        .as_u64()
-        .unwrap_or(60)
-        .clamp(30, 240);
-    let bitrate = context["settings"]["maxBitrateMbps"]
-        .as_u64()
-        .unwrap_or(75)
-        .clamp(1, 150)
-        * 1000;
-    let codec = context["settings"]["codec"].as_str().unwrap_or("H264");
-    let format = if codec.eq_ignore_ascii_case("AV1") {
-        2
-    } else if codec.eq_ignore_ascii_case("H265") || codec.eq_ignore_ascii_case("HEVC") {
-        1
-    } else {
-        0
-    };
-    let lines = vec![
-        "v=0".to_owned(),
-        "o=unknown 0 14 IN IPv4 127.0.0.1".to_owned(),
-        "s=NVIDIA Streaming Client".to_owned(),
-        format!("a=x-nv-video[0].clientViewportWd:{width}"),
-        format!("a=x-nv-video[0].clientViewportHt:{height}"),
-        format!("a=x-nv-video[0].maxFPS:{fps}"),
-        "a=x-nv-video[0].packetSize:1280".to_owned(),
-        "a=x-nv-video[0].enableRtpNack:1".to_owned(),
-        format!("a=x-nv-video[0].initialBitrateKbps:{bitrate}"),
-        format!("a=x-nv-vqos[0].bitStreamFormat:{format}"),
-        format!("a=x-nv-vqos[0].bw.maximumBitrateKbps:{bitrate}"),
-        "a=x-nv-vqos[0].fec.enable:1".to_owned(),
-        "a=x-nv-vqos[0].fec.repairPercent:20".to_owned(),
-        "a=x-nv-general.rtspWebSocketPerConnection:1".to_owned(),
-        "a=x-nv-general.clientPorts.video:0".to_owned(),
-        "a=x-nv-general.clientPorts.audio:0".to_owned(),
-        "a=x-nv-general.clientPorts.mic:0".to_owned(),
-        "a=x-nv-general.clientPorts.control:0".to_owned(),
-        "a=x-nv-general.clientPorts.bundle:0".to_owned(),
-        "a=x-nv-general.clientPorts.session:0".to_owned(),
-        format!("a=x-nv-general.clientPorts.localAddress:{}", params.address),
-        "a=x-nv-general.clientPorts.useReserved:1".to_owned(),
-        "a=x-nv-general.clientPorts.fallbackDynamic:1".to_owned(),
-        format!("a=x-nv-general.clientBundlePort:{}", params.port),
-        "a=x-nv-general.nativeRtcOnBundlePort:1".to_owned(),
-        "a=x-nv-general.rtcVideoOnNativeBundle:0".to_owned(),
-        "a=x-nv-general.rtcAudioOnNativeBundle:1".to_owned(),
-        "a=x-nv-general.rtcMicOnNativeBundle:1".to_owned(),
-        "a=x-nv-general.rtcDataChannelOnNativeBundle:1".to_owned(),
-        "a=x-nv-general.enableUnifiedSocket:0".to_owned(),
-        format!(
-            "a=x-nv-general.rtcpOnSctp:{}",
-            if params.rtcp_on_sctp { 1 } else { 0 }
-        ),
-        format!("a=x-nv-general.iceUserNameFragmentV2:{}", params.ufrag),
-        format!("a=x-nv-general.icePasswordV2:{}", params.password),
-        format!("a=x-nv-general.dtlsFingerprintV2:{}", params.fingerprint),
-        "a=x-nv-runtime.videoSrtp:1".to_owned(),
-        format!("a=x-nv-runtime.encryptionKey:{}", params.key),
-        format!("a=x-nv-runtime.encryptionKeyId:{}", params.key_id),
-        "a=x-nv-runtime.audioSrtp:0".to_owned(),
-        "a=x-nv-runtime.micSrtp:0".to_owned(),
-        "a=ice-options:trickle".to_owned(),
-        format!("a=ice-ufrag:{}", params.ufrag),
-        format!("a=ice-pwd:{}", params.password),
-        format!("a=fingerprint:sha-256 {}", params.fingerprint),
-        "a=setup:actpass".to_owned(),
-        format!(
-            "a=candidate:1 1 udp 2122260223 {} {} typ host",
-            params.address, params.port
-        ),
-        "t=0 0".to_owned(),
-        format!("m=video {}", params.video_port),
-        "c=IN IP4 0.0.0.0".to_owned(),
-        "i=DeviceString, DeviceName".to_owned(),
-        String::new(),
-    ];
-    lines.join("\r\n")
+    state.lock().expect("streamer state poisoned").transport =
+        started["transport"].as_str().map(ToOwned::to_owned);
+    Ok(())
 }
 
 fn handle_nvst_child_event(
@@ -2079,8 +1481,10 @@ fn streamer_context(mut session: Value, settings: &Value) -> Value {
         }
     });
     normalized["codec"] = Value::String(codec.to_ascii_uppercase());
-    let transport = settings["transportMode"].as_str().unwrap_or("webrtc");
-    normalized["transportMode"] = Value::String(transport.to_ascii_lowercase());
+    // The Qt/native client owns negotiation and media over NVST. Ignore old
+    // persisted WebRTC values so manual HEVC/AV1 selections cannot be routed
+    // through the retired browser transport.
+    normalized["transportMode"] = Value::String("nvst".to_owned());
     if session["negotiatedStreamProfile"].is_null() {
         session["negotiatedStreamProfile"] = json!({"codec":codec.to_ascii_uppercase()});
     }
@@ -2422,6 +1826,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn external_stream_window_is_the_native_input_owner() {
+        let command = streamer_command(
+            Path::new("opennow-streamer"),
+            &json!({
+                "nativeVideoBackend":"auto",
+                "decoderPreference":"auto",
+                "nativeCursorOverlay":true,
+                "mouseSensitivity":1.0,
+                "mouseAcceleration":1.0
+            }),
+        );
+        let environment = command
+            .get_envs()
+            .filter_map(|(name, value)| Some((name.to_str()?, value?.to_str()?)))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            environment.get("OPENNOW_NATIVE_EXTERNAL_RENDERER"),
+            Some(&"1")
+        );
+        assert_eq!(
+            environment.get("OPENNOW_NATIVE_INPUT_OWNER"),
+            Some(&"native")
+        );
+    }
+
+    #[test]
     fn crashed_child_is_reported_as_a_typed_streamer_failure() {
         #[cfg(target_os = "windows")]
         let mut child = Command::new("cmd")
@@ -2462,7 +1892,7 @@ mod tests {
         ));
         fs::write(
             &fixture,
-            "#!/bin/sh\nread -r _line\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":4,\"videoBackends\":[{\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true}]}]}}'\nexit 23\n",
+            "#!/bin/sh\nread -r _line\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":5,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true}]}]}}'\nexit 23\n",
         )
         .expect("write crash fixture");
         fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700))
@@ -2505,7 +1935,7 @@ mod tests {
     #[test]
     fn codec_capabilities_require_an_available_backend_and_codec() {
         let capabilities = json!({
-            "protocolVersion":4,
+            "protocolVersion":5,
             "videoBackends":[
                 {"backend":"hardware","available":true,"codecs":[
                     {"codec":"h264","available":true},
@@ -2536,7 +1966,7 @@ mod tests {
         ));
         fs::write(
             &fixture,
-            "#!/bin/sh\nread -r _hello\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":4,\"videoBackends\":[{\"backend\":\"software\",\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true},{\"codec\":\"av1\",\"available\":false,\"reason\":\"not built\"}]}]}}'\nread -r _shutdown\nprintf '%s\\n' '{\"id\":\"shutdown\",\"type\":\"ok\"}'\n",
+            "#!/bin/sh\nread -r _hello\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":5,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"backend\":\"software\",\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true},{\"codec\":\"av1\",\"available\":false,\"reason\":\"not built\"}]}]}}'\nread -r _shutdown\nprintf '%s\\n' '{\"id\":\"shutdown\",\"type\":\"ok\"}'\n",
         )
         .expect("write capability fixture");
         fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700))
@@ -2546,7 +1976,7 @@ mod tests {
         let detected = service
             .detect(&json!({"nativeStreamerExecutablePath":fixture}))
             .expect("capability probe");
-        assert_eq!(detected["protocolVersion"], 4);
+        assert_eq!(detected["protocolVersion"], 5);
         assert_eq!(detected["availableCodecs"], json!(["h264"]));
         assert_eq!(
             detected["capabilities"]["videoBackends"][0]["backend"],
@@ -2563,6 +1993,7 @@ mod tests {
             &json!({"codec":"auto","transportMode":"webrtc","resolution":"1920x1080"}),
         );
         assert_eq!(context["settings"]["codec"], "H264");
+        assert_eq!(context["settings"]["transportMode"], "nvst");
         assert_eq!(context_resolution(&context), (1920, 1080));
     }
 
@@ -2689,53 +2120,5 @@ mod tests {
             &json!({"codec":"H264","transportMode":"nvst","resolution":"1920x1080"}),
         );
         assert_eq!(context["settings"]["transportMode"], "nvst");
-    }
-
-    #[test]
-    fn rtsp_parser_waits_for_body_and_validates_cseq() {
-        let mut buffer = "RTSP/1.0 200 OK\r\nCSeq: 3\r\nContent-Length: 4\r\n\r\ntest".to_owned();
-        let response = take_rtsp_response(&mut buffer, 3).unwrap().unwrap();
-        assert_eq!(response.status, 200);
-        assert_eq!(response.body, "test");
-        assert!(buffer.is_empty());
-    }
-
-    #[test]
-    fn nvst_transport_peer_ignores_flag_tokens() {
-        let peer = parse_video_peer(
-            "RTP/AVP/UDP;unicast;source=198.51.100.20;X-GS-ServerPort=49000-49001",
-        )
-        .unwrap();
-        assert_eq!(peer, ("198.51.100.20".to_owned(), 49000));
-    }
-
-    #[test]
-    fn nvst_sdp_attributes_are_case_insensitive_and_preserve_values() {
-        let sdp = "A=X-NV-General.NativeRtcOnBundlePort:1\r\na=X-NV-runtime.encryptionKey:AbCd";
-        assert_eq!(
-            sdp_attribute(sdp, "general.nativeRtcOnBundlePort").as_deref(),
-            Some("1")
-        );
-        assert_eq!(
-            sdp_attribute(sdp, "runtime.encryptionKey").as_deref(),
-            Some("AbCd")
-        );
-    }
-
-    #[test]
-    fn nvst_host_policy_rejects_local_and_private_addresses() {
-        assert!(trusted_nvst_host("seat.nvidiagrid.net"));
-        assert!(trusted_nvst_host("8.8.8.8"));
-        assert!(!trusted_nvst_host("localhost"));
-        assert!(!trusted_nvst_host("127.0.0.1"));
-        assert!(!trusted_nvst_host("10.0.0.8"));
-        assert!(!trusted_nvst_host("::1"));
-    }
-
-    #[test]
-    fn nvst_hex_identity_increment_handles_carry() {
-        assert_eq!(increment_hex("00ff").as_deref(), Some("0100"));
-        assert_eq!(increment_hex("ffff").as_deref(), Some("10000"));
-        assert_eq!(increment_hex("PING"), None);
     }
 }

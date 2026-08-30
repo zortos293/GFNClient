@@ -12,6 +12,10 @@ FocusScope {
     property string searchText: ""
     property string settingsSubtitle: qsTr("Profile")
     readonly property string route: AppController.route
+    // Game details are modal on desktop. Keep the route beneath the modal so
+    // opening a Home or Store tile does not silently swap in the Library page.
+    readonly property string contentRoute: route === "game-detail"
+        ? (AppController.backRoute || "library") : route
     readonly property bool signInVisible: !ShellStore.authRestorePending && (!ShellStore.signedIn || route === "sign-in")
     readonly property bool sessionStartingVisible: !signInVisible && route === "inserting"
     readonly property bool streamVisible: !signInVisible && route === "stream"
@@ -74,9 +78,9 @@ FocusScope {
         id: shell
         anchors.fill: parent
         visible: root.shellVisible
-        route: root.route
-        title: root.titleForRoute(root.route)
-        subtitle: root.subtitleForRoute(root.route)
+        route: root.contentRoute
+        title: root.titleForRoute(root.contentRoute)
+        subtitle: root.subtitleForRoute(root.contentRoute)
         searchText: root.searchText
         onSearchTextChanged: root.searchText = searchText
         onRouteRequested: route => AppController.navigate(route)
@@ -86,7 +90,7 @@ FocusScope {
         Loader {
             id: pageLoader
             anchors.fill: parent
-            sourceComponent: root.contentForRoute(root.route)
+            sourceComponent: root.contentForRoute(root.contentRoute)
             opacity: 1
             onLoaded: {
                 if (shell.visible && root.route !== "game-detail" && !root.commandOpen && item && item.forceActiveFocus)
@@ -165,14 +169,14 @@ FocusScope {
         DesktopHomeScreen {
             active: root.route === "home"
             onRouteRequested: route => AppController.navigate(route)
-            onGameRequested: game => { ShellStore.selectedGame = game; AppController.navigate("game-detail") }
+            onGameRequested: game => ShellStore.openGame(game)
         }
     }
     Component {
         id: libraryComponent
         DesktopLibraryScreen {
             searchQuery: root.searchText
-            onDetailsRequested: game => { ShellStore.selectedGame = game; AppController.navigate("game-detail") }
+            onDetailsRequested: game => ShellStore.openGame(game)
             onPlayRequested: game => { ShellStore.selectedGame = game; ShellStore.launchSelectedGame(false) }
         }
     }
@@ -180,7 +184,7 @@ FocusScope {
         id: storeComponent
         DesktopStoreContent {
             searchText: root.searchText
-            onGameSelected: game => { ShellStore.selectedGame = game; AppController.navigate("game-detail") }
+            onGameSelected: game => ShellStore.openGame(game)
             onRouteRequested: route => AppController.navigate(route)
             onClaimRequested: games => ShellStore.accessibilityMessage = qsTr("Claim request prepared for %1 games").arg(games.length)
             onSearchRequested: shell.forceActiveFocus()

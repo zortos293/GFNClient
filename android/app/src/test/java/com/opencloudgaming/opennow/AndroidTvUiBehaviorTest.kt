@@ -75,8 +75,6 @@ class AndroidTvUiBehaviorTest {
         val hotPinkStyle = hotPink.activeSelectionEffectStyle()
         val cinemaStyle = cinema.activeSelectionEffectStyle()
         val switchStyle = switch.activeSelectionEffectStyle()
-        val orangeStyle = AppSettings(uiAccent = UiAccent.Orange)
-            .activeSelectionEffectStyle()
 
         assertEquals(OpenNowPalette.AccentHotPink, hotPink.uiAccent.color)
         assertEquals(OpenNowPalette.AccentHotPink, hotPinkStyle.color)
@@ -86,17 +84,10 @@ class AndroidTvUiBehaviorTest {
         assertEquals(OpenNowPalette.AccentHotPink, cinema.uiAccent.color)
         assertEquals(OpenNowPalette.AccentSwitchRed, switchStyle.color)
         assertEquals(OpenNowPalette.AccentSwitchBlue, switchStyle.secondaryColor)
-        assertEquals(OpenNowPalette.AccentOrange, orangeStyle.color)
-        assertEquals(OpenNowPalette.AccentOrange, orangeStyle.secondaryColor)
-        assertEquals(OpenNowPalette.AccentOrange, UiAccent.Orange.themeColor)
-        assertEquals(OpenNowPalette.AccentOrange, UiAccent.Orange.themeSecondaryColor)
-        // Orange is a normal accent, so its flat selection tint must not fall back to white.
-        assertEquals(OpenNowPalette.AccentOrange, orangeStyle.tintColor)
-
         val absoluteCinemaStyle = AppSettings(uiAccent = UiAccent.AbsoluteCinema)
             .activeSelectionEffectStyle()
-        assertEquals(OpenNowPalette.AccentCinemaOrange, absoluteCinemaStyle.color)
-        assertEquals(OpenNowPalette.AccentCinemaBlue, absoluteCinemaStyle.secondaryColor)
+        assertEquals(Color.White, absoluteCinemaStyle.color)
+        assertEquals(Color.White, absoluteCinemaStyle.secondaryColor)
         assertEquals(Color.White, absoluteCinemaStyle.tintColor)
         assertEquals(OpenNowPalette.AccentDefault, UiAccent.AbsoluteCinema.themeColor)
         assertEquals(OpenNowPalette.AccentDefaultSecondary, UiAccent.AbsoluteCinema.themeSecondaryColor)
@@ -106,7 +97,7 @@ class AndroidTvUiBehaviorTest {
     fun accentPickerRestoresAbsoluteCinemaWithoutEnablingEffects() {
         val accents = selectableUiAccents()
 
-        assertTrue(UiAccent.Orange in accents)
+        assertFalse(UiAccent.LegacyOrange in accents)
         assertTrue(UiAccent.AbsoluteCinema in accents)
         assertEquals(accents.size, accents.distinct().size)
         assertFalse(AppSettings(uiAccent = UiAccent.AbsoluteCinema).absoluteCinemaEffects)
@@ -472,6 +463,15 @@ class AndroidTvUiBehaviorTest {
                 touchInputEnabled = true,
                 touchControlsEnabled = true,
                 suppressedByPhysicalController = true,
+            ),
+        )
+        assertFalse(
+            shouldShowAndroidTouchControls(
+                tvProfile = false,
+                touchInputEnabled = true,
+                touchControlsEnabled = true,
+                suppressedByPhysicalController = false,
+                physicalMouseConnected = true,
             ),
         )
     }

@@ -132,6 +132,15 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
+    fun removedOrangeAccentMigratesToViolet() {
+        val settings = OpenNowJson.decodeFromString<AppSettings>(
+            """{"uiAccent":"Orange"}""",
+        ).normalizedForAndroid()
+
+        assertEquals(UiAccent.Violet, settings.uiAccent)
+    }
+
+    @Test
     fun crazyCinemaPersistsOnlyAsAnAbsoluteCinemaSuboption() {
         val enabled = OpenNowJson.decodeFromString<AppSettings>(
             """{"absoluteCinemaEffects":true,"absoluteCinemaEverywhere":true}""",

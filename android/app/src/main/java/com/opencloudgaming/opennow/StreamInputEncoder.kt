@@ -37,6 +37,21 @@ class InputEncoder {
         return wrapMouseMove(bytes)
     }
 
+    /** Absolute host cursor position, matching the desktop GFN local-cursor encoder. */
+    fun encodeMouseAbsolute(x: Int, y: Int, width: Int, height: Int): ByteArray {
+        val bytes = ByteArray(26)
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(INPUT_MOUSE_ABS)
+        ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+            .putShort(4, x.coerceIn(0, 65535).toShort())
+            .putShort(6, y.coerceIn(0, 65535).toShort())
+            .putShort(8, 0.toShort())
+            .putShort(10, width.coerceIn(1, 65535).toShort())
+            .putShort(12, height.coerceIn(1, 65535).toShort())
+            .putInt(14, 0)
+            .putLong(18, timestampUs())
+        return wrapMouseMove(bytes)
+    }
+
     fun encodeMouseButton(type: Int, button: Int): ByteArray {
         val bytes = ByteArray(18)
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(type)
@@ -248,6 +263,7 @@ class InputEncoder {
         const val INPUT_HEARTBEAT = 2
         const val INPUT_KEY_DOWN = 3
         const val INPUT_KEY_UP = 4
+        const val INPUT_MOUSE_ABS = 5
         const val INPUT_MOUSE_REL = 7
         const val INPUT_MOUSE_BUTTON_DOWN = 8
         const val INPUT_MOUSE_BUTTON_UP = 9
@@ -552,7 +568,38 @@ class InputEncoder {
     }
 }
 
-internal fun timestampUs(): Long = SystemClock.elapsedRealtimeNanos() / 1000L
+internal class InputSessionClock(
+    private val elapsedRealtimeNanos: () -> Long = SystemClock::elapsedRealtimeNanos,
+) {
+    @Volatile
+    private var startedAtNanos = 0L
+
+    fun start() {
+        startedAtNanos = elapsedRealtimeNanos()
+    }
+
+    fun timestampUs(): Long {
+        val startedAt = startedAtNanos
+        if (startedAt == 0L) return 0L
+        return (elapsedRealtimeNanos() - startedAt).coerceAtLeast(0L) / 1_000L
+    }
+}
+
+private val inputSessionClock = InputSessionClock()
+
+/** Reset the input clock when the host handshake completes, matching the desktop GFN client. */
+internal fun startInputSessionClock() {
+    inputSessionClock.start()
+}
+
+internal fun timestampUs(): Long = inputSessionClock.timestampUs()
+
+/** Protocol v3 outer headers carry the send-time session clock, not device uptime. */
+internal fun restampProtocolV3OuterTimestamp(packet: ByteArray, nowUs: Long = timestampUs()): Boolean {
+    if (packet.size < 9 || packet[0] != 0x23.toByte()) return false
+    ByteBuffer.wrap(packet).order(ByteOrder.BIG_ENDIAN).putLong(1, nowUs.coerceAtLeast(0L))
+    return true
+}
 
 /**
  * WebRTC's low-latency AudioTrack path can race teardown and dereference a released AudioTrack.

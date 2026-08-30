@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">Animowane obramowania zaznaczenia</string>
     <string name="settings_live_selected_outlines_desc">Animuje zaznaczone gry, pozycje menu, wybory serwerów i opcje launchera. Wyłącz, aby zaznaczenie było spokojniejsze.</string>
     <string name="settings_absolute_cinema_effects">Efekty Absolute Cinema</string>
-    <string name="settings_absolute_cinema_effects_desc">Używa animowanych pomarańczowych i niebieskich pierścieni fokusu, zachowując wybrany kolor interfejsu.</string>
+    <string name="settings_absolute_cinema_effects_desc">Używa animowanych purpurowych i niebieskich pierścieni fokusu, zachowując wybrany kolor interfejsu.</string>
     <string name="settings_im_crazy">Jestem szalony</string>
     <string name="settings_im_crazy_desc">Puść Absolute Cinema na cały interfejs. Grafiki, opisy, elementy sterowania i więcej otrzymują efekt przy najechaniu i zaznaczeniu.</string>
     <string name="settings_show_favorite_icon">Pokaż ikonę ulubionych na kartach gier</string>

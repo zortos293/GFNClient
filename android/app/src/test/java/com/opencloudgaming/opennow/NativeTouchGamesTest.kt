@@ -54,6 +54,31 @@ class NativeTouchGamesTest {
     }
 
     @Test
+    fun physicalMouseWinsOverAutomaticFortniteTouchButNotExplicitAlwaysMode() {
+        val fortnite = game(title = "Fortnite", supportedControls = listOf("TOUCHSCREEN", "MOUSE"))
+        val streamSettings = StreamSettings()
+
+        assertFalse(
+            shouldUseNativeTouchForStream(
+                NativeTouchMode.Auto,
+                fortnite,
+                streamSettings,
+                preferVirtualController = false,
+                physicalMouseConnected = true,
+            ),
+        )
+        assertTrue(
+            shouldUseNativeTouchForStream(
+                NativeTouchMode.Always,
+                fortnite,
+                streamSettings,
+                preferVirtualController = false,
+                physicalMouseConnected = true,
+            ),
+        )
+    }
+
+    @Test
     fun catalogTouchFlagIsCaseInsensitive() {
         assertTrue(catalogClaimsTouchSupport(game(supportedControls = listOf("Touchscreen"))))
         assertFalse(catalogClaimsTouchSupport(game(supportedControls = listOf("X_INPUT_GAMEPAD"))))
@@ -116,8 +141,28 @@ class NativeTouchGamesTest {
     }
 
     @Test
-    fun theModeDefaultsToAuto() {
-        assertEquals(NativeTouchMode.Auto, AndroidTouchSettings().nativeTouchMode)
+    fun nativeTouchDefaultsToExplicitlyOff() {
+        val settings = AndroidTouchSettings()
+        assertEquals(NativeTouchMode.Off, settings.nativeTouchMode)
+        assertFalse(settings.nativeTouchOptedIn)
+        assertEquals(NativeTouchMode.Off, settings.effectiveNativeTouchMode())
+    }
+
+    @Test
+    fun legacyAutoSettingDoesNotCountAsAnOptIn() {
+        val legacy = AndroidTouchSettings(nativeTouchMode = NativeTouchMode.Auto)
+        assertEquals(NativeTouchMode.Off, legacy.effectiveNativeTouchMode())
+    }
+
+    @Test
+    fun choosingNativeTouchExplicitlyEnablesIt() {
+        val enabled = AndroidTouchSettings().withNativeTouchMode(NativeTouchMode.Auto)
+        assertTrue(enabled.nativeTouchOptedIn)
+        assertEquals(NativeTouchMode.Auto, enabled.effectiveNativeTouchMode())
+
+        val disabled = enabled.withNativeTouchMode(NativeTouchMode.Off)
+        assertFalse(disabled.nativeTouchOptedIn)
+        assertEquals(NativeTouchMode.Off, disabled.effectiveNativeTouchMode())
     }
 
     @Test

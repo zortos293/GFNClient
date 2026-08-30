@@ -96,6 +96,10 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
+/** Prefer Android's explicit relative axes whenever either axis carries a captured-mouse delta. */
+internal fun shouldUseAndroidRelativeMouseAxes(relativeDx: Float, relativeDy: Float): Boolean =
+    relativeDx != 0f || relativeDy != 0f
+
 internal fun shouldUseFixedSizeStreamSurface(
     videoWidth: Int,
     videoHeight: Int,
@@ -266,6 +270,10 @@ class NativeStreamClient(
     // Informational only. Gamepad snapshots stay ordered and reliable because a late, older
     // snapshot on the loss-tolerant channel can undo a newer button or stick state.
     private var partiallyReliableGamepadMask = 0
+    private var hidDeviceMask = 0
+    private var partiallyReliableHidMask = 0
+    @Volatile
+    private var inputHandshakeReady = false
     private var hapticsAdvertised: Boolean? = null
     private var lastHapticsAdvertisementAtMs = 0L
     private var videoTrack: VideoTrack? = null
@@ -358,6 +366,7 @@ class NativeStreamClient(
     private val gamepadStateBurstLimiter = GamepadStateBurstLimiter(GAMEPAD_STATE_MIN_SEND_INTERVAL_MS)
     private var gamepadStateBurstFlushJob: Job? = null
     private val externalMouseMotionAccumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
+    private val externalMouseAbsolutePosition = ExternalMouseAbsolutePosition()
     private val gyroscopeMouseMotionAccumulator = MouseMotionAccumulator()
     private val forwardedPhysicalInput = ForwardedPhysicalInputState()
     private var externalMouseMotionDeviceId = Int.MIN_VALUE
@@ -956,6 +965,7 @@ class NativeStreamClient(
         mousePositionValid = false
         mouseSuppressNextAbsoluteDelta = false
         externalMouseMotionAccumulator.reset()
+        externalMouseAbsolutePosition.reset()
         gyroscopeMouseMotionAccumulator.reset()
         externalMouseMotionDeviceId = Int.MIN_VALUE
         externalMouseMotionSource = 0
@@ -969,13 +979,14 @@ class NativeStreamClient(
         physicalGamepadAxisLogged = false
         resetGamepadStateBurstLimiter()
         inputEncoder.resetGamepadSequences()
+        inputHandshakeReady = false
         emitControllerMouseAssistChanged(false)
     }
 
     fun dispatchKey(event: KeyEvent): Boolean {
         // Before the WebRTC input channel opens, leave keyboard events available to Android and
         // Compose. Consuming them here makes queue/desktop UI look completely unresponsive.
-        if (!hasOpenInputChannel()) return false
+        if (!hasReadyInputChannel()) return false
         if (event.isGamepadEvent() && dispatchGamepadKey(event)) {
             return true
         }
@@ -1035,7 +1046,7 @@ class NativeStreamClient(
 
     fun dispatchMotion(event: MotionEvent): Boolean {
         // Mouse/controller events must fall through to native UI until cloud input is ready.
-        if (!hasOpenInputChannel()) return false
+        if (!hasReadyInputChannel()) return false
         if (event.isGamepadMotionEvent()) {
             return dispatchJoystick(event)
         }
@@ -1046,14 +1057,16 @@ class NativeStreamClient(
     }
 
     /**
-     * GFN negotiates mouse movement as loss-tolerant HID input. Prefer that low-latency channel
-     * for live pointer motion and fall back to reliable automatically when it is unavailable.
-     * Ordered synthetic sequences can opt out explicitly.
+     * Mouse packets are relative deltas, so every packet must arrive in order. Keep Android mouse
+     * motion on the reliable channel: losing a delta leaves the VM cursor permanently displaced,
+     * and the Android partially-reliable data channel has failed to move the live host cursor.
      */
-    fun sendRawMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
+    fun sendRawMouseMove(dx: Int, dy: Int): Boolean {
         return sendInput(
             inputEncoder.encodeMouseMove(dx, dy),
-            partiallyReliable = partiallyReliable,
+            partiallyReliable = false,
+            fallbackToReliable = true,
+            resultDiagnosticKey = "mouse.move",
         )
     }
 
@@ -1063,7 +1076,7 @@ class NativeStreamClient(
         return sendReliableInput(packet)
     }
 
-    fun sendTouchMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
+    fun sendTouchMouseMove(dx: Int, dy: Int): Boolean {
         var adjustedDx = dx * settings.mouseSensitivity
         var adjustedDy = dy * settings.mouseSensitivity
         if (settings.mouseAcceleration > 1) {
@@ -1076,7 +1089,7 @@ class NativeStreamClient(
         return sendBurstLimitedMouseMove(
             dx = adjustedDx.roundToInt(),
             dy = adjustedDy.roundToInt(),
-            partiallyReliable = partiallyReliable,
+            partiallyReliable = false,
         )
     }
 
@@ -1174,15 +1187,18 @@ class NativeStreamClient(
             MotionEvent.ACTION_MOVE,
             -> {
                 if (event.isRelativeMousePointer()) {
-                    // Android pointer capture reports SOURCE_MOUSE_RELATIVE deltas through X/Y.
-                    // Prefer that documented route on API 37 desktop mode even when the device
-                    // also exposes optional AXIS_RELATIVE values.
-                    val sent = sendExternalMouseMotionSamples(event, useRelativeAxes = false)
+                    // Captured-pointer implementations disagree about where relative motion lives.
+                    // Pixel/Logitech exposes RELATIVE_X/Y, while other devices only populate X/Y.
+                    // Resolve every coalesced sample independently so neither representation is
+                    // discarded when Android changes it during capture or device hand-off.
+                    val sent = sendExternalMouseMotionSamples(event)
                     if (sent && !externalMouseCapturedMoveSentLogged) {
                         externalMouseCapturedMoveSentLogged = true
                         NativeInputDiagnostics.add(
                             "external mouse captured move sent source=${event.source} device=${event.deviceId} " +
-                                "dx=${event.x} dy=${event.y}",
+                                "x=${event.x} y=${event.y} " +
+                                "relativeX=${event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)} " +
+                                "relativeY=${event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)}",
                         )
                     }
                     if (sent && !externalMouseMoveSentLogged) {
@@ -1191,7 +1207,7 @@ class NativeStreamClient(
                     }
                     mousePositionValid = false
                 } else if (event.hasRelativeAxisMotion()) {
-                    val sent = sendExternalMouseMotionSamples(event, useRelativeAxes = true)
+                    val sent = sendExternalMouseMotionSamples(event)
                     if (sent && !externalMouseMoveSentLogged) {
                         externalMouseMoveSentLogged = true
                         NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relative")
@@ -1322,23 +1338,18 @@ class NativeStreamClient(
             getAxisValue(MotionEvent.AXIS_RELATIVE_Y) != 0f
     }
 
-    private fun sendExternalMouseMotionSamples(event: MotionEvent, useRelativeAxes: Boolean): Boolean {
+    private fun sendExternalMouseMotionSamples(event: MotionEvent): Boolean {
         prepareExternalMouseMotion(event)
         var sendDx = 0
         var sendDy = 0
         // Pointer capture may coalesce several raw samples into one MotionEvent. Process every
         // sample before one packet is sent so neither slow motion nor high-polling-rate input is lost.
         for (historyIndex in 0 until event.historySize) {
-            val dx = if (useRelativeAxes) {
-                event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, historyIndex)
-            } else {
-                event.getHistoricalX(historyIndex)
-            }
-            val dy = if (useRelativeAxes) {
-                event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, historyIndex)
-            } else {
-                event.getHistoricalY(historyIndex)
-            }
+            val relativeDx = event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, historyIndex)
+            val relativeDy = event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, historyIndex)
+            val useRelativeAxes = shouldUseAndroidRelativeMouseAxes(relativeDx, relativeDy)
+            val dx = if (useRelativeAxes) relativeDx else event.getHistoricalX(historyIndex)
+            val dy = if (useRelativeAxes) relativeDy else event.getHistoricalY(historyIndex)
             externalMouseMotionAccumulator.add(
                 dx = dx,
                 dy = dy,
@@ -1350,8 +1361,11 @@ class NativeStreamClient(
                 sendDy += delta.dy
             }
         }
-        val dx = if (useRelativeAxes) event.getAxisValue(MotionEvent.AXIS_RELATIVE_X) else event.x
-        val dy = if (useRelativeAxes) event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y) else event.y
+        val relativeDx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+        val relativeDy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+        val useRelativeAxes = shouldUseAndroidRelativeMouseAxes(relativeDx, relativeDy)
+        val dx = if (useRelativeAxes) relativeDx else event.x
+        val dy = if (useRelativeAxes) relativeDy else event.y
         externalMouseMotionAccumulator.add(
             dx = dx,
             dy = dy,
@@ -1362,7 +1376,7 @@ class NativeStreamClient(
             sendDx += delta.dx
             sendDy += delta.dy
         }
-        return (sendDx != 0 || sendDy != 0) && sendRawMouseMove(sendDx, sendDy)
+        return (sendDx != 0 || sendDy != 0) && sendExternalMouseAbsoluteMove(sendDx, sendDy)
     }
 
     private fun sendExternalMouseMotion(event: MotionEvent, dx: Float, dy: Float): Boolean {
@@ -1374,12 +1388,31 @@ class NativeStreamClient(
             sensitivity = settings.mouseSensitivity,
             acceleration = settings.mouseAcceleration,
         ) ?: return false
-        return sendRawMouseMove(delta.dx, delta.dy)
+        return sendExternalMouseAbsoluteMove(delta.dx, delta.dy)
+    }
+
+    private fun sendExternalMouseAbsoluteMove(dx: Int, dy: Int): Boolean {
+        val (width, height) = streamResolutionPixels(settings)
+        val position = externalMouseAbsolutePosition.moveBy(dx, dy, width, height)
+        val usePartiallyReliable =
+            partiallyReliableInputState == DataChannel.State.OPEN &&
+                SdpTools.supportsPartiallyReliableHidInput(
+                    hidDeviceMask = hidDeviceMask,
+                    partiallyReliableHidMask = partiallyReliableHidMask,
+                    inputType = InputEncoder.INPUT_MOUSE_ABS,
+                )
+        return sendInput(
+            inputEncoder.encodeMouseAbsolute(position.x, position.y, position.width, position.height),
+            partiallyReliable = usePartiallyReliable,
+            fallbackToReliable = true,
+            resultDiagnosticKey = "mouse.absolute",
+        )
     }
 
     private fun prepareExternalMouseMotion(event: MotionEvent) {
         if (externalMouseMotionDeviceId == event.deviceId && externalMouseMotionSource == event.source) return
         externalMouseMotionAccumulator.reset()
+        externalMouseAbsolutePosition.reset()
         externalMouseMotionDeviceId = event.deviceId
         externalMouseMotionSource = event.source
     }
@@ -1910,6 +1943,9 @@ class NativeStreamClient(
         statsChannel = null
         lastParsedGameFps = null
         partiallyReliableGamepadMask = 0
+        hidDeviceMask = 0
+        partiallyReliableHidMask = 0
+        inputHandshakeReady = false
         hapticsAdvertised = null
         lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
@@ -1933,6 +1969,9 @@ class NativeStreamClient(
             statsChannel = null
             lastParsedGameFps = null
             partiallyReliableGamepadMask = 0
+            hidDeviceMask = 0
+            partiallyReliableHidMask = 0
+            inputHandshakeReady = false
             runCatching { closingSignaling?.disconnect() }
                 .onFailure { error -> recordStreamDiagnostic("signaling disconnect failed error=${error.message.orEmpty()}") }
             if (closingRendererSinkAttached && closingRenderer != null) {
@@ -2053,7 +2092,14 @@ class NativeStreamClient(
         ensureInputDataChannels(pc, preferred)
         inputEncoder.setProtocolVersion(SdpTools.parseInputProtocolVersion(preferred))
         partiallyReliableGamepadMask = SdpTools.parsePartiallyReliableGamepadMask(preferred)
-        recordStreamDiagnostic("offer input protocol=${SdpTools.parseInputProtocolVersion(preferred)} partialGamepadMask=$partiallyReliableGamepadMask")
+        hidDeviceMask = SdpTools.parseHidDeviceMask(preferred)
+        partiallyReliableHidMask = SdpTools.parsePartiallyReliableHidMask(preferred)
+        recordStreamDiagnostic(
+            "offer input protocol=${SdpTools.parseInputProtocolVersion(preferred)} " +
+                "partialGamepadMask=$partiallyReliableGamepadMask " +
+                "hidMask=${hidDeviceMask.toUInt()} partialHidMask=${partiallyReliableHidMask.toUInt()} " +
+                "mouseMoveTransport=negotiated-absolute-external",
+        )
         pc.setRemoteDescription(
             object : SimpleSdpObserver() {
                 override fun onSetSuccess() {
@@ -2756,8 +2802,6 @@ class NativeStreamClient(
                 if (state == DataChannel.State.OPEN) {
                     inputDropLogged = false
                     NativeInputDiagnostics.add("input channel open label=$normalizedLabel")
-                    updateHapticsAdvertisement(force = true)
-                    schedulePrimeConnectedGamepadState(reason = "channel open $normalizedLabel")
                 }
             }
             override fun onMessage(buffer: DataChannel.Buffer) {
@@ -2828,6 +2872,14 @@ class NativeStreamClient(
 
         inputEncoder.setProtocolVersion(version)
         inputEncoder.resetGamepadSequences()
+        startInputSessionClock()
+        inputHandshakeReady = true
+        // Pre-handshake sends are intentionally blocked now. Re-arm the one-shot diagnostics so
+        // the first protocol-ready mouse packet records its v3 size and negotiated transport.
+        externalMouseMoveSentLogged = false
+        externalMouseCapturedMoveSentLogged = false
+        workerInputSendConfirmed.set(false)
+        directInputSendConfirmed.set(false)
         NativeInputDiagnostics.addRetained(
             key = "protocol",
             message = "input handshake protocol=$version bytes=$size",
@@ -2846,6 +2898,7 @@ class NativeStreamClient(
         heartbeatJob = scope.launch {
             while (true) {
                 delay(1000)
+                if (!inputHandshakeReady) continue
                 val usePartialFallback =
                     reliableInputState != DataChannel.State.OPEN &&
                         partiallyReliableInputState == DataChannel.State.OPEN
@@ -3707,6 +3760,8 @@ class NativeStreamClient(
         reliableInputState == DataChannel.State.OPEN ||
             partiallyReliableInputState == DataChannel.State.OPEN
 
+    private fun hasReadyInputChannel(): Boolean = inputHandshakeReady && hasOpenInputChannel()
+
     private fun inputChannelStateSummary(): String =
         "reliable=${reliableInputState?.name ?: "none"} partial=${partiallyReliableInputState?.name ?: "none"}"
 
@@ -3751,6 +3806,7 @@ class NativeStreamClient(
                 }
                 return@runCatching
             }
+            restampProtocolV3OuterTimestamp(bytes)
             val accepted = channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
             resultDiagnosticKey?.let { key ->
                 NativeInputDiagnostics.retainResult(key, accepted) {
@@ -3798,6 +3854,7 @@ class NativeStreamClient(
         partiallyReliable: Boolean,
         resultDiagnosticKey: String? = null,
     ): Boolean = runCatching {
+        restampProtocolV3OuterTimestamp(bytes)
         channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
     }.fold(
         onSuccess = { accepted ->
@@ -3928,7 +3985,7 @@ class NativeStreamClient(
     }
 
     private fun updateHapticsAdvertisement(force: Boolean = false) {
-        if (reliableInputState != DataChannel.State.OPEN) return
+        if (!inputHandshakeReady || reliableInputState != DataChannel.State.OPEN) return
         val now = SystemClock.elapsedRealtime()
         // Periodically re-advertise: the controller can connect (or start reporting a vibrator)
         // after the session began, and once advertised with enabled=false the server keeps

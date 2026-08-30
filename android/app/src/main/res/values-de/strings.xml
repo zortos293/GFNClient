@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">Animierte Auswahlrahmen</string>
     <string name="settings_live_selected_outlines_desc">Animiert ausgewählte Spiele, Menüpunkte, Serverauswahl und Launcher-Optionen. Schalte es aus für ruhigere Auswahl.</string>
     <string name="settings_absolute_cinema_effects">Absolute-Cinema-Effekte</string>
-    <string name="settings_absolute_cinema_effects_desc">Nutzt animierte orange und blaue Fokusringe und behält dabei deine gewählte Oberflächenfarbe.</string>
+    <string name="settings_absolute_cinema_effects_desc">Nutzt animierte magentafarbene und blaue Fokusringe und behält dabei deine gewählte Oberflächenfarbe.</string>
     <string name="settings_im_crazy">Ich bin verrückt</string>
     <string name="settings_im_crazy_desc">Lass Absolute Cinema auf die gesamte Oberfläche los. Artwork, Beschreibungen, Bedienelemente und mehr bekommen den Effekt beim Überfahren und Fokussieren.</string>
     <string name="settings_show_favorite_icon">Favoritensymbol auf Spielkarten anzeigen</string>

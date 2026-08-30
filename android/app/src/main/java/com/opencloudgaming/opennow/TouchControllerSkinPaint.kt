@@ -348,13 +348,6 @@ private fun DrawScope.drawTouchDpad(
                     )
                 }
             }
-            // A hub keeps four loose keys reading as one control.
-            drawCircle(
-                color = border.copy(alpha = border.alpha * 0.5f),
-                radius = armPx * 0.17f,
-                center = center,
-                style = Stroke(width = borderWidth),
-            )
         }
 
         TouchDpadShape.Disc -> {
@@ -388,12 +381,6 @@ private fun DrawScope.drawTouchDpad(
                     size = Size(sliceRadius * 2f, sliceRadius * 2f),
                 )
             }
-            drawCircle(
-                color = border.copy(alpha = border.alpha * 0.55f),
-                radius = radius * 0.3f,
-                center = center,
-                style = Stroke(width = borderWidth),
-            )
         }
 
         TouchDpadShape.Blades -> {
@@ -419,12 +406,6 @@ private fun DrawScope.drawTouchDpad(
                     )
                 }
             }
-            drawCircle(
-                color = border.copy(alpha = border.alpha * 0.6f),
-                radius = inner * 0.62f,
-                center = center,
-                style = Stroke(width = borderWidth),
-            )
         }
     }
 
@@ -757,13 +738,9 @@ internal fun TouchControllerSkinPreview(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     TouchShoulderFace(label = "LB", pressed = false, width = 42.dp, height = 18.dp)
-                    Box(contentAlignment = Alignment.Center) {
-                        // A directional press in a still preview reads as a stuck Up/Right input.
-                        // Keep all four directions neutral and sample the active palette on the
-                        // non-interactive hub instead; live play still lights the direction held.
-                        TouchDpadFace(arm = 20.dp, up = false, down = false, left = false, right = false)
-                        TouchDpadPreviewHub()
-                    }
+                    // A directional press in a still preview reads as a stuck input, so keep all
+                    // four directions neutral. Live play still lights the direction being held.
+                    TouchDpadFace(arm = 20.dp, up = false, down = false, left = false, right = false)
                 }
                 TouchStickFace(diameter = 62.dp, base = { Offset.Zero }, knob = { Offset.Zero })
                 Column(
@@ -791,19 +768,6 @@ internal fun TouchControllerSkinPreview(
                 }
             }
         }
-    }
-}
-
-/** Decorative pressed-palette sample for the picker; the real d-pad hub remains non-interactive. */
-@Composable
-private fun TouchDpadPreviewHub() {
-    val colors = LocalTouchSkin.current
-    Canvas(Modifier.size(11.dp)) {
-        drawCircle(color = colors.pressedFill)
-        drawCircle(
-            color = colors.pressedBorder,
-            style = Stroke(width = colors.pressedBorderWidth.toPx()),
-        )
     }
 }
 

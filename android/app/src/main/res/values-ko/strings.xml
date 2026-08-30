@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">선택 테두리 애니메이션</string>
     <string name="settings_live_selected_outlines_desc">선택된 게임, 메뉴 항목, 서버 선택, 실행기 옵션에 애니메이션을 적용합니다. 차분한 선택 표시를 원하면 끄세요.</string>
     <string name="settings_absolute_cinema_effects">Absolute Cinema 효과</string>
-    <string name="settings_absolute_cinema_effects_desc">선택한 인터페이스 색을 유지하면서 주황색과 파란색 포커스 링 애니메이션을 사용합니다.</string>
+    <string name="settings_absolute_cinema_effects_desc">선택한 인터페이스 색을 유지하면서 마젠타와 파란색 포커스 링 애니메이션을 사용합니다.</string>
     <string name="settings_im_crazy">끝까지 간다</string>
     <string name="settings_im_crazy_desc">Absolute Cinema를 인터페이스 전체에 적용합니다. 마우스를 올리거나 포커스된 아트워크, 설명, 조작 요소 등에도 효과가 적용됩니다.</string>
     <string name="settings_show_favorite_icon">게임 카드에 즐겨찾기 아이콘 표시</string>

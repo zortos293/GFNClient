@@ -1068,20 +1068,22 @@ private fun SettingsContent(
                 }
                 if (!state.androidTvProfile) {
                     // Sends fingers to the PC as a real touchscreen, so games with a touch mode switch
-                    // to it themselves. Auto limits that to games known to react; Always is the escape
-                    // hatch for when the built-in list lags behind the catalog.
+                    // to it themselves. It stays off until the player explicitly chooses a mode.
+                    val effectiveNativeTouchMode = settings.androidTouch.effectiveNativeTouchMode()
                     ChoiceMenuRow(
                         label = "Native touch",
                         options = NativeTouchMode.entries.map { mode ->
                             ChoiceMenuOption(value = mode.name, label = nativeTouchModeLabel(mode))
                         },
-                        selectedLabel = nativeTouchModeLabel(settings.androidTouch.nativeTouchMode),
+                        selectedLabel = nativeTouchModeLabel(effectiveNativeTouchMode),
                     ) { value ->
-                        val mode = NativeTouchMode.entries.firstOrNull { it.name == value } ?: NativeTouchMode.Auto
-                        viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(nativeTouchMode = mode)))
+                        val mode = NativeTouchMode.entries.firstOrNull { it.name == value } ?: NativeTouchMode.Off
+                        viewModel.updateSettings(
+                            settings.copy(androidTouch = settings.androidTouch.withNativeTouchMode(mode)),
+                        )
                     }
                     if (
-                        settings.androidTouch.nativeTouchMode == NativeTouchMode.Auto &&
+                        effectiveNativeTouchMode == NativeTouchMode.Auto &&
                         settings.stream.requiresNativeDesktopCloudMatchMode()
                     ) {
                         Text(
@@ -1090,7 +1092,7 @@ private fun SettingsContent(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    if (settings.androidTouch.nativeTouchMode != NativeTouchMode.Off) {
+                    if (effectiveNativeTouchMode != NativeTouchMode.Off) {
                         Box(Modifier.padding(start = 24.dp)) {
                             Column {
                                 val scrollSpeedLabel = when {

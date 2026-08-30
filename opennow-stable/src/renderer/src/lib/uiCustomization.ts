@@ -10,7 +10,6 @@ const ACCENT_COLOR_OPTIONS: readonly AccentColorOption[] = [
   { value: "green", labelKey: "settings.interface.accentColorGreen", hex: "#58d98a" },
   { value: "blue", labelKey: "settings.interface.accentColorBlue", hex: "#4f8cff" },
   { value: "violet", labelKey: "settings.interface.accentColorViolet", hex: "#8b6cff" },
-  { value: "amber", labelKey: "settings.interface.accentColorAmber", hex: "#f5b942" },
   { value: "rose", labelKey: "settings.interface.accentColorRose", hex: "#ff6b9a" },
 ] as const;
 

@@ -111,6 +111,14 @@ class TouchControllerSkinTest {
     }
 
     @Test
+    fun removedWarmTintsMigrateToMagenta() {
+        val magenta = ControllerThemeRgb(255, 92, 190)
+
+        assertEquals(magenta, ControllerThemeRgb(255, 176, 32).withoutRemovedWarmTint())
+        assertEquals(magenta, ControllerThemeRgb(255, 106, 43).withoutRemovedWarmTint())
+    }
+
+    @Test
     fun unsetTintUsesTheSkinsOwnAccent() {
         val settings = AndroidTouchSettings(touchControllerStyle = TouchControllerStyle.Retro, touchSkinTint = null)
         assertEquals(defaultTouchSkinAccent(TouchControllerStyle.Retro), touchSkinAccent(settings))

@@ -4354,7 +4354,15 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private fun appLaunchModeFor(game: GameInfo?, settings: StreamSettings): Int =
         if (
             !androidTvProfile &&
-            shouldUseNativeTouch(_state.value.settings.androidTouch.nativeTouchMode, game, settings)
+            !shouldPhysicalMouseOverrideNativeTouch(
+                mode = _state.value.settings.androidTouch.effectiveNativeTouchMode(),
+                physicalMouseConnected = hasConnectedPhysicalMouse(),
+            ) &&
+            shouldUseNativeTouch(
+                _state.value.settings.androidTouch.effectiveNativeTouchMode(),
+                game,
+                settings,
+            )
         ) {
             GfnAppLaunchMode.TOUCH_FRIENDLY
         } else {

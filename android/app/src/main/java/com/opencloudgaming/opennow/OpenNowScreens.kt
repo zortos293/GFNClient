@@ -326,8 +326,8 @@ internal val UiAccent.color: Color
         UiAccent.Lime -> OpenNowPalette.AccentLime
         UiAccent.Coral -> OpenNowPalette.AccentCoral
         UiAccent.Violet -> OpenNowPalette.AccentViolet
-        UiAccent.Orange -> OpenNowPalette.AccentOrange
-        UiAccent.AbsoluteCinema -> OpenNowPalette.AccentCinemaOrange
+        UiAccent.LegacyOrange -> OpenNowPalette.AccentViolet
+        UiAccent.AbsoluteCinema -> Color.White
         UiAccent.Switch -> OpenNowPalette.AccentSwitchRed
     }
 
@@ -339,18 +339,18 @@ internal fun uiAccentLabel(accent: UiAccent): String = when (accent) {
     UiAccent.Lime -> stringResource(R.string.accent_lime)
     UiAccent.Coral -> stringResource(R.string.accent_coral)
     UiAccent.Violet -> stringResource(R.string.accent_violet)
-    UiAccent.Orange -> stringResource(R.string.accent_orange)
+    UiAccent.LegacyOrange -> stringResource(R.string.accent_violet)
     UiAccent.AbsoluteCinema -> stringResource(R.string.accent_absolute_cinema)
     UiAccent.Switch -> stringResource(R.string.accent_switch)
 }
 
 /** Accent selection is independent from the switches that opt into Cinema border effects. */
-internal fun selectableUiAccents(): List<UiAccent> = UiAccent.entries
+internal fun selectableUiAccents(): List<UiAccent> = UiAccent.entries.filterNot { it == UiAccent.LegacyOrange }
 
 internal val UiAccent.secondaryColor: Color
     get() = when (this) {
         UiAccent.OpenNow -> OpenNowPalette.AccentDefaultSecondary
-        UiAccent.AbsoluteCinema -> OpenNowPalette.AccentCinemaBlue
+        UiAccent.AbsoluteCinema -> Color.White
         UiAccent.Switch -> OpenNowPalette.AccentSwitchBlue
         else -> color
     }
@@ -382,7 +382,7 @@ internal val NavigationSelectionColor = Color.White
  * accent remains the color owner.
  *
  * [ActiveSelectionEffectStyle.tintColor] splits flat selection from animated energy. Both use the
- * selected color; enabling Cinema never chooses orange or changes the Material palette.
+ * selected color; enabling Cinema never changes the Material palette.
  */
 internal fun AppSettings.activeSelectionEffectStyle(): ActiveSelectionEffectStyle {
     val cinemaEverywhere = absoluteCinemaEffects && absoluteCinemaEverywhere
@@ -409,8 +409,8 @@ internal fun UiAccent.usesDefaultSelectionTint(): Boolean =
 /**
  * The Material palette colour for an accent.
  *
- * Absolute Cinema keeps the regular Material palette and reserves orange/blue for artwork borders
- * and optional energy frames. Selecting it never enables those effects by itself.
+ * Absolute Cinema keeps the regular Material palette and white artwork/focus borders. Selecting it
+ * never enables those effects by itself; choosing another accent can still tint Cinema effects.
  */
 internal val UiAccent.themeColor: Color
     get() = if (this == UiAccent.AbsoluteCinema) OpenNowPalette.AccentDefault else color

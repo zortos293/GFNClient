@@ -1006,7 +1006,7 @@ internal class TouchMouseState {
             // The reanchor series is order-sensitive: the host must clamp through the top-left
             // boundary before moving to the target. The unordered loss-tolerant channel could
             // deliver these out of order and clamp the cursor back to 0,0, so keep it reliable.
-            if (!client.sendRawMouseMove(delta.dx, delta.dy, partiallyReliable = false)) {
+            if (!client.sendRawMouseMove(delta.dx, delta.dy)) {
                 virtualCursor.forget()
                 return false
             }

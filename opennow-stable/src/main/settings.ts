@@ -154,7 +154,7 @@ const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
 const CONTROLLER_THEME_STYLES_SET = new Set<ControllerThemeStyle>(["aurora", "nebula", "grid", "minimal", "pulse"]);
 const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
-const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
+const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "rose"]);
 
 function clampThemeByte(value: unknown): number {
   const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : NaN;

@@ -275,12 +275,35 @@ object SdpTools {
             PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
         )
 
+    fun parseHidDeviceMask(sdp: String): Int =
+        parseRiIntegerAttribute(sdp, "ri.hidDeviceMask", HID_DEVICE_MASK_ALL)
+
+    fun parsePartiallyReliableHidMask(sdp: String): Int =
+        parseRiIntegerAttribute(
+            sdp,
+            "ri.enablePartiallyReliableTransferHid",
+            HID_DEVICE_MASK_ALL,
+        )
+
+    fun supportsPartiallyReliableHidInput(
+        hidDeviceMask: Int,
+        partiallyReliableHidMask: Int,
+        inputType: Int,
+    ): Boolean {
+        if (inputType !in 0..31) return false
+        val inputMask = 1 shl inputType
+        return (hidDeviceMask and inputMask) != 0 &&
+            (partiallyReliableHidMask and inputMask) != 0
+    }
+
     fun buildNvstSdp(offerSdp: String, settings: StreamSettings, localAnswer: String): String {
         val (width, height) = streamResolutionPixels(settings)
         val ufrag = Regex("a=ice-ufrag:([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val pwd = Regex("a=ice-pwd:([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val fingerprint = Regex("a=fingerprint:sha-256 ([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val threshold = Regex("a=ri\\.partialReliableThresholdMs:(\\d+)").find(offerSdp)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 30
+        val hidDeviceMask = parseHidDeviceMask(offerSdp)
+        val partiallyReliableHidMask = parsePartiallyReliableHidMask(offerSdp)
         val bitDepth = if (settings.hdrEnabled || settings.colorQuality == ColorQuality.TenBit420 || settings.colorQuality == ColorQuality.TenBit444) 10 else 8
         // The settings UI intentionally allows 1-3 Mbps for severely constrained links. Keep the
         // usual NVIDIA 4 Mbps floor for normal profiles, but never let that floor exceed the
@@ -456,9 +479,9 @@ object SdpTools {
             add("m=application 0 RTP/AVP")
             add("a=msid:input_1")
             add("a=ri.partialReliableThresholdMs:$threshold")
-            add("a=ri.hidDeviceMask:4294967295")
+            add("a=ri.hidDeviceMask:${hidDeviceMask.toUInt()}")
             add("a=ri.enablePartiallyReliableTransferGamepad:15")
-            add("a=ri.enablePartiallyReliableTransferHid:4294967295")
+            add("a=ri.enablePartiallyReliableTransferHid:${partiallyReliableHidMask.toUInt()}")
             add("")
         }.joinToString("\n")
     }
@@ -508,9 +531,9 @@ object SdpTools {
             ?.trim()
             ?: return fallback
         val parsed = if (raw.startsWith("0x", ignoreCase = true)) {
-            raw.drop(2).toIntOrNull(16)
+            raw.drop(2).toULongOrNull(16)?.toInt()
         } else {
-            raw.toIntOrNull()
+            raw.toLongOrNull()?.toInt()
         }
         return parsed ?: fallback
     }
@@ -519,4 +542,5 @@ object SdpTools {
     private const val MIN_CONFIGURABLE_BITRATE_KBPS = 1000
     private const val HIGH_RESOLUTION_AV1_SPLIT_ENCODE_PIXELS = 2_764_800
     private const val PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = 0x0f
+    private const val HID_DEVICE_MASK_ALL = -1
 }

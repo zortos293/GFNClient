@@ -1069,14 +1069,13 @@ internal fun AndroidUpdateNoticeRow(
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onOpenUpdates),
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+        color = MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Row(
             Modifier.padding(start = 12.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            UpdateStatusBadge(update.status)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(accountUpdateTitle(update), color = SettingsText, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(accountUpdateSubtitle(update), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)

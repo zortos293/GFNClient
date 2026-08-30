@@ -28,6 +28,15 @@ internal fun nativeTouchModeLabel(mode: NativeTouchMode): String = when (mode) {
     NativeTouchMode.Always -> "Every game"
 }
 
+/** Legacy installs saved Auto by default, so only a post-migration player choice may enable it. */
+internal fun AndroidTouchSettings.effectiveNativeTouchMode(): NativeTouchMode =
+    if (nativeTouchOptedIn) nativeTouchMode else NativeTouchMode.Off
+
+internal fun AndroidTouchSettings.withNativeTouchMode(mode: NativeTouchMode): AndroidTouchSettings = copy(
+    nativeTouchMode = mode,
+    nativeTouchOptedIn = mode != NativeTouchMode.Off,
+)
+
 internal fun shouldUseNativeTouch(mode: NativeTouchMode, game: GameInfo?): Boolean = when (mode) {
     NativeTouchMode.Off -> false
     NativeTouchMode.Always -> true
@@ -55,16 +64,29 @@ internal fun shouldUseNativeTouchForStream(
     game: GameInfo?,
     streamSettings: StreamSettings,
     preferVirtualController: Boolean,
-): Boolean = !preferVirtualController && shouldUseNativeTouch(mode, game, streamSettings)
+    physicalMouseConnected: Boolean = false,
+): Boolean = !preferVirtualController &&
+    !shouldPhysicalMouseOverrideNativeTouch(mode, physicalMouseConnected) &&
+    shouldUseNativeTouch(mode, game, streamSettings)
+
+/** Auto yields to an attached mouse; Always remains the player's explicit touch-first override. */
+internal fun shouldPhysicalMouseOverrideNativeTouch(
+    mode: NativeTouchMode,
+    physicalMouseConnected: Boolean,
+): Boolean = physicalMouseConnected && mode == NativeTouchMode.Auto
 
 /** One line per session showing the catalog signal and the resulting native-touch decision. */
-internal fun nativeTouchDiagnostics(game: GameInfo, enabled: Boolean): String {
+internal fun nativeTouchDiagnostics(
+    game: GameInfo,
+    enabled: Boolean,
+    physicalMouseConnected: Boolean = false,
+): String {
     val controls = game.variants
         .flatMap { it.supportedControls }
         .distinct()
         .joinToString("|")
         .ifBlank { "none" }
-    return "native touch enabled=$enabled id=${game.id} title=${game.title} " +
+    return "native touch enabled=$enabled physicalMouse=$physicalMouseConnected id=${game.id} title=${game.title} " +
         "catalogTouch=${catalogClaimsTouchSupport(game)} " +
         "supportedControls=$controls"
 }

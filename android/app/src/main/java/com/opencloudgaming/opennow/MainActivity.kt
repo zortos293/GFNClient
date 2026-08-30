@@ -302,6 +302,9 @@ class MainActivity : ComponentActivity() {
             decorView.isFocusable = true
             decorView.isFocusableInTouchMode = true
             decorView.requestFocus()
+            // Compose/SurfaceView can move focus to a descendant after capture starts. Refresh the
+            // listener across the current tree so the focused child keeps forwarding deltas.
+            decorView.applyCapturedPointerListenerRecursive(streamCapturedPointerListener)
             runCatching { decorView.requestPointerCapture() }
                 .onSuccess {
                     NativeInputDiagnostics.addRetained(
@@ -422,14 +425,8 @@ class MainActivity : ComponentActivity() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val decorView = window.decorView
-            decorView.setOnCapturedPointerListener(
-                if (active) {
-                    View.OnCapturedPointerListener { _, event ->
-                        dispatchCapturedStreamPointer(event)
-                    }
-                } else {
-                    null
-                },
+            decorView.applyCapturedPointerListenerRecursive(
+                if (active) streamCapturedPointerListener else null,
             )
             if (!active) {
                 runCatching { decorView.releasePointerCapture() }
@@ -448,8 +445,20 @@ class MainActivity : ComponentActivity() {
         if (!shouldRouteCapturedAndroidMousePointer(streamSystemUiActive, event.isMouseLikePointerEvent())) {
             return false
         }
+        NativeInputDiagnostics.retainThrottled(
+            key = "mouse.captured-route",
+            minimumIntervalMs = 250L,
+        ) {
+            "captured mouse routed source=${event.source} device=${event.deviceId} " +
+                "relativeX=${event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)} " +
+                "relativeY=${event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)}"
+        }
         enforceStreamSystemUiFromInput()
         return NativeStreamInputRouter.dispatchMotion(event)
+    }
+
+    private val streamCapturedPointerListener = View.OnCapturedPointerListener { _, event ->
+        dispatchCapturedStreamPointer(event)
     }
 
     /** Reapplies only immersive bars; pointer-icon traversal and window flags are state changes. */
@@ -758,6 +767,16 @@ class MainActivity : ComponentActivity() {
         if (this is ViewGroup) {
             for (index in 0 until childCount) {
                 getChildAt(index).applyPointerIconRecursive(icon)
+            }
+        }
+    }
+
+    private fun View.applyCapturedPointerListenerRecursive(listener: View.OnCapturedPointerListener?) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        setOnCapturedPointerListener(listener)
+        if (this is ViewGroup) {
+            for (index in 0 until childCount) {
+                getChildAt(index).applyCapturedPointerListenerRecursive(listener)
             }
         }
     }

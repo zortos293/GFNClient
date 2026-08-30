@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">إطارات تحديد متحركة</string>
     <string name="settings_live_selected_outlines_desc">يحرّك الألعاب المحدّدة وعناصر القوائم واختيارات الخوادم وخيارات المُشغّل. أوقفه لتحديد أهدأ.</string>
     <string name="settings_absolute_cinema_effects">مؤثرات Absolute Cinema</string>
-    <string name="settings_absolute_cinema_effects_desc">يستخدم حلقات تركيز متحركة برتقالية وزرقاء مع الحفاظ على لون الواجهة الذي اخترته.</string>
+    <string name="settings_absolute_cinema_effects_desc">يستخدم حلقات تركيز متحركة أرجوانية وزرقاء مع الحفاظ على لون الواجهة الذي اخترته.</string>
     <string name="settings_im_crazy">أنا مجنون</string>
     <string name="settings_im_crazy_desc">أطلق Absolute Cinema على الواجهة بأكملها. الصور الفنية عند التمرير والتركيز والأوصاف وعناصر التحكم وغيرها تحصل على المؤثر.</string>
     <string name="settings_show_favorite_icon">إظهار رمز المفضّلة على بطاقات الألعاب</string>

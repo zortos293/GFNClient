@@ -317,6 +317,26 @@ class SdpToolsTest {
         assertTrue(h265.contains("a=vqos.bllFec.enable:0"))
     }
 
+    @Test
+    fun partiallyReliableAbsoluteMouseRequiresBothNegotiatedHidMasks() {
+        val absoluteMouseMask = 1 shl InputEncoder.INPUT_MOUSE_ABS
+
+        assertTrue(
+            SdpTools.supportsPartiallyReliableHidInput(
+                hidDeviceMask = absoluteMouseMask,
+                partiallyReliableHidMask = absoluteMouseMask,
+                inputType = InputEncoder.INPUT_MOUSE_ABS,
+            ),
+        )
+        assertFalse(
+            SdpTools.supportsPartiallyReliableHidInput(
+                hidDeviceMask = absoluteMouseMask,
+                partiallyReliableHidMask = 0,
+                inputType = InputEncoder.INPUT_MOUSE_ABS,
+            ),
+        )
+    }
+
     private fun buildNvstSdp(settings: StreamSettings): String =
         SdpTools.buildNvstSdp(
             offerSdp = "a=ri.partialReliableThresholdMs:42",

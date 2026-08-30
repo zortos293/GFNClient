@@ -75,8 +75,10 @@ enum class UiAccent {
     Lime,
     Coral,
     Violet,
-    Orange,
-    /** Orange/blue Absolute Cinema accent, selectable independently from its optional effects. */
+    /** Reads the removed Orange preference so existing settings can migrate without being reset. */
+    @SerialName("Orange")
+    LegacyOrange,
+    /** Magenta/blue Absolute Cinema accent, selectable independently from its optional effects. */
     AbsoluteCinema,
     Switch,
 }
@@ -380,7 +382,12 @@ data class AndroidTouchSettings(
     val rightOffsetXDp: Float = 0f,
     val rightOffsetYDp: Float = 0f,
     val mouseDirectClick: Boolean = false,
-    val nativeTouchMode: NativeTouchMode = NativeTouchMode.Auto,
+    val nativeTouchMode: NativeTouchMode = NativeTouchMode.Off,
+    /**
+     * Distinguishes an explicit Native Touch choice from the legacy Auto default. Existing saved
+     * settings do not contain this field and therefore remain off until the player opts in.
+     */
+    val nativeTouchOptedIn: Boolean = false,
     /**
      * Scales the velocity of touch movement in native touch mode. Values below 1.0 slow down
      * scroll/swipe gestures; values above 1.0 speed them up. Default 1.0 = no scaling.

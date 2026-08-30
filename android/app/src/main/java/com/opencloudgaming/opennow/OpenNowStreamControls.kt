@@ -2544,7 +2544,7 @@ private fun LazyListScope.mouseModePageItems(
             )
         }
     }
-    if (settings.androidTouch.nativeTouchMode != NativeTouchMode.Off) {
+    if (settings.androidTouch.effectiveNativeTouchMode() != NativeTouchMode.Off) {
         item {
             val scrollSpeedLabel = when {
                 settings.androidTouch.nativeTouchScrollScale <= 0.5f -> "Very slow"

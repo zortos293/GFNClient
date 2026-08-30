@@ -95,4 +95,11 @@ class ExternalMousePointerCaptureTest {
             ),
         )
     }
+
+    @Test
+    fun capturedMousePrefersExplicitRelativeAxesAndFallsBackWhenTheyAreEmpty() {
+        assertTrue(shouldUseAndroidRelativeMouseAxes(relativeDx = 4f, relativeDy = 0f))
+        assertTrue(shouldUseAndroidRelativeMouseAxes(relativeDx = 0f, relativeDy = -3f))
+        assertFalse(shouldUseAndroidRelativeMouseAxes(relativeDx = 0f, relativeDy = 0f))
+    }
 }

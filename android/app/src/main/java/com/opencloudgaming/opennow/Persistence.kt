@@ -314,10 +314,12 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         normalizedCatalogSortId
     }
     return copy(
+        uiAccent = if (uiAccent == UiAccent.LegacyOrange) UiAccent.Violet else uiAccent,
         stream = lowPowerSafe,
         posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
         streamKeyboardButtonPosition = streamKeyboardButtonPosition.normalized(),
         androidTouch = androidTouch.copy(
+            touchSkinTint = androidTouch.touchSkinTint.withoutRemovedWarmTint(),
             opacity = androidTouch.opacity.finiteIn(0f, 1f, touchDefaults.opacity),
             scale = androidTouch.scale.finiteIn(0.6f, 1.4f, touchDefaults.scale),
             buttonScale = androidTouch.buttonScale.finiteIn(0.65f, 1.5f, touchDefaults.buttonScale),

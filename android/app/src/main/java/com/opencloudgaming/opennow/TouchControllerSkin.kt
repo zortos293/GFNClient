@@ -163,7 +163,7 @@ internal data class TouchSkinForm(
 /** Used when [AndroidTouchSettings.touchSkinTint] is unset. */
 internal fun defaultTouchSkinAccent(style: TouchControllerStyle): Color = when (style) {
     TouchControllerStyle.Neon -> Color(0xff42c9ff)
-    TouchControllerStyle.Retro -> Color(0xffffb020)
+    TouchControllerStyle.Retro -> Color(0xffa685ff)
     TouchControllerStyle.Frost -> Color(0xffdff1ff)
     TouchControllerStyle.Arcade -> Color(0xffff4d5e)
     TouchControllerStyle.V1, TouchControllerStyle.V2, TouchControllerStyle.Contrast -> Color.White
@@ -434,12 +434,20 @@ internal val TOUCH_SKIN_TINTS: List<TouchSkinTintOption> = listOf(
     TouchSkinTintOption("white", "White", ControllerThemeRgb(255, 255, 255)),
     TouchSkinTintOption("cyan", "Cyan", ControllerThemeRgb(66, 201, 255)),
     TouchSkinTintOption("green", "Green", ControllerThemeRgb(124, 241, 177)),
-    TouchSkinTintOption("amber", "Amber", ControllerThemeRgb(255, 176, 32)),
-    TouchSkinTintOption("orange", "Orange", ControllerThemeRgb(255, 106, 43)),
     TouchSkinTintOption("magenta", "Magenta", ControllerThemeRgb(255, 92, 190)),
     TouchSkinTintOption("violet", "Violet", ControllerThemeRgb(166, 133, 255)),
     TouchSkinTintOption("red", "Red", ControllerThemeRgb(255, 82, 82)),
 )
+
+private val LegacyAmberTouchTint = ControllerThemeRgb(255, 176, 32)
+private val LegacyOrangeTouchTint = ControllerThemeRgb(255, 106, 43)
+private val ReplacementTouchTint = ControllerThemeRgb(255, 92, 190)
+
+/** Preserves old settings while ensuring removed warm presets cannot remain active. */
+internal fun ControllerThemeRgb?.withoutRemovedWarmTint(): ControllerThemeRgb? = when (this) {
+    LegacyAmberTouchTint, LegacyOrangeTouchTint -> ReplacementTouchTint
+    else -> this
+}
 
 /** Falls back to the default entry for a colour saved by a build that offered a wider list. */
 internal fun touchSkinTintId(tint: ControllerThemeRgb?): String =

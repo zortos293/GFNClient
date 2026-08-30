@@ -138,6 +138,7 @@ internal fun StreamScreen(
         videoTransportFallbackReason = null
     }
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = streamReady)
+    val physicalMouseConnected = rememberPhysicalMouseConnected(enabled = streamReady)
     var showTouchControlsWithPhysicalController by remember(session?.sessionId) { mutableStateOf(false) }
     var preferVirtualController by remember(session?.sessionId) { mutableStateOf(false) }
     var physicalControllerPromptOpen by remember(session?.sessionId) { mutableStateOf(false) }
@@ -150,23 +151,25 @@ internal fun StreamScreen(
             !showTouchControlsWithPhysicalController
     val builtInGameTouchSupported = !tvProfile && game?.let(::catalogClaimsTouchSupport) == true
     val nativeTouchAvailable = !tvProfile && shouldUseNativeTouch(
-        state.settings.androidTouch.nativeTouchMode,
+        state.settings.androidTouch.effectiveNativeTouchMode(),
         game,
         state.activeStreamSettings ?: state.settings.stream,
     )
     // Native game touch and the virtual controller need exclusive ownership of the same fingers.
     // Catalog touch remains the default, while a player's in-session controller choice wins.
     val nativeTouchActive = !tvProfile && shouldUseNativeTouchForStream(
-        state.settings.androidTouch.nativeTouchMode,
+        state.settings.androidTouch.effectiveNativeTouchMode(),
         game,
         state.activeStreamSettings ?: state.settings.stream,
         preferVirtualController = preferVirtualController,
+        physicalMouseConnected = physicalMouseConnected,
     )
     val touchControlsVisible = shouldShowAndroidTouchControls(
         tvProfile = tvProfile,
         touchInputEnabled = touchInputEnabled,
         touchControlsEnabled = state.settings.androidTouch.enabled,
         suppressedByPhysicalController = touchControlsSuppressedByPhysicalController,
+        physicalMouseConnected = physicalMouseConnected,
     ) && !nativeTouchActive
     val touchMouseActive =
         streamReady && touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive
@@ -467,15 +470,22 @@ internal fun StreamScreen(
         streamReady,
         touchInputEnabled,
         nativeTouchActive,
+        physicalMouseConnected,
         state.streamGame?.id,
     ) {
-        val game = state.streamGame
+        val activeGame = state.streamGame
         val enabled = streamReady && touchInputEnabled && nativeTouchActive
         NativeStreamInputRouter.setNativeTouchEnabled(enabled)
         // Records what the catalog says about this game even when we leave touch off, so the fixed
         // list in NativeTouchGames.kt can be filled in — and eventually retired — from real data.
-        if (game != null && streamReady) {
-            NativeInputDiagnostics.add(nativeTouchDiagnostics(game, enabled))
+        if (activeGame != null && streamReady) {
+            NativeInputDiagnostics.add(
+                nativeTouchDiagnostics(
+                    game = activeGame,
+                    enabled = enabled,
+                    physicalMouseConnected = physicalMouseConnected,
+                ),
+            )
         }
     }
 
@@ -1139,8 +1149,13 @@ internal fun shouldShowAndroidTouchControls(
     touchInputEnabled: Boolean,
     touchControlsEnabled: Boolean,
     suppressedByPhysicalController: Boolean,
+    physicalMouseConnected: Boolean = false,
 ): Boolean =
-    !tvProfile && touchInputEnabled && touchControlsEnabled && !suppressedByPhysicalController
+    !tvProfile &&
+        touchInputEnabled &&
+        touchControlsEnabled &&
+        !suppressedByPhysicalController &&
+        !physicalMouseConnected
 
 private data class SessionTimerDisplay(
     val label: String,

@@ -27,10 +27,6 @@ import kotlin.math.floor
 import kotlin.math.sin
 
 private const val ENERGY_ORBIT_DURATION_MS = 2_600
-private val ElectricBlue = Color(0xff42c9ff)
-private val ElectricBlueHot = Color(0xffd9f8ff)
-private val FireOrange = Color(0xffff6a2b)
-private val FireHot = Color(0xffffd166)
 
 internal fun shouldShowEnhancedControllerFocus(
     focused: Boolean,
@@ -195,10 +191,10 @@ internal fun BoxScope.ControllerFocusFrame(
             )
         }
 
-        val firstColor = tint ?: FireOrange
-        val firstHotColor = tint?.focusHighlight() ?: FireHot
-        val secondColor = secondaryTint ?: tint?.focusShade() ?: ElectricBlue
-        val secondHotColor = secondaryTint?.focusHighlight() ?: tint ?: ElectricBlueHot
+        val firstColor = tint ?: Color.White
+        val firstHotColor = tint?.focusHighlight() ?: Color.White
+        val secondColor = secondaryTint ?: tint?.focusShade() ?: Color.White
+        val secondHotColor = secondaryTint?.focusHighlight() ?: tint ?: Color.White
         drawEnergyArc(firstColor, firstHotColor, fireArc, fireStatic)
         drawEnergyArc(secondColor, secondHotColor, blueArc, blueStatic)
 

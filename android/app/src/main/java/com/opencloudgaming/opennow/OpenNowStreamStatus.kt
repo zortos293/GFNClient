@@ -206,7 +206,7 @@ internal fun StreamStatsPill(
         // what keeps its edge readable against a bright frame.
         color = Panel.copy(alpha = 0.52f),
         border = BorderStroke(
-            width = if (absoluteCinemaEnabled) 3.dp else 1.dp,
+            width = 1.dp,
             color = if (absoluteCinemaEnabled) Color.White else OpenNowPalette.PanelHairline,
         ),
         tonalElevation = 0.dp,

@@ -47,6 +47,7 @@ private slots:
         QSignalSpy responses(&client, &CoreClient::responseReceived);
         QSignalSpy failures(&client, &CoreClient::requestFailed);
         QSignalSpy events(&client, &CoreClient::eventReceived);
+        QSignalSpy logs(&client, &CoreClient::coreLogReceived);
         const auto helper = fakeCorePath();
 
         QVERIFY(client.start(helper));
@@ -90,6 +91,11 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(responses.size(), responseCount + 1, 2'000);
         QCOMPARE(responses.last().at(0).toString(), partialId);
         QVERIFY(responses.last().at(1).toJsonObject().value(QStringLiteral("fragmented")).toBool());
+
+        client.request(QStringLiteral("test.stderr"));
+        QTRY_COMPARE_WITH_TIMEOUT(logs.size(), 1, 2'000);
+        QCOMPARE(logs.first().at(0).toString(),
+                 QStringLiteral("native-streamer: decoder diagnostic"));
     }
 
     void restartsAfterUnexpectedExit()

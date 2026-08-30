@@ -16,14 +16,14 @@ use ::windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use ::windows::Win32::Graphics::Direct3D11::{
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
     D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
-    D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
-    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM,
-    D3D11_VIDEO_USAGE_OPTIMAL_SPEED, D3D11_VPIV_DIMENSION_TEXTURE2D,
+    D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT,
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
+    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_OPTIMAL_SPEED, D3D11_VPIV_DIMENSION_TEXTURE2D,
     D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
     ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoContext1, ID3D11VideoDevice,
-    ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView,
-    ID3D11VideoProcessorOutputView,
+    ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorEnumerator1,
+    ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
 };
 use ::windows::Win32::Graphics::Direct3D11on12::{D3D11On12CreateDevice, ID3D11On12Device};
 use ::windows::Win32::Graphics::Direct3D12::{
@@ -33,14 +33,14 @@ use ::windows::Win32::Graphics::Direct3D12::{
 use ::windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
     DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
-    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_RATIONAL,
-    DXGI_SAMPLE_DESC,
+    DXGI_FORMAT, DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_Y410, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use ::windows::Win32::Graphics::Dxgi::{
     DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT,
     DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
     DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
-    DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice,
+    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice,
     IDXGIFactory2, IDXGIFactory5, IDXGISwapChain1, IDXGISwapChain2, IDXGISwapChain3,
 };
 use ::windows::Win32::Media::MediaFoundation::{IMFDXGIDeviceManager, MFCreateDXGIDeviceManager};
@@ -59,8 +59,8 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 use ::windows::core::{BOOL, IUnknown, Interface, w};
 
 use crate::{
-    Bounds, ExistingWindow, OwnedWindow, SurfaceTarget, VideoCodec, VideoFormat, WindowHandle,
-    WindowsGraphicsApi,
+    Bounds, ExistingWindow, OwnedWindow, SurfaceTarget, VideoChromaFormat, VideoCodec, VideoFormat,
+    VideoPixelFormat, WindowHandle, WindowsGraphicsApi,
 };
 
 const WINDOW_CLASS: ::windows::core::PCWSTR = w!("OpenNOWStreamerD3D11Surface");
@@ -330,6 +330,7 @@ pub(super) struct Graphics {
     video_format: VideoFormat,
     swap_size: (u32, u32),
     swap_format: DXGI_FORMAT,
+    ten_bit_output_supported: bool,
 }
 
 impl Graphics {
@@ -369,7 +370,7 @@ impl Graphics {
         let resources = DeviceResources::new(api)?;
         let window = RenderWindow::new(target)?;
         let swap_size = window.client_size()?;
-        let swap_format = swap_chain_format(video_format);
+        let swap_format = swap_chain_format(video_format, true);
         let swap_chain =
             create_swap_chain(&resources.device, window.hwnd(), swap_size, swap_format)?;
         eprintln!(
@@ -391,6 +392,7 @@ impl Graphics {
             video_format,
             swap_size,
             swap_format,
+            ten_bit_output_supported: true,
         };
         graphics.ensure_processor(video_format.width, video_format.height)?;
         Ok(graphics)
@@ -438,7 +440,7 @@ impl Graphics {
         }
         let window = RenderWindow::new(target)?;
         let swap_size = window.client_size()?;
-        let swap_format = swap_chain_format(video_format);
+        let swap_format = swap_chain_format(video_format, self.ten_bit_output_supported);
         let swap_chain = create_swap_chain(
             &self.resources.device,
             window.hwnd(),
@@ -495,11 +497,12 @@ impl Graphics {
         _timestamp_100ns: i64,
         _duration_100ns: i64,
     ) -> Result<(), String> {
-        self.resize_if_needed()?;
         let mut texture_description = Default::default();
         unsafe {
             texture.GetDesc(&mut texture_description);
         }
+        self.synchronize_decoder_surface_format(texture_description.Format)?;
+        self.resize_if_needed()?;
         self.ensure_processor(texture_description.Width, texture_description.Height)?;
         let processor = self
             .processor
@@ -616,10 +619,14 @@ impl Graphics {
 
     fn resize_if_needed(&mut self) -> Result<(), String> {
         let size = self.window.client_size()?;
-        let format = swap_chain_format(self.video_format);
+        let format = swap_chain_format(self.video_format, self.ten_bit_output_supported);
         if size == self.swap_size && format == self.swap_format {
             return Ok(());
         }
+        self.resize_swap_chain(size, format)
+    }
+
+    fn resize_swap_chain(&mut self, size: (u32, u32), format: DXGI_FORMAT) -> Result<(), String> {
         self.processor = None;
         unsafe {
             self.swap_chain
@@ -636,6 +643,26 @@ impl Graphics {
             format.0,
             self.video_format.pixel_format.bit_depth(),
         );
+        Ok(())
+    }
+
+    fn synchronize_decoder_surface_format(&mut self, format: DXGI_FORMAT) -> Result<(), String> {
+        let Some(pixel_format) = pixel_format_from_dxgi(format) else {
+            return Err(format!(
+                "Media Foundation returned unsupported D3D11 texture format {}",
+                format.0
+            ));
+        };
+        if pixel_format == self.video_format.pixel_format {
+            return Ok(());
+        }
+        eprintln!(
+            "Windows presenter corrected decoder metadata {:?} to live texture {:?} (DXGI format={})",
+            self.video_format.pixel_format, pixel_format, format.0,
+        );
+        self.video_format.pixel_format = pixel_format;
+        self.video_format.chroma_format = chroma_format(pixel_format);
+        self.processor = None;
         Ok(())
     }
 
@@ -670,17 +697,34 @@ impl Graphics {
                 .video_device
                 .CreateVideoProcessorEnumerator(&description)
                 .map_err(|error| error.to_string())?;
+            if let Err(reason) = validate_video_processor_conversion(
+                &enumerator,
+                self.video_format,
+                self.swap_format,
+            ) {
+                if self.swap_format == DXGI_FORMAT_R10G10B10A2_UNORM {
+                    // A number of Windows drivers expose P010 decode and an R10
+                    // swap-chain independently, but cannot connect those formats
+                    // through the D3D11 video processor. VideoProcessorBlt may still
+                    // return S_OK and silently paint black. Keep the negotiated
+                    // 10-bit decoder surface and let the video processor dither it
+                    // into the universally-supported SDR scan-out format instead.
+                    self.ten_bit_output_supported = false;
+                    eprintln!(
+                        "Windows presenter falling back from 10-bit scan-out to 8-bit SDR: {reason}"
+                    );
+                    self.resize_swap_chain(self.swap_size, DXGI_FORMAT_R8G8B8A8_UNORM)?;
+                    return self.ensure_processor(input_width, input_height);
+                }
+                return Err(reason);
+            }
             let processor = self
                 .resources
                 .video_device
                 .CreateVideoProcessor(&enumerator, 0)
                 .map_err(|error| error.to_string())?;
             if let Some(video_context) = self.resources.video_context_1.as_ref() {
-                let input_color_space = if self.video_format.full_range {
-                    DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
-                } else {
-                    DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
-                };
+                let input_color_space = input_color_space(self.video_format);
                 video_context.VideoProcessorSetStreamColorSpace1(&processor, 0, input_color_space);
                 video_context.VideoProcessorSetOutputColorSpace1(
                     &processor,
@@ -717,6 +761,16 @@ impl Graphics {
                 input_views: HashMap::new(),
                 output_view: output_view.ok_or("D3D11 returned no video processor output view")?,
             });
+            eprintln!(
+                "Windows video processor conversion input={} output={} range={}",
+                dxgi_format(self.video_format.pixel_format).0,
+                self.swap_format.0,
+                if self.video_format.full_range {
+                    "full"
+                } else {
+                    "limited"
+                },
+            );
         }
         Ok(())
     }
@@ -752,7 +806,7 @@ fn create_swap_chain(
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
             Scaling: DXGI_SCALING_STRETCH,
-            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
             // IDXGISwapChain2::SetMaximumFrameLatency is only valid for a
             // waitable swap chain. Preserve the flag in ResizeBuffers too.
@@ -780,11 +834,92 @@ fn create_swap_chain(
     }
 }
 
-fn swap_chain_format(format: VideoFormat) -> DXGI_FORMAT {
-    if format.pixel_format.bit_depth() > 8 {
+fn swap_chain_format(format: VideoFormat, ten_bit_output_supported: bool) -> DXGI_FORMAT {
+    if format.pixel_format.bit_depth() > 8 && ten_bit_output_supported {
         DXGI_FORMAT_R10G10B10A2_UNORM
     } else {
-        DXGI_FORMAT_B8G8R8A8_UNORM
+        // Match the official Windows client. Its streaming swap chain starts at
+        // DXGI format 0x1c (R8G8B8A8) and changes to 0x18 for 10-bit scan-out.
+        DXGI_FORMAT_R8G8B8A8_UNORM
+    }
+}
+
+fn dxgi_format(format: VideoPixelFormat) -> DXGI_FORMAT {
+    match format {
+        VideoPixelFormat::Nv12 => DXGI_FORMAT_NV12,
+        VideoPixelFormat::P010 => DXGI_FORMAT_P010,
+        VideoPixelFormat::Ayuv => DXGI_FORMAT_AYUV,
+        VideoPixelFormat::Y410 => DXGI_FORMAT_Y410,
+    }
+}
+
+fn pixel_format_from_dxgi(format: DXGI_FORMAT) -> Option<VideoPixelFormat> {
+    match format {
+        DXGI_FORMAT_NV12 => Some(VideoPixelFormat::Nv12),
+        DXGI_FORMAT_P010 => Some(VideoPixelFormat::P010),
+        DXGI_FORMAT_AYUV => Some(VideoPixelFormat::Ayuv),
+        DXGI_FORMAT_Y410 => Some(VideoPixelFormat::Y410),
+        _ => None,
+    }
+}
+
+fn chroma_format(format: VideoPixelFormat) -> VideoChromaFormat {
+    match format {
+        VideoPixelFormat::Nv12 | VideoPixelFormat::P010 => VideoChromaFormat::Cs420,
+        VideoPixelFormat::Ayuv | VideoPixelFormat::Y410 => VideoChromaFormat::Cs444,
+    }
+}
+
+fn input_color_space(
+    format: VideoFormat,
+) -> ::windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_TYPE {
+    if format.full_range {
+        DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
+    } else {
+        DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
+    }
+}
+
+fn validate_video_processor_conversion(
+    enumerator: &ID3D11VideoProcessorEnumerator,
+    input: VideoFormat,
+    output_format: DXGI_FORMAT,
+) -> Result<(), String> {
+    unsafe {
+        let output_support = enumerator
+            .CheckVideoProcessorFormat(output_format)
+            .map_err(|error| format!("query output format {}: {error}", output_format.0))?;
+        if output_support & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0 as u32 == 0 {
+            return Err(format!(
+                "D3D11 video processor does not support output format {}",
+                output_format.0
+            ));
+        }
+
+        if let Ok(enumerator_1) = enumerator.cast::<ID3D11VideoProcessorEnumerator1>() {
+            let supported = enumerator_1
+                .CheckVideoProcessorFormatConversion(
+                    dxgi_format(input.pixel_format),
+                    input_color_space(input),
+                    output_format,
+                    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+                )
+                .map_err(|error| {
+                    format!(
+                        "query D3D11 conversion {} -> {}: {error}",
+                        dxgi_format(input.pixel_format).0,
+                        output_format.0,
+                    )
+                })?;
+            if !supported.as_bool() {
+                return Err(format!(
+                    "D3D11 driver rejects video conversion {} -> {}",
+                    dxgi_format(input.pixel_format).0,
+                    output_format.0,
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -958,6 +1093,48 @@ mod tests {
     use super::*;
     use ::windows::Win32::UI::WindowsAndMessaging::WS_VISIBLE;
 
+    fn video_format(pixel_format: VideoPixelFormat) -> VideoFormat {
+        VideoFormat {
+            codec: VideoCodec::H265,
+            width: 2560,
+            height: 1440,
+            frame_rate_numerator: NonZeroU32::new(120).expect("non-zero"),
+            frame_rate_denominator: NonZeroU32::new(1).expect("non-zero"),
+            average_bitrate: 100_000_000,
+            pixel_format,
+            chroma_format: chroma_format(pixel_format),
+            full_range: false,
+        }
+    }
+
+    #[test]
+    fn swap_chain_formats_match_official_windows_client() {
+        assert_eq!(
+            swap_chain_format(video_format(VideoPixelFormat::Nv12), true),
+            DXGI_FORMAT_R8G8B8A8_UNORM
+        );
+        assert_eq!(
+            swap_chain_format(video_format(VideoPixelFormat::P010), true),
+            DXGI_FORMAT_R10G10B10A2_UNORM
+        );
+        assert_eq!(
+            swap_chain_format(video_format(VideoPixelFormat::P010), false),
+            DXGI_FORMAT_R8G8B8A8_UNORM
+        );
+    }
+
+    #[test]
+    fn decoder_surface_formats_round_trip_to_dxgi() {
+        for format in [
+            VideoPixelFormat::Nv12,
+            VideoPixelFormat::P010,
+            VideoPixelFormat::Ayuv,
+            VideoPixelFormat::Y410,
+        ] {
+            assert_eq!(pixel_format_from_dxgi(dxgi_format(format)), Some(format));
+        }
+    }
+
     #[test]
     fn letterboxes_wide_target() {
         assert_eq!(
@@ -1012,5 +1189,28 @@ mod tests {
     fn d3d11_on_12_exposes_video_processing_interfaces() {
         Graphics::probe(WindowsGraphicsApi::D3d12)
             .expect("D3D11-on-12 must support the complete graphics presentation path");
+    }
+
+    #[test]
+    fn p010_presentation_selects_a_driver_supported_scanout() {
+        let graphics = Graphics::new(
+            WindowsGraphicsApi::D3d11,
+            SurfaceTarget::Owned(OwnedWindow {
+                parent: None,
+                bounds: Bounds {
+                    x: 0,
+                    y: 0,
+                    width: 64,
+                    height: 64,
+                },
+                visible: false,
+            }),
+            video_format(VideoPixelFormat::P010),
+        )
+        .expect("P010 must use either native 10-bit scan-out or the SDR fallback");
+        assert!(
+            graphics.swap_format == DXGI_FORMAT_R10G10B10A2_UNORM
+                || graphics.swap_format == DXGI_FORMAT_R8G8B8A8_UNORM
+        );
     }
 }

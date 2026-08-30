@@ -66,6 +66,7 @@ private:
     QProcess m_process;
     QTimer m_timeoutTimer;
     QByteArray m_stdoutBuffer;
+    QByteArray m_stderrBuffer;
     QHash<QString, PendingRequest> m_pending;
     QQueue<QJsonObject> m_events;
     QString m_state = QStringLiteral("stopped");

@@ -5,8 +5,12 @@
 #endif
 
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QStandardPaths>
 
 using namespace Qt::StringLiterals;
 
@@ -20,6 +24,44 @@ QString safeText(const QJsonValue &value, const QString &fallback)
     text.replace(u'\n', u' ');
     text.replace(u'\r', u' ');
     return text;
+}
+
+void appendCoreDiagnostics(const QList<QByteArray> &lines)
+{
+    if (lines.isEmpty()) {
+        return;
+    }
+    const auto dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (dataRoot.isEmpty()) {
+        return;
+    }
+    QDir directory(dataRoot);
+    if (!directory.mkpath(u"diagnostics"_s) || !directory.cd(u"diagnostics"_s)) {
+        return;
+    }
+
+    constexpr qint64 maximumLogBytes = 2 * 1024 * 1024;
+    const auto path = directory.filePath(u"native-streamer.log"_s);
+    const auto previousPath = directory.filePath(u"native-streamer.previous.log"_s);
+    qsizetype incomingBytes = 0;
+    for (const auto &line : lines) {
+        incomingBytes += line.size() + 40;
+    }
+    if (QFileInfo(path).size() + incomingBytes > maximumLogBytes) {
+        QFile::remove(previousPath);
+        QFile::rename(path, previousPath);
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        return;
+    }
+    for (const auto &line : lines) {
+        file.write(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toUtf8());
+        file.write(" ");
+        file.write(line.left(2'048));
+        file.write("\n");
+    }
 }
 }
 
@@ -89,6 +131,7 @@ bool CoreClient::start(const QString &program, const QStringList &arguments)
     m_arguments = arguments;
     m_manualStop = false;
     m_stdoutBuffer.clear();
+    m_stderrBuffer.clear();
     m_events.clear();
     m_droppedEvents = 0;
     setLastError({});
@@ -173,11 +216,26 @@ void CoreClient::processStdout()
 
 void CoreClient::processStderr()
 {
-    const auto data = m_process.readAllStandardError();
-    const auto lines = QString::fromUtf8(data).split(u'\n', Qt::SkipEmptyParts);
-    for (const auto &line : lines) {
-        emit coreLogReceived(line.left(2'048));
+    m_stderrBuffer += m_process.readAllStandardError();
+    QList<QByteArray> diagnosticLines;
+    qsizetype newline = -1;
+    while ((newline = m_stderrBuffer.indexOf('\n')) >= 0) {
+        auto line = m_stderrBuffer.first(newline).trimmed();
+        m_stderrBuffer.remove(0, newline + 1);
+        if (line.isEmpty()) {
+            continue;
+        }
+        line = line.left(2'048);
+        diagnosticLines.push_back(line);
+        emit coreLogReceived(QString::fromUtf8(line));
     }
+    if (m_stderrBuffer.size() > MaximumLineBytes) {
+        auto line = m_stderrBuffer.first(2'048);
+        m_stderrBuffer.clear();
+        diagnosticLines.push_back(line);
+        emit coreLogReceived(QString::fromUtf8(line));
+    }
+    appendCoreDiagnostics(diagnosticLines);
 }
 
 void CoreClient::processTimeouts()

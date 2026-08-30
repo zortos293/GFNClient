@@ -88,6 +88,10 @@ int main(int argc, char **argv)
             std::cout << "{\"type\":\"response\",\"id\":\"" << id << std::flush;
             std::this_thread::sleep_for(std::chrono::milliseconds(25));
             std::cout << "\",\"ok\":true,\"result\":{\"fragmented\":true}}\n" << std::flush;
+        } else if (method == "test.stderr") {
+            std::cerr << "native-streamer: decoder diagnostic\n" << std::flush;
+            std::cout << "{\"type\":\"response\",\"id\":\"" << id
+                      << "\",\"ok\":true,\"result\":{}}\n" << std::flush;
         } else if (method == "test.exit") {
             return 23;
         } else {

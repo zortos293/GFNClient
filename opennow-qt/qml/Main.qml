@@ -19,6 +19,7 @@ ApplicationWindow {
     property bool consoleHeldByPad: false
     property bool pointerRecentlyActive: false
     property bool forceConsole: false
+    property bool streamStatsAutoShown: false
     readonly property bool switchToConsoleOnPad: !settingsLoaded
         || ShellStore.settings.switchToConsoleOnPad !== false
     readonly property bool leaveConsoleOnPointer: !settingsLoaded
@@ -37,14 +38,11 @@ ApplicationWindow {
         "accounts", "profile-pin", "game-accounts", "persistent-storage", "media",
         "diagnostics", "updates", "feedback", "theme-store"].indexOf(activeRoute) < 0
     readonly property bool targetDesktopSurface: desktopRequested && desktopEligibleRoute
-    readonly property bool desktopStreamOverlayActive: desktopSurfaceActive && activeRoute === "stream"
-        && AppController.overlay.startsWith("desktop-stream-")
-    // The desktop shell owns only its own stream overlays, so anything else keeps
-    // rendering through the console overlay host instead of leaving a blank window.
+    readonly property bool streamQmlOverlayActive: activeRoute === "stream"
+        && (AppController.overlay.startsWith("desktop-stream-")
+            || AppController.overlay.startsWith("stream-stats"))
     readonly property bool consoleOverlayFallbackActive: desktopSurfaceActive
         && AppController.overlay !== "" && !AppController.overlay.startsWith("desktop-stream-")
-    readonly property bool desktopStatsOverlayActive: AppController.overlay === "desktop-stream-stats"
-        || AppController.overlay === "desktop-stream-stats-expanded"
     property bool desktopSurfaceActive: targetDesktopSurface
     property bool modeInitialized: false
     readonly property bool settingsLoadedForSmokeTest: settingsLoaded
@@ -74,48 +72,27 @@ ApplicationWindow {
         }
     }
 
-    function updateStreamSurface() {
-        ShellStore.setStreamSurface(
-            window.x,
-            window.y,
-            window.width,
-            window.height,
-            window.screen ? window.screen.devicePixelRatio : 1
-        )
-    }
-
-    function syncStreamWindowVisibility() {
-        const nativePresentationOwnsWindow = AppController.route === "stream"
-            && ShellStore.streamer
-            && ShellStore.streamer.status === "streaming"
-            && AppController.overlay === ""
-        if (nativePresentationOwnsWindow) {
-            if (window.visible)
-                window.hide()
-        } else if (!window.visible) {
-            window.show()
-            window.raise()
-            window.requestActivate()
-        }
-    }
-
-    onXChanged: updateStreamSurface()
-    onYChanged: updateStreamSurface()
     onWidthChanged: {
-        updateStreamSurface()
         if (geometryRestored)
             geometrySaveTimer.restart()
     }
     onHeightChanged: {
-        updateStreamSurface()
         if (geometryRestored)
             geometrySaveTimer.restart()
     }
-    onScreenChanged: updateStreamSurface()
+    onDesktopSurfaceActiveChanged: ShellStore.desktopUiActive = desktopSurfaceActive
+
+    Connections {
+        target: ShellStore
+        function onFullscreenToggleRequested() {
+            if (window.activeRoute === "stream")
+                window.toggleFullscreen()
+        }
+    }
 
     function syncInputOwnership() {
         const shellOwnsInput = AppController.route !== "stream"
-            || (AppController.overlay !== "" && !window.desktopStatsOverlayActive)
+            || AppController.overlay !== ""
         ControllerInput.shellCaptureEnabled = shellOwnsInput
             && ShellStore.settings.controllerMode !== false
         if (AppController.route === "stream")
@@ -130,6 +107,40 @@ ApplicationWindow {
             // synthetic F1 event. A real keyboard F1 event switches inputMode
             // to "keyboard" before it reaches this handler.
             || (event.key === Qt.Key_F1 && AppController.inputMode === "controller")
+    }
+
+    function toggleFullscreen() {
+        const enteringFullscreen = window.visibility !== ApplicationWindow.FullScreen
+        if (enteringFullscreen)
+            window.showFullScreen()
+        else
+            window.showNormal()
+        ShellStore.streamControlMessage = enteringFullscreen
+            ? qsTr("Fullscreen on") : qsTr("Fullscreen off")
+        ShellStore.accessibilityMessage = ShellStore.streamControlMessage
+    }
+
+    function showConfiguredStreamStats() {
+        if (window.activeRoute !== "stream" || window.streamStatsAutoShown
+                || AppController.overlay !== ""
+                || !Boolean(ShellStore.settings.showNativeStreamerStats)
+                || !ShellStore.streamer || ShellStore.streamer.status !== "streaming")
+            return
+        window.streamStatsAutoShown = true
+        AppController.showOverlay(window.desktopSurfaceActive
+            ? "desktop-stream-stats" : "stream-stats")
+    }
+
+    function toggleStreamStats() {
+        if (window.activeRoute !== "stream")
+            return false
+        const compact = window.desktopSurfaceActive
+            ? "desktop-stream-stats" : "stream-stats"
+        const expanded = window.desktopSurfaceActive
+            ? "desktop-stream-stats-expanded" : "stream-stats-expanded"
+        if (AppController.overlay === compact || AppController.overlay === expanded)
+            return AppController.showOverlay("")
+        return AppController.showOverlay(compact)
     }
     Timer {
         id: pointerGrace
@@ -178,8 +189,9 @@ ApplicationWindow {
         syncPadHold()
         modeInitialized = true
         window.synchronizeRenderedSurface()
+        ShellStore.desktopUiActive = window.desktopSurfaceActive
         syncInputOwnership()
-        updateStreamSurface()
+        Qt.callLater(() => window.showConfiguredStreamStats())
     }
 
     HoverHandler {
@@ -285,7 +297,8 @@ ApplicationWindow {
                 routeLoader.opacity = 0
                 routeEnter.restart()
                 window.syncInputOwnership()
-                window.syncStreamWindowVisibility()
+                window.streamStatsAutoShown = false
+                Qt.callLater(() => window.showConfiguredStreamStats())
             }
             function onOverlayChanged() {
                 if (window.desktopSurfaceActive && window.activeRoute === "stream"
@@ -294,7 +307,6 @@ ApplicationWindow {
                     return
                 }
                 window.syncInputOwnership()
-                window.syncStreamWindowVisibility()
                 if (AppController.overlay === "" && routeLoader.item)
                     Qt.callLater(() => routeLoader.item.forceActiveFocus())
             }
@@ -306,7 +318,7 @@ ApplicationWindow {
         }
         Connections {
             target: ShellStore
-            function onStreamerChanged() { window.syncStreamWindowVisibility() }
+            function onStreamerChanged() { window.showConfiguredStreamStats() }
             function onConsoleSurfaceRequested(enabled) { window.applyConsoleSurface(enabled) }
             function onSettingsChanged() {
                 window.syncInputOwnership()
@@ -315,7 +327,6 @@ ApplicationWindow {
                 window.width = Number(ShellStore.settings.windowWidth)
                 window.height = Number(ShellStore.settings.windowHeight)
                 window.geometryRestored = true
-                window.updateStreamSurface()
             }
         }
         Timer {
@@ -325,7 +336,10 @@ ApplicationWindow {
         }
 
         Keys.onPressed: event => {
-            if (event.key === Qt.Key_F10) {
+            if (event.key === Qt.Key_F11 && window.activeRoute === "stream") {
+                window.toggleFullscreen()
+                event.accepted = true
+            } else if (event.key === Qt.Key_F10) {
                 window.requestConsoleSurface(window.desktopSurfaceActive)
                 event.accepted = true
             } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
@@ -341,9 +355,8 @@ ApplicationWindow {
             } else if (window.isGuideShortcut(event)) {
                 event.accepted = AppController.showOverlay(window.desktopSurfaceActive
                     && window.activeRoute === "stream" ? "desktop-stream-menu" : "guide-session")
-            } else if (event.key === Qt.Key_F3 && window.desktopSurfaceActive
-                       && window.activeRoute === "stream") {
-                event.accepted = AppController.showOverlay("desktop-stream-stats")
+            } else if (event.key === Qt.Key_F3 && window.activeRoute === "stream") {
+                event.accepted = window.toggleStreamStats()
             } else if (event.key === Qt.Key_Menu) {
                 event.accepted = AppController.showOverlay("quick-settings")
             } else if (event.key === Qt.Key_Y) {
@@ -364,14 +377,15 @@ ApplicationWindow {
         scale: consoleScale
         transformOrigin: Item.TopLeft
         overlay: AppController.overlay
-        visible: !window.desktopSurfaceActive || window.consoleOverlayFallbackActive
+        visible: (!window.desktopSurfaceActive || window.consoleOverlayFallbackActive)
+            && !window.streamQmlOverlayActive
         z: 1000
     }
 
     DesktopStreamOverlayHost {
         anchors.fill: parent
         overlay: AppController.overlay
-        visible: window.desktopStreamOverlayActive
+        visible: window.streamQmlOverlayActive
         focus: visible
         z: 1100
         onVisibleChanged: if (visible) forceActiveFocus()

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 import OpenNOW
 
 FocusScope {
@@ -17,7 +18,7 @@ FocusScope {
         {label:qsTr("Take screenshot"), action:"screenshot", value:ShellStore.settings.shortcutScreenshot || "Ctrl+F11"},
         {label:ShellStore.streamRecordingActive ? "Stop recording" : "Start recording", action:"recording", value:ShellStore.settings.shortcutToggleRecording || "F12"},
         {label:qsTr("Screenshots & recordings"), action:"media", value:qsTr("Open library")},
-        {label:qsTr("Microphone"), action:"microphone", value:ShellStore.microphoneLabel},
+        {label:qsTr("Microphone"), action:"none", value:ShellStore.microphoneLabel},
         {label:qsTr("End session"), action:"end", danger:true}
     ] : root.page === "guide-controls" ? [
         {label:qsTr("Controller layout"), action:"controllers"},
@@ -37,7 +38,7 @@ FocusScope {
         {label:qsTr("Screenshot"), action:"screenshot", value:ShellStore.settings.shortcutScreenshot || "Ctrl+F11"},
         {label:qsTr("Toggle recording"), action:"recording", value:ShellStore.settings.shortcutToggleRecording || "F12"},
         {label:qsTr("Toggle Anti-AFK"), action:"none", value:ShellStore.settings.shortcutToggleAntiAfk || "Ctrl+Shift+K"},
-        {label:qsTr("Toggle microphone"), action:"microphone", value:ShellStore.settings.shortcutToggleMicrophone || "Ctrl+Shift+M"},
+        {label:qsTr("Microphone upstream"), action:"none", value:ShellStore.microphoneLabel},
         {label:qsTr("End session"), action:"none", value:ShellStore.settings.shortcutStopStream || "Ctrl+Shift+Q"}
     ]
     anchors.fill: parent
@@ -54,6 +55,20 @@ FocusScope {
     }
 
     function pad(value) { return value < 10 ? "0" + value : String(value) }
+
+    function toggleFullscreen() {
+        const targetWindow = Window.window
+        if (!targetWindow)
+            return
+        const enteringFullscreen = targetWindow.visibility !== Window.FullScreen
+        if (enteringFullscreen)
+            targetWindow.showFullScreen()
+        else
+            targetWindow.showNormal()
+        ShellStore.streamControlMessage = enteringFullscreen
+            ? qsTr("Fullscreen on") : qsTr("Fullscreen off")
+        ShellStore.accessibilityMessage = ShellStore.streamControlMessage
+    }
 
     function elapsedLabel() {
         if (!ShellStore.streamStartedAtMs)
@@ -73,15 +88,13 @@ FocusScope {
             AppController.showOverlay("")
             ShellStore.stopStreamingSession()
         } else if (action === "stats") {
-            ShellStore.controlStream("toggle-stats")
+            AppController.showOverlay("stream-stats")
         } else if (action === "fullscreen") {
-            ShellStore.controlStream("toggle-fullscreen")
+            root.toggleFullscreen()
         } else if (action === "screenshot") {
             ShellStore.captureStreamScreenshot()
         } else if (action === "recording") {
             ShellStore.toggleStreamRecording()
-        } else if (action === "microphone") {
-            ShellStore.toggleMicrophoneMode()
         } else if (action === "media") {
             AppController.showOverlay("")
             AppController.navigate("media")

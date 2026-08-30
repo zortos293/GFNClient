@@ -23,7 +23,6 @@ const REQUIRED_ATTESTATIONS: &[&str] = &[
     "fullscreen",
     "displayMigration",
     "highestRefreshRate",
-    "microphoneUpstream",
     "screenshotVisible",
     "recordingPlayback",
     "thumbnailGenerated",
@@ -254,13 +253,13 @@ fn validate_live(value: &Value, failures: &mut Vec<String>) {
         for name in [
             "streamingTenMinutes",
             "firstFramePresented",
+            "nvstTransportActive",
             "nativeInputReady",
             "inputOwnershipExercised",
             "allGuidePagesVisited",
             "surfaceReconfigured",
             "fullscreenControlExercised",
             "statsControlExercised",
-            "microphoneUpstreamReady",
             "recordingRoundTrip",
             "mediaArtifactsComplete",
             "networkRecoveryExercised",
@@ -278,6 +277,11 @@ fn validate_live(value: &Value, failures: &mut Vec<String>) {
     require(
         value["stream"]["status"] == "streaming",
         "live stream was not active",
+        failures,
+    );
+    require(
+        value["stream"]["transport"] == "nvst",
+        "live stream transport is not NVST",
         failures,
     );
     require(
@@ -939,13 +943,13 @@ mod tests {
         for name in [
             "streamingTenMinutes",
             "firstFramePresented",
+            "nvstTransportActive",
             "nativeInputReady",
             "inputOwnershipExercised",
             "allGuidePagesVisited",
             "surfaceReconfigured",
             "fullscreenControlExercised",
             "statsControlExercised",
-            "microphoneUpstreamReady",
             "recordingRoundTrip",
             "mediaArtifactsComplete",
             "networkRecoveryExercised",
@@ -960,7 +964,7 @@ mod tests {
             "schemaVersion":1,"kind":"opennow.live-acceptance","observedPass":true,
             "scope":"machine-observed-live-runtime","applicationVersion":"1.0.0",
             "platform":{"os":"linux","cpuArchitecture":"x86_64","windowSystem":"wayland"},
-            "checks":checks,"stream":{"status":"streaming","sessionUptimeMs":600000},
+            "checks":checks,"stream":{"status":"streaming","transport":"nvst","sessionUptimeMs":600000},
             "media":{"screenshot":media("shot.png"),
                 "recording":{"fileName":"clip.mkv","sizeBytes":1,"sha256":"0".repeat(64),
                              "thumbnail":media("thumb.jpg")}}
@@ -980,7 +984,7 @@ mod tests {
         let mut value = json!({
             "schemaVersion":1, "kind":"opennow.live-acceptance", "observedPass":true,
             "scope":"machine-observed-live-runtime", "applicationVersion":"1.0.0",
-            "checks":{}, "stream":{"status":"streaming","sessionUptimeMs":600000},
+            "checks":{}, "stream":{"status":"streaming","transport":"nvst","sessionUptimeMs":600000},
             "media":{"screenshot":{"fileName":"shot.png","sizeBytes":1,"sha256":"0".repeat(64)},
                      "recording":{"fileName":"clip.mkv","sizeBytes":1,"sha256":"0".repeat(64),
                                   "thumbnail":{"fileName":"thumb.jpg","sizeBytes":1,"sha256":"0".repeat(64)}}}
@@ -988,13 +992,13 @@ mod tests {
         for name in [
             "streamingTenMinutes",
             "firstFramePresented",
+            "nvstTransportActive",
             "nativeInputReady",
             "inputOwnershipExercised",
             "allGuidePagesVisited",
             "surfaceReconfigured",
             "fullscreenControlExercised",
             "statsControlExercised",
-            "microphoneUpstreamReady",
             "recordingRoundTrip",
             "mediaArtifactsComplete",
             "networkRecoveryExercised",
@@ -1008,6 +1012,7 @@ mod tests {
         validate_live(&value, &mut failures);
         assert!(failures.is_empty(), "{failures:?}");
         value["checks"]["nativeInputReady"] = Value::Bool(false);
+        value["stream"]["transport"] = Value::String("webrtc".to_owned());
         value["unsafeUrl"] = Value::String("https://example.invalid".to_owned());
         value["media"]["screenshot"]["sha256"] = Value::String("BAD".to_owned());
         validate_live(&value, &mut failures);
@@ -1018,6 +1023,7 @@ mod tests {
         );
         assert!(failures.iter().any(|value| value.contains("sensitive")));
         assert!(failures.iter().any(|value| value.contains("SHA-256")));
+        assert!(failures.iter().any(|value| value.contains("not NVST")));
     }
 
     #[test]

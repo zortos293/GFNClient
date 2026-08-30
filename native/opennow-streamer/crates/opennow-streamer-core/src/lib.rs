@@ -11,9 +11,8 @@ use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedMicrophoneQueue,
     MediaCodec, MediaColorQuality, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl,
     MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, MicrophoneCapture, PushOutcome,
-    RecordingSummary, StatsOverlayPosition, StreamRegionLabel, StreamShortcutAction,
-    StreamShortcutBindings, record_matroska, supports_audio_decode, supports_audio_output,
-    video_backends,
+    RecordingSummary, StreamShortcutAction, StreamShortcutBindings, record_matroska,
+    supports_audio_decode, supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
@@ -225,8 +224,20 @@ impl Engine {
             "input" => self.input(command),
             "input-paused" => self.set_paused(command),
             "surface" => self.update_surface(command),
-            "stats-toggle" => self.runtime_control(command, MediaRuntimeControl::Stats),
-            "fullscreen-toggle" => self.runtime_control(command, MediaRuntimeControl::Fullscreen),
+            "stats-toggle" => Ok(vec![
+                response(id, "ok"),
+                event(
+                    "shortcut-action",
+                    json!({"action":"toggle-stats", "source":"command"}),
+                ),
+            ]),
+            "fullscreen-toggle" => Ok(vec![
+                response(id, "ok"),
+                event(
+                    "shortcut-action",
+                    json!({"action":"toggle-fullscreen", "source":"command"}),
+                ),
+            ]),
             "microphone-toggle" => self.toggle_microphone(command),
             "anti-afk-pulse" => self.anti_afk_pulse(command),
             "recording-start" => self.start_recording(command),
@@ -1150,24 +1161,6 @@ impl Engine {
         Ok(vec![response(command.id, "ok")])
     }
 
-    fn runtime_control(
-        &self,
-        command: Command,
-        control: MediaRuntimeControl,
-    ) -> Result<Vec<Value>, Value> {
-        let Some(runtime) = self.media_runtime.as_ref() else {
-            return Err(error(
-                Some(&command.id),
-                "unsupported-command",
-                "Native streamer has no media runtime for this control",
-            ));
-        };
-        runtime
-            .control(control)
-            .map_err(|message| error(Some(&command.id), "media-host-unavailable", message))?;
-        Ok(vec![response(command.id, "ok")])
-    }
-
     fn stop(&mut self, reason: &str) {
         let was_active = {
             let mut lifecycle = lock_lifecycle(&self.lifecycle);
@@ -1568,8 +1561,8 @@ fn forward_shortcut_action(
     action: StreamShortcutAction,
 ) {
     let control = match action {
-        StreamShortcutAction::ToggleStats => Some(MediaRuntimeControl::Stats),
-        StreamShortcutAction::ToggleFullscreen => Some(MediaRuntimeControl::Fullscreen),
+        StreamShortcutAction::ToggleStats => None,
+        StreamShortcutAction::ToggleFullscreen => None,
         StreamShortcutAction::TogglePointerLock => Some(MediaRuntimeControl::PointerLock),
         _ => None,
     };
@@ -1612,12 +1605,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
         shortcut_runtime,
         transport: resources,
     } = event_resources;
-    let mut feedback_state = NvstMediaFeedbackState {
-        drop_reports: HashMap::new(),
-        recovery_attempts: 0,
-        input_origin: Instant::now(),
-        input_available: false,
-    };
+    let mut feedback_state = NvstMediaFeedbackState::new(false);
     loop {
         if let Some(feedback) = media_feedback.as_ref() {
             while let Ok(feedback) = feedback.try_recv() {
@@ -1931,6 +1919,25 @@ struct NvstMediaFeedbackState {
     recovery_attempts: usize,
     input_origin: Instant,
     input_available: bool,
+    telemetry_window_started: Instant,
+    telemetry_frames: u64,
+    telemetry_bytes: u64,
+    peak_bitrate_mbps: f64,
+}
+
+impl NvstMediaFeedbackState {
+    fn new(input_available: bool) -> Self {
+        Self {
+            drop_reports: HashMap::new(),
+            recovery_attempts: 0,
+            input_origin: Instant::now(),
+            input_available,
+            telemetry_window_started: Instant::now(),
+            telemetry_frames: 0,
+            telemetry_bytes: 0,
+            peak_bitrate_mbps: 0.0,
+        }
+    }
 }
 
 fn forward_nvst_media_feedback<R: NvstSessionResources>(
@@ -1951,6 +1958,27 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             resources.acknowledge_video_frame(bytes);
             if keyframe {
                 state.recovery_attempts = 0;
+            }
+            state.telemetry_frames = state.telemetry_frames.saturating_add(1);
+            state.telemetry_bytes = state.telemetry_bytes.saturating_add(u64::from(bytes));
+            let elapsed = state.telemetry_window_started.elapsed();
+            if elapsed >= Duration::from_secs(1) {
+                let elapsed_seconds = elapsed.as_secs_f64();
+                let frames_per_second = state.telemetry_frames as f64 / elapsed_seconds;
+                let bitrate_mbps =
+                    state.telemetry_bytes as f64 * 8.0 / elapsed_seconds / 1_000_000.0;
+                state.peak_bitrate_mbps = state.peak_bitrate_mbps.max(bitrate_mbps);
+                let _ = output.send(event(
+                    "telemetry",
+                    json!({
+                        "framesPerSecond": frames_per_second,
+                        "bitrateMbps": bitrate_mbps,
+                        "peakBitrateMbps": state.peak_bitrate_mbps,
+                    }),
+                ));
+                state.telemetry_window_started = Instant::now();
+                state.telemetry_frames = 0;
+                state.telemetry_bytes = 0;
             }
         }
         MediaFeedback::PlaybackStarted { backend } => {
@@ -2307,33 +2335,6 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .and_then(|profile| profile.get("enableCloudGsync"))
         .and_then(Value::as_bool);
     let cloud_gsync = requested_cloud_gsync && negotiated_cloud_gsync.unwrap_or(true);
-    let show_stats = context
-        .settings
-        .get("showNativeStreamerStats")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || context
-            .settings
-            .get("showStatsOnLaunch")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-    let stats_position = match context
-        .settings
-        .get("statsOverlayPosition")
-        .and_then(Value::as_str)
-        .unwrap_or("top-right")
-    {
-        "top-left" => StatsOverlayPosition::TopLeft,
-        "top-right" => StatsOverlayPosition::TopRight,
-        "bottom-left" => StatsOverlayPosition::BottomLeft,
-        "bottom-right" => StatsOverlayPosition::BottomRight,
-        _ => StatsOverlayPosition::TopRight,
-    };
-    let start_fullscreen = context
-        .settings
-        .get("autoFullScreen")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     MediaStreamConfig {
         codec,
         color_quality,
@@ -2341,118 +2342,9 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         height: resolution.1,
         fps,
         bitrate_bps: bitrate_mbps.saturating_mul(1_000_000).max(1),
-        server_region: stream_region_label(context),
         cloud_gsync,
-        show_stats,
-        stats_position,
-        start_fullscreen,
         shortcuts: StreamShortcutBindings::from_json(&context.shortcuts),
     }
-}
-
-fn stream_region_label(context: &SessionContext) -> StreamRegionLabel {
-    let server_location = context
-        .session
-        .extra
-        .get("serverLocation")
-        .and_then(location_value);
-    let zone = context.session.extra.get("zone").and_then(location_value);
-    let streaming_base = context
-        .session
-        .extra
-        .get("streamingBaseUrl")
-        .and_then(location_value);
-
-    let value = server_location
-        .and_then(format_stream_region)
-        .or_else(|| zone.and_then(format_stream_region))
-        .or_else(|| streaming_base.and_then(format_stream_region))
-        .unwrap_or_else(|| "GFN".to_owned());
-    StreamRegionLabel::new(&value)
-}
-
-fn location_value(value: &Value) -> Option<&str> {
-    value.as_str().or_else(|| {
-        ["displayName", "name", "city", "region", "zone"]
-            .into_iter()
-            .find_map(|key| value.get(key).and_then(Value::as_str))
-    })
-}
-
-fn format_stream_region(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if !trimmed.contains(['.', ':', '/']) && trimmed.chars().any(char::is_alphabetic) {
-        return Some(trimmed.to_owned());
-    }
-
-    let without_scheme = trimmed
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(trimmed);
-    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
-    let hostname = authority
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(authority)
-        .split(':')
-        .next()
-        .unwrap_or(authority)
-        .trim_matches(['[', ']']);
-    let first_label = hostname.split('.').next().unwrap_or(hostname);
-    let tokens = first_label
-        .split(['-', '_'])
-        .filter(|token| !token.is_empty())
-        .collect::<Vec<_>>();
-    const CITIES: [(&str, &str); 24] = [
-        ("ams", "Amsterdam"),
-        ("atl", "Atlanta"),
-        ("chi", "Chicago"),
-        ("dal", "Dallas"),
-        ("fra", "Frankfurt"),
-        ("hel", "Helsinki"),
-        ("kul", "Kuala Lumpur"),
-        ("lax", "Los Angeles"),
-        ("lon", "London"),
-        ("mia", "Miami"),
-        ("mon", "Montreal"),
-        ("nrt", "Tokyo"),
-        ("nyc", "New York"),
-        ("par", "Paris"),
-        ("pdx", "Portland"),
-        ("phx", "Phoenix"),
-        ("sea", "Seattle"),
-        ("sfo", "San Francisco"),
-        ("sof", "Sofia"),
-        ("sto", "Stockholm"),
-        ("syd", "Sydney"),
-        ("tyo", "Tokyo"),
-        ("waw", "Warsaw"),
-        ("zrh", "Zurich"),
-    ];
-    for (index, token) in tokens.iter().enumerate() {
-        if let Some((code, city)) = CITIES
-            .iter()
-            .find(|(code, _)| token.eq_ignore_ascii_case(code))
-        {
-            let server = tokens
-                .get(index + 1)
-                .filter(|candidate| {
-                    candidate
-                        .chars()
-                        .all(|character| character.is_ascii_digit())
-                })
-                .map(|candidate| format!("-{}", candidate))
-                .unwrap_or_default();
-            return Some(format!("{city} ({}{server})", code.to_ascii_uppercase()));
-        }
-    }
-    if first_label.chars().any(char::is_alphabetic) {
-        return Some(first_label.to_ascii_uppercase());
-    }
-    None
 }
 
 fn consume_encoded_media(
@@ -2819,21 +2711,54 @@ mod tests {
     }
 
     #[test]
-    fn shell_shortcuts_emit_typed_actions_and_runtime_shortcuts_fail_visibly() {
+    fn shell_shortcuts_emit_typed_actions() {
         let (sender, receiver) = std::sync::mpsc::channel();
         forward_shortcut_action(&sender, None, StreamShortcutAction::ToggleMicrophone);
         let action = receiver.recv().expect("shortcut action");
         assert_eq!(action["type"], "shortcut-action");
         assert_eq!(action["action"], "toggle-microphone");
 
+        forward_shortcut_action(&sender, None, StreamShortcutAction::ToggleStats);
+        let action = receiver.recv().expect("stats shortcut action");
+        assert_eq!(action["type"], "shortcut-action");
+        assert_eq!(action["action"], "toggle-stats");
+
         forward_shortcut_action(&sender, None, StreamShortcutAction::ToggleFullscreen);
-        let warning = receiver.recv().expect("runtime warning");
-        assert_eq!(warning["type"], "log");
-        assert!(
-            warning["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("native media runtime is unavailable"))
-        );
+        let action = receiver.recv().expect("fullscreen shortcut action");
+        assert_eq!(action["type"], "shortcut-action");
+        assert_eq!(action["action"], "toggle-fullscreen");
+    }
+
+    #[test]
+    fn legacy_stats_toggle_routes_to_the_shell_without_native_rendering() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let (responses, keep_running) = engine.handle(command(json!({
+            "id": "stats",
+            "type": "stats-toggle"
+        })));
+
+        assert!(keep_running);
+        assert_eq!(responses[0]["type"], "ok");
+        assert_eq!(responses[1]["type"], "shortcut-action");
+        assert_eq!(responses[1]["action"], "toggle-stats");
+        assert_eq!(responses[1]["source"], "command");
+    }
+
+    #[test]
+    fn legacy_fullscreen_toggle_routes_to_the_shell_without_native_mutation() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let (responses, keep_running) = engine.handle(command(json!({
+            "id": "fullscreen",
+            "type": "fullscreen-toggle"
+        })));
+
+        assert!(keep_running);
+        assert_eq!(responses[0]["type"], "ok");
+        assert_eq!(responses[1]["type"], "shortcut-action");
+        assert_eq!(responses[1]["action"], "toggle-fullscreen");
+        assert_eq!(responses[1]["source"], "command");
     }
 
     fn unused_udp_port() -> u16 {
@@ -2897,12 +2822,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
-        let mut state = NvstMediaFeedbackState {
-            drop_reports: HashMap::new(),
-            recovery_attempts: 0,
-            input_origin: Instant::now(),
-            input_available: true,
-        };
+        let mut state = NvstMediaFeedbackState::new(true);
 
         forward_nvst_media_feedback(
             &sender,
@@ -2931,12 +2851,8 @@ mod tests {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let lifecycle = connected_lifecycle();
         let resources = TestNvstResources::default();
-        let mut state = NvstMediaFeedbackState {
-            drop_reports: HashMap::new(),
-            recovery_attempts: 1,
-            input_origin: Instant::now(),
-            input_available: true,
-        };
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.recovery_attempts = 1;
 
         forward_nvst_media_feedback(
             &sender,
@@ -2956,14 +2872,45 @@ mod tests {
     }
 
     #[test]
+    fn accepted_video_frames_emit_bounded_shell_telemetry() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+
+        forward_nvst_media_feedback(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            MediaFeedback::VideoFrameAccepted {
+                timestamp: 90_000,
+                bytes: 125_000,
+                keyframe: false,
+            },
+            &mut state,
+        );
+
+        let telemetry = receiver.recv().expect("stream telemetry");
+        assert_eq!(telemetry["type"], "telemetry");
+        assert!(
+            telemetry["framesPerSecond"]
+                .as_f64()
+                .is_some_and(|value| value > 0.0)
+        );
+        assert!(
+            telemetry["bitrateMbps"]
+                .as_f64()
+                .is_some_and(|value| (0.9..=1.0).contains(&value))
+        );
+        assert_eq!(telemetry["peakBitrateMbps"], telemetry["bitrateMbps"]);
+    }
+
+    #[test]
     fn captured_sdl_input_routes_through_the_nvst_input_codec_packet_shape() {
         let resources = TestNvstResources::default();
-        let state = NvstMediaFeedbackState {
-            drop_reports: HashMap::new(),
-            recovery_attempts: 0,
-            input_origin: Instant::now(),
-            input_available: true,
-        };
+        let state = NvstMediaFeedbackState::new(true);
 
         assert!(
             forward_nvst_captured_input(
@@ -3039,12 +2986,8 @@ mod tests {
     fn captured_input_preserves_the_os_capture_timestamp() {
         let resources = TestNvstResources::default();
         let input_origin = Instant::now();
-        let state = NvstMediaFeedbackState {
-            drop_reports: HashMap::new(),
-            recovery_attempts: 0,
-            input_origin,
-            input_available: true,
-        };
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.input_origin = input_origin;
         forward_nvst_captured_sample(
             &resources,
             CapturedInputSample {
@@ -3405,11 +3348,7 @@ mod tests {
                 height: 1440,
                 fps: 120,
                 bitrate_bps: 75_000_000,
-                server_region: StreamRegionLabel::default(),
                 cloud_gsync: true,
-                show_stats: false,
-                stats_position: StatsOverlayPosition::TopRight,
-                start_fullscreen: true,
                 shortcuts: StreamShortcutBindings::default(),
             }
         );
@@ -3439,23 +3378,6 @@ mod tests {
             MediaColorQuality::TenBit444
         );
 
-        let mut located = synthetic_context("located-config", json!([]));
-        located["session"]["serverLocation"] = json!("np-ams-03.cloudmatchbeta.nvidiagrid.net");
-        located["session"]["zone"] = json!("EU Northwest");
-        let located: SessionContext = serde_json::from_value(located).expect("context");
-        assert_eq!(
-            media_stream_config(&located).server_region.as_str(),
-            "Amsterdam (AMS-03)"
-        );
-
-        let mut zone_only = synthetic_context("zone-config", json!([]));
-        zone_only["session"]["zone"] = json!("EU Central");
-        let zone_only: SessionContext = serde_json::from_value(zone_only).expect("context");
-        assert_eq!(
-            media_stream_config(&zone_only).server_region.as_str(),
-            "EU Central"
-        );
-
         let mut rejected_vrr = synthetic_context("rejected-vrr-config", json!([]));
         rejected_vrr["settings"] = json!({ "enableCloudGsync": true });
         rejected_vrr["session"]["negotiatedStreamProfile"] = json!({
@@ -3477,20 +3399,20 @@ mod tests {
         let forced_vrr: SessionContext = serde_json::from_value(forced_vrr).expect("context");
         let forced_config = media_stream_config(&forced_vrr);
         assert!(forced_config.cloud_gsync);
-        assert!(forced_config.show_stats);
-        assert_eq!(forced_config.stats_position, StatsOverlayPosition::TopRight);
 
-        for (wire, expected) in [
-            ("top-left", StatsOverlayPosition::TopLeft),
-            ("bottom-left", StatsOverlayPosition::BottomLeft),
-            ("bottom-right", StatsOverlayPosition::BottomRight),
-            ("invalid", StatsOverlayPosition::TopRight),
-        ] {
-            let mut value = synthetic_context("stats-position-config", json!([]));
-            value["settings"] = json!({ "statsOverlayPosition": wire });
-            let context: SessionContext = serde_json::from_value(value).expect("context");
-            assert_eq!(media_stream_config(&context).stats_position, expected);
-        }
+        let mut legacy_overlay = synthetic_context("legacy-overlay-config", json!([]));
+        legacy_overlay["settings"] = json!({
+            "showNativeStreamerStats": true,
+            "showStatsOnLaunch": true,
+            "statsOverlayPosition": "bottom-left",
+            "autoFullScreen": true
+        });
+        let legacy_overlay: SessionContext =
+            serde_json::from_value(legacy_overlay).expect("context");
+        assert_eq!(
+            media_stream_config(&legacy_overlay),
+            MediaStreamConfig::default()
+        );
     }
 
     #[test]

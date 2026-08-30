@@ -1,14 +1,25 @@
 import QtQuick
+import QtQuick.Controls
 import OpenNOW
 
 FocusScope {
     id: root
-    readonly property var game: ShellStore.selectedGame || ({ title: qsTr("GeForce NOW") })
+    focus: true
+    Accessible.role: Accessible.Pane
+    Accessible.name: qsTr("Live session")
+    readonly property var game: ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
     readonly property var profile: session.negotiatedStreamProfile || ({})
-    readonly property var streamer: ShellStore.streamer || ({ status: "starting", message: qsTr("Launching the native media runtime…") })
-    readonly property bool streaming: streamer.status === "streaming"
-    readonly property bool failed: streamer.status === "error"
+    readonly property var streamer: ShellStore.streamer || ({})
+    readonly property string status: {
+        if (ShellStore.streamState === "error")
+            return "error"
+        if (ShellStore.streamState === "reconnecting" || ShellStore.streamerRestartAttempts > 0)
+            return "reconnecting"
+        return String(streamer.status || ShellStore.streamState || "starting")
+    }
+    readonly property bool streaming: status === "streaming"
+    readonly property bool failed: status === "error"
     property double nowMs: Date.now()
     readonly property int elapsedSeconds: ShellStore.streamStartedAtMs > 0
         ? Math.max(0, Math.floor((nowMs - ShellStore.streamStartedAtMs) / 1000)) : 0
@@ -33,16 +44,25 @@ FocusScope {
 
     Timer { interval: 1000; repeat: true; running: root.streaming; onTriggered: root.nowMs = Date.now() }
 
+    Item {
+        objectName: "streamSurfaceHost"
+        anchors.fill: parent
+        visible: root.visible && root.streaming && AppController.overlay === ""
+        z: 0
+    }
+
     ScreenBackground {
         visible: !root.streaming
         artwork: root.game.heroImageUrl || root.game.imageUrl || ""
         tint: "#101B2A"
+        z: 1
     }
 
     Rectangle {
         visible: !root.streaming
         anchors.fill: parent
         color: Qt.rgba(0.02, 0.04, 0.08, 0.38)
+        z: 2
     }
 
     GlassPanel {
@@ -52,6 +72,7 @@ FocusScope {
         height: 500
         panelRadius: 44
         strong: true
+        z: 3
 
         Column {
             anchors.fill: parent
@@ -75,14 +96,14 @@ FocusScope {
                 Column {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 3
-                    Text { text: root.failed ? qsTr("MEDIA STARTUP FAILED") : (root.streaming ? qsTr("STREAMING LIVE") : qsTr("CLOUD SEAT READY")); color: root.failed ? Theme.coral : (root.streaming ? Theme.mint : Theme.focus); font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Black; font.letterSpacing: 1.4 }
-                    Text { text: root.game.title; color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 34; font.weight: Font.Black }
+                    Text { text: root.failed ? qsTr("MEDIA STARTUP FAILED") : (root.status === "reconnecting" ? qsTr("RECONNECTING") : qsTr("CLOUD SEAT READY")); color: root.failed ? Theme.coral : Theme.focus; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Black; font.letterSpacing: 1.4 }
+                    Text { text: root.game.title || qsTr("GeForce NOW"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 34; font.weight: Font.Black }
                 }
             }
 
             Text {
                 width: parent.width
-                text: root.streamer.message || qsTr("GeForce NOW prepared the remote machine. OpenNOW is validating the negotiated media transport.")
+                text: root.streamer.message || ShellStore.streamMessage || qsTr("GeForce NOW prepared the remote machine. OpenNOW is validating the negotiated media transport.")
                 wrapMode: Text.WordWrap
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
@@ -149,6 +170,27 @@ FocusScope {
     }
 
     GlassPanel {
+        visible: root.streaming && AppController.overlay === ""
+        z: 12
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 34
+        width: streamHints.implicitWidth + 34
+        height: 52
+        panelRadius: 26
+        strong: true
+
+        Row {
+            id: streamHints
+            anchors.centerIn: parent
+            spacing: 22
+            ControllerGlyph { glyph: "GUIDE"; label: qsTr("Session") }
+            ControllerGlyph { glyph: "F3"; label: qsTr("Stats") }
+            ControllerGlyph { glyph: "F11"; label: qsTr("Fullscreen") }
+        }
+    }
+
+    GlassPanel {
         visible: root.streaming && ShellStore.antiAfkEnabled
             && (Boolean(ShellStore.settings.showAntiAfkIndicator) || root.antiAfkReminderVisible)
         z: 12
@@ -171,5 +213,7 @@ FocusScope {
         }
     }
 
-    AppChrome { visible: !root.streaming; anchors.fill: parent; title: qsTr("Live session"); currentRoute: "home"; bottomVisible: false }
+    onStreamingChanged: if (streaming) Qt.callLater(root.forceActiveFocus)
+
+    AppChrome { visible: !root.streaming; anchors.fill: parent; title: qsTr("Live session"); currentRoute: "home"; bottomVisible: false; z: 4 }
 }

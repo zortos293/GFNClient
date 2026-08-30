@@ -1976,6 +1976,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn browser_service_identity_keeps_nvidia_required_webrtc_label() {
+        let headers = lcars_headers("token", "BROWSER", "WEBRTC").unwrap();
+        assert_eq!(headers["nv-client-type"], "BROWSER");
+        assert_eq!(headers["nv-client-streamer"], "WEBRTC");
+    }
+
+    #[test]
     fn provider_discovery_is_normalized_and_sorted() {
         let payload = json!({"gfnServiceInfo":{"gfnServiceEndpoints":[
             {"idpId":"two","loginProviderCode":"BPC","loginProviderDisplayName":"BPC","streamingServiceUrl":"https://two.example","loginProviderPriority":20},

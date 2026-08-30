@@ -56,6 +56,8 @@ qt_add_executable(opennow-qt
     src/Localization.h
     src/SingleInstance.cpp
     src/SingleInstance.h
+    src/StreamSurfaceController.cpp
+    src/StreamSurfaceController.h
     src/ThumbnailGenerator.cpp
     src/ThumbnailGenerator.h
 )
@@ -429,6 +431,27 @@ if(BUILD_TESTING)
     add_dependencies(opennow-coreclient-tests opennow-fake-core)
     add_test(NAME opennow-coreclient-tests COMMAND opennow-coreclient-tests -o -,txt)
 
+    qt_add_executable(opennow-streamsurface-tests
+        tests/tst_streamsurfacecontroller.cpp
+        src/StreamSurfaceController.cpp
+        src/StreamSurfaceController.h
+        src/AppController.cpp
+        src/AppController.h
+        src/CoreClient.cpp
+        src/CoreClient.h
+    )
+    target_include_directories(opennow-streamsurface-tests PRIVATE src)
+    target_link_libraries(opennow-streamsurface-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui Qt6::Quick)
+    target_compile_definitions(opennow-streamsurface-tests PRIVATE
+        OPENNOW_VERSION="${OPENNOW_BUILD_VERSION}")
+    add_dependencies(opennow-streamsurface-tests opennow-fake-core)
+    add_test(NAME opennow-streamsurface-tests
+             COMMAND opennow-streamsurface-tests -o -,txt)
+    set_tests_properties(opennow-streamsurface-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 8)
+
     qt_add_executable(opennow-singleinstance-tests
         tests/tst_singleinstance.cpp
         src/SingleInstance.cpp
@@ -473,13 +496,14 @@ if(BUILD_TESTING)
             opennow-localization-tests
             opennow-qt-tests
             opennow-coreclient-tests
+            opennow-streamsurface-tests
             opennow-singleinstance-tests
             opennow-thumbnail-tests
             opennow-controllerinput-tests
             PROPERTIES WIN32_EXECUTABLE FALSE)
 
         # windeployqt follows the application graph and therefore does not copy
-        # Qt6Test.dll. All six unit-test runners share the application output
+        # Qt6Test.dll. All unit-test runners share the application output
         # directory, so deploy the test runtime explicitly and make the runners
         # depend on it. This keeps a clean build directly runnable by CTest.
         add_custom_target(opennow-qt-test-runtime ALL
@@ -491,6 +515,7 @@ if(BUILD_TESTING)
                 opennow-localization-tests
                 opennow-qt-tests
                 opennow-coreclient-tests
+                opennow-streamsurface-tests
                 opennow-singleinstance-tests
                 opennow-thumbnail-tests
                 opennow-controllerinput-tests)

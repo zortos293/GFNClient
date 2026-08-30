@@ -37,8 +37,8 @@ FocusScope {
     ]
     readonly property var shortcutKeys: [
         "shortcutToggleStats", "shortcutTogglePointerLock", "shortcutToggleFullscreen",
-        "shortcutStopStream", "shortcutToggleAntiAfk", "shortcutToggleMicrophone",
-        "shortcutScreenshot", "shortcutToggleRecording"
+        "shortcutStopStream", "shortcutToggleAntiAfk", "shortcutScreenshot",
+        "shortcutToggleRecording"
     ]
 
     function titleCase(value) {
@@ -347,7 +347,7 @@ FocusScope {
             ]
             const shaderIndex = shader.enabled ? (Number(shader.filmGrain || 0) > 0 ? 3 : Number(shader.vibrance || 0) > 0 ? 2 : 1) : 0
             return [
-                {t:"Display", d:"Where OpenNOW opens in fullscreen", v:"Monitor 1 · current display"},
+                {t:"Display", d:"The Qt stream surface uses the current display", v:"Monitor 1 · current display"},
                 choice("Resolution", "Exact stream size · up / down to browse, A to pick", "resolution", resolutions, resolutionLabels(resolutions)),
                 choice("Frame rate", "Only rates your membership entitles are selectable", "fps", frameRates, frameRates.map(value => String(value)), "segments"),
                 toggle("Fullscreen on launch", "F11 toggles in-game", "autoFullScreen"),
@@ -358,16 +358,6 @@ FocusScope {
         }
         if (root.selectedSection === 3) {
             const rows = []
-            const microphoneValues = [""]
-            const microphoneLabels = ["System default"]
-            const microphoneDevices = ShellStore.streamerDetection
-                    && ShellStore.streamerDetection.capabilities
-                    && ShellStore.streamerDetection.capabilities.microphoneDevices
-                ? ShellStore.streamerDetection.capabilities.microphoneDevices : []
-            for (let microphoneIndex = 0; microphoneIndex < microphoneDevices.length; ++microphoneIndex) {
-                microphoneValues.push(String(microphoneDevices[microphoneIndex]))
-                microphoneLabels.push(String(microphoneDevices[microphoneIndex]))
-            }
             const controllerCards = []
             for (let index = 0; index < Math.min(2, ControllerInput.controllers.length); ++index) {
                 const controller = ControllerInput.controllers[index]
@@ -385,14 +375,12 @@ FocusScope {
                 ["English (US)","English (UK)","Turkish Q","German","French","Spanish","Spanish (Latin America)","Italian","Portuguese (Portugal)","Portuguese (Brazil)","Polish","Danish","Norwegian","Swedish","Finnish","Russian","Japanese","Korean","Chinese (Simplified)","Chinese (Traditional)"]))
             rows.push(choice("Game language", "Requested from the game when it supports it", "gameLanguage", ["en_US","en_GB","de_DE","fr_FR","es_ES","it_IT","pt_BR","ja_JP","ko_KR"], ["English (US)","English (UK)","Deutsch","Français","Español","Italiano","Português (BR)","日本語","한국어"]))
             rows.push({t:"Shortcuts", d:"Stats Ctrl+N · Pointer lock F8 · Fullscreen F11 · Screenshot Ctrl+F11", v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
-            rows.push(choice("Microphone", "Voice-activated Opus upstream for WebRTC sessions", "microphoneMode", ["disabled","voice-activity"], ["Disabled","Voice activity"]))
-            rows.push(choice("Microphone device", "Capture device used for Opus upstream", "microphoneDeviceId", microphoneValues, microphoneLabels))
-            rows.push(shortcut("Toggle stats", "Cycle the native performance overlay", "shortcutToggleStats"))
-            rows.push(shortcut("Toggle pointer lock", "Capture or release the mouse in the stream window", "shortcutTogglePointerLock"))
-            rows.push(shortcut("Toggle fullscreen", "Switch the native stream window between fullscreen and windowed", "shortcutToggleFullscreen"))
+            rows.push({t:"Microphone", d:"Microphone upstream is unavailable for NVST sessions", v:"Unavailable"})
+            rows.push(shortcut("Toggle stats", "Cycle the Qt stream statistics overlay", "shortcutToggleStats"))
+            rows.push(shortcut("Toggle pointer lock", "Capture or release the mouse on the Qt stream surface", "shortcutTogglePointerLock"))
+            rows.push(shortcut("Toggle fullscreen", "Switch the Qt application surface between fullscreen and windowed", "shortcutToggleFullscreen"))
             rows.push(shortcut("Stop stream", "End the active GeForce NOW session", "shortcutStopStream"))
             rows.push(shortcut("Toggle anti-AFK", "Enable or disable the session activity helper", "shortcutToggleAntiAfk"))
-            rows.push(shortcut("Toggle microphone", "Enable or disable microphone upstream", "shortcutToggleMicrophone"))
             rows.push(shortcut("Screenshot", "Save the current decoded frame", "shortcutScreenshot"))
             rows.push(shortcut("Toggle recording", "Start or stop lossless stream capture", "shortcutToggleRecording"))
             return rows
@@ -443,7 +431,7 @@ FocusScope {
         return [
             choice("Recording", "F12 clips · saved to ~/Videos/OpenNOW", "recordingResolution", ["720p","1080p","1440p"], ["720p · 30 FPS","1080p · 60 FPS","1440p · 60 FPS"], "segments"),
             {t:"Anti-AFK", d:"Nudge the session so GeForce NOW doesn't end it while idle", v:ShellStore.antiAfkEnabled ? "On" : "Off", control:"toggle", toggleState:ShellStore.antiAfkEnabled, action:"anti-afk"},
-            choice("Microphone", "Forward your mic to the rig for in-game voice", "microphoneMode", ["disabled","voice-activity"], ["Off","Voice activity"], "segments"),
+            {t:"Microphone", d:"Microphone upstream is unavailable for NVST sessions", v:"Unavailable"},
             choice("Updates", qsTr("OpenNOW %1 · signed update feed").arg(ShellStore.updaterState.currentVersion || ""), "updateChannel", ["stable","nightly"], ["Stable","Nightly"], "segments"),
             {t:"Diagnostics", d:"Logs, last session report and stream stats bundle", v:"Open diagnostics", route:"diagnostics"},
             {t:"Reset all settings", d:"Keeps your account and My games", v:"Reset to defaults", action:"reset", danger:true}

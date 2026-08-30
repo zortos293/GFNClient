@@ -2590,6 +2590,16 @@
       "s_qt_runtime_219": "HANDING OVER THE STREAM",
       "s_qt_runtime_220": "Your rig is live. OpenNOW is starting the native media runtime.",
       "s_qt_runtime_221": "Session menu",
-      "s_qt_runtime_222": "Stream stats"
+    "s_qt_runtime_222": "Stream stats",
+    "s_qt_runtime_223": "Fullscreen on",
+    "s_qt_runtime_224": "Fullscreen off",
+    "s_qt_runtime_225": "Go fullscreen",
+    "s_qt_runtime_226": "The Qt stream surface uses the current display",
+    "s_qt_runtime_227": "Microphone upstream is unavailable for NVST sessions",
+    "s_qt_runtime_228": "STARTING VIDEO",
+    "s_qt_runtime_229": "Fullscreen",
+    "s_qt_runtime_230": "Shows live stream statistics",
+    "s_qt_runtime_231": "Starts the next session with compact stats",
+    "s_qt_runtime_232": "Stream controls are available once the session is live."
   }
 }

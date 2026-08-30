@@ -143,16 +143,6 @@ pub struct FramePlane {
     pub rows: usize,
 }
 
-#[derive(Debug, Clone)]
-pub struct FrameOverlay {
-    pub origin_x: u32,
-    pub origin_y: u32,
-    pub width: u32,
-    pub height: u32,
-    pub luma: FramePlane,
-    pub chroma: FramePlane,
-}
-
 impl FramePlane {
     pub fn validate(&self, minimum_row_bytes: usize) -> Result<()> {
         if self.stride < minimum_row_bytes {
@@ -371,28 +361,12 @@ pub struct DecodedVideoFrame {
     pub planes: Vec<FramePlane>,
     pub dmabuf: Option<Arc<DmaBufFrame>>,
     pub vulkan: Option<Arc<VulkanVideoFrame>>,
-    pub overlay: Option<FrameOverlay>,
     pub timestamp_us: u64,
 }
 
 impl DecodedVideoFrame {
     pub fn validate(&self) -> Result<()> {
         self.format.validate()?;
-        if let Some(overlay) = &self.overlay {
-            if overlay.width == 0
-                || overlay.height == 0
-                || overlay.width % 2 != 0
-                || overlay.height % 2 != 0
-                || overlay.origin_x.saturating_add(overlay.width) > self.format.width
-                || overlay.origin_y.saturating_add(overlay.height) > self.format.height
-            {
-                return Err(Error::InvalidFormat(
-                    "frame overlay has invalid bounds".to_owned(),
-                ));
-            }
-            overlay.luma.validate(overlay.width as usize)?;
-            overlay.chroma.validate(overlay.width as usize)?;
-        }
         if let Some(vulkan) = &self.vulkan {
             vulkan.validate()?;
             return Ok(());
@@ -476,7 +450,6 @@ mod tests {
             ],
             dmabuf: None,
             vulkan: None,
-            overlay: None,
             timestamp_us: 1,
         };
         frame.validate().unwrap();
@@ -501,7 +474,6 @@ mod tests {
             ],
             dmabuf: None,
             vulkan: None,
-            overlay: None,
             timestamp_us: 1,
         };
         assert!(frame.validate().is_err());

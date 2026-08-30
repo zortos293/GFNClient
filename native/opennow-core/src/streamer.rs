@@ -1,8 +1,8 @@
+#[cfg(test)]
 use rand::RngCore as _;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::net::TcpStream;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -10,18 +10,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tungstenite::client::IntoClientRequest;
-use tungstenite::http::HeaderValue;
-use tungstenite::http::header::{ORIGIN, SEC_WEBSOCKET_PROTOCOL, USER_AGENT};
-use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket, connect};
-use url::Url;
 
 const STREAMER_PROTOCOL_VERSION: u64 = 5;
 const CHILD_MESSAGE_LIMIT: usize = 1024 * 1024;
 const CHILD_START_TIMEOUT: Duration = Duration::from_secs(90);
 const CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub struct StreamerError {
@@ -51,6 +44,9 @@ struct Snapshot {
     session_started_at_ms: Option<u128>,
     first_frame_latency_ms: Option<u64>,
     media_backend: Option<String>,
+    frames_per_second: Option<f64>,
+    bitrate_mbps: Option<f64>,
+    peak_bitrate_mbps: Option<f64>,
     backend_fallback_count: u64,
     decoder_error_count: u64,
     output_error_count: u64,
@@ -72,7 +68,7 @@ impl Default for Snapshot {
     fn default() -> Self {
         Self {
             status: "stopped".to_owned(),
-            message: "Native streamer is not running".to_owned(),
+            message: "Native NVST streamer is not running".to_owned(),
             session_id: None,
             process_id: None,
             transport: None,
@@ -91,6 +87,9 @@ impl Default for Snapshot {
             session_started_at_ms: None,
             first_frame_latency_ms: None,
             media_backend: None,
+            frames_per_second: None,
+            bitrate_mbps: None,
+            peak_bitrate_mbps: None,
             backend_fallback_count: 0,
             decoder_error_count: 0,
             output_error_count: 0,
@@ -133,6 +132,9 @@ impl Snapshot {
             "sessionStartedAtMs":self.session_started_at_ms.map(|value| value.to_string()),
             "firstFrameLatencyMs":self.first_frame_latency_ms,
             "mediaBackend":self.media_backend,
+            "framesPerSecond":self.frames_per_second,
+            "bitrateMbps":self.bitrate_mbps,
+            "peakBitrateMbps":self.peak_bitrate_mbps,
             "backendFallbackCount":self.backend_fallback_count,
             "decoderErrorCount":self.decoder_error_count,
             "outputErrorCount":self.output_error_count,
@@ -169,6 +171,9 @@ impl Snapshot {
             "sessionStartedAtMs": self.session_started_at_ms.map(|value| value.to_string()),
             "firstFrameLatencyMs": self.first_frame_latency_ms,
             "mediaBackend": self.media_backend,
+            "framesPerSecond": self.frames_per_second,
+            "bitrateMbps": self.bitrate_mbps,
+            "peakBitrateMbps": self.peak_bitrate_mbps,
             "backendFallbackCount": self.backend_fallback_count,
             "decoderErrorCount": self.decoder_error_count,
             "outputErrorCount": self.output_error_count,
@@ -232,12 +237,6 @@ enum WorkerCommand {
         output_path: Option<PathBuf>,
         reply: mpsc::SyncSender<Result<Value, StreamerError>>,
     },
-}
-
-struct SignalingContext<'a> {
-    session_id: &'a str,
-    signaling_url: &'a str,
-    streamer_context: &'a Value,
 }
 
 pub struct StreamerService {
@@ -325,15 +324,11 @@ impl StreamerService {
         let status = session["status"].as_i64().unwrap_or_default();
         if !matches!(status, 2 | 3) {
             return Err(invalid(
-                "CloudMatch session is not ready for media attachment",
+                "CloudMatch session is not ready for NVST media attachment",
             ));
         }
         let session_id = required_string(&session, "sessionId")?.to_owned();
         let microphone_mode = settings["microphoneMode"].as_str().unwrap_or("disabled");
-        let signaling_url = session["signalingUrl"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
         let mut context = streamer_context(session, settings);
         let surface = normalize_surface(params.get("surface"), context_resolution(&context))?;
         context["surface"] = surface;
@@ -342,16 +337,19 @@ impl StreamerService {
         {
             let mut snapshot = state.lock().expect("streamer state poisoned");
             snapshot.status = "starting".to_owned();
-            snapshot.message = "Launching the native media runtime…".to_owned();
+            snapshot.message = "Launching the native NVST media runtime…".to_owned();
             snapshot.session_id = Some(session_id.clone());
             snapshot.process_id = None;
-            snapshot.transport = None;
+            snapshot.transport = Some("nvst".to_owned());
             snapshot.executable = Some(executable.clone());
             snapshot.error_code = None;
             snapshot.started_at = Some(Instant::now());
             snapshot.session_started_at_ms = Some(unix_time_millis());
             snapshot.first_frame_latency_ms = None;
             snapshot.media_backend = None;
+            snapshot.frames_per_second = None;
+            snapshot.bitrate_mbps = None;
+            snapshot.peak_bitrate_mbps = None;
             snapshot.backend_fallback_count = 0;
             snapshot.decoder_error_count = 0;
             snapshot.output_error_count = 0;
@@ -380,7 +378,7 @@ impl StreamerService {
                     snapshot.microphone_state = "unavailable".to_owned();
                     snapshot.microphone_enabled = false;
                     snapshot.microphone_message =
-                        Some("Push-to-talk is not supported by the native runtime".to_owned());
+                        Some("Push-to-talk is not supported by the native NVST runtime".to_owned());
                 }
                 _ => {
                     snapshot.microphone_state = "disabled".to_owned();
@@ -392,14 +390,8 @@ impl StreamerService {
         let join = thread::Builder::new()
             .name("opennow-streamer-coordinator".to_owned())
             .spawn(move || {
-                if let Err(error) = run_worker(
-                    &executable,
-                    &session_id,
-                    &signaling_url,
-                    context,
-                    control_rx,
-                    Arc::clone(&state),
-                ) {
+                if let Err(error) = run_worker(&executable, context, control_rx, Arc::clone(&state))
+                {
                     eprintln!(
                         "native-streamer worker failed [{}]: {}",
                         error.code, error.message
@@ -479,7 +471,6 @@ impl StreamerService {
 
     pub fn control(&self, action: &str) -> Result<Value, StreamerError> {
         let child_command = match action {
-            "toggle-stats" => "stats-toggle",
             "toggle-fullscreen" => "fullscreen-toggle",
             "toggle-microphone" => "microphone-toggle",
             "anti-afk-pulse" => "anti-afk-pulse",
@@ -500,12 +491,6 @@ impl StreamerService {
                 code: "streamer_control_failed",
                 message: "Native streamer control channel is closed".to_owned(),
             })?;
-        let mut snapshot = self.state.lock().expect("streamer state poisoned");
-        if action == "toggle-fullscreen" {
-            snapshot.fullscreen_toggle_count = snapshot.fullscreen_toggle_count.saturating_add(1);
-        } else if action == "toggle-stats" {
-            snapshot.stats_toggle_count = snapshot.stats_toggle_count.saturating_add(1);
-        }
         Ok(json!({"action":action,"streamerRunning":true}))
     }
 
@@ -792,8 +777,6 @@ fn ensure_codec_available(capabilities: &Value, codec: &str) -> Result<(), Strea
 
 fn run_worker(
     executable: &Path,
-    session_id: &str,
-    signaling_url: &str,
     context: Value,
     control: Receiver<WorkerCommand>,
     state: Arc<Mutex<Snapshot>>,
@@ -853,51 +836,15 @@ fn run_worker(
         snapshot.status = "starting".to_owned();
         snapshot.message = "Preparing native video and audio output…".to_owned();
     }
-    let nvst = context["settings"]["transportMode"]
-        .as_str()
-        .is_some_and(|value| value.eq_ignore_ascii_case("nvst"));
-    if nvst {
-        if hello["capabilities"]["supportsOwnedNvstNegotiation"].as_bool() != Some(true) {
-            return Err(StreamerError {
-                code: "streamer_protocol_mismatch",
-                message:
-                    "Native streamer does not own NVST negotiation; protocol 5 support is required"
-                        .to_owned(),
-            });
-        }
-        let result = run_owned_nvst_child(
-            &context, &mut stdin, &mut child, &child_rx, &control, &state,
-        );
-        let _ = write_child(
-            &mut stdin,
-            &json!({"id":"shutdown","type":"shutdown","reason":"OpenNOW session ended"}),
-        );
-        wait_or_kill(&mut child);
-        drop(stdin);
-        let _ = reader.join();
-        let _ = stderr_reader.join();
-        return result;
+    if hello["capabilities"]["supportsOwnedNvstNegotiation"].as_bool() != Some(true) {
+        return Err(StreamerError {
+            code: "streamer_protocol_mismatch",
+            message: "Native streamer cannot start NVST: owned NVST negotiation and protocol 5 are required"
+                .to_owned(),
+        });
     }
-    start_child(&mut stdin, &child_rx, &context, &state)?;
-    ensure_child_running(&mut child)?;
-    {
-        let mut snapshot = state.lock().expect("streamer state poisoned");
-        snapshot.status = "connecting".to_owned();
-        snapshot.message = "Attaching secure GeForce NOW signaling…".to_owned();
-    }
-    write_surface(&mut stdin, &context["surface"])?;
-
-    let result = run_signaling(
-        SignalingContext {
-            session_id,
-            signaling_url,
-            streamer_context: &context,
-        },
-        &mut stdin,
-        &mut child,
-        &child_rx,
-        &control,
-        &state,
+    let result = run_owned_nvst_child(
+        &context, &mut stdin, &mut child, &child_rx, &control, &state,
     );
     let _ = write_child(
         &mut stdin,
@@ -921,7 +868,8 @@ fn run_owned_nvst_child(
     {
         let mut snapshot = state.lock().expect("streamer state poisoned");
         snapshot.status = "negotiating".to_owned();
-        snapshot.message = "Native streamer is negotiating the GeForce NOW session…".to_owned();
+        snapshot.message =
+            "Native streamer is negotiating the GeForce NOW NVST session…".to_owned();
     }
     start_child(stdin, child_rx, context, state)?;
     ensure_child_running(child)?;
@@ -989,7 +937,7 @@ fn start_child(
     )?;
     let started = wait_for_child(child_rx, "start", CHILD_START_TIMEOUT, state)?;
     if started["type"] != "ok" {
-        return Err(child_error(&started, "Native media startup failed"));
+        return Err(child_error(&started, "Native NVST media startup failed"));
     }
     state.lock().expect("streamer state poisoned").transport =
         started["transport"].as_str().map(ToOwned::to_owned);
@@ -1043,7 +991,9 @@ fn handle_nvst_child_event(
                 .filter(|action| {
                     matches!(
                         *action,
-                        "stop-stream"
+                        "toggle-stats"
+                            | "toggle-fullscreen"
+                            | "stop-stream"
                             | "toggle-anti-afk"
                             | "toggle-microphone"
                             | "screenshot"
@@ -1057,6 +1007,12 @@ fn handle_nvst_child_event(
             let mut snapshot = state.lock().expect("streamer state poisoned");
             snapshot.shortcut_action_generation =
                 snapshot.shortcut_action_generation.wrapping_add(1);
+            if action == "toggle-stats" {
+                snapshot.stats_toggle_count = snapshot.stats_toggle_count.saturating_add(1);
+            } else if action == "toggle-fullscreen" {
+                snapshot.fullscreen_toggle_count =
+                    snapshot.fullscreen_toggle_count.saturating_add(1);
+            }
             snapshot.shortcut_action = Some(action.to_owned());
             Ok(())
         }
@@ -1066,293 +1022,6 @@ fn handle_nvst_child_event(
         }
         _ => Ok(()),
     }
-}
-
-fn run_signaling(
-    config: SignalingContext<'_>,
-    stdin: &mut ChildStdin,
-    child: &mut Child,
-    child_rx: &Receiver<Value>,
-    control: &Receiver<WorkerCommand>,
-    state: &Arc<Mutex<Snapshot>>,
-) -> Result<(), StreamerError> {
-    ensure_child_running(child)?;
-    let peer_name = format!("peer-{}", random_u64() % 10_000_000_000);
-    let sign_in = sign_in_url(config.signaling_url, config.session_id, &peer_name)?;
-    let mut request = sign_in
-        .as_str()
-        .into_client_request()
-        .map_err(|error| StreamerError {
-            code: "signaling_connect_failed",
-            message: error.to_string(),
-        })?;
-    request.headers_mut().insert(
-        SEC_WEBSOCKET_PROTOCOL,
-        HeaderValue::from_str(&format!("x-nv-sessionid.{}", config.session_id))
-            .map_err(|_| invalid("Session ID cannot be used as a signaling protocol"))?,
-    );
-    request.headers_mut().insert(
-        ORIGIN,
-        HeaderValue::from_static("https://play.geforcenow.com"),
-    );
-    request.headers_mut().insert(
-        USER_AGENT,
-        HeaderValue::from_static("Mozilla/5.0 OpenNOW/0.1 GFN-PC/2.0.87.131"),
-    );
-    let (mut websocket, _) = connect(request).map_err(|error| StreamerError {
-        code: "signaling_connect_failed",
-        message: format!("Could not connect to GeForce NOW signaling: {error}"),
-    })?;
-    set_read_timeout(&mut websocket, Duration::from_millis(100));
-    let mut peer_id = 0_i64;
-    let mut remote_peer_id = 1_i64;
-    let mut ack_id = 1_u64;
-    send_ws_json(
-        &mut websocket,
-        &json!({"ackid":ack_id,"peer_info":{
-            "browser":"Chrome","browserVersion":"131","connected":true,
-            "id":peer_id,"name":peer_name,"peerRole":0,"resolution":"1920x1080","version":2
-        }}),
-    )?;
-    ack_id += 1;
-    {
-        let mut snapshot = state.lock().expect("streamer state poisoned");
-        snapshot.status = "negotiating".to_owned();
-        snapshot.message = "Negotiating ICE and encrypted media…".to_owned();
-    }
-    let mut last_heartbeat = Instant::now();
-    let mut offer_counter = 0_u64;
-
-    loop {
-        if let Ok(command) = control.try_recv() {
-            match command {
-                WorkerCommand::Stop(reason) => {
-                    let _ = write_child(stdin, &json!({"id":"stop","type":"stop","reason":reason}));
-                    let _ = websocket.close(None);
-                    return Ok(());
-                }
-                WorkerCommand::InputPaused(paused) => {
-                    write_child(
-                        stdin,
-                        &json!({"id":"input-paused","type":"input-paused","paused":paused}),
-                    )?;
-                }
-                WorkerCommand::Control(command_type) => {
-                    write_child(stdin, &json!({"id":"runtime-control","type":command_type}))?;
-                }
-                WorkerCommand::Surface(surface) => write_surface(stdin, &surface)?,
-                WorkerCommand::Recording {
-                    enabled,
-                    output_path,
-                    reply,
-                } => {
-                    let result =
-                        execute_recording(stdin, child_rx, state, enabled, output_path.as_deref());
-                    let _ = reply.send(result);
-                }
-            }
-        }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| internal(error.to_string()))?
-        {
-            return Err(StreamerError {
-                code: "streamer_exited",
-                message: format!("Native streamer exited unexpectedly ({status})"),
-            });
-        }
-        while let Ok(message) = child_rx.try_recv() {
-            handle_child_event(
-                &message,
-                &mut websocket,
-                &mut peer_id,
-                remote_peer_id,
-                &mut ack_id,
-                state,
-            )?;
-        }
-        if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-            send_ws_json(&mut websocket, &json!({"hb":1}))?;
-            last_heartbeat = Instant::now();
-        }
-        match websocket.read() {
-            Ok(Message::Text(text)) => {
-                let payload: Value = match serde_json::from_str(text.as_str()) {
-                    Ok(value) => value,
-                    Err(_) => continue,
-                };
-                if let Some(info) = payload["peer_info"].as_object() {
-                    if info.get("name").and_then(Value::as_str) == Some(peer_name.as_str()) {
-                        peer_id = info.get("id").and_then(Value::as_i64).unwrap_or(peer_id);
-                    }
-                }
-                if let Some(incoming_ack) = payload["ackid"].as_u64() {
-                    let is_ours = payload["peer_info"]["id"].as_i64() == Some(peer_id);
-                    if !is_ours {
-                        send_ws_json(&mut websocket, &json!({"ack":incoming_ack}))?;
-                    }
-                }
-                if payload["hb"].as_i64().is_some() {
-                    send_ws_json(&mut websocket, &json!({"hb":1}))?;
-                    continue;
-                }
-                if payload["error"].as_str() == Some("peerRemoved") {
-                    return Err(StreamerError {
-                        code: "signaling_disconnected",
-                        message: "The remote GeForce NOW peer ended the session".to_owned(),
-                    });
-                }
-                let Some(peer_message) = payload["peer_msg"]["msg"].as_str() else {
-                    continue;
-                };
-                remote_peer_id = payload["peer_msg"]["from"]
-                    .as_i64()
-                    .unwrap_or(remote_peer_id);
-                if peer_message.trim() == "BYE" {
-                    return Err(StreamerError {
-                        code: "signaling_disconnected",
-                        message: "The remote GeForce NOW peer closed the stream".to_owned(),
-                    });
-                }
-                let Ok(peer_payload) = serde_json::from_str::<Value>(peer_message) else {
-                    continue;
-                };
-                if peer_payload["type"].as_str() == Some("offer")
-                    && let Some(sdp) = peer_payload["sdp"].as_str()
-                {
-                    offer_counter += 1;
-                    write_child(
-                        stdin,
-                        &json!({
-                            "id":format!("offer-{offer_counter}"),"type":"offer",
-                            "sdp":sdp,"context":config.streamer_context
-                        }),
-                    )?;
-                } else if let Some(candidate) = peer_payload["candidate"].as_str() {
-                    write_child(
-                        stdin,
-                        &json!({
-                            "id":format!("remote-ice-{}",random_u64()),"type":"remote-ice",
-                            "candidate":{
-                                "candidate":candidate,
-                                "sdpMid":peer_payload["sdpMid"],
-                                "sdpMLineIndex":peer_payload["sdpMLineIndex"],
-                                "usernameFragment":peer_payload["usernameFragment"]
-                            }
-                        }),
-                    )?;
-                }
-            }
-            Ok(Message::Close(_)) => {
-                return Err(StreamerError {
-                    code: "signaling_disconnected",
-                    message: "GeForce NOW signaling closed".to_owned(),
-                });
-            }
-            Ok(Message::Ping(payload)) => {
-                websocket
-                    .send(Message::Pong(payload))
-                    .map_err(signaling_error)?;
-            }
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(error))
-                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
-                return Err(StreamerError {
-                    code: "signaling_disconnected",
-                    message: "GeForce NOW signaling disconnected".to_owned(),
-                });
-            }
-            Err(error) => return Err(signaling_error(error)),
-        }
-    }
-}
-
-fn handle_child_event(
-    message: &Value,
-    websocket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
-    peer_id: &mut i64,
-    remote_peer_id: i64,
-    ack_id: &mut u64,
-    state: &Arc<Mutex<Snapshot>>,
-) -> Result<(), StreamerError> {
-    apply_child_telemetry(message, state);
-    match message["type"].as_str().unwrap_or_default() {
-        "answer" => {
-            let Some(sdp) = message["answer"]["sdp"].as_str() else {
-                return Err(internal("Native streamer returned an empty SDP answer"));
-            };
-            send_peer_message(
-                websocket,
-                *peer_id,
-                remote_peer_id,
-                ack_id,
-                &json!({"type":"answer","sdp":sdp}),
-            )?;
-        }
-        "local-ice" => {
-            let candidate = &message["candidate"];
-            if !candidate["candidate"]
-                .as_str()
-                .is_some_and(|value| value.to_ascii_lowercase().contains(" tcp "))
-            {
-                send_peer_message(websocket, *peer_id, remote_peer_id, ack_id, candidate)?;
-            }
-        }
-        "status" => {
-            let mut snapshot = state.lock().expect("streamer state poisoned");
-            if let Some(status) = message["status"].as_str() {
-                snapshot.status = status.to_owned();
-            }
-            if let Some(text) = message["message"].as_str() {
-                snapshot.message = text.to_owned();
-            }
-        }
-        "overlay-request" => {
-            let mut snapshot = state.lock().expect("streamer state poisoned");
-            snapshot.overlay_request_generation =
-                snapshot.overlay_request_generation.wrapping_add(1);
-        }
-        "screenshot-request" => {
-            let mut snapshot = state.lock().expect("streamer state poisoned");
-            snapshot.screenshot_request_generation =
-                snapshot.screenshot_request_generation.wrapping_add(1);
-        }
-        "recording-toggle-request" => {
-            let mut snapshot = state.lock().expect("streamer state poisoned");
-            snapshot.recording_toggle_request_generation =
-                snapshot.recording_toggle_request_generation.wrapping_add(1);
-        }
-        "shortcut-action" => {
-            if let Some(action) = message["action"].as_str().filter(|action| {
-                matches!(
-                    *action,
-                    "stop-stream"
-                        | "toggle-anti-afk"
-                        | "toggle-microphone"
-                        | "screenshot"
-                        | "toggle-recording"
-                )
-            }) {
-                let mut snapshot = state.lock().expect("streamer state poisoned");
-                snapshot.shortcut_action_generation =
-                    snapshot.shortcut_action_generation.wrapping_add(1);
-                snapshot.shortcut_action = Some(action.to_owned());
-            }
-        }
-        "microphone-state" => apply_microphone_state(message, state),
-        "error" => {
-            return Err(StreamerError {
-                code: "native_stream_error",
-                message: message["message"]
-                    .as_str()
-                    .unwrap_or("Native streamer reported a media error")
-                    .to_owned(),
-            });
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 fn apply_microphone_state(message: &Value, state: &Arc<Mutex<Snapshot>>) {
@@ -1375,6 +1044,22 @@ fn apply_child_telemetry(message: &Value, state: &Arc<Mutex<Snapshot>>) {
         "input-unavailable" => {
             snapshot.input_ready = false;
             snapshot.input_unavailable_reason = message["reason"].as_str().map(ToOwned::to_owned);
+        }
+        "telemetry" => {
+            let metric = |key: &str, maximum: f64| {
+                message[key]
+                    .as_f64()
+                    .filter(|value| value.is_finite() && (0.0..=maximum).contains(value))
+            };
+            if let Some(value) = metric("framesPerSecond", 1_000.0) {
+                snapshot.frames_per_second = Some(value);
+            }
+            if let Some(value) = metric("bitrateMbps", 10_000.0) {
+                snapshot.bitrate_mbps = Some(value);
+            }
+            if let Some(value) = metric("peakBitrateMbps", 10_000.0) {
+                snapshot.peak_bitrate_mbps = Some(value);
+            }
         }
         _ => {}
     }
@@ -1411,62 +1096,6 @@ fn apply_child_telemetry(message: &Value, state: &Arc<Mutex<Snapshot>>) {
         }
         _ => {}
     }
-}
-
-fn send_peer_message(
-    websocket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
-    peer_id: i64,
-    remote_peer_id: i64,
-    ack_id: &mut u64,
-    payload: &Value,
-) -> Result<(), StreamerError> {
-    send_ws_json(
-        websocket,
-        &json!({
-            "peer_msg":{"from":peer_id,"to":remote_peer_id,"msg":payload.to_string()},
-            "ackid":*ack_id
-        }),
-    )?;
-    *ack_id += 1;
-    Ok(())
-}
-
-fn send_ws_json(
-    websocket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
-    value: &Value,
-) -> Result<(), StreamerError> {
-    websocket
-        .send(Message::Text(value.to_string().into()))
-        .map_err(signaling_error)
-}
-
-fn set_read_timeout(websocket: &mut WebSocket<MaybeTlsStream<TcpStream>>, timeout: Duration) {
-    let result = match websocket.get_mut() {
-        MaybeTlsStream::Plain(stream) => stream.set_read_timeout(Some(timeout)),
-        MaybeTlsStream::Rustls(stream) => stream.sock.set_read_timeout(Some(timeout)),
-        _ => Ok(()),
-    };
-    let _ = result;
-}
-
-fn sign_in_url(raw: &str, session_id: &str, peer_name: &str) -> Result<Url, StreamerError> {
-    let mut url = Url::parse(raw).map_err(|_| invalid("Invalid signaling URL"))?;
-    let host = url
-        .host_str()
-        .unwrap_or_default()
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    if url.scheme() != "wss" || !(host == "nvidiagrid.net" || host.ends_with(".nvidiagrid.net")) {
-        return Err(invalid("Untrusted GeForce NOW signaling URL"));
-    }
-    let path = format!("{}/sign_in", url.path().trim_end_matches('/'));
-    url.set_path(&path);
-    url.query_pairs_mut()
-        .append_pair("peer_id", peer_name)
-        .append_pair("version", "2")
-        .append_pair("peer_role", "1")
-        .append_pair("pairing_id", session_id);
-    Ok(url)
 }
 
 fn streamer_context(mut session: Value, settings: &Value) -> Value {
@@ -1536,21 +1165,33 @@ fn normalize_surface(
         .and_then(Value::as_object)
         .or_else(|| object.get("rect").and_then(Value::as_object))
         .ok_or_else(|| invalid("streamer surface requires screenRect"))?;
-    let width = screen
-        .get("width")
-        .and_then(Value::as_u64)
-        .filter(|value| (64..=16_384).contains(value))
-        .ok_or_else(|| invalid("streamer surface width is out of range"))?;
-    let height = screen
-        .get("height")
-        .and_then(Value::as_u64)
-        .filter(|value| (64..=16_384).contains(value))
-        .ok_or_else(|| invalid("streamer surface height is out of range"))?;
-    let x = screen.get("x").and_then(Value::as_i64).unwrap_or(0);
-    let y = screen.get("y").and_then(Value::as_i64).unwrap_or(0);
-    if !(-100_000..=100_000).contains(&x) || !(-100_000..=100_000).contains(&y) {
-        return Err(invalid("streamer surface position is out of range"));
-    }
+    let parse_rect = |value: &serde_json::Map<String, Value>, label: &str| {
+        let width = value
+            .get("width")
+            .and_then(Value::as_u64)
+            .filter(|value| (64..=16_384).contains(value))
+            .ok_or_else(|| invalid(format!("streamer {label} width is out of range")))?;
+        let height = value
+            .get("height")
+            .and_then(Value::as_u64)
+            .filter(|value| (64..=16_384).contains(value))
+            .ok_or_else(|| invalid(format!("streamer {label} height is out of range")))?;
+        let x = value.get("x").and_then(Value::as_i64).unwrap_or(0);
+        let y = value.get("y").and_then(Value::as_i64).unwrap_or(0);
+        if !(-100_000..=100_000).contains(&x) || !(-100_000..=100_000).contains(&y) {
+            return Err(invalid(format!(
+                "streamer {label} position is out of range"
+            )));
+        }
+        Ok((x, y, width, height))
+    };
+    let (screen_x, screen_y, screen_width, screen_height) = parse_rect(screen, "screenRect")?;
+    let (local_x, local_y, local_width, local_height) = object
+        .get("rect")
+        .and_then(Value::as_object)
+        .map(|rect| parse_rect(rect, "rect"))
+        .transpose()?
+        .unwrap_or((0, 0, screen_width, screen_height));
     let scale = object
         .get("deviceScaleFactor")
         .and_then(Value::as_f64)
@@ -1563,8 +1204,8 @@ fn normalize_surface(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty() && value.len() <= 512);
     let mut normalized = json!({
-        "rect":{"x":0,"y":0,"width":width,"height":height},
-        "screenRect":{"x":x,"y":y,"width":width,"height":height},
+        "rect":{"x":local_x,"y":local_y,"width":local_width,"height":local_height},
+        "screenRect":{"x":screen_x,"y":screen_y,"width":screen_width,"height":screen_height},
         "visible":visible,
         "deviceScaleFactor":scale
     });
@@ -1794,17 +1435,11 @@ fn unix_time_millis() -> u128 {
         .as_millis()
 }
 
+#[cfg(test)]
 fn random_u64() -> u64 {
     let mut bytes = [0_u8; 8];
     rand::rng().fill_bytes(&mut bytes);
     u64::from_le_bytes(bytes)
-}
-
-fn signaling_error(error: tungstenite::Error) -> StreamerError {
-    StreamerError {
-        code: "signaling_error",
-        message: error.to_string(),
-    }
 }
 
 fn invalid(message: impl Into<String>) -> StreamerError {
@@ -2020,16 +1655,27 @@ mod tests {
     }
 
     #[test]
-    fn native_shortcut_actions_are_validated_and_exposed_once() {
+    fn native_shell_shortcuts_are_forwarded_to_qt_and_counted_once() {
         let state = Arc::new(Mutex::new(Snapshot::default()));
         handle_nvst_child_event(
-            &json!({"type":"shortcut-action","action":"toggle-recording"}),
+            &json!({"type":"shortcut-action","action":"toggle-stats"}),
             &state,
         )
         .expect("supported shortcut action");
         let value = state.lock().expect("snapshot").value();
-        assert_eq!(value["streamer"]["shortcutAction"], "toggle-recording");
+        assert_eq!(value["streamer"]["shortcutAction"], "toggle-stats");
         assert_eq!(value["streamer"]["shortcutActionGeneration"], 1);
+        assert_eq!(value["streamer"]["statsToggleCount"], 1);
+
+        handle_nvst_child_event(
+            &json!({"type":"shortcut-action","action":"toggle-fullscreen"}),
+            &state,
+        )
+        .expect("supported fullscreen shortcut action");
+        let value = state.lock().expect("snapshot").value();
+        assert_eq!(value["streamer"]["shortcutAction"], "toggle-fullscreen");
+        assert_eq!(value["streamer"]["shortcutActionGeneration"], 2);
+        assert_eq!(value["streamer"]["fullscreenToggleCount"], 1);
 
         let failure = handle_nvst_child_event(
             &json!({"type":"shortcut-action","action":"launch-command"}),
@@ -2039,7 +1685,7 @@ mod tests {
         assert_eq!(failure.code, "streamer_protocol_error");
         assert_eq!(
             state.lock().expect("snapshot").shortcut_action_generation,
-            1
+            2
         );
     }
 
@@ -2056,6 +1702,7 @@ mod tests {
             json!({"type":"log","event":"device-state","subsystem":"video","recovered":false}),
             json!({"type":"log","event":"device-state","subsystem":"video","recovered":true}),
             json!({"type":"status","event":"first-frame","backend":"ffmpeg","status":"streaming"}),
+            json!({"type":"telemetry","framesPerSecond":59.8,"bitrateMbps":42.5,"peakBitrateMbps":51.0}),
         ] {
             apply_child_telemetry(&event, &state);
         }
@@ -2069,28 +1716,34 @@ mod tests {
         assert_eq!(value["deviceLossCount"], 1);
         assert_eq!(value["deviceRecoveryCount"], 1);
         assert_eq!(value["inputReady"], true);
+        assert_eq!(value["framesPerSecond"], 59.8);
+        assert_eq!(value["bitrateMbps"], 42.5);
+        assert_eq!(value["peakBitrateMbps"], 51.0);
         assert!(value.get("sessionId").is_none());
         assert!(value.get("executable").is_none());
         assert!(value.get("processId").is_none());
     }
 
     #[test]
-    fn dynamic_surface_is_bounded_and_normalized() {
+    fn dynamic_surface_preserves_embedding_handle_and_normalizes_geometry() {
         let surface = normalize_surface(
             Some(&json!({
+                "rect":{"x":32,"y":64,"width":1600,"height":900},
                 "screenRect":{"x":-120,"y":48,"width":1600,"height":900},
                 "visible":true,
-                "deviceScaleFactor":1.5
+                "deviceScaleFactor":1.5,
+                "windowHandle":"0x1234"
             })),
             (1280, 720),
         )
         .unwrap();
         assert_eq!(
             surface["rect"],
-            json!({"x":0,"y":0,"width":1600,"height":900})
+            json!({"x":32,"y":64,"width":1600,"height":900})
         );
         assert_eq!(surface["screenRect"]["x"], -120);
         assert_eq!(surface["deviceScaleFactor"], 1.5);
+        assert_eq!(surface["windowHandle"], "0x1234");
         assert!(
             normalize_surface(
                 Some(&json!({"screenRect":{"width":32,"height":900}})),
@@ -2098,19 +1751,6 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn signaling_url_is_scoped_to_nvidia_and_session() {
-        let url = sign_in_url(
-            "wss://80-1-2-3.nvidiagrid.net/nvst/",
-            "session-one",
-            "peer-one",
-        )
-        .unwrap();
-        assert_eq!(url.path(), "/nvst/sign_in");
-        assert!(url.query().unwrap().contains("pairing_id=session-one"));
-        assert!(sign_in_url("wss://example.com/nvst/", "session", "peer").is_err());
     }
 
     #[test]

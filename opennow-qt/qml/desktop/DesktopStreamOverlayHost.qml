@@ -11,17 +11,20 @@ FocusScope {
     readonly property bool menuVisible: overlay === "desktop-stream-menu"
     readonly property bool statsVisible: overlay === "desktop-stream-stats"
         || overlay === "desktop-stream-stats-expanded"
+        || overlay === "stream-stats"
+        || overlay === "stream-stats-expanded"
 
     function closeOverlay() {
         AppController.showOverlay("")
     }
     function cycleStats() {
-        if (overlay === "desktop-stream-stats")
-            AppController.showOverlay("desktop-stream-stats-expanded")
-        else if (overlay === "desktop-stream-stats-expanded")
+        const prefix = overlay.startsWith("desktop-") ? "desktop-stream-stats" : "stream-stats"
+        if (overlay === prefix)
+            AppController.showOverlay(prefix + "-expanded")
+        else if (overlay === prefix + "-expanded")
             AppController.showOverlay("")
         else
-            AppController.showOverlay("desktop-stream-stats")
+            AppController.showOverlay(prefix)
     }
     function liveNumber(value) {
         return value === undefined || value === null || isNaN(Number(value)) ? null : Number(value)
@@ -48,6 +51,12 @@ FocusScope {
             .arg(region)
             .arg(ping === "—" ? ping : ping + " ms")
             .arg(bitrate === "—" ? bitrate : bitrate + " Mbps")
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        visible: root.statsVisible
+        color: "#04060A"
     }
 
     DesktopInStreamMenu {
@@ -80,6 +89,7 @@ FocusScope {
         visible: root.statsVisible
         focus: visible
         expanded: root.overlay === "desktop-stream-stats-expanded"
+            || root.overlay === "stream-stats-expanded"
         onCycleRequested: root.cycleStats()
         onCloseRequested: root.closeOverlay()
         onCopyRequested: ShellStore.accessibilityMessage = root.copyStatsSummary()

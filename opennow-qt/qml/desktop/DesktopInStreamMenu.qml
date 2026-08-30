@@ -31,6 +31,8 @@ FocusScope {
         .indexOf(String(live.status || "")) >= 0
     readonly property bool modePending: DesktopTokens.consoleModePending(Window.window)
     readonly property bool modeOn: DesktopTokens.consoleModeOn(Window.window)
+    readonly property bool fullscreen: Window.window
+        && Window.window.visibility === Window.FullScreen
     readonly property int outputHeight: Number(profile.height || 0)
     readonly property int qualityFps: Number(profile.fps || profile.frameRate || 0)
     readonly property bool invitesAvailable: Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.invitesAvailable)
@@ -70,13 +72,30 @@ FocusScope {
         closeAnimation.restart()
         actionTimer.restart()
     }
+    function toggleFullscreen() {
+        const targetWindow = Window.window
+        if (!targetWindow)
+            return
+        const enteringFullscreen = targetWindow.visibility !== Window.FullScreen
+        if (enteringFullscreen)
+            targetWindow.showFullScreen()
+        else
+            targetWindow.showNormal()
+        ShellStore.streamControlMessage = enteringFullscreen
+            ? qsTr("Fullscreen on") : qsTr("Fullscreen off")
+        ShellStore.accessibilityMessage = ShellStore.streamControlMessage
+    }
     function finishAction() {
         if (pendingAction === 0) resumeRequested()
         else if (pendingAction === 1) qualityRequested()
         else if (pendingAction === 2) inviteRequested()
         else if (pendingAction === 3) consoleModeRequested(!root.modeOn)
-        else if (pendingAction === 4) endSessionRequested()
-        else if (pendingAction === 5) statsRequested()
+        else if (pendingAction === 4) {
+            root.toggleFullscreen()
+            resumeRequested()
+        }
+        else if (pendingAction === 5) endSessionRequested()
+        else if (pendingAction === 6) statsRequested()
     }
     function clockText() {
         if (ShellStore.streamStartedAtMs <= 0)
@@ -114,7 +133,7 @@ FocusScope {
         x: Math.round((root.width - width) / 2)
         y: Math.round((root.height - height) / 2) - 2
         width: 760
-        height: 410
+        height: 460
         radius: 20
         color: "#F00A0E15"
         border.width: 1
@@ -219,6 +238,7 @@ FocusScope {
                         { title: qsTr("Stream quality"), detail: root.resolution + " · " + (root.qualityFps > 0 ? root.qualityFps : "—"), icon: "desktop-sliders.svg", primary: false, danger: false },
                         { title: qsTr("Invite a friend"), detail: root.invitesAvailable ? qsTr("AVAILABLE") : qsTr("UNAVAILABLE"), icon: "desktop-user-plus.svg", primary: false, danger: false },
                         { title: root.modeOn ? qsTr("Switch to desktop mode") : qsTr("Switch to console mode"), detail: root.modePending ? qsTr("SWITCHING…") : root.modeOn ? qsTr("DESKTOP READY") : qsTr("GAMEPAD READY"), icon: "desktop-gamepad.svg", primary: false, danger: false },
+                        { title: root.fullscreen ? qsTr("Exit fullscreen") : qsTr("Go fullscreen"), detail: "F11", icon: "desktop-expand.svg", primary: false, danger: false },
                         { title: qsTr("End session"), detail: "Ctrl Q", icon: "desktop-logout.svg", primary: false, danger: true }
                     ]
                     delegate: Rectangle {
@@ -362,9 +382,9 @@ FocusScope {
                     width: parent.width
                     height: 118
                     radius: 12
-                    color: root.selectedIndex === 5 ? "#1FFFFFFF" : "#0FFFFFFF"
-                    border.width: root.selectedIndex === 5 ? 2 : 1
-                    border.color: root.selectedIndex === 5 ? DesktopTokens.focus : "#17FFFFFF"
+                    color: root.selectedIndex === 6 ? "#1FFFFFFF" : "#0FFFFFFF"
+                    border.width: root.selectedIndex === 6 ? 2 : 1
+                    border.color: root.selectedIndex === 6 ? DesktopTokens.focus : "#17FFFFFF"
                     Text { x: 14; y: 13; text: qsTr("STREAM STATS OVERLAY"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 1 }
                     Text { x: 14; y: 39; text: qsTr("See frame rate, latency and bitrate\nwithout leaving the game."); color: DesktopTokens.textBody; font.family: DesktopTokens.bodyFont; font.pixelSize: 11; font.weight: Font.DemiBold; lineHeight: 1.25 }
                     Rectangle {
@@ -373,8 +393,8 @@ FocusScope {
                     }
                     Text { x: 49; y: 87; text: qsTr("Cycle"); color: DesktopTokens.textMuted; font.family: DesktopTokens.bodyFont; font.pixelSize: 10; font.weight: Font.DemiBold }
                     Text { anchors.right: parent.right; anchors.rightMargin: 14; y: 87; text: qsTr("Hold F3 for details"); color: DesktopTokens.textFaint; font.family: DesktopTokens.bodyFont; font.pixelSize: 10 }
-                    HoverHandler { id: statsHover; onHoveredChanged: if (hovered) root.selectedIndex = 5 }
-                    TapHandler { onTapped: root.runAction(5) }
+                    HoverHandler { id: statsHover; onHoveredChanged: if (hovered) root.selectedIndex = 6 }
+                    TapHandler { onTapped: root.runAction(6) }
                 }
             }
         }
@@ -399,6 +419,12 @@ FocusScope {
 
     Timer { interval: 1000; repeat: true; running: root.visible; onTriggered: root.nowMs = Date.now() }
     Timer { id: actionTimer; interval: AppController.reducedMotion ? 0 : 145; onTriggered: root.finishAction() }
+    onVisibleChanged: if (visible) {
+        closing = false
+        pendingAction = -1
+        selectedIndex = 0
+        forceActiveFocus()
+    }
     ParallelAnimation {
         id: closeAnimation
         NumberAnimation { target: panel; property: "opacity"; to: 0; duration: AppController.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic }
@@ -418,7 +444,7 @@ FocusScope {
             root.runAction(0)
             event.accepted = true
         } else if (event.key === Qt.Key_Down) {
-            root.selectedIndex = Math.min(5, root.selectedIndex + 1)
+            root.selectedIndex = Math.min(6, root.selectedIndex + 1)
             event.accepted = true
         } else if (event.key === Qt.Key_Up) {
             root.selectedIndex = Math.max(0, root.selectedIndex - 1)
@@ -427,10 +453,10 @@ FocusScope {
             root.runAction(root.selectedIndex)
             event.accepted = true
         } else if (event.key === Qt.Key_F3) {
-            root.runAction(5)
+            root.runAction(6)
             event.accepted = true
         } else if (event.key === Qt.Key_Q && (event.modifiers & Qt.ControlModifier)) {
-            root.runAction(4)
+            root.runAction(5)
             event.accepted = true
         }
     }

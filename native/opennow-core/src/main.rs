@@ -591,6 +591,7 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                     && streamer["sessionUptimeMs"].as_u64().unwrap_or_default() >= 600_000,
                 "firstFramePresented": streamer["firstFrameLatencyMs"].is_number()
                     && streamer["mediaBackend"].is_string(),
+                "nvstTransportActive": streamer["transport"] == "nvst",
                 "nativeInputReady": streamer["inputReady"].as_bool().unwrap_or(false),
                 "inputOwnershipExercised": streamer["inputPauseCount"].as_u64().unwrap_or_default() > 0
                     && streamer["inputResumeCount"].as_u64().unwrap_or_default() > 0,
@@ -598,8 +599,6 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 "surfaceReconfigured": streamer["surfaceUpdateCount"].as_u64().unwrap_or_default() > 0,
                 "fullscreenControlExercised": streamer["fullscreenToggleCount"].as_u64().unwrap_or_default() > 0,
                 "statsControlExercised": streamer["statsToggleCount"].as_u64().unwrap_or_default() > 0,
-                "microphoneUpstreamReady": streamer["microphoneEnabled"].as_bool().unwrap_or(false)
-                    && streamer["microphoneState"] == "ready",
                 "recordingRoundTrip": streamer["recordingStartCount"].as_u64().unwrap_or_default() > 0
                     && streamer["recordingStopCount"].as_u64().unwrap_or_default() > 0,
                 "mediaArtifactsComplete": media["complete"].as_bool().unwrap_or(false),

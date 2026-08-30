@@ -2417,6 +2417,8 @@ struct WindowsExternalSdlSurface {
     raw_input: Option<WindowsRawInputController>,
     stream_size: (u32, u32),
     visible: bool,
+    session_paused: bool,
+    input_suspended: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -2428,6 +2430,8 @@ impl WindowsExternalSdlSurface {
         // Force the Windows RawInput path. Warp-relative motion is quantized by
         // cursor recentering and Windows pointer scaling, which is particularly
         // noticeable in 120 FPS first-person games.
+        sdl2::hint::set("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2");
+        sdl2::hint::set("SDL_WINDOWS_DPI_SCALING", "1");
         sdl2::hint::set("SDL_MOUSE_RELATIVE_MODE_WARP", "0");
         sdl2::hint::set("SDL_MOUSE_RELATIVE_SCALING", "0");
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
@@ -2435,8 +2439,12 @@ impl WindowsExternalSdlSurface {
             .video()
             .map_err(|error| format!("SDL video initialization failed: {error}"))?;
         let mut window_builder = video.window("OpenNOW Stream", 1280, 720);
-        window_builder.position_centered().resizable().hidden();
-        let window = window_builder
+        window_builder
+            .position_centered()
+            .resizable()
+            .borderless()
+            .hidden();
+        let mut window = window_builder
             .build()
             .map_err(|error| format!("external SDL video window creation failed: {error}"))?;
         let native_surface = NativeSurface::new(&window)?;
@@ -2471,6 +2479,7 @@ impl WindowsExternalSdlSurface {
             stream.shortcuts,
         );
         input_capture.enable_gamepads(&sdl);
+        input_capture.set_input_paused(true, &sdl, &mut window);
         Ok(Self {
             sdl,
             window,
@@ -2480,6 +2489,8 @@ impl WindowsExternalSdlSurface {
             raw_input,
             stream_size: (stream.width, stream.height),
             visible: false,
+            session_paused: false,
+            input_suspended: true,
         })
     }
 
@@ -2491,31 +2502,26 @@ impl WindowsExternalSdlSurface {
 
     fn update(&mut self, surface: &RenderSurface) -> Result<(), String> {
         let Some(rect) = surface.rect.filter(|_| surface.visible) else {
-            self.input_capture.release(&self.sdl, &mut self.window);
-            if let Some(raw_input) = self.raw_input.as_ref() {
-                raw_input.set_capture(false, false);
-            }
-            self.window.hide();
             self.visible = false;
+            self.sync_input_ownership();
+            self.native_surface.hide_checked()?;
             return Ok(());
         };
-        let bounds = surface.screen_rect.unwrap_or(rect);
-        self.window.set_position(
-            sdl2::video::WindowPos::Positioned(bounds.x),
-            sdl2::video::WindowPos::Positioned(bounds.y),
-        );
-        self.window
-            .set_size(bounds.width.max(2), bounds.height.max(2))
-            .map_err(|error| format!("failed to resize external SDL video surface: {error}"))?;
-        self.window.show();
-        if !self.visible {
-            self.window.raise();
+        let parent_handle = surface.window_handle.as_deref().ok_or_else(|| {
+            "visible Windows stream surface is missing the Qt window handle".to_owned()
+        })?;
+        let foreground_owner = parse_windows_handle(parent_handle)?.get();
+        self.native_surface.attach_and_show(
+            parent_handle,
+            rect,
+            surface.screen_rect,
+            surface.device_scale_factor,
+        )?;
+        if let Some(raw_input) = self.raw_input.as_ref() {
+            raw_input.set_foreground_owner(foreground_owner);
         }
         self.visible = true;
-        if let Some(raw_input) = self.raw_input.as_ref() {
-            raw_input.set_target(self.native_surface.window_handle());
-        }
-        self.sync_raw_input();
+        self.sync_input_ownership();
         Ok(())
     }
 
@@ -2523,9 +2529,9 @@ impl WindowsExternalSdlSurface {
         let stream_window_id = self.window.id();
         for event in self.event_pump.poll_iter().collect::<Vec<_>>() {
             if matches!(event, sdl2::event::Event::Quit { .. }) {
-                self.input_capture.release(&self.sdl, &mut self.window);
-                self.window.hide();
-                self.visible = false;
+                if let Err(error) = self.release() {
+                    eprintln!("{error}");
+                }
             } else if matches!(
                 event,
                 sdl2::event::Event::Window {
@@ -2569,13 +2575,26 @@ impl WindowsExternalSdlSurface {
         self.sync_raw_input();
     }
 
-    fn release(&mut self) {
-        self.input_capture.release(&self.sdl, &mut self.window);
-        if let Some(raw_input) = self.raw_input.as_ref() {
-            raw_input.set_capture(false, false);
-        }
-        self.window.hide();
+    fn release(&mut self) -> Result<(), String> {
         self.visible = false;
+        self.sync_input_ownership();
+        self.native_surface.hide_checked()
+    }
+
+    fn set_paused(&mut self, paused: bool) {
+        self.session_paused = paused;
+        self.sync_input_ownership();
+    }
+
+    fn sync_input_ownership(&mut self) {
+        let suspended = self.session_paused || !self.visible;
+        if suspended == self.input_suspended {
+            return;
+        }
+        self.input_capture
+            .set_input_paused(suspended, &self.sdl, &mut self.window);
+        self.input_suspended = suspended;
+        self.sync_raw_input();
     }
 
     fn take_captured_input(&mut self) -> Vec<CapturedInput> {
@@ -2716,9 +2735,7 @@ impl WindowsOutput {
 
     fn set_paused(&mut self, paused: bool) -> Result<(), String> {
         if let Some(surface) = self.external_surface.as_mut() {
-            surface
-                .input_capture
-                .set_input_paused(paused, &surface.sdl, &mut surface.window);
+            surface.set_paused(paused);
         }
         self.backend
             .set_paused(paused)
@@ -2790,7 +2807,9 @@ impl WindowsOutput {
         }
         self.bridge.replace_backend(None);
         if let Some(surface) = self.external_surface.as_mut() {
-            surface.release();
+            if let Err(error) = surface.release() {
+                eprintln!("{error}");
+            }
             let captured_input = self.output.captured_input();
             for input in surface.take_captured_input() {
                 captured_input.push(input);

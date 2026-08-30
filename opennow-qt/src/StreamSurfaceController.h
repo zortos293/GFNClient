@@ -71,11 +71,14 @@ signals:
     void surfaceChanged();
     void hostAvailableChanged();
     void lastErrorChanged();
+    void surfaceGenerationApplied(quint64 generation);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    bool prepareOverlayTransition(bool opening);
+    bool waitForAppliedGeneration(quint64 generation);
     static PlatformFamily currentPlatformFamily();
     static QString encodeWindowHandle(WId handle);
     void discoverHost();
@@ -100,8 +103,10 @@ private:
     QString m_lastError;
     quint64 m_generation = 0;
     quint64 m_requestGeneration = 0;
+    quint64 m_lastAppliedGeneration = 0;
     int m_failureCount = 0;
     bool m_dirty = false;
     bool m_streamerActive = false;
     bool m_tearingDown = false;
+    bool m_forceHidden = false;
 };

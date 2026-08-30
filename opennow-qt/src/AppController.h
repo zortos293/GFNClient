@@ -5,6 +5,8 @@
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
+
 class AppController final : public QObject
 {
     Q_OBJECT
@@ -48,6 +50,8 @@ public:
     Q_INVOKABLE void quitApplication();
     Q_INVOKABLE bool handleArguments(const QStringList &arguments);
 
+    void setOverlayTransitionGuard(std::function<bool(bool)> guard);
+
 public slots:
     void setReducedMotion(bool reducedMotion);
     void setControllerCount(int count);
@@ -63,6 +67,7 @@ signals:
     void directLaunchRequested(const QString &appId, const QString &title);
 
 private:
+    bool applyOverlay(const QString &overlay);
     static const QStringList &routes();
     static const QStringList &primaryRoutes();
     static const QStringList &overlays();
@@ -73,4 +78,5 @@ private:
     int m_controllerCount = 0;
     QString m_inputMode = QStringLiteral("keyboard");
     QVector<QString> m_routeHistory;
+    std::function<bool(bool)> m_overlayTransitionGuard;
 };

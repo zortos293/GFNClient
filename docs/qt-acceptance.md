@@ -20,8 +20,8 @@ Use an authorized test account with no production secrets in reports. Sign in in
 not put NVIDIA credentials, refresh tokens, signing keys, or notarization passwords in command
 arguments, logs, issue trackers, or acceptance artifacts.
 
-The presenter remains out of process. The current Qt launch contract uses a paired native top-level
-window aligned to the shell's stream region on Windows, X11, Wayland and macOS.
+The presenter remains out of process. Windows reparents its HWND as a child of the Qt top-level
+window. X11, Wayland and macOS use a paired native top-level window aligned to the stream region.
 The surface contract carries a window handle, host-local and screen geometry, visibility, and scale,
 but it does not establish cross-process Qt texture embedding. Foreign children and paired windows
 cannot be covered reliably by ordinary Qt Quick items, so the shell hides the presenter before it
@@ -68,8 +68,8 @@ ten minutes. Exercise the following without restarting the app:
    the live evidence reports `stream.transport: "nvst"`.
 3. Open and close every guide and stats page while video is live. Confirm the presenter hides before
    QML appears, returns after QML closes, never leaves a stale native handle, and transfers controller
-   input atomically. Record every platform as paired-window behavior rather than claiming a composited
-   live-video overlay.
+   input atomically. Record Windows as child-HWND behavior and the other platforms as paired-window
+   behavior rather than claiming a composited live-video overlay.
 4. Exercise keyboard, relative mouse, and every connected controller. Validate neutral controller
    state after overlay entry, reconnect, pause, and resume.
 5. Test window resize, fullscreen, display migration, the display's highest supported refresh

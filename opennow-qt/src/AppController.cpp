@@ -18,6 +18,8 @@
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <utility>
+
 using namespace Qt::StringLiterals;
 
 AppController::AppController(QObject *parent)
@@ -63,8 +65,7 @@ bool AppController::navigate(const QString &route)
     }
 
     if (!m_overlay.isEmpty()) {
-        m_overlay.clear();
-        emit overlayChanged();
+        applyOverlay({});
     }
 
     m_routeHistory.push_back(m_route);
@@ -80,8 +81,7 @@ bool AppController::navigateFromLastPrimary(const QString &route)
     }
 
     if (!m_overlay.isEmpty()) {
-        m_overlay.clear();
-        emit overlayChanged();
+        applyOverlay({});
     }
 
     auto routeStack = m_routeHistory;
@@ -108,17 +108,13 @@ bool AppController::showOverlay(const QString &overlay)
         return false;
     }
 
-    m_overlay = overlay;
-    emit overlayChanged();
-    return true;
+    return applyOverlay(overlay);
 }
 
 bool AppController::goBack()
 {
     if (!m_overlay.isEmpty()) {
-        m_overlay.clear();
-        emit overlayChanged();
-        return true;
+        return applyOverlay({});
     }
 
     if (m_routeHistory.isEmpty()) {
@@ -127,6 +123,21 @@ bool AppController::goBack()
 
     m_route = m_routeHistory.takeLast();
     emit routeChanged();
+    return true;
+}
+
+void AppController::setOverlayTransitionGuard(std::function<bool(bool)> guard)
+{
+    m_overlayTransitionGuard = std::move(guard);
+}
+
+bool AppController::applyOverlay(const QString &overlay)
+{
+    if (m_overlayTransitionGuard && !m_overlayTransitionGuard(!overlay.isEmpty())) {
+        return false;
+    }
+    m_overlay = overlay;
+    emit overlayChanged();
     return true;
 }
 

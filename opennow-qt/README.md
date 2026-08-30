@@ -63,9 +63,9 @@ supported and fails closed. Live multi-OS streaming, window-composition and
 hardware validation plus production signing/notarization remain removal gates,
 so Electron is still retained as the shipping fallback.
 
-The current presenter is not a Qt scene-graph texture: the Qt launch contract uses
-paired native top-level windows on Windows, macOS, X11 and Wayland. Ordinary QML
-cannot reliably cover those surfaces, so opening Qt-owned stream UI temporarily
-hides native presentation and restores it afterward. This is deliberately not
-described as a composited live-video overlay, a single OS window, or cross-platform
-zero-copy.
+The current presenter is not a Qt scene-graph texture. Windows reparents its native
+presenter HWND into the Qt top-level window, while macOS, X11 and Wayland use paired
+native top-level windows. Ordinary QML cannot reliably cover those surfaces, so
+opening Qt-owned stream UI temporarily hides native presentation and restores it
+afterward. This is deliberately not described as a composited live-video overlay or
+cross-platform zero-copy.

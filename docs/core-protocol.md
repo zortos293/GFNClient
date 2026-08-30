@@ -67,6 +67,7 @@ most 512 items; overflow drops the oldest event and emits a diagnostic counter.
 - `session.active.get`
 - `session.remote.list`, `session.claim`, `session.ad.report`
 - `streamer.detect`
+- `streamer.prepare`
 - `streamer.start`
 - `streamer.status.get`
 - `streamer.stop`
@@ -94,13 +95,12 @@ cached in the core process and bounded per response.
 CloudMatch session methods preserve one client/device identity through create,
 poll and stop, retain pending queue responses before signaling is available,
 and return the complete ordered connection, ICE and negotiated-feature payload
-needed by the native streamer. Streamer methods supervise the out-of-process
-protocol-v4 runtime, secure NVIDIA signaling, SDP/ICE relay, health state and
-bounded shutdown.
-The shell supplies bounded global surface geometry on startup and debounced
-move/resize updates at runtime. Both WebRTC and classic NVST receive a visible
-surface before media presentation; the external native window remains behind
-the transparent Qt guide layer while it owns gameplay input.
+needed by the native streamer. `streamer.prepare` returns the normalized session
+context used by the NVST runtime linked into the Qt shell. The in-process runtime
+owns secure NVIDIA signaling, ICE/DTLS/SCTP, RTSPS, Mjolnir, RTCP and native
+gameplay input, while Qt owns the graphics device, scene graph, video item and
+all top-level windows. Legacy streamer lifecycle methods remain protocol
+compatibility routes and are not used by the Qt shell.
 
 `acceptance.export` is available only through the Qt shell's Diagnostics screen. It rejects
 headless window systems and writes an atomic, redacted `opennow.live-acceptance` JSON file. The

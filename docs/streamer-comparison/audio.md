@@ -4,7 +4,7 @@
 
 Both clients play stereo Opus at 48 kHz through WASAPI. Official GFN keeps a timestamped jitter buffer (`NVST:TimestampAudioBuffer`) and asks the server for RFC 2198 RED at redundancy level 2. OpenNOW advertises `aqos.enableRedundancy:0`, decodes with `fec=false`, and has no audio jitter buffer. Loss is a drop. Underrun is a WASAPI stop and reset, not silence.
 
-Microphone is the other split. Official GFN has an Opus encoder wrapper and mic RED level 3. OpenNOW advertises NVST mic ports in RTSP and then refuses capture.
+Microphone is the other split. Official GFN has an Opus encoder wrapper and mic RED level 3. OpenNOW has no microphone capture or upstream transport path.
 
 Game audio works. It will not conceal gaps the way official GFN does, and the mic button will not reach the session.
 
@@ -85,7 +85,7 @@ There is no A/V sync. Video uses `PresentationClock`. Audio is decode-and-push.
 
 ## Microphone
 
-OpenNOW RTSP still writes `rtcMicOnNativeBundle:1` and `clientPorts.mic:0`. `native/opennow-core/src/streamer.rs` then refuses microphone upstream on this path. There is no NVST send.
+OpenNOW's NVST ANNOUNCE compatibility profile still writes `rtcMicOnNativeBundle:1` and `clientPorts.mic:0`, but the runtime has no microphone capture, encoder, queue or send path. Persisted microphone settings migrate to disabled.
 
 Official logs `NVST:OpusAudioEncoderWrapper` payload 20 ms, 2 channels, `mVoiceBitrate 16000`, in-band FEC disabled, mic RED 3.
 
@@ -93,7 +93,6 @@ Official logs `NVST:OpusAudioEncoderWrapper` payload 20 ms, 2 channels, `mVoiceB
 
 - WASAPI. `native/opennow-streamer/crates/opennow-streamer-platform-windows/src/windows/audio.rs`
 - Opus decode. `native/opennow-streamer/crates/opennow-streamer-platform/src/media.rs`
-- Mic. `native/opennow-streamer/crates/opennow-streamer-platform/src/microphone.rs`
 - NVST audio and RED strip. `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst.rs`
 - ANNOUNCE audio attrs. `native/opennow-streamer/crates/opennow-streamer-core/src/nvst_rtsp.rs`
 - CloudMatch stereo. `native/opennow-core/src/cloudmatch.rs`

@@ -1,4 +1,6 @@
 mod audio;
+mod embedded;
+mod mailbox;
 mod presentation;
 mod surface;
 mod video;
@@ -14,16 +16,21 @@ use thiserror::Error;
 
 use crate::failure::{BackendFailure, FailureReporter, VideoDecodeLoss};
 use crate::format::{
-    AudioFormat, Av1Format, BackendConfig, FormatError, FrameTiming, H264Format, H264Framing,
-    H265Format, RendererRect, ScreenRect, VideoFormat, access_unit_to_avcc,
+    AudioFormat, Av1Format, BackendConfig, EmbeddedBackendConfig, FormatError, FrameTiming,
+    H264Format, H264Framing, H265Format, RendererRect, ScreenRect, VideoFormat,
+    access_unit_to_avcc,
 };
 use crate::lifecycle::{BackendState, Lifecycle};
 use crate::queue::{BoundedQueue, PushResult};
 
 use self::audio::AudioPipeline;
+pub use self::embedded::{
+    AdoptedMetalContext, EmbeddedFrameProducer, MetalFrame, MetalRecordedFrame,
+};
+use self::mailbox::LatestMailbox;
 use self::presentation::PresenterHandle;
 use self::surface::SurfaceOwner;
-use self::video::{DecodedFrame, VideoDecoder};
+use self::video::{DecodedFrameOutput, VideoDecoder};
 
 const MAX_OPUS_PACKET_BYTES: usize = 1_275;
 
@@ -371,7 +378,7 @@ impl StreamSink {
         }
         let replacement = VideoDecoder::new(
             &format,
-            self.shared.video_queue.clone(),
+            self.shared.video_output.clone(),
             Arc::clone(&self.shared.counters),
             Arc::clone(&self.shared.failures),
             self.shared.video_frames_in_flight,
@@ -387,7 +394,7 @@ impl StreamSink {
         }
         let previous = decoder.replace(replacement);
         drop(previous);
-        let discarded = self.shared.video_queue.clear();
+        let discarded = self.shared.video_output.clear();
         self.shared
             .counters
             .video_frames_dropped
@@ -444,7 +451,7 @@ struct Shared {
     paused: AtomicBool,
     counters: Arc<Counters>,
     failures: Arc<FailureReporter>,
-    video_queue: Arc<BoundedQueue<DecodedFrame>>,
+    video_output: DecodedFrameOutput,
     video: Mutex<Option<VideoDecoder>>,
     audio: Mutex<Option<AudioPipeline>>,
     presenter: Mutex<Option<PresenterHandle>>,
@@ -465,6 +472,10 @@ impl Shared {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         drop(decoder);
+        let discarded = self.video_output.clear();
+        self.counters
+            .video_frames_dropped
+            .fetch_add(discarded as u64, Ordering::Relaxed);
         if let Some(audio) = self
             .audio
             .lock()
@@ -489,6 +500,7 @@ impl Shared {
 pub struct MacOsBackend {
     shared: Arc<Shared>,
     surface: Option<SurfaceOwner>,
+    frame_producer: Option<EmbeddedFrameProducer>,
     _main_thread_only: PhantomData<Rc<()>>,
 }
 
@@ -500,6 +512,7 @@ impl MacOsBackend {
         let counters = Arc::new(Counters::default());
         let failures = Arc::new(FailureReporter::default());
         let video_queue = Arc::new(BoundedQueue::new(config.queues.decoded_video_frames));
+        let video_output = DecodedFrameOutput::PresentationQueue(Arc::clone(&video_queue));
         let presenter = PresenterHandle::start(
             surface.metal_layer(),
             surface.presentation_visibility(),
@@ -509,7 +522,7 @@ impl MacOsBackend {
         )?;
         let video = VideoDecoder::new(
             &config.video,
-            Arc::clone(&video_queue),
+            video_output.clone(),
             Arc::clone(&counters),
             Arc::clone(&failures),
             config.queues.video_frames_in_flight,
@@ -526,7 +539,7 @@ impl MacOsBackend {
             paused: AtomicBool::new(false),
             counters,
             failures,
-            video_queue,
+            video_output,
             video: Mutex::new(Some(video)),
             audio: Mutex::new(Some(audio)),
             presenter: Mutex::new(Some(presenter)),
@@ -538,6 +551,94 @@ impl MacOsBackend {
         Ok(Self {
             shared,
             surface: Some(surface),
+            frame_producer: None,
+            _main_thread_only: PhantomData,
+        })
+    }
+
+    /// Starts VideoToolbox and CoreAudio for a shell-owned Qt/Metal renderer.
+    ///
+    /// This path creates no AppKit object, SDL window, `CAMetalLayer`, `CVDisplayLink`, Metal
+    /// device, or Metal command queue. Decoded IOSurface-backed frames are retained in a
+    /// latest-frame mailbox until [`EmbeddedFrameProducer::acquire_latest`] transfers them to Qt's
+    /// render thread.
+    pub fn start_embedded(config: EmbeddedBackendConfig) -> Result<Self, BackendError> {
+        Self::start_embedded_inner(config, None::<fn(MetalFrame) -> bool>)
+    }
+
+    /// Starts embedded output and forwards each newest retained frame to a shell mailbox.
+    ///
+    /// The publisher runs on VideoToolbox's callback thread and must return promptly. Returning
+    /// `true` indicates that the shell replaced an older unconsumed frame.
+    pub fn start_embedded_with_publisher(
+        config: EmbeddedBackendConfig,
+        publish: impl Fn(MetalFrame) -> bool + Send + Sync + 'static,
+    ) -> Result<Self, BackendError> {
+        Self::start_embedded_inner(config, Some(publish))
+    }
+
+    fn start_embedded_inner(
+        config: EmbeddedBackendConfig,
+        publish: Option<impl Fn(MetalFrame) -> bool + Send + Sync + 'static>,
+    ) -> Result<Self, BackendError> {
+        config.validate()?;
+        let counters = Arc::new(Counters::default());
+        let failures = Arc::new(FailureReporter::default());
+        let mailbox = Arc::new(LatestMailbox::new());
+        let frame_producer = EmbeddedFrameProducer::new(mailbox, Arc::clone(&counters));
+        let frame_available = publish.map(|publish| {
+            let producer = frame_producer.clone();
+            Arc::new(move || {
+                if let Some(frame) = producer.acquire_latest() {
+                    let replaced = publish(frame);
+                    if replaced {
+                        let counters = producer.counters();
+                        counters
+                            .video_decoded_queue_dropped
+                            .fetch_add(1, Ordering::Relaxed);
+                        counters
+                            .video_frames_dropped
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }) as Arc<dyn Fn() + Send + Sync>
+        });
+        let video_output = DecodedFrameOutput::EmbeddedMailbox {
+            mailbox: Arc::clone(frame_producer.mailbox()),
+            frame_available,
+        };
+        let video = VideoDecoder::new(
+            &config.video,
+            video_output.clone(),
+            Arc::clone(&counters),
+            Arc::clone(&failures),
+            config.queues.video_frames_in_flight,
+        )?;
+        let audio = AudioPipeline::start(
+            config.audio,
+            config.queues.opus_packets,
+            config.queues.pcm_milliseconds,
+            Arc::clone(&counters),
+            Arc::clone(&failures),
+        )?;
+        let shared = Arc::new(Shared {
+            lifecycle: Lifecycle::running(),
+            paused: AtomicBool::new(false),
+            counters,
+            failures,
+            video_output,
+            video: Mutex::new(Some(video)),
+            audio: Mutex::new(Some(audio)),
+            presenter: Mutex::new(None),
+            video_frames_in_flight: config.queues.video_frames_in_flight,
+            opus_packets: config.queues.opus_packets,
+            pcm_milliseconds: config.queues.pcm_milliseconds,
+            max_video_access_unit_bytes: config.queues.max_video_access_unit_bytes,
+        });
+        Ok(Self {
+            shared,
+            surface: None,
+            frame_producer: Some(frame_producer),
             _main_thread_only: PhantomData,
         })
     }
@@ -550,6 +651,10 @@ impl MacOsBackend {
 
     pub fn native_surface(&self) -> Option<NativeSurfaceHandle> {
         self.surface.as_ref().map(SurfaceOwner::native_handle)
+    }
+
+    pub fn frame_producer(&self) -> Option<EmbeddedFrameProducer> {
+        self.frame_producer.clone()
     }
 
     /// Updates a supplied-window child surface in renderer-relative, top-left AppKit points.
@@ -613,14 +718,16 @@ impl MacOsBackend {
     }
 
     pub fn set_paused(&mut self, paused: bool) -> Result<(), BackendError> {
-        let _main_thread = MainThreadMarker::new().ok_or(BackendError::MainThreadRequired)?;
+        if self.surface.is_some() && MainThreadMarker::new().is_none() {
+            return Err(BackendError::MainThreadRequired);
+        }
         if self.shared.lifecycle.state() != BackendState::Running {
             return Err(BackendError::Stopped);
         }
         if paused {
             self.shared.paused.store(true, Ordering::Release);
         }
-        let discarded = self.shared.video_queue.clear();
+        let discarded = self.shared.video_output.clear();
         self.shared
             .counters
             .video_frames_dropped

@@ -237,7 +237,6 @@ impl NvstVideoCodec {
     }
 }
 
-/// Why an NVST handoff cannot be selected. Callers should retain their WebRTC fallback.
 #[derive(Debug, Error)]
 pub enum NvstConfigError {
     #[error("nvstVideo must be an object")]
@@ -1126,7 +1125,6 @@ fn required_ice_credential(
 }
 
 /// Parses `context.nvstVideo` without tying the rest of the transport to JSON field names.
-/// `None` means the legacy handoff was not supplied, which is a normal WebRTC fallback case.
 pub fn parse_nvst_video_handoff(
     context: &Value,
 ) -> Result<Option<NvstVideoConfig>, NvstConfigError> {
@@ -1148,30 +1146,6 @@ pub fn parse_nvst_video_handoff(
         config.frame_time_us = 1_000_000 / fps;
     }
     Ok(Some(config))
-}
-
-/// The transport selector always prefers a valid NVST video handoff, while making every
-/// incomplete or unsupported handoff a typed WebRTC fallback instead of an optimistic start.
-#[derive(Debug)]
-pub enum PreferredVideoTransport {
-    Nvst(Box<NvstVideoConfig>),
-    WebRtcFallback(NvstFallbackReason),
-}
-
-#[derive(Debug)]
-pub enum NvstFallbackReason {
-    NoNvstHandoff,
-    InvalidNvstHandoff(NvstConfigError),
-}
-
-pub fn select_preferred_video_transport(context: &Value) -> PreferredVideoTransport {
-    match parse_nvst_video_handoff(context) {
-        Ok(Some(config)) => PreferredVideoTransport::Nvst(Box::new(config)),
-        Ok(None) => PreferredVideoTransport::WebRtcFallback(NvstFallbackReason::NoNvstHandoff),
-        Err(error) => {
-            PreferredVideoTransport::WebRtcFallback(NvstFallbackReason::InvalidNvstHandoff(error))
-        }
-    }
 }
 
 fn required_string<'a>(
@@ -6175,12 +6149,9 @@ mod tests {
     }
 
     #[test]
-    fn selector_prefers_valid_legacy_nvst_and_falls_back_for_h265() {
+    fn parses_valid_legacy_nvst_and_rejects_invalid_handoffs() {
         let context = json!({ "nvstVideo": legacy_handoff() });
-        assert!(matches!(
-            select_preferred_video_transport(&context),
-            PreferredVideoTransport::Nvst(_)
-        ));
+        assert!(parse_nvst_video_handoff(&context).unwrap().is_some());
         let configured = parse_nvst_video_handoff(&json!({
             "nvstVideo": legacy_handoff(),
             "settings": { "fps": 60 },
@@ -6197,10 +6168,8 @@ mod tests {
         .expect("NVST handoff");
         assert_eq!(capped.frame_time_us, 4_166);
         assert!(matches!(
-            select_preferred_video_transport(&json!({ "nvstTransport": { "tracks": [] } })),
-            PreferredVideoTransport::WebRtcFallback(NvstFallbackReason::InvalidNvstHandoff(
-                NvstConfigError::MissingNvstVideoHandoff
-            ))
+            parse_nvst_video_handoff(&json!({ "nvstTransport": { "tracks": [] } })),
+            Err(NvstConfigError::MissingNvstVideoHandoff)
         ));
 
         let mut missing_gcm_salt = legacy_handoff();
@@ -6217,10 +6186,8 @@ mod tests {
         invalid["codec"] = json!("VP9");
         let context = json!({ "nvstVideo": invalid });
         assert!(matches!(
-            select_preferred_video_transport(&context),
-            PreferredVideoTransport::WebRtcFallback(NvstFallbackReason::InvalidNvstHandoff(
-                NvstConfigError::UnsupportedCodec(_)
-            ))
+            parse_nvst_video_handoff(&context),
+            Err(NvstConfigError::UnsupportedCodec(_))
         ));
 
         let mut missing_cm_salt = legacy_handoff();

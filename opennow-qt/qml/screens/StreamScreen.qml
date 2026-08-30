@@ -42,13 +42,46 @@ FocusScope {
             + String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0")
     }
 
+    function publishCaptureRect() {
+        const window = root.Window.window
+        if (!window)
+            return
+        const point = root.mapToItem(null, 0, 0)
+        ShellStore.streamCaptureRect = Qt.rect(
+            window.x + point.x, window.y + point.y, root.width, root.height)
+    }
+
+    onXChanged: publishCaptureRect()
+    onYChanged: publishCaptureRect()
+    onWidthChanged: publishCaptureRect()
+    onHeightChanged: publishCaptureRect()
+    onVisibleChanged: publishCaptureRect()
+    Component.onCompleted: publishCaptureRect()
+
+    Connections {
+        target: root.Window.window
+        function onXChanged() { root.publishCaptureRect() }
+        function onYChanged() { root.publishCaptureRect() }
+    }
+
     Timer { interval: 1000; repeat: true; running: root.streaming; onTriggered: root.nowMs = Date.now() }
 
-    Item {
+    StreamVideoItem {
+        id: streamVideo
         objectName: "streamSurfaceHost"
         anchors.fill: parent
-        visible: root.visible && root.streaming && AppController.overlay === ""
+        visible: root.visible && root.streaming
+        focus: visible
+        inputEnabled: visible && AppController.overlay === ""
+        videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         z: 0
+    }
+
+    Connections {
+        target: ShellStore
+        function onPointerLockToggleRequested() {
+            streamVideo.relativeMouse = !streamVideo.relativeMouse
+        }
     }
 
     ScreenBackground {

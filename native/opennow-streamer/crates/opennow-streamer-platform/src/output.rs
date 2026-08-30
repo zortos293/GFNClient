@@ -143,6 +143,10 @@ impl WindowsBridge {
 
 impl OutputBuffers {
     pub(crate) fn new() -> Self {
+        Self::with_captured_input(Arc::new(CapturedInputQueue::default()))
+    }
+
+    pub(crate) fn with_captured_input(captured_input: Arc<CapturedInputQueue>) -> Self {
         Self {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
@@ -154,7 +158,7 @@ impl OutputBuffers {
                 * AUDIO_CHANNELS as usize
                 * MAX_AUDIO_LATENCY_MS
                 / 1_000,
-            captured_input: Arc::new(CapturedInputQueue::default()),
+            captured_input,
         }
     }
 
@@ -273,6 +277,57 @@ impl OutputBuffers {
         for sample in destination {
             *sample = audio.pop_front().unwrap_or(0.0);
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) struct HeadlessAudioOutput {
+    device: AudioDevice<StreamAudioCallback>,
+    output: Arc<OutputBuffers>,
+    _sdl: sdl2::Sdl,
+}
+
+#[cfg(target_os = "windows")]
+impl HeadlessAudioOutput {
+    pub(crate) fn start(output: Arc<OutputBuffers>) -> Result<Self, String> {
+        let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
+        let audio_subsystem = sdl
+            .audio()
+            .map_err(|error| format!("SDL audio initialization failed: {error}"))?;
+        let desired = AudioSpecDesired {
+            freq: Some(AUDIO_SAMPLE_RATE),
+            channels: Some(AUDIO_CHANNELS),
+            samples: Some(AUDIO_BUFFER_FRAMES),
+        };
+        let callback_output = Arc::clone(&output);
+        let device = audio_subsystem
+            .open_playback(None, &desired, move |_| StreamAudioCallback {
+                output: callback_output,
+            })
+            .map_err(|error| format!("native audio output creation failed: {error}"))?;
+        device.resume();
+        Ok(Self {
+            device,
+            output,
+            _sdl: sdl,
+        })
+    }
+
+    pub(crate) fn set_paused(&self, paused: bool) {
+        if paused {
+            self.device.pause();
+            self.output.clear();
+        } else {
+            self.device.resume();
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for HeadlessAudioOutput {
+    fn drop(&mut self) {
+        self.device.pause();
+        self.output.clear();
     }
 }
 

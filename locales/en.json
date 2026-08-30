@@ -2600,6 +2600,19 @@
     "s_qt_runtime_229": "Fullscreen",
     "s_qt_runtime_230": "Shows live stream statistics",
     "s_qt_runtime_231": "Starts the next session with compact stats",
-    "s_qt_runtime_232": "Stream controls are available once the session is live."
+    "s_qt_runtime_232": "Stream controls are available once the session is live.",
+    "s_qt_runtime_233": "The embedded media runtime could not start",
+    "s_qt_runtime_234": "The embedded media runtime rejected a command",
+    "s_qt_runtime_235": "Preparing the embedded native media runtime…",
+    "s_qt_runtime_236": "The core could not prepare the native stream context",
+    "s_qt_runtime_237": "This stream control is unavailable",
+    "s_qt_runtime_238": "The embedded media runtime returned an invalid handshake",
+    "s_qt_runtime_239": "Native-owned NVST media transport is active",
+    "s_qt_runtime_240": "Stream stopped",
+    "s_qt_runtime_241": "Native media runtime failed",
+    "s_qt_runtime_242": "Recording failed",
+    "s_qt_runtime_243": "The embedded media runtime stopped",
+    "s_qt_runtime_244": "The core returned an invalid embedded stream context",
+    "s_qt_runtime_245": "The embedded media runtime could not start the stream"
   }
 }

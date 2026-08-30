@@ -298,6 +298,29 @@ impl StreamerService {
         ensure_codec_available(&detection["capabilities"], codec)
     }
 
+    pub fn prepare_embedded(
+        &self,
+        params: &Value,
+        settings: &Value,
+    ) -> Result<Value, StreamerError> {
+        let session = params["session"]
+            .as_object()
+            .map(|_| params["session"].clone())
+            .ok_or_else(|| invalid("streamer.prepare requires a ready session"))?;
+        let status = session["status"].as_i64().unwrap_or_default();
+        if !matches!(status, 2 | 3) {
+            return Err(invalid(
+                "CloudMatch session is not ready for NVST media attachment",
+            ));
+        }
+        let mut context = streamer_context(session, settings);
+        context["surface"] = Value::Null;
+        Ok(json!({
+            "protocolVersion": STREAMER_PROTOCOL_VERSION,
+            "context": context
+        }))
+    }
+
     pub fn start(&self, params: &Value, settings: &Value) -> Result<Value, StreamerError> {
         self.reap_finished();
         let mut worker = self.worker.lock().expect("streamer worker poisoned");
@@ -1630,6 +1653,30 @@ mod tests {
         assert_eq!(context["settings"]["codec"], "H264");
         assert_eq!(context["settings"]["transportMode"], "nvst");
         assert_eq!(context_resolution(&context), (1920, 1080));
+    }
+
+    #[test]
+    fn embedded_prepare_returns_nvst_context_without_a_native_surface() {
+        let service = StreamerService::new();
+        let prepared = service
+            .prepare_embedded(
+                &json!({
+                    "session": {
+                        "sessionId": "session-one",
+                        "status": 2,
+                        "signalingUrl": "wss://server.nvidiagrid.net/nvst/"
+                    }
+                }),
+                &json!({"codec":"auto","transportMode":"webrtc","resolution":"1920x1080"}),
+            )
+            .expect("embedded context");
+
+        assert_eq!(prepared["protocolVersion"], STREAMER_PROTOCOL_VERSION);
+        assert_eq!(prepared["context"]["session"]["sessionId"], "session-one");
+        assert_eq!(prepared["context"]["settings"]["codec"], "H264");
+        assert_eq!(prepared["context"]["settings"]["transportMode"], "nvst");
+        assert_eq!(prepared["context"]["surface"], Value::Null);
+        assert!(service.worker.lock().expect("streamer worker").is_none());
     }
 
     #[test]

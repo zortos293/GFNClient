@@ -2,6 +2,7 @@
 members = [
     "crates/opennow-streamer",
     "crates/opennow-streamer-core",
+    "crates/opennow-streamer-ffi",
     "crates/opennow-streamer-platform",
     "crates/opennow-streamer-platform-linux",
     "crates/opennow-streamer-platform-macos",

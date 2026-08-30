@@ -15,6 +15,10 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Network Multimedia Test)
 find_package(SDL3 REQUIRED CONFIG)
+find_package(Threads REQUIRED)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Vulkan REQUIRED)
+endif()
 if(TARGET SDL3::SDL3-shared)
     set(OPENNOW_SDL3_RUNTIME_TARGET SDL3::SDL3-shared)
 elseif(TARGET SDL3::SDL3-static)
@@ -54,10 +58,12 @@ qt_add_executable(opennow-qt
     src/InputModeTracker.h
     src/Localization.cpp
     src/Localization.h
+    src/NativeStreamRuntime.cpp
+    src/NativeStreamRuntime.h
     src/SingleInstance.cpp
     src/SingleInstance.h
-    src/StreamSurfaceController.cpp
-    src/StreamSurfaceController.h
+    src/StreamVideoItem.cpp
+    src/StreamVideoItem.h
     src/ThumbnailGenerator.cpp
     src/ThumbnailGenerator.h
 )
@@ -244,10 +250,14 @@ target_include_directories(opennow-qt PRIVATE src)
 target_link_libraries(opennow-qt PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
+    Qt6::GuiPrivate
     Qt6::Network
     Qt6::Multimedia
     SDL3::SDL3
 )
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(opennow-qt PRIVATE Vulkan::Vulkan)
+endif()
 
 if(WIN32)
     add_custom_command(TARGET opennow-qt POST_BUILD
@@ -282,6 +292,7 @@ endif()
 target_compile_definitions(opennow-qt PRIVATE
     QT_NO_CAST_FROM_ASCII
     QT_NO_CAST_TO_ASCII
+    OPENNOW_EMBEDDED_STREAMER
     OPENNOW_VERSION="${OPENNOW_BUILD_VERSION}"
 )
 
@@ -347,10 +358,9 @@ if(OPENNOW_RUST_TARGET)
     set(OPENNOW_STREAMER_ARTIFACT_ROOT
         "${OPENNOW_STREAMER_TARGET_DIR}/${OPENNOW_RUST_TARGET}")
 endif()
-# The streamer is an optimized subprocess that decodes and presents video in
-# real time; a debug-profile build of it is too slow to stream with and has no
-# debugging value for Qt or QML work. Build it as release regardless of the Qt
-# configuration so what runs locally is what ships.
+# The embedded streamer decodes and publishes GPU frames in process. A debug
+# Rust build is too slow for real-time playback, so link its release library
+# into every Qt configuration.
 set(OPENNOW_STREAMER_PROFILE "release")
 set(OPENNOW_STREAMER_CARGO_FEATURE_ARGS)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -362,25 +372,79 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND OPENNOW_STREAMER_CARGO_FEATURE_ARGS
         --features linux-ffmpeg-bundled)
 endif()
-option(OPENNOW_BUILD_STREAMER "Build and bundle the native media streamer" ON)
-if(OPENNOW_BUILD_STREAMER)
-    add_custom_target(opennow-streamer ALL
-        COMMAND "${CMAKE_COMMAND}" -E env "CMAKE=${CMAKE_COMMAND}"
-                "${CARGO_EXECUTABLE}" build
-                --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
-                --target-dir "${OPENNOW_STREAMER_TARGET_DIR}"
-                ${OPENNOW_RUST_TARGET_ARGS}
-                ${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}
-                --release
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "${OPENNOW_STREAMER_ARTIFACT_ROOT}/${OPENNOW_STREAMER_PROFILE}/opennow-streamer${OPENNOW_CORE_SUFFIX}"
-                "$<TARGET_FILE_DIR:opennow-qt>/opennow-streamer${OPENNOW_CORE_SUFFIX}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer"
-        COMMENT "Building and bundling the OpenNOW native media streamer"
-        COMMAND_EXPAND_LISTS
-        VERBATIM
-    )
-    add_dependencies(opennow-qt opennow-streamer)
+if(MSVC)
+    set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "opennow_streamer_ffi.dll")
+    set(OPENNOW_STREAMER_FFI_LINK_NAME "opennow_streamer_ffi.dll.lib")
+elseif(WIN32)
+    set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "opennow_streamer_ffi.dll")
+    set(OPENNOW_STREAMER_FFI_LINK_NAME "libopennow_streamer_ffi.dll.a")
+elseif(APPLE)
+    set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "libopennow_streamer_ffi.dylib")
+    set(OPENNOW_STREAMER_FFI_LINK_NAME "${OPENNOW_STREAMER_FFI_RUNTIME_NAME}")
+else()
+    set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "libopennow_streamer_ffi.so")
+    set(OPENNOW_STREAMER_FFI_LINK_NAME "${OPENNOW_STREAMER_FFI_RUNTIME_NAME}")
+endif()
+set(OPENNOW_STREAMER_FFI_RUNTIME
+    "${OPENNOW_STREAMER_ARTIFACT_ROOT}/${OPENNOW_STREAMER_PROFILE}/${OPENNOW_STREAMER_FFI_RUNTIME_NAME}")
+set(OPENNOW_STREAMER_FFI_LINK_LIBRARY
+    "${OPENNOW_STREAMER_ARTIFACT_ROOT}/${OPENNOW_STREAMER_PROFILE}/${OPENNOW_STREAMER_FFI_LINK_NAME}")
+set(OPENNOW_STREAMER_FFI_ARTIFACTS
+    "${OPENNOW_STREAMER_FFI_RUNTIME}" "${OPENNOW_STREAMER_FFI_LINK_LIBRARY}")
+list(REMOVE_DUPLICATES OPENNOW_STREAMER_FFI_ARTIFACTS)
+file(GLOB_RECURSE OPENNOW_STREAMER_RUST_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/crates/*.rs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/crates/*/Cargo.toml")
+add_custom_command(
+    OUTPUT ${OPENNOW_STREAMER_FFI_ARTIFACTS}
+    COMMAND "${CMAKE_COMMAND}" -E env --unset=MAKEFLAGS --unset=MFLAGS
+            "CMAKE=${CMAKE_COMMAND}"
+            "${CARGO_EXECUTABLE}" build
+            --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
+            --target-dir "${OPENNOW_STREAMER_TARGET_DIR}"
+            --package opennow-streamer-ffi
+            --lib
+            ${OPENNOW_RUST_TARGET_ARGS}
+            ${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}
+            --release
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.lock"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/crates/opennow-streamer-ffi/include/opennow_streamer_ffi.h"
+        ${OPENNOW_STREAMER_RUST_SOURCES}
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer"
+    COMMENT "Building the embedded OpenNOW streamer library"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
+add_custom_target(opennow-streamer-ffi-build
+    DEPENDS ${OPENNOW_STREAMER_FFI_ARTIFACTS})
+add_library(opennow-streamer-ffi SHARED IMPORTED GLOBAL)
+if(WIN32)
+    set_target_properties(opennow-streamer-ffi PROPERTIES
+        IMPORTED_IMPLIB "${OPENNOW_STREAMER_FFI_LINK_LIBRARY}"
+        IMPORTED_LOCATION "${OPENNOW_STREAMER_FFI_RUNTIME}")
+else()
+    set_target_properties(opennow-streamer-ffi PROPERTIES
+        IMPORTED_LOCATION "${OPENNOW_STREAMER_FFI_LINK_LIBRARY}")
+endif()
+set_target_properties(opennow-streamer-ffi PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES
+        "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/crates/opennow-streamer-ffi/include")
+add_dependencies(opennow-streamer-ffi opennow-streamer-ffi-build)
+target_link_libraries(opennow-qt PRIVATE opennow-streamer-ffi)
+add_dependencies(opennow-qt opennow-streamer-ffi-build)
+add_custom_command(TARGET opennow-qt POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${OPENNOW_STREAMER_FFI_RUNTIME}"
+            "$<TARGET_FILE_DIR:opennow-qt>/${OPENNOW_STREAMER_FFI_RUNTIME_NAME}"
+    VERBATIM)
+if(APPLE)
+    set_property(TARGET opennow-qt APPEND PROPERTY BUILD_RPATH "@loader_path")
+    set_property(TARGET opennow-qt APPEND PROPERTY INSTALL_RPATH "@loader_path")
+elseif(UNIX)
+    set_property(TARGET opennow-qt APPEND PROPERTY BUILD_RPATH "$ORIGIN")
+    set_property(TARGET opennow-qt APPEND PROPERTY INSTALL_RPATH "$ORIGIN")
 endif()
 
 if(MSVC)
@@ -431,26 +495,47 @@ if(BUILD_TESTING)
     add_dependencies(opennow-coreclient-tests opennow-fake-core)
     add_test(NAME opennow-coreclient-tests COMMAND opennow-coreclient-tests -o -,txt)
 
-    qt_add_executable(opennow-streamsurface-tests
-        tests/tst_streamsurfacecontroller.cpp
-        src/StreamSurfaceController.cpp
-        src/StreamSurfaceController.h
-        src/AppController.cpp
-        src/AppController.h
-        src/CoreClient.cpp
-        src/CoreClient.h
+    qt_add_executable(opennow-streamvideo-tests
+        tests/tst_streamvideoitem.cpp
+        src/NativeStreamRuntime.cpp
+        src/NativeStreamRuntime.h
+        src/StreamVideoItem.cpp
+        src/StreamVideoItem.h
     )
-    target_include_directories(opennow-streamsurface-tests PRIVATE src)
-    target_link_libraries(opennow-streamsurface-tests PRIVATE
-        Qt6::Test Qt6::Core Qt6::Gui Qt6::Quick)
-    target_compile_definitions(opennow-streamsurface-tests PRIVATE
-        OPENNOW_VERSION="${OPENNOW_BUILD_VERSION}")
-    add_dependencies(opennow-streamsurface-tests opennow-fake-core)
-    add_test(NAME opennow-streamsurface-tests
-             COMMAND opennow-streamsurface-tests -o -,txt)
-    set_tests_properties(opennow-streamsurface-tests PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-        TIMEOUT 8)
+    target_include_directories(opennow-streamvideo-tests PRIVATE src)
+    target_link_libraries(opennow-streamvideo-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Qml Qt6::Quick
+        opennow-streamer-ffi)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(opennow-streamvideo-tests PRIVATE Vulkan::Vulkan)
+    endif()
+    add_dependencies(opennow-streamvideo-tests opennow-streamer-ffi-build)
+    add_test(NAME opennow-streamvideo-tests
+             COMMAND opennow-streamvideo-tests -o -,txt)
+    set_tests_properties(opennow-streamvideo-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    qt_add_executable(opennow-nativestreamruntime-tests
+        tests/tst_nativestreamruntime.cpp
+        src/NativeStreamRuntime.cpp
+        src/NativeStreamRuntime.h
+    )
+    target_include_directories(opennow-nativestreamruntime-tests PRIVATE src)
+    target_link_libraries(opennow-nativestreamruntime-tests PRIVATE
+        Qt6::Test Qt6::Core opennow-streamer-ffi)
+    add_dependencies(opennow-nativestreamruntime-tests opennow-streamer-ffi-build)
+    add_test(NAME opennow-nativestreamruntime-tests
+             COMMAND opennow-nativestreamruntime-tests -o -,txt)
+    set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 8)
+
+    qt_add_executable(opennow-embedded-orchestration-tests
+        tests/tst_embeddedorchestration.cpp
+    )
+    target_link_libraries(opennow-embedded-orchestration-tests PRIVATE Qt6::Test Qt6::Core)
+    target_compile_definitions(opennow-embedded-orchestration-tests PRIVATE
+        OPENNOW_QT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME opennow-embedded-orchestration-tests
+             COMMAND opennow-embedded-orchestration-tests -o -,txt)
 
     qt_add_executable(opennow-singleinstance-tests
         tests/tst_singleinstance.cpp
@@ -496,7 +581,9 @@ if(BUILD_TESTING)
             opennow-localization-tests
             opennow-qt-tests
             opennow-coreclient-tests
-            opennow-streamsurface-tests
+            opennow-streamvideo-tests
+            opennow-nativestreamruntime-tests
+            opennow-embedded-orchestration-tests
             opennow-singleinstance-tests
             opennow-thumbnail-tests
             opennow-controllerinput-tests
@@ -515,7 +602,9 @@ if(BUILD_TESTING)
                 opennow-localization-tests
                 opennow-qt-tests
                 opennow-coreclient-tests
-                opennow-streamsurface-tests
+                opennow-streamvideo-tests
+                opennow-nativestreamruntime-tests
+                opennow-embedded-orchestration-tests
                 opennow-singleinstance-tests
                 opennow-thumbnail-tests
                 opennow-controllerinput-tests)
@@ -630,10 +719,14 @@ endif()
 if(NOT APPLE)
     install(PROGRAMS
         "$<TARGET_FILE_DIR:opennow-qt>/opennow-core${OPENNOW_CORE_SUFFIX}"
-        "$<TARGET_FILE_DIR:opennow-qt>/opennow-streamer${OPENNOW_CORE_SUFFIX}"
         "$<TARGET_FILE_DIR:opennow-qt>/opennow-acceptance-verify${OPENNOW_CORE_SUFFIX}"
         DESTINATION "${CMAKE_INSTALL_BINDIR}"
     )
+    install(PROGRAMS "${OPENNOW_STREAMER_FFI_RUNTIME}"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}")
+else()
+    install(FILES "${OPENNOW_STREAMER_FFI_RUNTIME}"
+        DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS")
 endif()
 
 if(APPLE)

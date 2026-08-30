@@ -33,7 +33,11 @@ use crate::{
     VideoCodec, VideoFormat, VideoPixelFormat, WindowsDecoderMode,
 };
 
-use super::graphics::Graphics;
+pub(super) trait DecoderDevice {
+    fn device_manager(&self) -> &::windows::Win32::Media::MediaFoundation::IMFDXGIDeviceManager;
+    fn adapter_luid(&self) -> Result<LUID, String>;
+    fn video_format(&self) -> VideoFormat;
+}
 
 pub(super) struct DecodedVideoFrame {
     pub(super) texture: ID3D11Texture2D,
@@ -56,8 +60,8 @@ pub(super) struct Decoder {
 }
 
 impl Decoder {
-    pub(super) fn probe(
-        graphics: &Graphics,
+    pub(super) fn probe<G: DecoderDevice>(
+        graphics: &G,
         codec: VideoCodec,
         mode: WindowsDecoderMode,
     ) -> Result<(), String> {
@@ -73,8 +77,8 @@ impl Decoder {
         Ok(())
     }
 
-    pub(super) fn new(
-        graphics: &Graphics,
+    pub(super) fn new<G: DecoderDevice>(
+        graphics: &G,
         format: VideoFormat,
         mode: WindowsDecoderMode,
     ) -> Result<Self, String> {
@@ -360,22 +364,21 @@ impl Drop for Decoder {
     }
 }
 
-fn configure_transform(
+type ConfiguredTransform = (
+    IMFTransform,
+    Option<IMFMediaEventGenerator>,
+    u32,
+    u32,
+    bool,
+    VideoPixelFormat,
+    bool,
+);
+
+fn configure_transform<G: DecoderDevice>(
     activation: &IMFActivate,
-    graphics: &Graphics,
+    graphics: &G,
     format: VideoFormat,
-) -> Result<
-    (
-        IMFTransform,
-        Option<IMFMediaEventGenerator>,
-        u32,
-        u32,
-        bool,
-        VideoPixelFormat,
-        bool,
-    ),
-    String,
-> {
+) -> Result<ConfiguredTransform, String> {
     unsafe {
         let transform: IMFTransform = activation
             .ActivateObject()

@@ -478,6 +478,20 @@ pub struct BackendConfig {
     pub queues: QueueLimits,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmbeddedBackendConfig {
+    pub video: VideoFormat,
+    pub audio: AudioFormat,
+    pub queues: QueueLimits,
+}
+
+impl EmbeddedBackendConfig {
+    pub(crate) fn validate(&self) -> Result<(), FormatError> {
+        self.audio.validate()?;
+        self.queues.validate()
+    }
+}
+
 impl BackendConfig {
     pub(crate) fn validate(&self) -> Result<(), FormatError> {
         self.audio.validate()?;

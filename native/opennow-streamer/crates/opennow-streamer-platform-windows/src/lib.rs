@@ -6,6 +6,11 @@ mod queue;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(windows)]
+pub use windows::{
+    AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
+};
+
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;

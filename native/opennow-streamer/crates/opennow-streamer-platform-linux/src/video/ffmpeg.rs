@@ -1,5 +1,5 @@
 use std::ptr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ffmpeg::codec;
 use ffmpeg::ffi;
@@ -210,23 +210,23 @@ impl FfmpegDecoder {
     }
 
     fn convert_frame(&mut self, decoded: &frame::Video) -> Result<DecodedVideoFrame> {
+        let mut direct_vulkan = None;
         if self.mode == FfmpegMode::Vulkan
             && self
                 .wanted_hw_format
                 .as_deref()
                 .is_some_and(|selection| Pixel::from(selection.pixel_format) == decoded.format())
         {
-            if let Ok(frame) = map_vulkan_frame_direct(decoded, self.last_timestamp_us) {
-                if !self.zero_copy_active {
-                    eprintln!("Vulkan Video same-device zero-copy enabled");
-                    self.zero_copy_active = true;
-                }
-                return Ok(frame);
-            }
+            direct_vulkan = map_vulkan_frame_direct(decoded, self.last_timestamp_us)
+                .ok()
+                .and_then(|frame| frame.vulkan);
             match map_vulkan_frame_to_dmabuf(decoded, self.last_timestamp_us) {
-                Ok(frame) => {
+                Ok(mut frame) => {
+                    frame.vulkan = direct_vulkan.clone();
                     if !self.zero_copy_active {
-                        eprintln!("Vulkan Video zero-copy enabled through DRM PRIME/DMA-BUF");
+                        eprintln!(
+                            "Vulkan Video frames expose same-device and DRM PRIME/DMA-BUF paths"
+                        );
                         self.zero_copy_active = true;
                     }
                     return Ok(frame);
@@ -346,7 +346,7 @@ impl FfmpegDecoder {
                 },
             ],
             dmabuf: None,
-            vulkan: None,
+            vulkan: direct_vulkan,
             timestamp_us,
         })
     }
@@ -431,6 +431,7 @@ fn map_vulkan_frame_direct(
             "failed to retain Vulkan Video frame for presentation",
         ));
     }
+    let cpu_fallback = vulkan_cpu_nv12_fallback(decoded)?;
     let device = unsafe {
         VulkanVideoFrame::new(
             (*vulkan_device).inst as usize,
@@ -455,7 +456,8 @@ fn map_vulkan_frame_direct(
             }),
             Arc::new(retained),
         )
-    };
+    }
+    .with_cpu_nv12_fallback(cpu_fallback);
     let output_format = StreamFormat {
         width,
         height,
@@ -477,6 +479,74 @@ fn map_vulkan_frame_direct(
     };
     output.validate()?;
     Ok(output)
+}
+
+fn vulkan_cpu_nv12_fallback(
+    decoded: &frame::Video,
+) -> Result<Arc<dyn Fn() -> Result<Vec<FramePlane>> + Send + Sync>> {
+    let mut retained = frame::Video::empty();
+    if unsafe { ffi::av_frame_ref(retained.as_mut_ptr(), decoded.as_ptr()) } < 0 {
+        return Err(Error::backend(
+            Subsystem::Ffmpeg,
+            "failed to retain Vulkan frame for CPU fallback",
+        ));
+    }
+    let retained = Mutex::new(retained);
+    Ok(Arc::new(move || {
+        let source = retained.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut transferred = frame::Video::empty();
+        let transfer_result =
+            unsafe { ffi::av_hwframe_transfer_data(transferred.as_mut_ptr(), source.as_ptr(), 0) };
+        if transfer_result < 0 {
+            return Err(ffmpeg_error(
+                "Vulkan frame CPU fallback download failed".to_owned(),
+                transfer_result,
+            ));
+        }
+        let width = transferred.width().max(1);
+        let height = transferred.height().max(1);
+        let converted;
+        let nv12 = if transferred.format() == Pixel::NV12 {
+            &transferred
+        } else {
+            let mut scaler = Scaler::get(
+                transferred.format(),
+                width,
+                height,
+                Pixel::NV12,
+                width,
+                height,
+                ScaleFlags::BILINEAR,
+            )
+            .map_err(|error| {
+                Error::backend(
+                    Subsystem::Ffmpeg,
+                    format!("Vulkan CPU fallback conversion setup failed: {error}"),
+                )
+            })?;
+            let mut output = frame::Video::empty();
+            scaler.run(&transferred, &mut output).map_err(|error| {
+                Error::backend(
+                    Subsystem::Ffmpeg,
+                    format!("Vulkan CPU fallback NV12 conversion failed: {error}"),
+                )
+            })?;
+            converted = output;
+            &converted
+        };
+        Ok(vec![
+            FramePlane {
+                data: Arc::from(nv12.data(0).to_vec()),
+                stride: nv12.stride(0),
+                rows: height as usize,
+            },
+            FramePlane {
+                data: Arc::from(nv12.data(1).to_vec()),
+                stride: nv12.stride(1),
+                rows: height as usize / 2,
+            },
+        ])
+    }))
 }
 
 fn map_vulkan_frame_to_dmabuf(

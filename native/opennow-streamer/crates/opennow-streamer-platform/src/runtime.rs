@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use opennow_streamer_protocol::RenderSurface;
 
+use crate::GraphicsFramePublisher;
 use crate::media::{MediaFeedback, MediaSession, MediaStreamConfig};
 #[cfg(target_os = "windows")]
 use crate::output::WindowsBridge;
@@ -87,14 +88,63 @@ pub struct MediaRuntime {
     linux_selection: LinuxVideoSelection,
     #[cfg(target_os = "linux")]
     linux_software_fallback: Arc<AtomicBool>,
+    mode: MediaRuntimeMode,
+}
+
+#[derive(Clone)]
+enum MediaRuntimeMode {
+    Standalone,
+    Embedded(GraphicsFramePublisher),
+    #[cfg(feature = "test-runtime")]
+    Test,
 }
 
 impl MediaRuntime {
+    pub const fn is_embedded(&self) -> bool {
+        matches!(self.mode, MediaRuntimeMode::Embedded(_))
+    }
+
+    pub fn captured_input(&self) -> Arc<crate::CapturedInputQueue> {
+        self.output.captured_input()
+    }
+
     pub fn start(
         &self,
         feedback: Sender<MediaFeedback>,
         stream: MediaStreamConfig,
     ) -> Result<MediaSession, String> {
+        if let MediaRuntimeMode::Embedded(frames) = &self.mode {
+            let session = MediaSession::spawn_embedded(
+                Arc::clone(&self.output),
+                feedback,
+                self.commands.clone(),
+                stream,
+                frames.clone(),
+                #[cfg(target_os = "linux")]
+                self.linux_selection.clone(),
+            )?;
+            if self.paused.load(Ordering::Acquire) {
+                session.set_paused(true);
+            }
+            return Ok(session);
+        }
+        #[cfg(feature = "test-runtime")]
+        if matches!(self.mode, MediaRuntimeMode::Test) {
+            let session = MediaSession::spawn_test(
+                Arc::clone(&self.output),
+                feedback,
+                self.commands.clone(),
+                stream,
+                #[cfg(target_os = "windows")]
+                Arc::clone(&self.windows_bridge),
+                #[cfg(target_os = "linux")]
+                Arc::clone(&self.linux_software_fallback),
+            )?;
+            if self.paused.load(Ordering::Acquire) {
+                session.set_paused(true);
+            }
+            return Ok(session);
+        }
         let (reply, response) = mpsc::channel();
         self.commands
             .send(HostCommand::Start {
@@ -145,6 +195,9 @@ impl MediaRuntime {
     }
 
     pub fn update_surface(&self, surface: RenderSurface) -> Result<(), String> {
+        if !matches!(self.mode, MediaRuntimeMode::Standalone) {
+            return Ok(());
+        }
         let (reply, response) = mpsc::channel();
         self.commands
             .send(HostCommand::Surface { surface, reply })
@@ -156,6 +209,9 @@ impl MediaRuntime {
 
     pub fn set_paused(&self, paused: bool) -> Result<(), String> {
         self.paused.store(paused, Ordering::Release);
+        if !matches!(self.mode, MediaRuntimeMode::Standalone) {
+            return Ok(());
+        }
         let (reply, response) = mpsc::channel();
         self.commands
             .send(HostCommand::Pause {
@@ -169,6 +225,9 @@ impl MediaRuntime {
     }
 
     pub fn control(&self, control: MediaRuntimeControl) -> Result<(), String> {
+        if !matches!(self.mode, MediaRuntimeMode::Standalone) {
+            return Ok(());
+        }
         let (reply, response) = mpsc::channel();
         self.commands
             .send(HostCommand::Control { control, reply })
@@ -751,8 +810,136 @@ pub fn create_runtime() -> Result<(MainThreadHost, MediaRuntime), String> {
             linux_selection,
             #[cfg(target_os = "linux")]
             linux_software_fallback,
+            mode: MediaRuntimeMode::Standalone,
         },
     ))
+}
+
+pub fn create_embedded_runtime(frames: GraphicsFramePublisher) -> MediaRuntime {
+    create_embedded_runtime_with_input(frames, Arc::new(crate::CapturedInputQueue::default()), None)
+}
+
+pub fn create_embedded_runtime_with_input(
+    frames: GraphicsFramePublisher,
+    captured_input: Arc<crate::CapturedInputQueue>,
+    cursor_update: Option<Arc<dyn Fn(Vec<u8>) + Send + Sync>>,
+) -> MediaRuntime {
+    let (commands, receiver) = mpsc::channel();
+    if let Some(cursor_update) = cursor_update {
+        let _ = std::thread::Builder::new()
+            .name("opennow-embedded-cursor".to_owned())
+            .spawn(move || {
+                while let Ok(command) = receiver.recv() {
+                    match command {
+                        HostCommand::Cursor(bytes) => cursor_update(bytes),
+                        HostCommand::Shutdown => break,
+                        _ => {}
+                    }
+                }
+            });
+    } else {
+        drop(receiver);
+    }
+    #[cfg(target_os = "linux")]
+    let linux_selection = crate::linux_backend::select_video_path();
+    MediaRuntime {
+        commands,
+        output: Arc::new(OutputBuffers::with_captured_input(captured_input)),
+        paused: Arc::new(AtomicBool::new(false)),
+        use_hardware: Arc::new(AtomicBool::new(true)),
+        #[cfg(target_os = "windows")]
+        windows_bridge: Arc::new(WindowsBridge::new()),
+        #[cfg(target_os = "linux")]
+        linux_selection,
+        #[cfg(target_os = "linux")]
+        linux_software_fallback: Arc::new(AtomicBool::new(false)),
+        mode: MediaRuntimeMode::Embedded(frames),
+    }
+}
+
+#[cfg(feature = "test-runtime")]
+pub struct TestMediaRuntimeHost {
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(feature = "test-runtime")]
+impl TestMediaRuntimeHost {
+    pub fn join(mut self) -> std::thread::Result<()> {
+        self.worker.take().expect("test media worker").join()
+    }
+}
+
+#[cfg(feature = "test-runtime")]
+pub fn create_test_runtime() -> (TestMediaRuntimeHost, MediaRuntime) {
+    let use_macos_hardware = Arc::new(AtomicBool::new(false));
+    #[cfg(target_os = "linux")]
+    let linux_selection = crate::linux_backend::select_video_path();
+    #[cfg(target_os = "linux")]
+    let linux_software_fallback = Arc::new(AtomicBool::new(matches!(
+        linux_selection.path,
+        LinuxVideoPath::Software
+    )));
+    let (commands, receiver) = mpsc::channel();
+    let output = Arc::new(OutputBuffers::new());
+    let paused = Arc::new(AtomicBool::new(false));
+    #[cfg(target_os = "windows")]
+    let windows_bridge = Arc::new(WindowsBridge::new());
+    let worker = std::thread::Builder::new()
+        .name("opennow-test-media-runtime".to_owned())
+        .spawn(move || {
+            while let Ok(command) = receiver.recv() {
+                match command {
+                    HostCommand::Start { reply, .. } => {
+                        let _ = reply.send(Err(
+                            "test media runtime does not start media sessions".to_owned()
+                        ));
+                    }
+                    HostCommand::Pause { reply, .. } => {
+                        if let Some(reply) = reply {
+                            let _ = reply.send(Ok(()));
+                        }
+                    }
+                    HostCommand::Surface { reply, .. } | HostCommand::Control { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    HostCommand::Cursor(_) | HostCommand::Stop => {}
+                    #[cfg(target_os = "macos")]
+                    HostCommand::ConfigureMacH264 { reply, .. } => {
+                        let _ = reply.send(Err("test media runtime has no decoder".to_owned()));
+                    }
+                    #[cfg(target_os = "macos")]
+                    HostCommand::ConfigureMacH265 { reply, .. } => {
+                        let _ = reply.send(Err("test media runtime has no decoder".to_owned()));
+                    }
+                    #[cfg(target_os = "macos")]
+                    HostCommand::ConfigureMacAv1 { reply, .. } => {
+                        let _ = reply.send(Err("test media runtime has no decoder".to_owned()));
+                    }
+                    #[cfg(target_os = "linux")]
+                    HostCommand::FallbackLinux { .. } => {}
+                    HostCommand::Shutdown => break,
+                }
+            }
+        })
+        .expect("test media runtime worker");
+    (
+        TestMediaRuntimeHost {
+            worker: Some(worker),
+        },
+        MediaRuntime {
+            commands,
+            output,
+            paused,
+            use_hardware: use_macos_hardware,
+            #[cfg(target_os = "windows")]
+            windows_bridge,
+            #[cfg(target_os = "linux")]
+            linux_selection,
+            #[cfg(target_os = "linux")]
+            linux_software_fallback,
+            mode: MediaRuntimeMode::Test,
+        },
+    )
 }
 
 fn initialize_output(
@@ -870,5 +1057,41 @@ mod tests {
         assert!(!backend_preference_allows_value(Some("d3d12"), "d3d11"));
         assert!(backend_preference_allows_value(Some("d3d12"), "d3d12"));
         assert!(!backend_preference_allows_value(Some("d3d11"), "d3d12"));
+    }
+
+    #[cfg(feature = "test-runtime")]
+    #[test]
+    fn embedded_style_start_creates_a_live_media_consumer_without_a_render_surface() {
+        use std::sync::Arc;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use crate::{EncodedFrame, MediaCodec, MediaFeedback, MediaStreamConfig, PushOutcome};
+
+        let (host, runtime) = super::create_test_runtime();
+        let (feedback, received) = mpsc::channel();
+        let session = runtime
+            .start(feedback, MediaStreamConfig::default())
+            .expect("headless media session starts without a RenderSurface");
+        assert_eq!(
+            session.sink().push(EncodedFrame {
+                mid: "video".to_owned(),
+                codec: MediaCodec::H264,
+                data: Arc::from([0_u8, 0, 0, 1, 0x65]),
+                timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                keyframe: true,
+                contiguous: true,
+            }),
+            PushOutcome::Queued
+        );
+        assert!(matches!(
+            received.recv_timeout(Duration::from_secs(2)),
+            Ok(MediaFeedback::VideoFrameAccepted { .. })
+        ));
+
+        session.stop();
+        runtime.shutdown();
+        host.join().expect("test media runtime");
     }
 }

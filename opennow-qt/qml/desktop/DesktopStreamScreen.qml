@@ -14,6 +14,7 @@ FocusScope {
 
     readonly property var game: ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
+    readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
     readonly property var streamer: ShellStore.streamer || ({})
     readonly property string status: {
         if (ShellStore.streamState === "error")
@@ -37,11 +38,43 @@ FocusScope {
         return qsTr("STARTING VIDEO")
     }
 
-    Item {
+    function publishCaptureRect() {
+        const window = root.Window.window
+        if (!window)
+            return
+        const point = root.mapToItem(null, 0, 0)
+        ShellStore.streamCaptureRect = Qt.rect(
+            window.x + point.x, window.y + point.y, root.width, root.height)
+    }
+
+    onXChanged: publishCaptureRect()
+    onYChanged: publishCaptureRect()
+    onWidthChanged: publishCaptureRect()
+    onHeightChanged: publishCaptureRect()
+    Component.onCompleted: publishCaptureRect()
+
+    Connections {
+        target: root.Window.window
+        function onXChanged() { root.publishCaptureRect() }
+        function onYChanged() { root.publishCaptureRect() }
+    }
+
+    StreamVideoItem {
+        id: streamVideo
         objectName: "streamSurfaceHost"
         anchors.fill: parent
-        visible: root.visible && root.streaming && AppController.overlay === ""
+        visible: root.visible && root.streaming
+        focus: visible
+        inputEnabled: visible && AppController.overlay === ""
+        videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         z: 0
+    }
+
+    Connections {
+        target: ShellStore
+        function onPointerLockToggleRequested() {
+            streamVideo.relativeMouse = !streamVideo.relativeMouse
+        }
     }
 
     ArtworkSource {
@@ -190,7 +223,11 @@ FocusScope {
             root.forceActiveFocus()
     }
 
-    onVisibleChanged: if (visible) Qt.callLater(root.restoreStreamFocus)
+    onVisibleChanged: {
+        publishCaptureRect()
+        if (visible)
+            Qt.callLater(root.restoreStreamFocus)
+    }
     onStatusVisibleChanged: Qt.callLater(root.restoreStreamFocus)
 
     Keys.onPressed: event => {

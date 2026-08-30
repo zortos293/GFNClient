@@ -63,6 +63,8 @@ use crate::{
     VideoPixelFormat, WindowHandle, WindowsGraphicsApi,
 };
 
+use super::decoder::DecoderDevice;
+
 const WINDOW_CLASS: ::windows::core::PCWSTR = w!("OpenNOWStreamerD3D11Surface");
 
 struct DeviceResources {
@@ -173,7 +175,7 @@ impl DeviceResources {
             let mut context = None;
             D3D11On12CreateDevice(
                 &d3d12_device,
-                (D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT).0 as u32,
+                (D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT).0,
                 Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
                 Some(&[Some(queue_unknown)]),
                 0,
@@ -773,6 +775,20 @@ impl Graphics {
             );
         }
         Ok(())
+    }
+}
+
+impl DecoderDevice for Graphics {
+    fn device_manager(&self) -> &IMFDXGIDeviceManager {
+        self.device_manager()
+    }
+
+    fn adapter_luid(&self) -> Result<LUID, String> {
+        self.adapter_luid()
+    }
+
+    fn video_format(&self) -> VideoFormat {
+        self.video_format()
     }
 }
 

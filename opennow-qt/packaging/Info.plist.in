@@ -37,8 +37,6 @@
     <string>public.app-category.games</string>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>OpenNOW uses the microphone only when you enable voice chat for a cloud gaming session.</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
 </dict>

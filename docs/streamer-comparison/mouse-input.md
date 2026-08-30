@@ -105,22 +105,22 @@ NVST wrap is `COMMAND_REMOTE_INPUT` `0x0206`. Absolute encode injects flags `0x0
 1. **Host curve.** Official disables session accel and pins speed 10 on every focus change. The type 10 frame itself has not been captured. This is still the first thing to match if you want official look.
 2. **Client curve.** OpenNOW can scale type 7 before send. Official logs imply raw counts.
 3. **i16 split.** A large HID burst becomes several type-7 packets. Official may keep a wider delta.
-4. **Foreground filter.** OpenNOW requires the SDL HWND to be foreground. Overlay is special-cased. A real Qt steal drops all mouse. Official async thread is also focus-scoped, but it restarts on window state 19 and resends alt settings.
+4. **Foreground filter.** The embedded Windows capture binds Raw Input ownership to the Qt window and pauses capture while an overlay owns input. Official's async thread is also focus-scoped, but it restarts on window state 19 and resends alternate settings.
 5. **Binary cursor mode.** Official has visible-unlocked, visible-warped, and hidden-locked. OpenNOW has hidden versus visible. Custom bitmap id 0 stays visible.
-6. **SDL still grabs** while Raw Input owns motion. Official may keep lock inside `RawInputController`.
+6. **Qt owns pointer state** while the embedded Raw Input controller owns relative motion. Official may keep lock inside `RawInputController`.
 7. **Drain stalls.** Encode and SCTP share the NVST event thread. A hitch batches then bursts. The 300 ms unordered lifetime exists because ordered PR-SCTP already felt like delayed catch-up.
 
 ## Where things live
 
 - Raw Input. `native/opennow-streamer/crates/opennow-streamer-platform/src/windows_raw_input.rs`
-- SDL grab and cursor. `native/opennow-streamer/crates/opennow-streamer-platform/src/output.rs`
+- Embedded capture ownership. `native/opennow-streamer/crates/opennow-streamer-platform/src/embedded_input.rs`
 - Tuning and packet. `native/opennow-streamer/crates/opennow-streamer-core/src/lib.rs` `tune_relative_mouse`, `captured_input_packet`
 - NVST encode and channels. `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst_input.rs`
-- Launch env. `native/opennow-core/src/streamer.rs`
+- Qt input bridge. `opennow-qt/src/NativeStreamRuntime.cpp`
 
 ## Gotchas
 
-`owned_window_rejects_hit_testing` is the D3D child HWND used when video is embedded. Qt's real path presents on the SDL HWND, which is a popup that takes focus. That child is not what eats mouse.
+The Qt path has no SDL presenter HWND. The shell passes its own native window handle to the embedded capture controller and submits Qt/controller events directly through the FFI.
 
 Absolute `MOUSE_MOVE_ABSOLUTE` reports never become type 5. Tablets and some virtual mice produce no relative motion.
 

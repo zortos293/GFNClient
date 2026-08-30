@@ -123,12 +123,12 @@ out of process so decoder or driver failures cannot take down the shell.
   the out-of-process presenter with `OPENNOW_NATIVE_EXTERNAL_RENDERER=1`.
 - [x] Implement native frame presentation and shell/streamer window ordering for Windows, macOS,
   X11 and Wayland, with controller ownership transferred atomically while QML guide overlays are
-  active. The current external-presenter launch contract uses paired native top-level windows on all
-  four targets; none is a texture embedded in the Qt scene graph. Because ordinary QML cannot reliably
-  cover these native surfaces, the typed controller hides presentation for QML menus, stats, reconnect
-  and error states, then restores it from fresh host geometry. Cross-OS live-stream ordering proof
-  remains an acceptance gate, and this implementation does not claim a live-video QML overlay or
-  cross-platform zero-copy.
+  active. Windows reparents the presenter HWND into the Qt top-level window; X11, Wayland and macOS
+  currently use paired native top-level windows. None is a texture embedded in the Qt scene graph.
+  Because ordinary QML cannot reliably cover these native surfaces, the typed controller hides
+  presentation for QML menus, stats, reconnect and error states, then restores it from fresh host
+  geometry. Cross-OS live-stream ordering proof remains an acceptance gate, and this implementation
+  does not claim a live-video QML overlay or cross-platform zero-copy.
 - [x] Preserve out-of-process lifecycle, protocol-v5 health checks and restart isolation.
 - [x] Preserve hardware decode selection and safe fallback behavior for every negotiable codec. NVST
   H.264/H.265/AV1 profiles, strict automatic/hardware/software selection, prelaunch capability

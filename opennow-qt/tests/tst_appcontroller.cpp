@@ -20,6 +20,7 @@ private slots:
 
     void rejectsUnknownRoutes();
     void acceptsQtOwnedStreamOverlays();
+    void overlayGuardCommitsOnlyAfterNativeHandoff();
     void closesOverlayBeforeNavigatingBack();
     void gameDetailsReturnToTheirPrimaryOrigin();
     void sessionExitDiscardsTransientRouteHistory();
@@ -45,6 +46,23 @@ void AppControllerTest::acceptsQtOwnedStreamOverlays()
     QCOMPARE(controller.overlay(), QStringLiteral("stream-stats"));
     QVERIFY(controller.showOverlay(QStringLiteral("stream-stats-expanded")));
     QCOMPARE(controller.overlay(), QStringLiteral("stream-stats-expanded"));
+}
+
+void AppControllerTest::overlayGuardCommitsOnlyAfterNativeHandoff()
+{
+    AppController controller;
+    bool allowOpening = false;
+    controller.setOverlayTransitionGuard(
+        [&allowOpening](bool opening) { return !opening || allowOpening; });
+
+    QVERIFY(!controller.showOverlay(QStringLiteral("stream-stats")));
+    QVERIFY(controller.overlay().isEmpty());
+    allowOpening = true;
+    QVERIFY(controller.showOverlay(QStringLiteral("stream-stats")));
+    QCOMPARE(controller.overlay(), QStringLiteral("stream-stats"));
+    allowOpening = false;
+    QVERIFY(controller.showOverlay({}));
+    QVERIFY(controller.overlay().isEmpty());
 }
 
 void AppControllerTest::closesOverlayBeforeNavigatingBack()

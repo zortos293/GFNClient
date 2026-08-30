@@ -4,6 +4,7 @@
 #include "CoreClient.h"
 
 #include <QEvent>
+#include <QEventLoop>
 #include <QGuiApplication>
 #include <QJsonValue>
 #include <QPlatformSurfaceEvent>
@@ -20,6 +21,7 @@ namespace {
 constexpr int UpdateDelayMs = 40;
 constexpr int HostDiscoveryDelayMs = 50;
 constexpr int MinimumSurfaceSize = 64;
+constexpr int SurfaceHandoffTimeoutMs = 1'500;
 
 QJsonObject rectObject(int x, int y, int width, int height)
 {
@@ -38,6 +40,9 @@ StreamSurfaceController::StreamSurfaceController(CoreClient *coreClient,
 {
     Q_ASSERT(m_coreClient);
     Q_ASSERT(m_appController);
+
+    m_appController->setOverlayTransitionGuard(
+        [this](bool opening) { return prepareOverlayTransition(opening); });
 
     m_updateTimer.setSingleShot(true);
     m_updateTimer.setInterval(UpdateDelayMs);
@@ -79,6 +84,7 @@ StreamSurfaceController::StreamSurfaceController(CoreClient *coreClient,
 
 StreamSurfaceController::~StreamSurfaceController()
 {
+    m_appController->setOverlayTransitionGuard({});
     if (m_window) m_window->removeEventFilter(this);
     if (m_host) m_host->removeEventFilter(this);
 }
@@ -127,9 +133,14 @@ void StreamSurfaceController::setWindow(QQuickWindow *window)
 void StreamSurfaceController::teardown()
 {
     if (m_tearingDown) return;
+    const auto streamerActive = m_streamerActive;
     m_tearingDown = true;
-    m_streamerActive = false;
     refreshSurface(true);
+    if (streamerActive && m_coreClient->state() == u"ready"_s
+        && !waitForAppliedGeneration(m_generation)) {
+        setLastError(u"Timed out detaching the native presenter during Qt teardown."_s);
+    }
+    m_streamerActive = false;
 }
 
 StreamSurfaceController::Capability StreamSurfaceController::capabilityFor(
@@ -137,11 +148,11 @@ StreamSurfaceController::Capability StreamSurfaceController::capabilityFor(
 {
     switch (family) {
     case PlatformFamily::Windows:
-        return {u"paired-auxiliary"_s,
-                u"Windows presentation currently uses a distinct native presenter targeted to "
-                 "the Qt window bounds; it is not an embedded Qt Quick surface and ordinary QML "
-                 "cannot overlap it reliably."_s,
-                false, true};
+        return {u"embedded-child"_s,
+                u"Windows attaches the out-of-process native presenter as a child HWND inside "
+                 "the Qt window. It is not a Qt Quick texture, so the shell hides it before "
+                 "showing QML stream UI."_s,
+                true, true};
     case PlatformFamily::Linux:
         if (platformName.compare(u"xcb"_s, Qt::CaseInsensitive) == 0) {
             return {u"paired-auxiliary"_s,
@@ -208,6 +219,10 @@ bool StreamSurfaceController::eventFilter(QObject *watched, QEvent *event)
         if (surfaceEvent->surfaceEventType() == QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
             m_tearingDown = true;
             refreshSurface(true);
+            if (m_streamerActive && m_coreClient->state() == u"ready"_s
+                && !waitForAppliedGeneration(m_generation)) {
+                setLastError(u"Timed out detaching the native presenter before Qt surface teardown."_s);
+            }
         } else {
             m_tearingDown = false;
             refreshSurface(true);
@@ -291,7 +306,7 @@ void StreamSurfaceController::refreshSurface(bool immediate)
             && m_window->visibility() != QWindow::Minimized;
         metrics.visible = !m_tearingDown && m_capability.presentationSupported
             && m_appController->route() == u"stream"_s && m_appController->overlay().isEmpty()
-            && windowUsable && m_host->isVisible();
+            && !m_forceHidden && windowUsable && m_host->isVisible();
         if (metrics.visible) metrics.windowHandle = encodeWindowHandle(m_window->winId());
     }
 
@@ -306,6 +321,37 @@ void StreamSurfaceController::refreshSurface(bool immediate)
     if (m_streamerActive || !m_surface.value(u"visible"_s).toBool()) {
         scheduleUpdate(immediate);
     }
+}
+
+bool StreamSurfaceController::prepareOverlayTransition(bool opening)
+{
+    m_forceHidden = opening;
+    refreshSurface(true);
+    if (!opening || !m_streamerActive || m_coreClient->state() != u"ready"_s) {
+        return true;
+    }
+    if (waitForAppliedGeneration(m_generation)) {
+        return true;
+    }
+    setLastError(u"Native presenter did not release input and hide before the overlay opened."_s);
+    return false;
+}
+
+bool StreamSurfaceController::waitForAppliedGeneration(quint64 generation)
+{
+    if (m_lastAppliedGeneration >= generation) return true;
+
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    connect(this, &StreamSurfaceController::surfaceGenerationApplied, &loop,
+            [&loop, generation](quint64 appliedGeneration) {
+                if (appliedGeneration >= generation) loop.quit();
+            });
+    timeout.start(SurfaceHandoffTimeoutMs);
+    loop.exec(QEventLoop::ExcludeUserInputEvents);
+    return m_lastAppliedGeneration >= generation;
 }
 
 void StreamSurfaceController::scheduleUpdate(bool immediate)
@@ -349,6 +395,8 @@ void StreamSurfaceController::processResponse(const QString &requestId,
     if (applied) {
         m_failureCount = 0;
         setLastError({});
+        m_lastAppliedGeneration = std::max(m_lastAppliedGeneration, m_requestGeneration);
+        emit surfaceGenerationApplied(m_requestGeneration);
     } else if (m_streamerActive) {
         ++m_failureCount;
         setLastError(u"Native streamer did not apply the current stream surface."_s);

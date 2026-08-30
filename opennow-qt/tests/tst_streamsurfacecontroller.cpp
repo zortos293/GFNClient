@@ -21,9 +21,9 @@ private slots:
     void reportsHonestCompositionModes()
     {
         const auto windows = StreamSurfaceController::capabilityFor(Family::Windows, {});
-        QCOMPARE(windows.mode, QStringLiteral("paired-auxiliary"));
+        QCOMPARE(windows.mode, QStringLiteral("embedded-child"));
         QVERIFY(windows.presentationSupported);
-        QVERIFY(!windows.embedded);
+        QVERIFY(windows.embedded);
 
         const auto x11 = StreamSurfaceController::capabilityFor(Family::Linux,
                                                                  QStringLiteral("xcb"));

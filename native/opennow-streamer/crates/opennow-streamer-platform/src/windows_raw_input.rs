@@ -48,7 +48,7 @@ const RAW_INPUT_CLASS: &[u16] = &[
 const WM_RAW_INPUT_REREGISTER: u32 = WM_APP + 1;
 
 struct RawInputState {
-    target: AtomicIsize,
+    foreground_owner: AtomicIsize,
     enabled: AtomicBool,
     relative_motion: AtomicBool,
     pressed_buttons: Mutex<HashSet<u8>>,
@@ -63,11 +63,11 @@ pub(crate) struct WindowsRawInputController {
 
 impl WindowsRawInputController {
     pub(crate) fn start(
-        target: isize,
+        foreground_owner: isize,
         captured_input: Arc<CapturedInputQueue>,
     ) -> Result<Self, String> {
         let state = Arc::new(RawInputState {
-            target: AtomicIsize::new(target),
+            foreground_owner: AtomicIsize::new(foreground_owner),
             enabled: AtomicBool::new(false),
             relative_motion: AtomicBool::new(false),
             pressed_buttons: Mutex::new(HashSet::new()),
@@ -97,8 +97,10 @@ impl WindowsRawInputController {
         })
     }
 
-    pub(crate) fn set_target(&self, target: isize) {
-        self.state.target.store(target, Ordering::Release);
+    pub(crate) fn set_foreground_owner(&self, foreground_owner: isize) {
+        self.state
+            .foreground_owner
+            .store(foreground_owner, Ordering::Release);
     }
 
     pub(crate) fn set_capture(&self, enabled: bool, relative_motion: bool) {
@@ -278,7 +280,7 @@ unsafe fn process_raw_input(state: &RawInputState, handle: HRAWINPUT) {
     }
     let mouse = unsafe { raw.data.mouse };
     let owns_foreground =
-        unsafe { GetForegroundWindow() } as isize == state.target.load(Ordering::Acquire);
+        unsafe { GetForegroundWindow() } as isize == state.foreground_owner.load(Ordering::Acquire);
     if owns_foreground
         && state.relative_motion.load(Ordering::Acquire)
         && mouse.usFlags & MOUSE_MOVE_ABSOLUTE == 0
@@ -398,7 +400,7 @@ mod tests {
 
     fn state() -> RawInputState {
         RawInputState {
-            target: Default::default(),
+            foreground_owner: Default::default(),
             enabled: true.into(),
             relative_motion: false.into(),
             pressed_buttons: Default::default(),

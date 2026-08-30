@@ -1,6 +1,5 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -17,26 +16,6 @@ pub enum H264Framing {
 pub enum VideoColorSpace {
     Bt601,
     Bt709,
-}
-
-/// Placement for a small GPU-composited diagnostic surface.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GpuOverlayPlacement {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
-
-/// Immutable RGBA8 pixels uploaded only when diagnostic text changes.
-///
-/// Metal samples this surface without reading a decoded video pixel buffer back to the CPU.
-#[derive(Clone, Debug)]
-pub struct GpuOverlayFrame {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Arc<[u8]>,
-    pub placement: GpuOverlayPlacement,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

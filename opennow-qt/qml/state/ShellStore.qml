@@ -29,6 +29,7 @@ QtObject {
     property bool consoleSurfaceRequestValue: false
     property bool consoleSurfaceInitialized: false
     property string consoleSurfaceError: ""
+    property bool desktopUiActive: false
     property var subscription: null
     property var regions: []
     property var regionPingResults: ({})
@@ -144,17 +145,8 @@ QtObject {
     property string streamInputPauseRequestId: ""
     property string streamControlRequestId: ""
     property string streamControlAction: ""
-    property string streamSurfaceRequestId: ""
     property string streamControlMessage: ""
-    property bool streamSurfaceDirty: false
-    property int streamSurfaceFailureCount: 0
-    property int streamSurfaceGeneration: 0
-    property int streamSurfaceRequestGeneration: 0
-    property var streamSurface: ({
-        screenRect: {x: 0, y: 0, width: 1600, height: 900},
-        visible: true,
-        deviceScaleFactor: 1.0
-    })
+    readonly property var streamSurface: StreamSurfaceController.surface
     property int overlayRequestGeneration: 0
     property int screenshotRequestGeneration: 0
     property int recordingToggleRequestGeneration: 0
@@ -181,6 +173,8 @@ QtObject {
         return ""
     }
     readonly property bool streamBusy: streamCreateRequestId !== "" || streamStopRequestId !== ""
+
+    signal fullscreenToggleRequested()
     readonly property var resumableSession: {
         if (root.activeSession) {
             const localStatus = Number(root.activeSession.status || 0)
@@ -197,18 +191,10 @@ QtObject {
         }
         return null
     }
-    readonly property string microphoneState: streamer && streamer.microphoneState
-        ? String(streamer.microphoneState) : (settings.microphoneMode === "voice-activity" ? "armed" : "disabled")
-    readonly property bool microphoneEnabled: Boolean(streamer && streamer.microphoneEnabled)
-    readonly property string microphoneLabel: microphoneEnabled ? qsTr("On")
-        : microphoneState === "starting" ? qsTr("Starting")
-        : microphoneState === "unavailable" ? qsTr("Unavailable")
-        : settings.microphoneMode === "voice-activity" ? qsTr("Next session") : qsTr("Off")
-    readonly property string microphoneDescription: streamer && streamer.microphoneMessage
-        ? String(streamer.microphoneMessage)
-        : settings.microphoneMode === "voice-activity"
-            ? qsTr("Voice-activated Opus upstream is armed for WebRTC sessions")
-            : qsTr("Microphone capture is disabled")
+    readonly property string microphoneState: "unavailable"
+    readonly property bool microphoneEnabled: false
+    readonly property string microphoneLabel: qsTr("Unavailable")
+    readonly property string microphoneDescription: qsTr("Microphone upstream is unavailable for NVST sessions")
 
     property Timer devicePollTimer: Timer {
         interval: root.authChallenge ? Math.max(1000, Number(root.authChallenge.intervalSeconds || 5) * 1000) : 5000
@@ -281,12 +267,6 @@ QtObject {
         interval: 15000
         repeat: false
         onTriggered: root.checkForUpdates()
-    }
-
-    property Timer streamSurfaceTimer: Timer {
-        interval: 40
-        repeat: false
-        onTriggered: root.flushStreamSurface()
     }
 
     function refreshSettings() {
@@ -1147,8 +1127,6 @@ QtObject {
             streamState = status
             streamMessage = streamer.message || streamMessage
             streamerStatusTimer.restart()
-            if (streamSurfaceDirty)
-                streamSurfaceTimer.restart()
             setStreamInputPaused(desiredStreamInputPaused)
         }
         if (status === "streaming") {
@@ -1323,7 +1301,7 @@ QtObject {
         if (!ready || streamControlRequestId !== "")
             return
         if (!activeSession || !streamer || streamer.status !== "streaming") {
-            streamControlMessage = qsTr("The native stream window is not active.")
+            streamControlMessage = qsTr("Stream controls are available once the session is live.")
             return
         }
         streamControlMessage = qsTr("")
@@ -1333,45 +1311,13 @@ QtObject {
         }, 5000)
     }
 
-    function setStreamSurface(x, y, width, height, deviceScaleFactor) {
-        if (width < 64 || height < 64)
-            return
-        streamSurface = {
-            screenRect: {
-                x: Math.round(x),
-                y: Math.round(y),
-                width: Math.round(width),
-                height: Math.round(height)
-            },
-            visible: true,
-            deviceScaleFactor: Math.max(0.5, Math.min(8.0, Number(deviceScaleFactor || 1)))
-        }
-        streamSurfaceDirty = true
-        streamSurfaceFailureCount = 0
-        streamSurfaceGeneration += 1
-        if (activeSession && streamer && streamer.status !== "stopped" && streamer.status !== "error")
-            streamSurfaceTimer.restart()
-    }
-
-    function flushStreamSurface() {
-        if (!ready || streamSurfaceRequestId !== "" || !activeSession || !streamer)
-            return
-        if (streamer.status === "stopped" || streamer.status === "error")
-            return
-        streamSurfaceDirty = false
-        streamSurfaceRequestGeneration = streamSurfaceGeneration
-        streamSurfaceRequestId = CoreClient.request("streamer.surface.update", {
-            surface: streamSurface
-        }, 5000)
-    }
-
     function inspectStreamerOverlayRequest(value) {
         const generation = Number(value && value.overlayRequestGeneration || 0)
         if (generation <= overlayRequestGeneration)
             return
         overlayRequestGeneration = generation
         AppController.activateWindow()
-        AppController.showOverlay("guide-session")
+        AppController.showOverlay(desktopUiActive ? "desktop-stream-menu" : "guide-session")
     }
 
     function inspectStreamerScreenshotRequest(value) {
@@ -1383,8 +1329,8 @@ QtObject {
     }
 
     function captureStreamScreenshot() {
-        const rect = streamSurface && streamSurface.screenRect
-            ? streamSurface.screenRect : ({x: 0, y: 0, width: 0, height: 0})
+        const rect = streamSurface && streamSurface.logicalScreenRect
+            ? streamSurface.logicalScreenRect : ({x: 0, y: 0, width: 0, height: 0})
         const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
         const path = AppController.captureScreenRegion(
             Number(rect.x || 0), Number(rect.y || 0),
@@ -1422,6 +1368,18 @@ QtObject {
             accessibilityMessage = streamControlMessage
         } else if (action === "toggle-microphone") {
             toggleMicrophoneMode()
+        } else if (action === "toggle-stats") {
+            AppController.activateWindow()
+            const compact = desktopUiActive ? "desktop-stream-stats" : "stream-stats"
+            const expanded = desktopUiActive
+                ? "desktop-stream-stats-expanded" : "stream-stats-expanded"
+            if (AppController.overlay === compact || AppController.overlay === expanded)
+                AppController.showOverlay("")
+            else
+                AppController.showOverlay(compact)
+        } else if (action === "toggle-fullscreen") {
+            AppController.activateWindow()
+            fullscreenToggleRequested()
         } else if (action === "screenshot") {
             captureStreamScreenshot()
         } else if (action === "toggle-recording") {
@@ -1454,16 +1412,12 @@ QtObject {
     }
 
     function toggleMicrophoneMode() {
-        if (activeSession && streamer && streamer.status === "streaming"
-                && settings.microphoneMode === "voice-activity") {
-            controlStream("toggle-microphone")
-            return
+        if (settings.microphoneMode !== "disabled") {
+            applySetting("microphoneMode", "disabled")
+            setSetting("microphoneMode", "disabled")
         }
-        const enable = settings.microphoneMode !== "voice-activity"
-        setSetting("microphoneMode", enable ? "voice-activity" : "disabled")
-        accessibilityMessage = activeSession
-            ? (enable ? "Microphone will enable for the next WebRTC session" : "Microphone will disable for the next session")
-            : (enable ? "Voice-activated microphone enabled" : "Microphone disabled")
+        streamControlMessage = qsTr("Microphone upstream is unavailable for NVST sessions")
+        accessibilityMessage = streamControlMessage
     }
 
     function pollStreamingSession() {
@@ -1664,7 +1618,9 @@ QtObject {
             if (root.finishArtworkRequest(requestId, result, false)) {
                 return
             } else if (requestId === root.settingsRequestId && result.settings) {
-                root.settings = result.settings
+                root.settings = Object.assign({}, result.settings, {microphoneMode: "disabled"})
+                if (result.settings.microphoneMode !== "disabled")
+                    root.setSetting("microphoneMode", "disabled")
                 root.consoleSurfaceConfirmedValue = Boolean(result.settings.launchInConsoleMode)
                 root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
                 root.consoleSurfaceInitialized = true
@@ -1922,8 +1878,8 @@ QtObject {
                 root.streamRecordingActive = true
                 root.streamRecordingStartedAtMs = Date.now()
                 root.streamRecordingElapsedMs = 0
-                const rect = root.streamSurface && root.streamSurface.screenRect
-                    ? root.streamSurface.screenRect : ({x: 0, y: 0, width: 0, height: 0})
+                const rect = root.streamSurface && root.streamSurface.logicalScreenRect
+                    ? root.streamSurface.logicalScreenRect : ({x: 0, y: 0, width: 0, height: 0})
                 if (root.pendingRecordingThumbnailPath) {
                     AppController.captureScreenRegionTo(
                         Number(rect.x || 0), Number(rect.y || 0),
@@ -2058,22 +2014,9 @@ QtObject {
                     Qt.callLater(() => root.setStreamInputPaused(root.desiredStreamInputPaused))
             } else if (requestId === root.streamControlRequestId) {
                 root.streamControlRequestId = ""
-                const action = String(result.action || root.streamControlAction)
                 root.streamControlAction = ""
-                root.streamControlMessage = action === "toggle-fullscreen"
-                    ? qsTr("Fullscreen changed")
-                    : action === "toggle-stats" ? qsTr("Stats overlay changed")
-                    : action === "toggle-microphone" ? qsTr("Microphone state changed")
-                    : qsTr("Stream control applied")
+                root.streamControlMessage = qsTr("Stream control applied")
                 root.refreshStreamerStatus()
-            } else if (requestId === root.streamSurfaceRequestId) {
-                root.streamSurfaceRequestId = ""
-                const applied = Boolean(result.applied)
-                root.streamSurfaceDirty = root.streamSurfaceRequestGeneration
-                    !== root.streamSurfaceGeneration || !applied
-                root.streamSurfaceFailureCount = applied ? 0 : root.streamSurfaceFailureCount + 1
-                if (root.streamSurfaceDirty && root.streamSurfaceFailureCount < 3)
-                    root.streamSurfaceTimer.restart()
             }
         }
         function onRequestFailed(requestId, code, message) {
@@ -2287,14 +2230,6 @@ QtObject {
                 root.streamControlRequestId = ""
                 root.streamControlAction = ""
                 root.streamControlMessage = message
-            } else if (requestId === root.streamSurfaceRequestId) {
-                root.streamSurfaceRequestId = ""
-                root.streamSurfaceDirty = true
-                root.streamSurfaceFailureCount += 1
-                if (root.streamSurfaceDirty && root.streamSurfaceFailureCount < 3)
-                    root.streamSurfaceTimer.restart()
-                else
-                    root.streamControlMessage = message
             }
         }
         function onEventReceived(name, payload) {

@@ -5,6 +5,7 @@
 #include "InputModeTracker.h"
 #include "Localization.h"
 #include "SingleInstance.h"
+#include "StreamSurfaceController.h"
 #include "ThumbnailGenerator.h"
 
 #include <QGuiApplication>
@@ -102,6 +103,7 @@ int main(int argc, char *argv[])
     Localization localization;
     application.installTranslator(&localization);
     CoreClient coreClient;
+    StreamSurfaceController streamSurfaceController(&coreClient, &controller);
     InputModeTracker inputModeTracker(&controller);
     application.installEventFilter(&inputModeTracker);
     controller.setControllerCount(controllerInput.controllerCount());
@@ -146,6 +148,8 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(u"ThumbnailGenerator"_s, &thumbnailGenerator);
     engine.rootContext()->setContextProperty(u"I18n"_s, &localization);
     engine.rootContext()->setContextProperty(u"CoreClient"_s, &coreClient);
+    engine.rootContext()->setContextProperty(u"StreamSurfaceController"_s,
+                                             &streamSurfaceController);
     engine.rootContext()->setContextProperty(
         u"LaunchModeOverride"_s,
         arguments.contains(u"--desktop"_s) ? u"desktop"_s
@@ -171,6 +175,11 @@ int main(int argc, char *argv[])
                      &application, [] { QCoreApplication::exit(EXIT_FAILURE); },
                      Qt::QueuedConnection);
     engine.loadFromModule(u"OpenNOW"_s, u"Main"_s);
+    auto *rootWindow = engine.rootObjects().isEmpty()
+        ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    streamSurfaceController.setWindow(rootWindow);
+    QObject::connect(&application, &QCoreApplication::aboutToQuit,
+                     &streamSurfaceController, &StreamSurfaceController::teardown);
     const auto qmlReadyMs = startupTimer.elapsed();
     controller.handleArguments(arguments);
     QObject::connect(&controller, &AppController::activationRequested,

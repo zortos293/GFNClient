@@ -48,16 +48,24 @@ the local plain-file theme directory.
 The versioned Rust core owns settings, NVIDIA device login and token refresh,
 OS-protected accounts, PINs, catalogs, subscriptions, regions and latency tests,
 account connections, persistent storage, CloudMatch lifecycle/recovery/ads,
-secure signaling, classic NVST, diagnostics, media listing, Discord, telemetry,
+NVST session orchestration, diagnostics, media listing, Discord, telemetry,
 feedback and update discovery. The supervised protocol-v5 native streamer owns
 the complete NVST negotiation, its media sockets, hardware/software decode,
-audio, native input and runtime stats/fullscreen controls. The Qt shell sends one
+audio, native input and presentation controls. Qt/QML owns stream status, stats,
+menus, recovery, failure and fullscreen chrome. The Qt shell sends one
 complete CloudMatch session context and never proxies RTSPS or ICE/SRTP state.
 CPack installs the shell, core and streamer together and can generate
-a Linux deb locally, while CI defines a checksum-pinned x64 AppImage build. F11
-saves the exact stream region and F12 records the negotiated H.264/H.265/AV1
-source stream plus Opus audio atomically into Matroska, then generates a media
-thumbnail. WebRTC sessions support bounded voice-activity microphone upstream
-audio. Live multi-OS streaming/microphone/hardware validation and production
-signing/notarization remain removal gates, so Electron is still retained as the
-shipping fallback.
+a Linux deb locally, while CI defines a checksum-pinned x64 AppImage build.
+The screenshot shortcut captures the exact stream region, and F12 records the
+negotiated H.264/H.265/AV1 source stream plus Opus audio atomically into Matroska
+before generating a media thumbnail. NVST microphone upstream is not currently
+supported and fails closed. Live multi-OS streaming, window-composition and
+hardware validation plus production signing/notarization remain removal gates,
+so Electron is still retained as the shipping fallback.
+
+The current presenter is not a Qt scene-graph texture: the Qt launch contract uses
+paired native top-level windows on Windows, macOS, X11 and Wayland. Ordinary QML
+cannot reliably cover those surfaces, so opening Qt-owned stream UI temporarily
+hides native presentation and restores it afterward. This is deliberately not
+described as a composited live-video overlay, a single OS window, or cross-platform
+zero-copy.

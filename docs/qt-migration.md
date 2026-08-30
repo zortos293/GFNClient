@@ -118,19 +118,38 @@ out of process so decoder or driver failures cannot take down the shell.
 
 ### 6. Native streaming
 
-- [x] Replace Electron-specific surface ownership with a shell-neutral external-window contract.
-- [x] Implement native frame presentation and shell/streamer window ordering for Windows, macOS, X11 and Wayland, with controller ownership transferred atomically while QML guide overlays are active. Cross-OS live-stream proof remains an acceptance gate.
-- [x] Preserve out-of-process lifecycle, protocol-v4 health checks and restart isolation.
-- [x] Preserve hardware decode selection and safe fallback behavior for every negotiable codec. Codec-specific H.264/H.265/AV1 WebRTC answers, strict automatic/hardware/software selection, prelaunch capability probing, Windows class-separated Media Foundation hardware and system-software probing/fallback, Linux bundled-FFmpeg fallback, and independently probed macOS VideoToolbox H.264/HEVC/AV1 are implemented. Windows HEVC/AV1 software availability follows registered D3D11-aware software MFTs instead of being mixed into the hardware result. macOS guarantees H.264 through OpenH264 fallback; HEVC/AV1 are offered only when the corresponding VideoToolbox hardware probe succeeds, and failures disable that codec instead of silently negotiating an unavailable software path.
+- [x] Replace Electron-specific surface ownership with a shell-neutral external-window contract. The
+  core preserves `windowHandle`, `rect`, `screenRect`, visibility and scale updates and always starts
+  the out-of-process presenter with `OPENNOW_NATIVE_EXTERNAL_RENDERER=1`.
+- [x] Implement native frame presentation and shell/streamer window ordering for Windows, macOS,
+  X11 and Wayland, with controller ownership transferred atomically while QML guide overlays are
+  active. The current external-presenter launch contract uses paired native top-level windows on all
+  four targets; none is a texture embedded in the Qt scene graph. Because ordinary QML cannot reliably
+  cover these native surfaces, the typed controller hides presentation for QML menus, stats, reconnect
+  and error states, then restores it from fresh host geometry. Cross-OS live-stream ordering proof
+  remains an acceptance gate, and this implementation does not claim a live-video QML overlay or
+  cross-platform zero-copy.
+- [x] Preserve out-of-process lifecycle, protocol-v5 health checks and restart isolation.
+- [x] Preserve hardware decode selection and safe fallback behavior for every negotiable codec. NVST
+  H.264/H.265/AV1 profiles, strict automatic/hardware/software selection, prelaunch capability
+  probing, Windows class-separated Media Foundation hardware and system-software probing/fallback,
+  Linux bundled-FFmpeg fallback, and independently probed macOS VideoToolbox H.264/HEVC/AV1 are
+  implemented. Windows HEVC/AV1 software availability follows registered D3D11-aware software MFTs
+  instead of being mixed into the hardware result. macOS guarantees H.264 through OpenH264 fallback;
+  HEVC/AV1 are offered only when the corresponding VideoToolbox hardware probe succeeds, and
+  failures disable that codec instead of silently negotiating an unavailable software path.
 - [x] Route keyboard, mouse and up to four gamepads directly to the streamer while shell overlays are closed.
 - [x] Transfer input ownership atomically to the shell for overlays and send neutral controller state on pause.
 - [x] Integrate stream statistics, next-session bitrate, recording and Cloud G-Sync quick controls.
-- [x] Add bounded SDL microphone capture, voice-activity Opus encoding and negotiated WebRTC upstream audio; classic NVST and push-to-talk fail closed.
-- [x] Enumerate microphone capture devices, fall back safely from stale migrated device identifiers,
-  and support live mute/unmute for microphone-armed WebRTC sessions.
+  The configurable stats shortcut is forwarded as `shortcut-action: toggle-stats`; Qt owns the
+  overlay and renders core telemetry instead of asking the native presenter to draw it.
+- [x] Fail closed when a persisted microphone mode is selected: upstream microphone audio is not
+  implemented by the NVST runtime, and diagnostics report it as unavailable rather than selecting a
+  WebRTC media session.
 - [x] Apply all eight configurable native shortcuts, including pointer lock, recording, screenshot,
-  microphone, stop and real four-minute anti-AFK F13 pulses across WebRTC and NVST input transports.
-- [ ] Validate microphone permissions and live upstream audio with an authorized account on Windows, macOS and Linux.
+  microphone, stop and real four-minute anti-AFK F13 pulses. Stats and fullscreen are forwarded to
+  Qt instead of mutating native presentation; pointer lock remains native. The microphone shortcut
+  retains settings compatibility but reports NVST upstream audio as unavailable.
 - [ ] Validate HDR, high-refresh, VRR, resize, fullscreen and display migration.
 - [ ] Validate screenshots and source-stream recording with an authorized live session on each supported OS.
 
@@ -141,8 +160,8 @@ out of process so decoder or driver failures cannot take down the shell.
 - [x] Port proxy-aware HTTP, client identity, endpoint and error handling.
 - [x] Port authentication, catalog, subscriptions and region discovery.
 - [x] Port account connections.
-- [x] Port fresh-session lifecycle and WebRTC signaling coordination.
-- [x] Port active-session claim, recovery and classic NVST RTSP negotiation.
+- [x] Port fresh-session lifecycle and CloudMatch coordination for NVST-only media sessions.
+- [x] Port active-session claim, recovery and native-owned NVST RTSP negotiation.
 - [x] Port updater discovery/channels, media library, diagnostics, Discord and opt-in telemetry.
 - [x] No temporary Node service was introduced.
 
@@ -187,13 +206,12 @@ storage migration and controller-only operation are all removal gates.
 The 2026-08-28 Linux checkpoint has a warning-fatal suite covering 48 shell,
 controller, localization, native recording, route, overlay, performance-harness and lifecycle
 tests; the complete four-way run takes about 19 seconds after making unused Qt Multimedia thumbnail
-decoding lazy. The Rust application core has 59 unit tests, the acceptance verifier has four, the
+decoding lazy. The Rust application core has 74 unit tests, the acceptance verifier has four, the
 update-manifest generator has two, and the legacy boundary has three machine-readable contract tests
-(68 total).
-The native streamer workspace has 246 passing default-feature
-platform/core/protocol/transport tests plus doc tests. Its system-FFmpeg Linux
-configuration has 247 passing tests and one intentionally ignored live-hardware
-probe, including linked H.264/H.265/AV1 software-decoder verification. Both Rust
+(83 total).
+The native streamer workspace's platform/core/protocol/transport tests and doc tests pass on the
+development host. The system-FFmpeg Linux configuration retains one intentionally ignored
+live-hardware probe, including linked H.264/H.265/AV1 software-decoder verification. Both Rust
 workspaces pass clippy with warnings denied.
 
 The macOS VideoToolbox crate passes `x86_64-apple-darwin` and `aarch64-apple-darwin` Rust type
@@ -209,8 +227,8 @@ launch passed while explicitly using the packaged `opennow-core` and
 metadata, icon, license and generated third-party notices. The exact local artifact has SHA-256
 `e1d076182530a3e128f18708371bdbe6c936cdc9fd6dbcaad826121e13cfa1bf`.
 
-The native WebRTC answer now advertises exactly the CloudMatch codec configured
-in the active decoder. A protocol-v4 child-process probe applies the selected
+The native NVST launch context now carries exactly the CloudMatch codec configured
+for the active decoder. A protocol-v5 child-process probe applies the selected
 decoder policy before CloudMatch allocates a session, including automatic H.264;
 explicit HEVC/AV1 sessions remain available only where the selected native backend
 honestly reports them. CPack packages the Qt shell, Rust core, native streamer,
@@ -219,7 +237,7 @@ builds the distributable Linux streamer with bundled FFmpeg and smoke-tests the
 checksum-pinned x64 AppImage.
 
 The extracted DEB starts the Qt shell against its packaged core and streamer.
-Its live protocol-v4 probe reports the bundled H.264/H.265/AV1 codecs, applies an
+Its live protocol-v5 probe reports the bundled H.264/H.265/AV1 codecs, applies an
 explicit unavailable V4L2 policy as zero available codecs, and rejects
 `session.create` with `streamer_codec_unavailable` before any provider request.
 
@@ -231,12 +249,26 @@ remains intact.
 
 The Diagnostics screen now exports both a human-readable redacted report and a direct
 machine-readable live-acceptance manifest. The latter hashes the screenshot, recording and
-thumbnail, records ten-minute streaming, first-frame, guide/input ownership, surface, microphone,
+thumbnail, records ten-minute NVST streaming, first-frame, guide/input ownership, surface,
 recording, recovery and error checks, and excludes session/process identifiers, endpoints,
 executable paths and local media paths. The packaged `opennow-acceptance-verify` tool combines that
 manifest with both hardware performance reports, the explicit manual-attestation template and all
 required platform packages; it fails closed on any false/mismatched gate and emits a path-free
 verification result.
+
+The NVST-only core no longer contains its former browser WebSocket/SDP/ICE media fallback or the
+associated Tungstenite dependency. Persisted `transportMode` remains part of the settings contract
+for rollback compatibility, but every legacy value normalizes to `nvst` before session creation or
+streamer launch. NVIDIA still requires some protocol labels whose names contain `WEBRTC`: device
+authorization and browser-style region discovery retain the `nv-client-streamer: WEBRTC` identity.
+The native streamer also retains DTLS/SCTP-named bundle, input and control structures because NVST
+audio, input and RTCP use that encrypted bundle. Those names are wire compatibility, not a second
+media transport.
+
+No cross-process zero-copy path into the Qt scene graph is implemented or claimed. Hardware decode
+and native presentation can still avoid software decode, but acceptance must treat that separately
+from Qt texture sharing. macOS and Wayland acceptance therefore verifies the supported two-window
+ordering and input-ownership model rather than requiring single-window embedding.
 
 The exact live-account, hardware, signing and rollout procedure is maintained in
 [`docs/qt-acceptance.md`](qt-acceptance.md). It defines which artifacts constitute proof, so an

@@ -8,34 +8,23 @@ mod linux_xinput;
 mod macos_backend;
 mod media;
 mod microphone;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-mod native_stats_overlay;
 mod native_surface;
 mod output;
 mod queue;
 mod recording;
 mod runtime;
 #[cfg(target_os = "windows")]
-mod windows_debug_overlay;
-#[cfg(target_os = "windows")]
 mod windows_raw_input;
 
 pub use media::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedRecordingReceiver,
     MediaCodec, MediaColorQuality, MediaControl, MediaFeedback, MediaSession, MediaSink,
-    MediaStreamConfig, MediaVideoCodec, PushOutcome, ShortcutChord, StatsOverlayPosition,
-    StreamRegionLabel, StreamShortcutAction, StreamShortcutBindings,
+    MediaStreamConfig, MediaVideoCodec, PushOutcome, ShortcutChord, StreamShortcutAction,
+    StreamShortcutBindings,
 };
 pub use microphone::{EncodedMicrophonePacket, EncodedMicrophoneQueue, MicrophoneCapture};
 pub use recording::{RecordingSummary, record_matroska};
 pub use runtime::{MainThreadHost, MediaRuntime, MediaRuntimeControl, create_runtime};
-
-/// Shows a standalone overlay window through the exact production creation path.
-/// Debug-only aid for isolating window-server behavior without a streaming session.
-#[cfg(target_os = "macos")]
-pub fn debug_show_overlay_window() {
-    opennow_streamer_platform_macos::debug_show_overlay_window();
-}
 
 use opennow_streamer_protocol::{CodecCapability, VideoBackendCapability};
 

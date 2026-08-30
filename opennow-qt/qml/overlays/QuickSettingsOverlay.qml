@@ -43,11 +43,11 @@ GlassPanel {
         SettingRow {
             id: statsRow; width: parent.width; title: ShellStore.activeSession ? qsTr("Stats overlay") : qsTr("Stats on launch")
             value: ShellStore.activeSession ? qsTr("Toggle") : (ShellStore.settings.showNativeStreamerStats ? qsTr("On") : qsTr("Off"))
-            description: ShellStore.activeSession ? qsTr("Toggles live native stream statistics") : qsTr("Starts the next native session with compact stats")
+            description: ShellStore.activeSession ? qsTr("Shows live stream statistics") : qsTr("Starts the next session with compact stats")
             KeyNavigation.up: bitrateRow; KeyNavigation.down: recordingRow
             onClicked: {
                 if (ShellStore.activeSession)
-                    ShellStore.controlStream("toggle-stats")
+                    AppController.showOverlay("stream-stats")
                 else
                     ShellStore.setSetting("showNativeStreamerStats", !Boolean(ShellStore.settings.showNativeStreamerStats))
             }
@@ -72,7 +72,7 @@ GlassPanel {
             value: ShellStore.microphoneLabel
             description: ShellStore.microphoneDescription
             KeyNavigation.up: syncRow; KeyNavigation.down: controllerButton
-            onClicked: ShellStore.toggleMicrophoneMode()
+            enabled: false
         }
         Text { text: qsTr("CONTROLLERS · %1 CONNECTED").arg(AppController.controllerCount); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 12; font.letterSpacing: 1; topPadding: 12; bottomPadding: 8 }
         GlassButton {

@@ -15,12 +15,16 @@ FocusScope {
     readonly property var game: ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
     readonly property var streamer: ShellStore.streamer || ({})
-    readonly property string status: String(root.streamer.status || "starting")
+    readonly property string status: {
+        if (ShellStore.streamState === "error")
+            return "error"
+        if (ShellStore.streamState === "reconnecting" || ShellStore.streamerRestartAttempts > 0)
+            return "reconnecting"
+        return String(root.streamer.status || ShellStore.streamState || "starting")
+    }
     readonly property bool streaming: root.status === "streaming"
     readonly property bool failed: root.status === "error"
-    // While the native runtime presents the picture the shell stays out of the way:
-    // the window is hidden by Main.qml, and any overlay must composite over the stream.
-    readonly property bool handoffVisible: !root.streaming
+    readonly property bool statusVisible: !root.streaming
     readonly property string artwork: DesktopTokens.decodeArtworkUrl(
         String(root.game.heroImageUrl || root.game.imageUrl || ""))
 
@@ -30,19 +34,27 @@ FocusScope {
         if (root.status === "connecting") return qsTr("CONNECTING TO RIG")
         if (root.status === "reconnecting") return qsTr("RECONNECTING")
         if (root.status === "stopped") return qsTr("SESSION CLOSED")
-        return qsTr("HANDING OVER THE STREAM")
+        return qsTr("STARTING VIDEO")
+    }
+
+    Item {
+        objectName: "streamSurfaceHost"
+        anchors.fill: parent
+        visible: root.visible && root.streaming && AppController.overlay === ""
+        z: 0
     }
 
     ArtworkSource {
         id: streamArtwork
         sourceUrl: root.artwork
-        active: root.handoffVisible && root.visible
+        active: root.statusVisible && root.visible
     }
 
     Rectangle {
         anchors.fill: parent
-        visible: root.handoffVisible
+        visible: root.statusVisible
         color: "#04060A"
+        z: 1
 
         Image {
             anchors.fill: parent
@@ -64,12 +76,13 @@ FocusScope {
     }
 
     Column {
-        id: handoff
-        visible: root.handoffVisible
+        id: statusContent
+        visible: root.statusVisible
         width: Math.min(560, root.width - 64)
         x: Math.round((root.width - width) / 2)
         y: Math.max(72, Math.round((root.height - height) / 2))
         spacing: 0
+        z: 2
 
         Text {
             text: root.statusLabel()
@@ -108,7 +121,7 @@ FocusScope {
             DesktopButton {
                 id: primaryAction
                 text: root.failed ? qsTr("Retry media") : qsTr("Session menu")
-                shortcutText: root.failed ? "" : "F1"
+                shortcutText: root.failed ? "" : "Ctrl G"
                 primary: true
                 onClicked: root.failed ? root.retryRequested() : root.menuRequested()
             }
@@ -123,14 +136,14 @@ FocusScope {
         Item { width: 1; height: 24 }
         Row {
             spacing: 22
-            DesktopKeyHint { keyText: "F1"; label: qsTr("Session menu") }
+            DesktopKeyHint { keyText: "Ctrl G"; label: qsTr("Session menu") }
             DesktopKeyHint { keyText: "F3"; label: qsTr("Stream stats") }
             DesktopKeyHint { keyText: "F10"; label: qsTr("Console mode") }
         }
     }
 
     Text {
-        visible: root.handoffVisible
+        visible: root.statusVisible
         anchors.left: parent.left
         anchors.bottom: parent.bottom
         anchors.margins: 32
@@ -142,9 +155,43 @@ FocusScope {
         font.pixelSize: 9
         font.weight: Font.Bold
         font.letterSpacing: 0.8
+        z: 2
     }
 
-    onVisibleChanged: if (visible) Qt.callLater(() => primaryAction.forceActiveFocus())
+    Rectangle {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 24
+        width: liveHints.implicitWidth + 28
+        height: 32
+        radius: 16
+        visible: root.streaming && AppController.overlay === ""
+        color: "#9904060A"
+        border.width: 1
+        border.color: "#24FFFFFF"
+        z: 2
+
+        Row {
+            id: liveHints
+            anchors.centerIn: parent
+            spacing: 18
+            DesktopKeyHint { keyText: "Ctrl G"; label: qsTr("Session") }
+            DesktopKeyHint { keyText: "F3"; label: qsTr("Stats") }
+            DesktopKeyHint { keyText: "F11"; label: qsTr("Fullscreen") }
+        }
+    }
+
+    function restoreStreamFocus() {
+        if (!root.visible)
+            return
+        if (root.statusVisible)
+            primaryAction.forceActiveFocus()
+        else
+            root.forceActiveFocus()
+    }
+
+    onVisibleChanged: if (visible) Qt.callLater(root.restoreStreamFocus)
+    onStatusVisibleChanged: Qt.callLater(root.restoreStreamFocus)
 
     Keys.onPressed: event => {
         if (event.isAutoRepeat)

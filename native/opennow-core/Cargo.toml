@@ -20,7 +20,6 @@ sha2 = "0.10"
 scrypt = "0.11"
 subtle = "2"
 url = "2"
-tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 
 [profile.release]
 lto = "thin"

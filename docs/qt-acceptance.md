@@ -20,6 +20,16 @@ Use an authorized test account with no production secrets in reports. Sign in in
 not put NVIDIA credentials, refresh tokens, signing keys, or notarization passwords in command
 arguments, logs, issue trackers, or acceptance artifacts.
 
+The presenter remains out of process. The current Qt launch contract uses a paired native top-level
+window aligned to the shell's stream region on Windows, X11, Wayland and macOS.
+The surface contract carries a window handle, host-local and screen geometry, visibility, and scale,
+but it does not establish cross-process Qt texture embedding. Foreign children and paired windows
+cannot be covered reliably by ordinary Qt Quick items, so the shell hides the presenter before it
+shows a QML menu, stats panel, reconnect screen, or error screen. The result is Qt-owned UI with a
+temporarily suspended video surface, not a composited overlay over live video. No matrix row may
+claim single-window composition or zero-copy into the Qt scene graph without a separate implementation
+and measurement evidence.
+
 ## Performance evidence
 
 Run the release package on the agreed baseline iGPU with its native display backend. Close frame
@@ -45,7 +55,8 @@ latency, frame intervals, missed-frame ratio, budgets, and the final pass/fail r
 requires `pass: true` for both reports. The hardware flag rejects offscreen/minimal platforms,
 software/null renderers, missing screens, and workloads that do not receive the requested physical
 dimensions. It also rejects the test-only refresh-rate override, so release evidence always uses
-the display-reported rate.
+the display-reported rate. This measures the Qt shell workload; it does not prove stream-window
+embedding, native decoder throughput or a zero-copy handoff into Qt.
 
 ## Authorized stream evidence
 
@@ -53,24 +64,29 @@ For every matrix row, launch a real account-owned title and keep the session act
 ten minutes. Exercise the following without restarting the app:
 
 1. Complete device login, account switching, subscription and region refresh.
-2. Create a session, pass queue/ads if present, and reach native first-frame playback.
-3. Open and close every guide page over live video. Confirm video remains correctly ordered and
-   controller input transfers atomically between the shell and game.
+2. Create a session, pass queue/ads if present, reach native NVST first-frame playback, and confirm
+   the live evidence reports `stream.transport: "nvst"`.
+3. Open and close every guide and stats page while video is live. Confirm the presenter hides before
+   QML appears, returns after QML closes, never leaves a stale native handle, and transfers controller
+   input atomically. Record every platform as paired-window behavior rather than claiming a composited
+   live-video overlay.
 4. Exercise keyboard, relative mouse, and every connected controller. Validate neutral controller
    state after overlay entry, reconnect, pause, and resume.
 5. Test window resize, fullscreen, display migration, the display's highest supported refresh
    rate, and VRR/HDR only where the machine advertises them.
-6. Enable voice-activity microphone mode before a new WebRTC session, grant the OS permission, and
-   confirm upstream audio at the remote endpoint. Record an explicit not-supported result for NVST
-   or hardware without an input device; do not reinterpret it as a pass.
+6. Load a profile that previously selected WebRTC or another legacy transport and confirm settings,
+   session creation, streamer status and exported evidence all resolve it to NVST. If a persisted
+   microphone mode is armed, confirm the runtime reports upstream audio as unavailable without
+   changing transport; microphone audio is not a release gate for the NVST-only client.
 7. Capture a screenshot, start and stop a source-stream Matroska recording, play the resulting
    media, verify the generated thumbnail, and reveal both files through the Media screen.
-8. Rebind and exercise all eight stream shortcuts. Confirm stats, pointer lock and fullscreen act
-   inside the native window; microphone, screenshot, recording and stop reach the shell exactly
-   once; and anti-AFK produces an F13 pulse after four minutes without leaking the key into the game.
-9. Select a non-default microphone where available, verify live mute/unmute, enable the anti-AFK
-   indicator/reminder and session clock, then confirm the post-session report reflects elapsed time,
-   backend, first-frame latency, recovery/error counters and diagnostics navigation.
+8. Rebind and exercise all eight stream shortcuts. Confirm stats and fullscreen reach Qt exactly once,
+   pointer lock remains native, microphone reports unavailable, screenshot, recording and stop reach
+   the shell exactly once, and anti-AFK produces an F13 pulse after four minutes without leaking the
+   key into the game.
+9. Enable the anti-AFK indicator/reminder and session clock, then confirm the post-session report
+   reflects NVST transport, elapsed time, backend, first-frame latency, recovery/error counters and
+   diagnostics navigation.
 10. Exercise favorites, entitlement-filtered aspect ratio/resolution/FPS choices, keyboard layout,
     game language, console-friendly launch and in-game-settings persistence on a title that advertises
     the corresponding NVIDIA feature.
@@ -79,7 +95,7 @@ ten minutes. Exercise the following without restarting the app:
 12. Export both the redacted diagnostic report and **live evidence** from the Diagnostics screen
    after the run. The live export is direct machine-readable JSON and must report
    `observedPass: true`; it includes hashed screenshot/recording/thumbnail metadata and bounded
-   transport, first-frame, input ownership, guide, microphone, recovery and error checks without
+   NVST transport, first-frame, input ownership, guide, recovery and error checks without
    exposing a local path, account, token, session identifier or endpoint.
 
 Retain the two performance JSON files, redacted diagnostic export, screenshot, recording, package
@@ -90,8 +106,9 @@ artifacts is not proof of the gate.
 Copy [`qt-acceptance-attestations.example.json`](qt-acceptance-attestations.example.json) for the
 matrix row. Use exactly one of `windows-x64`, `windows-arm64`, `macos-apple-silicon`, `macos-intel`,
 `linux-x64-x11`, `linux-x64-wayland` or `linux-arm64-native`. Leave a check `false` until it was
-actually exercised. `hdr` and `vrr` accept `passed` or an evidence-backed `not-supported`; upstream
-microphone audio does not have a not-supported exception. Declare every required release artifact,
+actually exercised. `hdr` and `vrr` accept `passed` or an evidence-backed `not-supported`.
+`microphoneUpstream`, if present in an older attestation template, is compatibility metadata and is
+not a required NVST gate. Declare every required release artifact,
 its byte size and SHA-256, and set the signing/update booleans only after the platform commands below
 have succeeded.
 

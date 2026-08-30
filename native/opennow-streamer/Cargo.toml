@@ -28,7 +28,6 @@ crc32fast = "1"
 getrandom = "0.3"
 ghash = "0.5"
 hmac = "0.12"
-fontdue = "0.9.4"
 image = { version = "0.25", default-features = false, features = ["bmp", "ico", "png"] }
 openh264 = { version = "0.9.8", default-features = false, features = ["source"] }
 oxideav-core = "0.1.34"

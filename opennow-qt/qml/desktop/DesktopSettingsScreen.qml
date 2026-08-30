@@ -38,7 +38,7 @@ FocusScope {
         "Entitlements reported by your GeForce NOW account.",
         "Link a store once and its cloud-ready games show up in your library.",
         "Defaults for every session. Any game can override these from its details page.",
-        "Output and microphone behavior for every session.",
+        "Output and input behavior for every session.",
         "Pads, glyphs and what happens when one wakes up.",
         "Region, bitrate and proxy settings used by OpenNOW.",
         "How the desktop shell looks, starts and notifies you.",
@@ -619,7 +619,7 @@ FocusScope {
             width: contentFlick.width; spacing: 14
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 44; title: qsTr("Display"); description: qsTr("The native stream window opens on the current display"); value: qsTr("CURRENT DISPLAY") }
+                DesktopSettingsRow { width: parent.width; rowHeight: 44; title: qsTr("Display"); description: qsTr("The Qt stream surface uses the current display"); value: qsTr("CURRENT DISPLAY") }
                 DesktopSettingsRow { width: parent.width; rowHeight: 64; title: "Resolution"; description: "Exact stream size, grouped by aspect ratio"
                     DesktopSettingsButton { id: resolutionButton; menu: true; text: String(root.valueSetting("resolution", "1920x1080")).replace("x", "×"); compact: true; onClicked: root.openChoices(resolutionButton, "resolution", root.resolutionItems()) }
                 }
@@ -656,10 +656,7 @@ FocusScope {
             }
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
-                DesktopSettingsRow { width: parent.width; rowHeight: 62; title: qsTr("Microphone device"); description: qsTr("An empty device uses the operating system default"); value: String(root.valueSetting("microphoneDeviceId", "")) || qsTr("SYSTEM DEFAULT") }
-                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: qsTr("Microphone upstream"); description: qsTr("Voice activity is sent only while a supported stream is running"); showDivider: false
-                    DesktopSettingsToggle { checked: String(root.valueSetting("microphoneMode", "disabled")) === "voice-activity"; onValueChangedByUser: value => root.setSetting("microphoneMode", value ? "voice-activity" : "disabled") }
-                }
+                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: qsTr("Microphone upstream"); description: qsTr("Microphone upstream is unavailable for NVST sessions"); value: qsTr("UNAVAILABLE"); showDivider: false }
             }
             DesktopSettingsPanel {
                 width: parent.width; padding: 18

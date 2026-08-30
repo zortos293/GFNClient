@@ -1408,6 +1408,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn session_requests_keep_the_classic_nvst_client_identity() {
+        let headers = cloudmatch_headers("token", "device-id").unwrap();
+        assert_eq!(headers["nv-client-type"], "NATIVE");
+        assert_eq!(headers["nv-client-streamer"], "NVIDIA-CLASSIC");
+    }
+
+    #[test]
     fn builds_a_stable_official_session_shape() {
         let body = build_create_body(
             "12345",

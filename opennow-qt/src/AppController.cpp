@@ -503,6 +503,8 @@ const QStringList &AppController::overlays()
         u"desktop-stream-menu"_s,
         u"desktop-stream-stats"_s,
         u"desktop-stream-stats-expanded"_s,
+        u"stream-stats"_s,
+        u"stream-stats-expanded"_s,
         u"guide-session"_s,
         u"guide-controls"_s,
         u"guide-media"_s,

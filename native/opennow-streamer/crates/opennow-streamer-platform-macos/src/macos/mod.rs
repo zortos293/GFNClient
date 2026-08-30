@@ -6,7 +6,7 @@ mod video;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice};
@@ -14,8 +14,8 @@ use thiserror::Error;
 
 use crate::failure::{BackendFailure, FailureReporter, VideoDecodeLoss};
 use crate::format::{
-    AudioFormat, Av1Format, BackendConfig, FormatError, FrameTiming, GpuOverlayFrame, H264Format,
-    H264Framing, H265Format, RendererRect, ScreenRect, VideoFormat, access_unit_to_avcc,
+    AudioFormat, Av1Format, BackendConfig, FormatError, FrameTiming, H264Format, H264Framing,
+    H265Format, RendererRect, ScreenRect, VideoFormat, access_unit_to_avcc,
 };
 use crate::lifecycle::{BackendState, Lifecycle};
 use crate::queue::{BoundedQueue, PushResult};
@@ -26,15 +26,6 @@ use self::surface::SurfaceOwner;
 use self::video::{DecodedFrame, VideoDecoder};
 
 const MAX_OPUS_PACKET_BYTES: usize = 1_275;
-
-/// Shows a standalone overlay window through the exact production creation path.
-/// Debug-only aid for isolating window-server behavior without a streaming session.
-pub fn debug_show_overlay_window() {
-    let Some(main_thread) = MainThreadMarker::new() else {
-        return;
-    };
-    surface::debug_overlay_window(main_thread);
-}
 
 /// Drains pending AppKit events and window-server work on the main thread.
 ///
@@ -457,7 +448,6 @@ struct Shared {
     video: Mutex<Option<VideoDecoder>>,
     audio: Mutex<Option<AudioPipeline>>,
     presenter: Mutex<Option<PresenterHandle>>,
-    overlay: Arc<RwLock<Option<Arc<GpuOverlayFrame>>>>,
     video_frames_in_flight: usize,
     opus_packets: usize,
     pcm_milliseconds: u32,
@@ -510,14 +500,12 @@ impl MacOsBackend {
         let counters = Arc::new(Counters::default());
         let failures = Arc::new(FailureReporter::default());
         let video_queue = Arc::new(BoundedQueue::new(config.queues.decoded_video_frames));
-        let overlay = Arc::new(RwLock::new(None));
         let presenter = PresenterHandle::start(
             surface.metal_layer(),
             surface.presentation_visibility(),
             Arc::clone(&video_queue),
             Arc::clone(&counters),
             Arc::clone(&failures),
-            Arc::clone(&overlay),
         )?;
         let video = VideoDecoder::new(
             &config.video,
@@ -542,7 +530,6 @@ impl MacOsBackend {
             video: Mutex::new(Some(video)),
             audio: Mutex::new(Some(audio)),
             presenter: Mutex::new(Some(presenter)),
-            overlay,
             video_frames_in_flight: config.queues.video_frames_in_flight,
             opus_packets: config.queues.opus_packets,
             pcm_milliseconds: config.queues.pcm_milliseconds,
@@ -619,15 +606,6 @@ impl MacOsBackend {
 
     pub fn stats(&self) -> BackendStats {
         self.shared.counters.snapshot()
-    }
-
-    /// Replaces the optional diagnostic surface sampled by the Metal presentation shader.
-    pub fn set_gpu_overlay(&mut self, overlay: Option<GpuOverlayFrame>) {
-        *self
-            .shared
-            .overlay
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = overlay.map(Arc::new);
     }
 
     pub fn fatal_failure(&self) -> Option<BackendFailure> {

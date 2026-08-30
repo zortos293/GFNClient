@@ -1,8 +1,8 @@
 use opennow_streamer_platform_macos::{
-    AudioFormat, Av1Format, BackendConfig, BackendStats, BorrowedNsView, GpuOverlayFrame,
-    GpuOverlayPlacement, H264Format, H264Framing, H264ParameterSets, H265Format, H265ParameterSets,
-    MacOsBackend, OwnedOverlayConfig, QueueLimits, ScreenRect, StreamSink, SurfaceTarget,
-    VideoColorSpace, probe_av1_hardware, probe_h264_hardware, probe_h265_hardware,
+    AudioFormat, Av1Format, BackendConfig, BorrowedNsView, H264Format, H264Framing,
+    H264ParameterSets, H265Format, H265ParameterSets, MacOsBackend, OwnedOverlayConfig,
+    QueueLimits, ScreenRect, StreamSink, SurfaceTarget, VideoColorSpace, probe_av1_hardware,
+    probe_h264_hardware, probe_h265_hardware,
 };
 use opennow_streamer_protocol::{RenderSurface, RenderSurfaceRect};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -10,11 +10,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::media::{CapturedInput, MediaStreamConfig, StatsOverlayPosition};
-use crate::native_stats_overlay::{NativeStatsOverlay, OverlayMode};
+use crate::media::{CapturedInput, MediaStreamConfig};
 use crate::output::{
     OutputControl, SdlInputCapture, external_renderer_enabled, native_input_capture_enabled,
-    toggle_sdl_fullscreen,
 };
 
 const HIDDEN_SURFACE: ScreenRect = ScreenRect::new(0.0, 0.0, 2.0, 2.0);
@@ -122,9 +120,6 @@ impl MacOutput {
             queues: QueueLimits::default(),
         })
         .map_err(|error| format!("VideoToolbox backend initialization failed: {error}"))?;
-        if let Some(surface) = self.external_surface.as_ref() {
-            backend.set_gpu_overlay(surface.gpu_overlay());
-        }
         backend
             .set_paused(self.paused)
             .map_err(|error| format!("VideoToolbox pause state failed: {error}"))?;
@@ -154,9 +149,6 @@ impl MacOutput {
             queues: QueueLimits::default(),
         })
         .map_err(|error| format!("VideoToolbox HEVC backend initialization failed: {error}"))?;
-        if let Some(surface) = self.external_surface.as_ref() {
-            backend.set_gpu_overlay(surface.gpu_overlay());
-        }
         backend
             .set_paused(self.paused)
             .map_err(|error| format!("VideoToolbox pause state failed: {error}"))?;
@@ -183,9 +175,6 @@ impl MacOutput {
             queues: QueueLimits::default(),
         })
         .map_err(|error| format!("VideoToolbox AV1 backend initialization failed: {error}"))?;
-        if let Some(surface) = self.external_surface.as_ref() {
-            backend.set_gpu_overlay(surface.gpu_overlay());
-        }
         backend
             .set_paused(self.paused)
             .map_err(|error| format!("VideoToolbox pause state failed: {error}"))?;
@@ -200,6 +189,7 @@ impl MacOutput {
             surface
                 .input_capture
                 .set_input_paused(paused, &surface.sdl, &mut surface.window);
+            surface.set_visible(self.visible && !paused);
         }
         if let Some(backend) = self.backend.as_mut() {
             backend
@@ -227,6 +217,9 @@ impl MacOutput {
     pub(crate) fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
         if let Some(external) = self.external_surface.as_mut() {
             self.visible = surface.visible;
+            if surface.visible {
+                external.update_geometry(surface)?;
+            }
             external.set_visible(surface.visible && !self.paused);
             return Ok(());
         }
@@ -245,19 +238,8 @@ impl MacOutput {
     }
 
     pub(crate) fn pump(&mut self) -> Result<(), String> {
-        let backend_stats = self.backend.as_ref().map(MacOsBackend::stats);
-        let overlay_changed = self
-            .external_surface
-            .as_mut()
-            .is_some_and(|surface| surface.pump(backend_stats));
-        if overlay_changed {
-            let overlay = self
-                .external_surface
-                .as_ref()
-                .and_then(MacExternalSurface::gpu_overlay);
-            if let Some(backend) = self.backend.as_mut() {
-                backend.set_gpu_overlay(overlay);
-            }
+        if let Some(surface) = self.external_surface.as_mut() {
+            surface.pump();
         }
         if !self.failure_reported
             && let Some(failure) = self.backend.as_ref().and_then(MacOsBackend::fatal_failure)
@@ -301,14 +283,6 @@ impl MacOutput {
             return Err("Runtime controls require the external stream window".to_owned());
         };
         match control {
-            OutputControl::Stats => {
-                surface.debug_overlay.toggle();
-                if let Some(backend) = self.backend.as_mut() {
-                    backend.set_gpu_overlay(surface.gpu_overlay());
-                }
-                Ok(())
-            }
-            OutputControl::Fullscreen => toggle_sdl_fullscreen(&mut surface.window),
             OutputControl::PointerLock => {
                 surface
                     .input_capture
@@ -326,7 +300,6 @@ struct MacExternalSurface {
     window: sdl2::video::Window,
     sdl: sdl2::Sdl,
     stream_size: (u32, u32),
-    debug_overlay: NativeStatsOverlay,
     visible: bool,
 }
 
@@ -345,9 +318,6 @@ impl MacExternalSurface {
             .allow_highdpi()
             .hidden()
             .metal_view();
-        if stream.start_fullscreen {
-            window_builder.fullscreen_desktop();
-        }
         let window = window_builder
             .build()
             .map_err(|error| format!("external macOS stream window creation failed: {error}"))?;
@@ -369,7 +339,6 @@ impl MacExternalSurface {
             window,
             sdl,
             stream_size: (stream.width.max(1), stream.height.max(1)),
-            debug_overlay: NativeStatsOverlay::new(stream, "MACOS / VIDEOTOOLBOX / METAL"),
             visible: false,
         })
     }
@@ -407,9 +376,25 @@ impl MacExternalSurface {
         self.visible = visible;
     }
 
-    fn pump(&mut self, stats: Option<BackendStats>) -> bool {
+    fn update_geometry(&mut self, surface: &RenderSurface) -> Result<(), String> {
+        let bounds = surface
+            .screen_rect
+            .ok_or_else(|| "visible external macOS surface is missing screen bounds".to_owned())?;
+        let scale = surface.device_scale_factor.clamp(0.5, 8.0);
+        self.window.set_position(
+            sdl2::video::WindowPos::Positioned((bounds.x as f32 / scale).round() as i32),
+            sdl2::video::WindowPos::Positioned((bounds.y as f32 / scale).round() as i32),
+        );
+        self.window
+            .set_size(
+                ((bounds.width as f32 / scale).round() as u32).max(2),
+                ((bounds.height as f32 / scale).round() as u32).max(2),
+            )
+            .map_err(|error| format!("failed to resize external macOS surface: {error}"))
+    }
+
+    fn pump(&mut self) {
         let window_id = self.window.id();
-        let mut overlay_changed = false;
         for event in self.event_pump.poll_iter().collect::<Vec<_>>() {
             if matches!(event, sdl2::event::Event::Quit { .. })
                 || matches!(
@@ -433,42 +418,6 @@ impl MacExternalSurface {
                 );
             }
         }
-        if let Some(stats) = stats {
-            let dropped = stats
-                .video_backpressured
-                .saturating_add(stats.video_frames_dropped)
-                .saturating_add(stats.video_present_errors);
-            overlay_changed |= self.debug_overlay.update(
-                stats.video_presented,
-                dropped,
-                self.input_capture.relative_mouse_enabled(),
-                stats.video_submitted_bytes,
-            );
-        }
-        overlay_changed
-    }
-
-    fn gpu_overlay(&self) -> Option<GpuOverlayFrame> {
-        let frame = self.debug_overlay.frame()?;
-        if self.debug_overlay.mode() == OverlayMode::Hidden {
-            return None;
-        }
-        let placement = match self.debug_overlay.position() {
-            StatsOverlayPosition::TopLeft => GpuOverlayPlacement::TopLeft,
-            StatsOverlayPosition::TopRight => GpuOverlayPlacement::TopRight,
-            StatsOverlayPosition::BottomLeft => GpuOverlayPlacement::BottomLeft,
-            StatsOverlayPosition::BottomRight => GpuOverlayPlacement::BottomRight,
-        };
-        let mut rgba = Vec::with_capacity(frame.rgb.len() / 3 * 4);
-        for rgb in frame.rgb.chunks_exact(3) {
-            rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 245]);
-        }
-        Some(GpuOverlayFrame {
-            width: frame.width,
-            height: frame.height,
-            rgba: rgba.into(),
-            placement,
-        })
     }
 
     fn release_input(&mut self) {

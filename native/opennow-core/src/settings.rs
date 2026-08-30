@@ -5,6 +5,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+const NATIVE_TRANSPORT: &str = "nvst";
+
 pub struct SettingsStore {
     path: PathBuf,
     values: Map<String, Value>,
@@ -137,7 +139,10 @@ impl SettingsStore {
                 "auto",
             );
         }
-        normalize_choice(&mut self.values, "transportMode", &["nvst"], "nvst");
+        self.values.insert(
+            "transportMode".to_owned(),
+            Value::String(NATIVE_TRANSPORT.to_owned()),
+        );
         normalize_choice(
             &mut self.values,
             "codec",
@@ -798,6 +803,30 @@ mod tests {
         assert_eq!(persisted["sessionTimeRemainingDisplay"], json!("both"));
         assert_eq!(persisted["mouseAcceleration"], json!(100));
         assert_eq!(persisted["codec"], json!("h264"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn every_legacy_transport_selector_normalizes_and_persists_as_nvst() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-core-transport-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+
+        for legacy in [
+            json!("webrtc"),
+            json!("browser"),
+            json!("auto"),
+            json!(null),
+        ] {
+            assert_eq!(store.set("transportMode", legacy).unwrap(), json!("nvst"));
+        }
+
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(persisted["transportMode"], json!("nvst"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

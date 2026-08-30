@@ -24,8 +24,6 @@ const HOST_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaRuntimeControl {
-    Stats,
-    Fullscreen,
     PointerLock,
 }
 
@@ -372,8 +370,6 @@ impl MainThreadHost {
                 }
                 Ok(HostCommand::Control { control, reply }) => {
                     let output_control = match control {
-                        MediaRuntimeControl::Stats => OutputControl::Stats,
-                        MediaRuntimeControl::Fullscreen => OutputControl::Fullscreen,
                         MediaRuntimeControl::PointerLock => OutputControl::PointerLock,
                     };
                     let result = active
@@ -709,7 +705,7 @@ impl MainThreadHost {
                 }
             }
             // The host loop replaces `NSApplication.run()`; without draining AppKit's queue the
-            // overlay window never finishes ordering in and its controls stay dead.
+            // stream window never finishes ordering in and its controls stay dead.
             #[cfg(target_os = "macos")]
             opennow_streamer_platform_macos::pump_app_events();
         }

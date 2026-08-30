@@ -311,58 +311,9 @@ impl Default for StreamShortcutBindings {
     }
 }
 
-const STREAM_REGION_CAPACITY: usize = 64;
-
-/// Small copyable label carried with the negotiated media configuration.
-/// Keeping this inline avoids adding allocation or ownership churn to the hot
-/// frame-delivery paths which copy `MediaStreamConfig`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamRegionLabel {
-    bytes: [u8; STREAM_REGION_CAPACITY],
-    len: u8,
-}
-
-impl StreamRegionLabel {
-    pub fn new(value: &str) -> Self {
-        let mut bytes = [0_u8; STREAM_REGION_CAPACITY];
-        let mut len = 0_usize;
-        for character in value
-            .trim()
-            .chars()
-            .filter(|character| !character.is_control())
-        {
-            let mut encoded = [0_u8; 4];
-            let encoded = character.encode_utf8(&mut encoded).as_bytes();
-            if len + encoded.len() > STREAM_REGION_CAPACITY {
-                break;
-            }
-            bytes[len..len + encoded.len()].copy_from_slice(encoded);
-            len += encoded.len();
-        }
-        if len == 0 {
-            return Self::default();
-        }
-        Self {
-            bytes,
-            len: len as u8,
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("GFN")
-    }
-}
-
-impl Default for StreamRegionLabel {
-    fn default() -> Self {
-        let mut bytes = [0_u8; STREAM_REGION_CAPACITY];
-        bytes[..3].copy_from_slice(b"GFN");
-        Self { bytes, len: 3 }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum MediaColorQuality {
+    #[default]
     EightBit420,
     EightBit444,
     TenBit420,
@@ -382,12 +333,6 @@ impl MediaColorQuality {
     }
 }
 
-impl Default for MediaColorQuality {
-    fn default() -> Self {
-        Self::EightBit420
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaStreamConfig {
     pub codec: MediaVideoCodec,
@@ -397,25 +342,9 @@ pub struct MediaStreamConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate_bps: u32,
-    /// Human-readable location of the server selected for this session.
-    pub server_region: StreamRegionLabel,
     /// CloudMatch accepted Cloud G-SYNC and the host presentation path is VRR-capable.
     pub cloud_gsync: bool,
-    /// Start the local performance overlay in its compact mode.
-    pub show_stats: bool,
-    pub stats_position: StatsOverlayPosition,
-    /// Open the shell-neutral stream window in compositor-managed fullscreen.
-    pub start_fullscreen: bool,
     pub shortcuts: StreamShortcutBindings,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum StatsOverlayPosition {
-    TopLeft,
-    #[default]
-    TopRight,
-    BottomLeft,
-    BottomRight,
 }
 
 impl Default for MediaStreamConfig {
@@ -427,11 +356,7 @@ impl Default for MediaStreamConfig {
             height: 1080,
             fps: 60,
             bitrate_bps: 75_000_000,
-            server_region: StreamRegionLabel::default(),
             cloud_gsync: false,
-            show_stats: false,
-            stats_position: StatsOverlayPosition::default(),
-            start_fullscreen: false,
             shortcuts: StreamShortcutBindings::default(),
         }
     }
@@ -677,10 +602,6 @@ impl MediaSink {
     }
 
     fn push_video(&self, frame: EncodedFrame) -> PushOutcome {
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        self.shared
-            .output
-            .record_received_video_bytes(frame.data.len());
         if !frame.keyframe && self.shared.video_desynced.load(Ordering::Acquire) {
             self.mark_video_desynced(&frame.mid, "waiting for a decodable H.264 keyframe");
         } else if !frame.contiguous {
@@ -2477,15 +2398,6 @@ fn mark_macos_video_desynced(shared: &SharedPipeline, mid: &str, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stream_region_label_is_copyable_utf8_and_never_empty() {
-        let label = StreamRegionLabel::new("  Montréal (YUL-01)  ");
-        let copied = label;
-        assert_eq!(copied.as_str(), "Montréal (YUL-01)");
-        assert_eq!(StreamRegionLabel::new("\n\t").as_str(), "GFN");
-        assert!(StreamRegionLabel::new(&"x".repeat(100)).as_str().len() <= 64);
-    }
 
     #[test]
     fn shortcut_chords_parse_supported_keys_and_reject_ambiguous_input() {

@@ -65,23 +65,6 @@ enum Attachment {
     },
 }
 
-/// Creates the overlay window exactly as `SurfaceOwner::attach` does for `OwnedOverlay`,
-/// for isolating window-server behavior without a streaming session.
-pub(super) fn debug_overlay_window(main_thread: MainThreadMarker) {
-    let rect = ScreenRect::new(200.0, 167.0, 1400.0, 868.0);
-    let surface = SurfaceOwner::attach(
-        SurfaceTarget::OwnedOverlay(crate::format::OwnedOverlayConfig::new(rect, true)),
-        main_thread,
-    )
-    .expect("production overlay surface");
-    if let Some(window) = &surface.window {
-        window.orderFrontRegardless();
-    }
-    surface.visible.store(true, Ordering::Release);
-    eprintln!("NVST debug-overlay-window created");
-    std::mem::forget(surface);
-}
-
 pub(super) struct SurfaceOwner {
     window: Option<Retained<NSWindow>>,
     view: Retained<NSView>,

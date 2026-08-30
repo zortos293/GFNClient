@@ -347,7 +347,6 @@ impl FfmpegDecoder {
             ],
             dmabuf: None,
             vulkan: None,
-            overlay: None,
             timestamp_us,
         })
     }
@@ -474,7 +473,6 @@ fn map_vulkan_frame_direct(
         planes: Vec::new(),
         dmabuf: None,
         vulkan: Some(Arc::new(device)),
-        overlay: None,
         timestamp_us,
     };
     output.validate()?;
@@ -580,7 +578,6 @@ fn map_vulkan_frame_to_dmabuf(
         planes: Vec::new(),
         dmabuf: Some(dmabuf),
         vulkan: None,
-        overlay: None,
         timestamp_us,
     };
     frame.validate()?;

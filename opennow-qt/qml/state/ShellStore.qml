@@ -1207,6 +1207,12 @@ QtObject {
         streamerStatusTimer.stop()
         if (!ready || streamerStopRequestId !== "")
             return
+        // A runtime that never started, or that already reported "stopped", has
+        // nothing left to reap. Without this an Escape held down during a failing
+        // session issues one streamer.stop per key repeat.
+        const status = streamer ? String(streamer.status || "") : ""
+        if (status === "" || status === "stopped")
+            return
         streamerStopExpected = true
         streamerStopRequestId = CoreClient.request("streamer.stop", {
             reason: reason || "User stopped the session"

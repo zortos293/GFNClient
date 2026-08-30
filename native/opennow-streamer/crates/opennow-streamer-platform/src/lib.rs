@@ -8,7 +8,7 @@ mod linux_xinput;
 mod macos_backend;
 mod media;
 mod microphone;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod native_stats_overlay;
 mod native_surface;
 mod output;

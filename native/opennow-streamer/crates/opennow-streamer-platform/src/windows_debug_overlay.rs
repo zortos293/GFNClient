@@ -90,11 +90,14 @@ impl NativeDebugOverlay {
         presented_frames: u64,
         dropped_frames: u64,
         relative_mouse: bool,
+        received_video_bytes: u64,
     ) {
-        if self
-            .stats
-            .update(presented_frames, dropped_frames, relative_mouse)
-            && self.stats.mode() != OverlayMode::Hidden
+        if self.stats.update(
+            presented_frames,
+            dropped_frames,
+            relative_mouse,
+            received_video_bytes,
+        ) && self.stats.mode() != OverlayMode::Hidden
         {
             self.refresh_position();
             self.draw();

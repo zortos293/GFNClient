@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor as IoCursor;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::AtomicBool;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::atomic::AtomicU64;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::sync::atomic::Ordering;
@@ -72,7 +72,7 @@ pub(crate) struct OutputBuffers {
     hardware_video_drops: AtomicU64,
     #[cfg(target_os = "linux")]
     display_video_skips: AtomicU64,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     received_video_bytes: AtomicU64,
     audio: Mutex<VecDeque<f32>>,
     audio_capacity: usize,
@@ -167,7 +167,7 @@ impl OutputBuffers {
             hardware_video_drops: AtomicU64::new(0),
             #[cfg(target_os = "linux")]
             display_video_skips: AtomicU64::new(0),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             received_video_bytes: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::with_capacity(
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
@@ -289,13 +289,13 @@ impl OutputBuffers {
         self.display_video_skips.load(Ordering::Relaxed)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub(crate) fn record_received_video_bytes(&self, bytes: usize) {
         self.received_video_bytes
             .fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn received_video_bytes(&self) -> u64 {
         self.received_video_bytes.load(Ordering::Relaxed)
     }
@@ -2721,7 +2721,7 @@ impl WindowsExternalSdlSurface {
         Ok(())
     }
 
-    fn pump(&mut self, presented_frames: u64, dropped_frames: u64) {
+    fn pump(&mut self, presented_frames: u64, dropped_frames: u64, received_video_bytes: u64) {
         let stream_window_id = self.window.id();
         for event in self.event_pump.poll_iter().collect::<Vec<_>>() {
             if matches!(event, sdl2::event::Event::Quit { .. }) {
@@ -2786,6 +2786,7 @@ impl WindowsExternalSdlSurface {
             presented_frames,
             dropped_frames,
             self.input_capture.relative_mouse_enabled(),
+            received_video_bytes,
         );
     }
 
@@ -2932,7 +2933,11 @@ impl WindowsOutput {
 
     fn pump(&mut self) -> Result<OutputEvent, String> {
         if let Some(surface) = self.external_surface.as_mut() {
-            surface.pump(self.backend.presented_frames(), self.dropped_video_frames);
+            surface.pump(
+                self.backend.presented_frames(),
+                self.dropped_video_frames,
+                self.output.received_video_bytes(),
+            );
         }
         let Some(event) = self.backend.try_event() else {
             return Ok(OutputEvent::None);
@@ -3187,7 +3192,7 @@ mod tests {
             hardware_video_drops: AtomicU64::new(0),
             #[cfg(target_os = "linux")]
             display_video_skips: AtomicU64::new(0),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             received_video_bytes: AtomicU64::new(0),
             audio: Mutex::new(VecDeque::new()),
             audio_capacity: 4,

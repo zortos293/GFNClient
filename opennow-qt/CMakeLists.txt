@@ -121,6 +121,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/DesktopInStreamMenu.qml
         qml/desktop/DesktopSessionStarting.qml
         qml/desktop/DesktopStreamOverlayHost.qml
+        qml/desktop/DesktopStreamScreen.qml
         qml/desktop/DesktopStreamStats.qml
         qml/desktop/DesktopStoreCard.qml
         qml/desktop/DesktopStoreChip.qml
@@ -332,15 +333,20 @@ if(OPENNOW_RUST_TARGET)
     set(OPENNOW_STREAMER_ARTIFACT_ROOT
         "${OPENNOW_STREAMER_TARGET_DIR}/${OPENNOW_RUST_TARGET}")
 endif()
+# The streamer is an optimized subprocess that decodes and presents video in
+# real time; a debug-profile build of it is too slow to stream with and has no
+# debugging value for Qt or QML work. Build it as release regardless of the Qt
+# configuration so what runs locally is what ships.
+set(OPENNOW_STREAMER_PROFILE "release")
 set(OPENNOW_STREAMER_CARGO_FEATURE_ARGS)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Distributable Linux builds carry FFmpeg's H.264/HEVC/AV1 software
-    # fallback and dynamically load optional GPU driver interfaces. Keeping
-    # this on the Release expression avoids the long vendor build in ordinary
-    # debug/QML iteration while preventing a release from silently omitting it.
+    # fallback and dynamically load optional GPU driver interfaces. Every Qt
+    # configuration now shares one cargo profile directory, so this feature has
+    # to stay unconditional: gating it on Release would make each Debug/Release
+    # switch rebuild the vendored FFmpeg instead of paying for it once.
     list(APPEND OPENNOW_STREAMER_CARGO_FEATURE_ARGS
-        "$<$<CONFIG:Release>:--features>"
-        "$<$<CONFIG:Release>:linux-ffmpeg-bundled>")
+        --features linux-ffmpeg-bundled)
 endif()
 option(OPENNOW_BUILD_STREAMER "Build and bundle the native media streamer" ON)
 if(OPENNOW_BUILD_STREAMER)
@@ -351,9 +357,9 @@ if(OPENNOW_BUILD_STREAMER)
                 --target-dir "${OPENNOW_STREAMER_TARGET_DIR}"
                 ${OPENNOW_RUST_TARGET_ARGS}
                 ${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}
-                $<$<CONFIG:Release>:--release>
+                --release
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "${OPENNOW_STREAMER_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-streamer${OPENNOW_CORE_SUFFIX}"
+                "${OPENNOW_STREAMER_ARTIFACT_ROOT}/${OPENNOW_STREAMER_PROFILE}/opennow-streamer${OPENNOW_CORE_SUFFIX}"
                 "$<TARGET_FILE_DIR:opennow-qt>/opennow-streamer${OPENNOW_CORE_SUFFIX}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer"
         COMMENT "Building and bundling the OpenNOW native media streamer"

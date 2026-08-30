@@ -420,6 +420,9 @@ fn enumerate_decoders(
     codec: VideoCodec,
     mode: WindowsDecoderMode,
 ) -> Result<Vec<IMFActivate>, String> {
+    let registered = MFT_ENUM_FLAG(
+        MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_ASYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+    );
     unsafe {
         match mode {
             WindowsDecoderMode::Hardware => {
@@ -434,21 +437,21 @@ fn enumerate_decoders(
                 attributes
                     .SetBlob(&MFT_ENUM_ADAPTER_LUID, luid_bytes)
                     .map_err(|error| error.to_string())?;
-                enumerate_matching_decoders(
+                let mut activations = enumerate_matching_decoders(
                     MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
                     Some(&attributes),
                     codec,
-                )
+                )?;
+                // NVIDIA and AMD drive decode through DXVA2 instead of registering
+                // a hardware-flagged MFT, so on those adapters the enumeration above
+                // is empty and the D3D11-aware Microsoft MFT is the GPU path. Keep it
+                // as a fallback rather than reporting no hardware decode at all;
+                // configure_transform still rejects any MFT that cannot accept our
+                // D3D manager, so a genuinely software-only MFT never gets through.
+                activations.extend(enumerate_matching_decoders(registered, None, codec)?);
+                Ok(activations)
             }
-            WindowsDecoderMode::Software => enumerate_matching_decoders(
-                MFT_ENUM_FLAG(
-                    MFT_ENUM_FLAG_SYNCMFT.0
-                        | MFT_ENUM_FLAG_ASYNCMFT.0
-                        | MFT_ENUM_FLAG_SORTANDFILTER.0,
-                ),
-                None,
-                codec,
-            ),
+            WindowsDecoderMode::Software => enumerate_matching_decoders(registered, None, codec),
         }
     }
 }

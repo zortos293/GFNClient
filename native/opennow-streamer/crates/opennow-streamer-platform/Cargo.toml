@@ -27,6 +27,11 @@ serde_json.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 opennow-streamer-platform-windows = { path = "../opennow-streamer-platform-windows" }
 raw-window-handle = "0.6"
+# sdl2-sys ships a single checked-in sdl_bindings.rs generated on Linux and
+# copies it for every target unless use-bindgen is on. Its X11 layout assertions
+# underflow against Windows LLP64, so Windows must generate bindings from the
+# bundled SDL2 headers instead. Requires libclang on Windows build machines.
+sdl2 = { workspace = true, features = ["use-bindgen"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

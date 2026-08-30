@@ -101,6 +101,27 @@ FocusScope {
             ? String(game.availableStores[0]).toUpperCase() : "GEFORCE NOW"
     }
 
+    // Focus is restored once the tile layout has settled. A Timer is used instead
+    // of Qt.callLater so a pending restore dies with the screen when the shell
+    // swaps surfaces, rather than calling into a half-destroyed object.
+    Timer {
+        id: deferredFocus
+        interval: 0
+        repeat: false
+        property var indexResolver: null
+        function schedule(resolver) {
+            indexResolver = resolver || null
+            restart()
+        }
+        onTriggered: {
+            const resolver = indexResolver
+            indexResolver = null
+            if (resolver)
+                root.currentIndex = resolver()
+            root.focusCurrent()
+        }
+    }
+
     function focusCurrent() {
         if (!gameRepeater.count)
             return
@@ -157,7 +178,7 @@ FocusScope {
             return
         currentIndex = next
         ShellStore.rememberFocus("home", next)
-        Qt.callLater(root.focusCurrent)
+        deferredFocus.schedule(null)
     }
 
     function reorderPreview(direction) {
@@ -174,10 +195,7 @@ FocusScope {
         updated.splice(sourceIndex, 1)
         updated.splice(targetIndex, 0, sourceId)
         movePreviewIds = updated
-        Qt.callLater(() => {
-            root.currentIndex = root.indexForGameId(sourceId)
-            root.focusCurrent()
-        })
+        deferredFocus.schedule(() => root.indexForGameId(sourceId))
     }
 
     function openEditMenu(game, index) {
@@ -195,25 +213,19 @@ FocusScope {
         moveMode = true
         editMenuOpen = false
         currentIndex = indexForGameId(editingGameId)
-        Qt.callLater(root.focusCurrent)
+        deferredFocus.schedule(null)
         Accessible.announce(qsTr("Move mode. Use the D-pad, press A to place, or B to cancel."))
     }
 
     function commitMove() {
         ShellStore.setHomeOrder(movePreviewIds)
         moveMode = false
-        Qt.callLater(() => {
-            root.currentIndex = root.indexForGameId(editingGameId)
-            root.focusCurrent()
-        })
+        deferredFocus.schedule(() => root.indexForGameId(root.editingGameId))
     }
 
     function cancelMove() {
         moveMode = false
-        Qt.callLater(() => {
-            root.currentIndex = root.indexForGameId(editingGameId)
-            root.focusCurrent()
-        })
+        deferredFocus.schedule(() => root.indexForGameId(root.editingGameId))
         Accessible.announce(qsTr("Home move cancelled"))
     }
 
@@ -370,19 +382,17 @@ FocusScope {
         onRemoveRequested: {
             root.editMenuOpen = false
             ShellStore.removeFromHome(root.editingGame)
-            Qt.callLater(root.focusCurrent)
+            deferredFocus.schedule(null)
         }
         onCloseRequested: {
             root.editMenuOpen = false
-            Qt.callLater(root.focusCurrent)
+            deferredFocus.schedule(null)
         }
     }
 
-    onLayoutItemsChanged: Qt.callLater(root.focusCurrent)
-    Component.onCompleted: Qt.callLater(() => {
-        root.currentIndex = Math.min(ShellStore.focusIndex("home"), Math.max(0, root.layoutItems.length - 1))
-        root.focusCurrent()
-    })
+    onLayoutItemsChanged: deferredFocus.schedule(null)
+    Component.onCompleted: deferredFocus.schedule(
+        () => Math.min(ShellStore.focusIndex("home"), Math.max(0, root.layoutItems.length - 1)))
 
     AppChrome {
         anchors.fill: parent

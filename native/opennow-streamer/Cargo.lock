@@ -210,6 +210,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -2122,7 +2124,7 @@ checksum = "8028ded836a0d9fabdfa4d713389b76a2098b5153f50a135c8faed7e3a3d5ae2"
 [[package]]
 name = "sdl2"
 version = "0.38.0"
-source = "git+https://github.com/Rust-SDL2/rust-sdl2.git?rev=adeb978d921a1440da07fddd6651da9f567ed21b#adeb978d921a1440da07fddd6651da9f567ed21b"
+source = "git+https://github.com/zortos293/rust-sdl2.git?rev=8c812c4a0087eaf664a11a844634200cebe9afb8#8c812c4a0087eaf664a11a844634200cebe9afb8"
 dependencies = [
  "bitflags 2.13.1",
  "lazy_static",
@@ -2134,8 +2136,9 @@ dependencies = [
 [[package]]
 name = "sdl2-sys"
 version = "0.38.0"
-source = "git+https://github.com/Rust-SDL2/rust-sdl2.git?rev=adeb978d921a1440da07fddd6651da9f567ed21b#adeb978d921a1440da07fddd6651da9f567ed21b"
+source = "git+https://github.com/zortos293/rust-sdl2.git?rev=8c812c4a0087eaf664a11a844634200cebe9afb8#8c812c4a0087eaf664a11a844634200cebe9afb8"
 dependencies = [
+ "bindgen 0.72.1",
  "cfg-if",
  "cmake",
  "libc",

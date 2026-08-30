@@ -163,6 +163,8 @@ FocusScope {
     }
 
     Keys.onPressed: event => {
+        if (event.isAutoRepeat)
+            return
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
             event.accepted = true
             ShellStore.stopStreamingSession()

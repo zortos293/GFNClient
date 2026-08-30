@@ -39,6 +39,9 @@ FocusScope {
     readonly property string rigName: String(session.rigName || session.gpuName || "").toUpperCase()
     readonly property string sessionArtwork: DesktopTokens.decodeArtworkUrl(
         String(root.game.heroImageUrl || root.game.imageUrl || ""))
+    // The launch card is centred, so the corner footers only fit once the window
+    // leaves them clear room below it.
+    readonly property bool footerVisible: root.height - launchContent.y - launchContent.height > 104
 
     ArtworkSource {
         id: sessionArtworkSource
@@ -99,8 +102,10 @@ FocusScope {
     }
 
     Row {
-        x: 32
-        y: 28
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.leftMargin: 32
+        anchors.topMargin: 28
         spacing: 10
         Image {
             anchors.verticalCenter: parent.verticalCenter
@@ -123,8 +128,8 @@ FocusScope {
     Column {
         id: launchContent
         x: Math.round((root.width - width) / 2)
-        y: 204
-        width: 620
+        y: Math.max(76, Math.round((root.height - height) / 2))
+        width: Math.min(620, root.width - 64)
         spacing: 0
         opacity: 1
         transform: Translate { id: revealTranslate; y: 0 }
@@ -331,10 +336,13 @@ FocusScope {
     }
 
     Item {
-        x: 32
-        y: 804
-        width: 340
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: 32
+        anchors.bottomMargin: 32
+        width: Math.min(340, Math.round(root.width / 3))
         height: 64
+        visible: root.footerVisible
         Text {
             text: qsTr("WHILE YOU WAIT")
             color: DesktopTokens.textFaint
@@ -356,9 +364,11 @@ FocusScope {
 
     Column {
         anchors.right: parent.right
+        anchors.bottom: parent.bottom
         anchors.rightMargin: 32
-        y: 812
+        anchors.bottomMargin: 32
         spacing: 5
+        visible: root.footerVisible
         Text {
             anchors.right: parent.right
             text: root.session.sessionId
@@ -390,6 +400,8 @@ FocusScope {
     }
 
     Keys.onPressed: event => {
+        if (event.isAutoRepeat)
+            return
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
             root.cancelRequested()
             event.accepted = true

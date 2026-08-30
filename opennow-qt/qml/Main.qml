@@ -33,12 +33,16 @@ ApplicationWindow {
             || (consoleHeldByPad && switchToConsoleOnPad)))
     readonly property bool desktopRequested: LaunchModeOverride === "desktop"
         || (LaunchModeOverride !== "console" && !consolePreferred)
-    readonly property bool desktopEligibleRoute: ["joining", "stream",
+    readonly property bool desktopEligibleRoute: ["joining",
         "accounts", "profile-pin", "game-accounts", "persistent-storage", "media",
         "diagnostics", "updates", "feedback", "theme-store"].indexOf(activeRoute) < 0
     readonly property bool targetDesktopSurface: desktopRequested && desktopEligibleRoute
-    readonly property bool desktopStreamOverlayActive: desktopRequested && activeRoute === "stream"
+    readonly property bool desktopStreamOverlayActive: desktopSurfaceActive && activeRoute === "stream"
         && AppController.overlay.startsWith("desktop-stream-")
+    // The desktop shell owns only its own stream overlays, so anything else keeps
+    // rendering through the console overlay host instead of leaving a blank window.
+    readonly property bool consoleOverlayFallbackActive: desktopSurfaceActive
+        && AppController.overlay !== "" && !AppController.overlay.startsWith("desktop-stream-")
     readonly property bool desktopStatsOverlayActive: AppController.overlay === "desktop-stream-stats"
         || AppController.overlay === "desktop-stream-stats-expanded"
     property bool desktopSurfaceActive: targetDesktopSurface
@@ -274,7 +278,7 @@ ApplicationWindow {
                 window.syncStreamWindowVisibility()
             }
             function onOverlayChanged() {
-                if (window.desktopRequested && window.activeRoute === "stream"
+                if (window.desktopSurfaceActive && window.activeRoute === "stream"
                         && AppController.overlay === "guide-session") {
                     Qt.callLater(() => AppController.showOverlay("desktop-stream-menu"))
                     return
@@ -325,9 +329,9 @@ ApplicationWindow {
                     ? AppController.cycleGuidePage(1)
                     : AppController.cyclePrimaryRoute(1)
             } else if (event.key === Qt.Key_F1) {
-                event.accepted = AppController.showOverlay(window.desktopRequested
+                event.accepted = AppController.showOverlay(window.desktopSurfaceActive
                     && window.activeRoute === "stream" ? "desktop-stream-menu" : "guide-session")
-            } else if (event.key === Qt.Key_F3 && window.desktopRequested
+            } else if (event.key === Qt.Key_F3 && window.desktopSurfaceActive
                        && window.activeRoute === "stream") {
                 event.accepted = AppController.showOverlay("desktop-stream-stats")
             } else if (event.key === Qt.Key_Menu) {
@@ -342,25 +346,20 @@ ApplicationWindow {
     }
 
     OverlayHost {
-        x: Math.round((window.width - width * scale) / 2)
-        y: Math.round((window.height - height * scale) / 2)
+        readonly property real consoleScale: Math.min(window.width / 1920, window.height / 1080)
+        x: Math.round((window.width - width * consoleScale) / 2)
+        y: Math.round((window.height - height * consoleScale) / 2)
         width: 1920
         height: 1080
-        scale: window.designScale
+        scale: consoleScale
         transformOrigin: Item.TopLeft
         overlay: AppController.overlay
-        visible: !window.desktopSurfaceActive && !window.desktopStreamOverlayActive
+        visible: !window.desktopSurfaceActive || window.consoleOverlayFallbackActive
         z: 1000
     }
 
     DesktopStreamOverlayHost {
-        readonly property real overlayScale: Math.min(window.width / 1440, window.height / 900)
-        x: Math.round((window.width - width * overlayScale) / 2)
-        y: Math.round((window.height - height * overlayScale) / 2)
-        width: 1440
-        height: 900
-        scale: overlayScale
-        transformOrigin: Item.TopLeft
+        anchors.fill: parent
         overlay: AppController.overlay
         visible: window.desktopStreamOverlayActive
         focus: visible

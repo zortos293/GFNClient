@@ -14,6 +14,8 @@ FocusScope {
     readonly property string route: AppController.route
     readonly property bool signInVisible: !ShellStore.authRestorePending && (!ShellStore.signedIn || route === "sign-in")
     readonly property bool sessionStartingVisible: !signInVisible && route === "inserting"
+    readonly property bool streamVisible: !signInVisible && route === "stream"
+    readonly property bool shellVisible: !signInVisible && !sessionStartingVisible && !streamVisible
 
     function titleForRoute(value) {
         if (value === "library" || value === "game-detail") return qsTr("Library")
@@ -71,7 +73,7 @@ FocusScope {
     DesktopShell {
         id: shell
         anchors.fill: parent
-        visible: !root.signInVisible && !root.sessionStartingVisible
+        visible: root.shellVisible
         route: root.route
         title: root.titleForRoute(root.route)
         subtitle: root.subtitleForRoute(root.route)
@@ -103,15 +105,25 @@ FocusScope {
         onCancelRequested: ShellStore.stopStreamingSession()
     }
 
+    DesktopStreamScreen {
+        anchors.fill: parent
+        visible: root.streamVisible
+        focus: visible
+        z: 85
+        onStopRequested: ShellStore.stopStreamingSession()
+        onRetryRequested: ShellStore.retryNativeStreamer()
+        onMenuRequested: AppController.showOverlay("desktop-stream-menu")
+    }
+
     DesktopGameModal {
         anchors.fill: parent
-        visible: !root.signInVisible && !root.sessionStartingVisible && root.route === "game-detail"
+        visible: root.shellVisible && root.route === "game-detail"
         z: 100
         onCloseRequested: AppController.goBack()
         onPlayRequested: ShellStore.launchSelectedGame(false)
     }
     DesktopCommandPalette {
-        visible: root.commandOpen && !root.signInVisible && !root.sessionStartingVisible
+        visible: root.commandOpen && root.shellVisible
         z: 120
         onCloseRequested: root.commandOpen = false
         onRouteRequested: route => AppController.navigate(route)

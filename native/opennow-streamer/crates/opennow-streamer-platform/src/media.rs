@@ -587,7 +587,7 @@ impl MediaSink {
     }
 
     fn push_video(&self, frame: EncodedFrame) -> PushOutcome {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         self.shared
             .output
             .record_received_video_bytes(frame.data.len());

@@ -1,19 +1,26 @@
 use rand::RngCore;
 use serde_json::{Value, json};
 use std::io::{self, Read, Write};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 const CLIENT_ID: &str = "1479944467112001669";
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
+const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct DiscordService {
-    last_signature: Mutex<Option<String>>,
+    last_signature: Arc<Mutex<Option<String>>>,
+    exchange_running: Arc<AtomicBool>,
 }
 
 impl DiscordService {
     pub fn new() -> Self {
         Self {
-            last_signature: Mutex::new(None),
+            last_signature: Arc::new(Mutex::new(None)),
+            exchange_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -32,25 +39,79 @@ impl DiscordService {
         {
             return Ok(json!({"connected":true,"unchanged":true}));
         }
-        let mut stream = match connect() {
-            Ok(stream) => stream,
-            Err(_) => return Ok(json!({"connected":false,"message":"Discord is not running"})),
-        };
-        handshake(&mut stream)?;
-        command(&mut stream, Some(activity))?;
-        *self.last_signature.lock().expect("discord state poisoned") = Some(signature);
-        Ok(json!({"connected":true,"unchanged":false}))
+        self.exchange(Some(activity), Some(signature))
     }
 
     pub fn clear(&self) -> Result<Value, String> {
         *self.last_signature.lock().expect("discord state poisoned") = None;
-        let Ok(mut stream) = connect() else {
-            return Ok(json!({"connected":false,"cleared":true}));
-        };
-        handshake(&mut stream)?;
-        command(&mut stream, None)?;
-        Ok(json!({"connected":true,"cleared":true}))
+        self.exchange(None, None)
     }
+
+    /// Runs the connect/handshake/SET_ACTIVITY round trip off the caller's
+    /// thread and gives up on it after `EXCHANGE_TIMEOUT`.
+    ///
+    /// A Windows named pipe opened as a file has no read deadline, so a Discord
+    /// client that accepts the connection and then stalls would otherwise block
+    /// the caller indefinitely — session teardown has been observed waiting 30
+    /// seconds on this. Presence is cosmetic, so an exchange that overruns is
+    /// abandoned and left to drain in the background. Only one runs at a time,
+    /// so a wedged Discord costs one parked thread rather than one per update.
+    fn exchange(&self, activity: Option<Value>, signature: Option<String>) -> Result<Value, String> {
+        if self.exchange_running.swap(true, Ordering::SeqCst) {
+            return Ok(json!({"connected":false,"busy":true}));
+        }
+        let guard = RunningGuard(Arc::clone(&self.exchange_running));
+        let last_signature = Arc::clone(&self.last_signature);
+        let (sender, receiver) = mpsc::channel();
+        let spawned = thread::Builder::new()
+            .name("opennow-discord".to_owned())
+            .spawn(move || {
+                let _guard = guard;
+                let _ = sender.send(run_exchange(activity, signature, &last_signature));
+            });
+        if let Err(error) = spawned {
+            self.exchange_running.store(false, Ordering::SeqCst);
+            return Err(error.to_string());
+        }
+        match receiver.recv_timeout(EXCHANGE_TIMEOUT) {
+            Ok(result) => result,
+            Err(_) => Ok(json!({"connected":false,"timedOut":true})),
+        }
+    }
+}
+
+/// Clears the in-flight marker even if the worker panics mid-exchange.
+struct RunningGuard(Arc<AtomicBool>);
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn run_exchange(
+    activity: Option<Value>,
+    signature: Option<String>,
+    last_signature: &Mutex<Option<String>>,
+) -> Result<Value, String> {
+    let clearing = activity.is_none();
+    let Ok(mut stream) = connect() else {
+        return Ok(if clearing {
+            json!({"connected":false,"cleared":true})
+        } else {
+            json!({"connected":false,"message":"Discord is not running"})
+        });
+    };
+    handshake(&mut stream)?;
+    command(&mut stream, activity)?;
+    if let Some(signature) = signature {
+        *last_signature.lock().expect("discord state poisoned") = Some(signature);
+    }
+    Ok(if clearing {
+        json!({"connected":true,"cleared":true})
+    } else {
+        json!({"connected":true,"unchanged":false})
+    })
 }
 
 fn activity_payload(params: &Value) -> Result<Value, String> {
@@ -228,6 +289,20 @@ mod tests {
         assert_eq!(payload["state"], "In queue (#14)");
         assert!(payload.get("assets").is_none());
         assert!(activity_payload(&json!({"gameName":"X","kind":"unknown"})).is_err());
+    }
+
+    #[test]
+    fn an_exchange_is_refused_while_another_is_in_flight() {
+        let service = DiscordService::new();
+        service.exchange_running.store(true, Ordering::SeqCst);
+        assert_eq!(service.clear().unwrap()["busy"], true);
+    }
+
+    #[test]
+    fn a_panicking_exchange_still_releases_the_in_flight_marker() {
+        let marker = Arc::new(AtomicBool::new(true));
+        drop(RunningGuard(Arc::clone(&marker)));
+        assert!(!marker.load(Ordering::SeqCst));
     }
 
     #[test]

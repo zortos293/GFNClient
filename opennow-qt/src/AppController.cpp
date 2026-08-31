@@ -202,6 +202,17 @@ QString AppController::readClipboardText() const
     return text;
 }
 
+bool AppController::writeClipboardText(const QString &value) const
+{
+    auto *clipboard = QGuiApplication::clipboard();
+    if (!clipboard) return false;
+    auto text = value.left(65'536);
+    text.remove(QChar::Null);
+    if (text.isEmpty()) return false;
+    clipboard->setText(text, QClipboard::Clipboard);
+    return clipboard->text(QClipboard::Clipboard) == text;
+}
+
 QString AppController::normalizeNativeStreamerExecutable(const QString &urlOrPath) const
 {
     const QUrl candidate(urlOrPath);
@@ -512,6 +523,7 @@ const QStringList &AppController::overlays()
         u"session-conflict"_s,
         u"queue-ad"_s,
         u"desktop-stream-menu"_s,
+        u"desktop-stream-exit-confirm"_s,
         u"desktop-stream-stats"_s,
         u"desktop-stream-stats-expanded"_s,
         u"stream-stats"_s,

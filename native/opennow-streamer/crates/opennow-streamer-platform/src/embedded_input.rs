@@ -53,7 +53,7 @@ impl EmbeddedInputCapture {
         #[cfg(target_os = "linux")]
         {
             let _ = window_handle;
-            let raw_enabled = active && relative_mouse;
+            let raw_enabled = raw_capture_enabled(active, relative_mouse);
             let mut raw = self
                 .raw
                 .lock()
@@ -74,6 +74,11 @@ impl EmbeddedInputCapture {
 
         #[cfg(target_os = "windows")]
         {
+            // Qt owns absolute position, buttons, and wheel as one ordered event
+            // stream. Raw Input is required only for relative motion. Letting the
+            // raw thread own buttons in absolute mode races the Qt position event,
+            // so the host can apply a click at its previous cursor coordinate.
+            let raw_enabled = raw_capture_enabled(active, relative_mouse);
             let mut raw = self
                 .raw
                 .lock()
@@ -91,8 +96,8 @@ impl EmbeddedInputCapture {
                 if window_handle != 0 {
                     raw.set_foreground_owner(window_handle as isize);
                 }
-                raw.set_capture(active, relative_mouse);
-                true
+                raw.set_capture(raw_enabled, relative_mouse);
+                raw_enabled
             } else {
                 false
             }
@@ -108,6 +113,10 @@ impl EmbeddedInputCapture {
     pub fn queue(&self) -> Arc<CapturedInputQueue> {
         Arc::clone(&self.queue)
     }
+}
+
+const fn raw_capture_enabled(active: bool, relative_mouse: bool) -> bool {
+    active && relative_mouse
 }
 
 #[cfg(test)]
@@ -128,5 +137,13 @@ mod tests {
         capture.active.store(true, Ordering::Release);
         capture.submit_local_action(EmbeddedLocalAction::Guide);
         assert_eq!(queue.take(), Some(CapturedInput::Guide));
+    }
+
+    #[test]
+    fn raw_capture_is_reserved_for_relative_mouse_mode() {
+        assert!(!raw_capture_enabled(false, false));
+        assert!(!raw_capture_enabled(true, false));
+        assert!(!raw_capture_enabled(false, true));
+        assert!(raw_capture_enabled(true, true));
     }
 }

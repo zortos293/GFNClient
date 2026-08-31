@@ -13,9 +13,9 @@ FocusScope {
     focus: true
 
     signal resumeRequested()
-    signal qualityRequested()
     signal inviteRequested()
     signal consoleModeRequested(bool enabled)
+    signal fullscreenRequested()
     signal endSessionRequested()
     signal statsRequested()
 
@@ -34,7 +34,6 @@ FocusScope {
     readonly property bool fullscreen: Window.window
         && Window.window.visibility === Window.FullScreen
     readonly property int outputHeight: Number(profile.height || 0)
-    readonly property int qualityFps: Number(profile.fps || profile.frameRate || 0)
     readonly property bool invitesAvailable: Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.invitesAvailable)
 
     function liveNumber(value) {
@@ -46,24 +45,22 @@ FocusScope {
     function liveValue(value) {
         return root.liveTelemetryAvailable ? value : undefined
     }
-    function liveText(value, suffix) {
+    function liveText(value, suffix, fallback) {
         const number = root.liveNumber(value)
-        return number === null ? "—" : String(Math.round(number)) + (suffix || "")
+        return number === null ? (fallback || qsTr("Measuring"))
+            : String(Math.round(number)) + (suffix || "")
     }
-    readonly property string fpsText: root.liveText(root.liveValue(root.firstAvailable(live.framesPerSecond, live.fps)))
-    readonly property string latencyText: root.liveText(root.liveValue(root.firstAvailable(live.latencyMs, live.roundTripLatencyMs)), " ms")
-    readonly property string bitrateText: root.liveText(root.liveValue(root.firstAvailable(live.bitrateMbps, live.receiveBitrateMbps)), " Mb")
-    readonly property string pingText: root.liveText(root.firstAvailable(root.liveValue(live.pingMs), session.latencyMs), " ms")
-    readonly property string lossText: {
-        const number = root.liveNumber(root.liveValue(live.packetLossPercent))
-        return number === null ? "—" : number.toFixed(2) + "%"
-    }
-    readonly property string codecText: String(root.liveValue(live.codec) || profile.codec || "").toUpperCase() || "—"
-    readonly property string streamerStatus: String(live.status || "").toUpperCase() || "—"
+    readonly property string fpsText: root.liveText(root.liveValue(root.firstAvailable(live.framesPerSecond, live.fps)), "", qsTr("Measuring"))
+    readonly property string bitrateText: root.liveText(root.liveValue(root.firstAvailable(live.bitrateMbps, live.receiveBitrateMbps)), " Mb", qsTr("Measuring"))
+    readonly property string codecText: String(root.liveValue(live.codec) || profile.codec
+        || ShellStore.runtimeStreamProfile.codec || ShellStore.settings.codec || qsTr("Automatic")).toUpperCase()
+    readonly property string transportText: String(root.liveValue(live.transport) || "NVST").toUpperCase()
+    readonly property string backendText: String(root.liveValue(live.mediaBackend) || qsTr("Pending")).toUpperCase()
+    readonly property string streamerStatus: String(live.status || qsTr("Starting")).toUpperCase()
     readonly property string resolution: outputHeight >= 2160 ? "2160P"
         : outputHeight >= 1440 ? "1440P"
         : outputHeight >= 1080 ? "1080P"
-        : outputHeight > 0 ? outputHeight + "P" : "—"
+        : outputHeight > 0 ? outputHeight + "P" : qsTr("Pending")
 
     function runAction(index) {
         if (closing) return
@@ -72,30 +69,16 @@ FocusScope {
         closeAnimation.restart()
         actionTimer.restart()
     }
-    function toggleFullscreen() {
-        const targetWindow = Window.window
-        if (!targetWindow)
-            return
-        const enteringFullscreen = targetWindow.visibility !== Window.FullScreen
-        if (enteringFullscreen)
-            targetWindow.showFullScreen()
-        else
-            targetWindow.showNormal()
-        ShellStore.streamControlMessage = enteringFullscreen
-            ? qsTr("Fullscreen on") : qsTr("Fullscreen off")
-        ShellStore.accessibilityMessage = ShellStore.streamControlMessage
-    }
     function finishAction() {
         if (pendingAction === 0) resumeRequested()
-        else if (pendingAction === 1) qualityRequested()
-        else if (pendingAction === 2) inviteRequested()
-        else if (pendingAction === 3) consoleModeRequested(!root.modeOn)
-        else if (pendingAction === 4) {
-            root.toggleFullscreen()
+        else if (pendingAction === 1) inviteRequested()
+        else if (pendingAction === 2) consoleModeRequested(!root.modeOn)
+        else if (pendingAction === 3) {
+            fullscreenRequested()
             resumeRequested()
         }
-        else if (pendingAction === 5) endSessionRequested()
-        else if (pendingAction === 6) statsRequested()
+        else if (pendingAction === 4) endSessionRequested()
+        else if (pendingAction === 5) statsRequested()
     }
     function clockText() {
         if (ShellStore.streamStartedAtMs <= 0)
@@ -132,8 +115,8 @@ FocusScope {
         id: panel
         x: Math.round((root.width - width) / 2)
         y: Math.round((root.height - height) / 2) - 2
-        width: 760
-        height: 460
+        width: Math.min(760, root.width - 32)
+        height: Math.min(460, root.height - 32)
         radius: 20
         color: "#F00A0E15"
         border.width: 1
@@ -193,7 +176,7 @@ FocusScope {
                 Repeater {
                     model: [
                         { label: "FPS", value: root.fpsText },
-                        { label: qsTr("LATENCY"), value: root.latencyText },
+                        { label: qsTr("OUTPUT"), value: root.resolution },
                         { label: qsTr("BITRATE"), value: root.bitrateText }
                     ]
                     delegate: Column {
@@ -235,11 +218,10 @@ FocusScope {
                 Repeater {
                     model: [
                         { title: qsTr("Back to game"), detail: qsTr("Esc"), icon: "desktop-play.svg", primary: true, danger: false },
-                        { title: qsTr("Stream quality"), detail: root.resolution + " · " + (root.qualityFps > 0 ? root.qualityFps : "—"), icon: "desktop-sliders.svg", primary: false, danger: false },
                         { title: qsTr("Invite a friend"), detail: root.invitesAvailable ? qsTr("AVAILABLE") : qsTr("UNAVAILABLE"), icon: "desktop-user-plus.svg", primary: false, danger: false },
                         { title: root.modeOn ? qsTr("Switch to desktop mode") : qsTr("Switch to console mode"), detail: root.modePending ? qsTr("SWITCHING…") : root.modeOn ? qsTr("DESKTOP READY") : qsTr("GAMEPAD READY"), icon: "desktop-gamepad.svg", primary: false, danger: false },
                         { title: root.fullscreen ? qsTr("Exit fullscreen") : qsTr("Go fullscreen"), detail: "F11", icon: "desktop-expand.svg", primary: false, danger: false },
-                        { title: qsTr("End session"), detail: "Ctrl Q", icon: "desktop-logout.svg", primary: false, danger: true }
+                        { title: qsTr("End session"), detail: "Ctrl Shift Q", icon: "desktop-logout.svg", primary: false, danger: true }
                     ]
                     delegate: Rectangle {
                         id: actionButton
@@ -282,6 +264,7 @@ FocusScope {
                         }
                         Text {
                             x: 48
+                            width: parent.width - 164
                             anchors.verticalCenter: parent.verticalCenter
                             text: actionButton.modelData.title
                             color: actionButton.modelData.primary ? DesktopTokens.shell
@@ -289,10 +272,13 @@ FocusScope {
                             font.family: DesktopTokens.bodyFont
                             font.pixelSize: 12
                             font.weight: Font.Bold
+                            elide: Text.ElideRight
                         }
                         Text {
                             anchors.right: parent.right
                             anchors.rightMargin: 14
+                            width: 100
+                            horizontalAlignment: Text.AlignRight
                             anchors.verticalCenter: parent.verticalCenter
                             text: actionButton.modelData.detail
                             color: actionButton.modelData.primary ? "#990B0F1A"
@@ -347,9 +333,9 @@ FocusScope {
                         spacing: 6
                         Repeater {
                             model: [
-                                { label: qsTr("PING"), value: root.pingText },
-                                { label: qsTr("LOSS"), value: root.lossText },
-                                { label: qsTr("CODEC"), value: root.codecText }
+                                { label: qsTr("TRANSPORT"), value: root.transportText },
+                                { label: qsTr("CODEC"), value: root.codecText },
+                                { label: qsTr("DECODER"), value: root.backendText }
                             ]
                             delegate: Item {
                                 id: connectionRow
@@ -382,9 +368,9 @@ FocusScope {
                     width: parent.width
                     height: 118
                     radius: 12
-                    color: root.selectedIndex === 6 ? "#1FFFFFFF" : "#0FFFFFFF"
-                    border.width: root.selectedIndex === 6 ? 2 : 1
-                    border.color: root.selectedIndex === 6 ? DesktopTokens.focus : "#17FFFFFF"
+                    color: root.selectedIndex === 5 ? "#1FFFFFFF" : "#0FFFFFFF"
+                    border.width: root.selectedIndex === 5 ? 2 : 1
+                    border.color: root.selectedIndex === 5 ? DesktopTokens.focus : "#17FFFFFF"
                     Text { x: 14; y: 13; text: qsTr("STREAM STATS OVERLAY"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 1 }
                     Text { x: 14; y: 39; text: qsTr("See frame rate, latency and bitrate\nwithout leaving the game."); color: DesktopTokens.textBody; font.family: DesktopTokens.bodyFont; font.pixelSize: 11; font.weight: Font.DemiBold; lineHeight: 1.25 }
                     Rectangle {
@@ -393,8 +379,8 @@ FocusScope {
                     }
                     Text { x: 49; y: 87; text: qsTr("Cycle"); color: DesktopTokens.textMuted; font.family: DesktopTokens.bodyFont; font.pixelSize: 10; font.weight: Font.DemiBold }
                     Text { anchors.right: parent.right; anchors.rightMargin: 14; y: 87; text: qsTr("Hold F3 for details"); color: DesktopTokens.textFaint; font.family: DesktopTokens.bodyFont; font.pixelSize: 10 }
-                    HoverHandler { id: statsHover; onHoveredChanged: if (hovered) root.selectedIndex = 6 }
-                    TapHandler { onTapped: root.runAction(6) }
+                    HoverHandler { id: statsHover; onHoveredChanged: if (hovered) root.selectedIndex = 5 }
+                    TapHandler { onTapped: root.runAction(5) }
                 }
             }
         }
@@ -402,10 +388,10 @@ FocusScope {
 
     Row {
         anchors.horizontalCenter: parent.horizontalCenter
-        y: 680
+        y: panel.y + panel.height - 27
         spacing: 22
         Repeater {
-            model: ["Esc  " + qsTr("Resume"), "Ctrl K  " + qsTr("Commands"), "Ctrl Q  " + qsTr("End session")]
+            model: ["Esc  " + qsTr("Resume"), "Ctrl K  " + qsTr("Commands"), "Ctrl Shift Q  " + qsTr("End session")]
             delegate: Text {
                 required property string modelData
                 text: modelData
@@ -444,7 +430,7 @@ FocusScope {
             root.runAction(0)
             event.accepted = true
         } else if (event.key === Qt.Key_Down) {
-            root.selectedIndex = Math.min(6, root.selectedIndex + 1)
+            root.selectedIndex = Math.min(5, root.selectedIndex + 1)
             event.accepted = true
         } else if (event.key === Qt.Key_Up) {
             root.selectedIndex = Math.max(0, root.selectedIndex - 1)
@@ -453,10 +439,13 @@ FocusScope {
             root.runAction(root.selectedIndex)
             event.accepted = true
         } else if (event.key === Qt.Key_F3) {
-            root.runAction(6)
-            event.accepted = true
-        } else if (event.key === Qt.Key_Q && (event.modifiers & Qt.ControlModifier)) {
             root.runAction(5)
+            event.accepted = true
+        } else if (event.key === Qt.Key_Q
+                && (event.modifiers & (Qt.ControlModifier | Qt.ShiftModifier
+                    | Qt.AltModifier | Qt.MetaModifier))
+                    === (Qt.ControlModifier | Qt.ShiftModifier)) {
+            root.runAction(4)
             event.accepted = true
         }
     }

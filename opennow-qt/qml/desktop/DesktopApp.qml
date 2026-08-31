@@ -62,6 +62,10 @@ FocusScope {
     function toggleConsoleMode() {
         ShellStore.requestConsoleSurface(!DesktopTokens.consoleModeTargetOn(Window.window))
     }
+    function resynchronizeStreamInput() {
+        if (root.streamVisible)
+            desktopStream.resynchronizeStreamInput()
+    }
 
     DesktopSignInScreen {
         id: desktopSignIn
@@ -110,11 +114,12 @@ FocusScope {
     }
 
     DesktopStreamScreen {
+        id: desktopStream
         anchors.fill: parent
         visible: root.streamVisible
         focus: visible
         z: 85
-        onStopRequested: ShellStore.stopStreamingSession()
+        onStopRequested: ShellStore.requestStreamExitConfirmation()
         onRetryRequested: ShellStore.retryNativeStreamer()
         onMenuRequested: AppController.showOverlay("desktop-stream-menu")
     }

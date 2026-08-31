@@ -2613,6 +2613,26 @@
     "s_qt_runtime_242": "Recording failed",
     "s_qt_runtime_243": "The embedded media runtime stopped",
     "s_qt_runtime_244": "The core returned an invalid embedded stream context",
-    "s_qt_runtime_245": "The embedded media runtime could not start the stream"
+    "s_qt_runtime_245": "The embedded media runtime could not start the stream",
+    "s_qt_runtime_246": "DECODER",
+    "s_qt_runtime_247": "Measuring",
+    "s_qt_runtime_248": "Pending",
+    "s_qt_runtime_249": "End cloud session confirmation",
+    "s_qt_runtime_250": "END SESSION",
+    "s_qt_runtime_251": "End this cloud session?",
+    "s_qt_runtime_252": "Keep playing",
+    "s_qt_runtime_253": "Your game will close on the remote rig. This session cannot be resumed after it ends.",
+    "s_qt_runtime_254": "pending",
+    "s_qt_runtime_255": "Stream stats: %1 FPS, %2 Mbps, %3 output",
+    "s_qt_runtime_256": "DROPS",
+    "s_qt_runtime_257": "FRAMETIME",
+    "s_qt_runtime_258": "min %1 · max %2 %3",
+    "s_qt_runtime_259": "queue",
+    "s_qt_runtime_260": "waiting for samples",
+    "s_qt_runtime_261": "Adjust",
+    "s_qt_runtime_262": "All settings",
+    "s_qt_runtime_263": "Applies to your next launch",
+    "s_qt_runtime_264": "Game controller",
+    "s_qt_runtime_265": "Confirm ending the cloud session"
   }
 }

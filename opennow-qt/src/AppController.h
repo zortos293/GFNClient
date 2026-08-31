@@ -37,6 +37,7 @@ public:
     Q_INVOKABLE bool openExternalUrl(const QString &url) const;
     Q_INVOKABLE bool openLocalPath(const QString &path, bool reveal = false) const;
     Q_INVOKABLE QString readClipboardText() const;
+    Q_INVOKABLE bool writeClipboardText(const QString &text) const;
     Q_INVOKABLE QString normalizeNativeStreamerExecutable(const QString &urlOrPath) const;
     Q_INVOKABLE bool copyScreenshotTo(const QString &sourcePath,
                                       const QString &destinationUrlOrPath) const;

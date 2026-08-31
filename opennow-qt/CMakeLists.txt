@@ -12,8 +12,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
+# CMake's MinGW AutoMoc predefine probe is unreliable when invoked through
+# cmake_autogen on Windows. All required platform and Qt definitions are already
+# propagated by the targets below, so avoid the redundant compiler subprocess.
+set(CMAKE_AUTOMOC_COMPILER_PREDEFINES OFF)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Network Multimedia Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 GuiPrivate Network Multimedia Test)
 find_package(SDL3 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -127,6 +131,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/DesktopSidebar.qml
         qml/desktop/DesktopSignInScreen.qml
         qml/desktop/DesktopInStreamMenu.qml
+        qml/desktop/DesktopStreamExitConfirm.qml
         qml/desktop/DesktopSessionStarting.qml
         qml/desktop/DesktopStreamOverlayHost.qml
         qml/desktop/DesktopStreamScreen.qml
@@ -260,6 +265,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 if(WIN32)
+    target_link_libraries(opennow-qt PRIVATE user32)
     add_custom_command(TARGET opennow-qt POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "$<TARGET_FILE:${OPENNOW_SDL3_RUNTIME_TARGET}>"
@@ -506,6 +512,9 @@ if(BUILD_TESTING)
     target_link_libraries(opennow-streamvideo-tests PRIVATE
         Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Qml Qt6::Quick
         opennow-streamer-ffi)
+    if(WIN32)
+        target_link_libraries(opennow-streamvideo-tests PRIVATE user32)
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_libraries(opennow-streamvideo-tests PRIVATE Vulkan::Vulkan)
     endif()
@@ -629,7 +638,7 @@ if(BUILD_TESTING)
             TIMEOUT 5
         )
     endforeach()
-    foreach(overlay desktop-stream-menu desktop-stream-stats desktop-stream-stats-expanded)
+    foreach(overlay desktop-stream-menu desktop-stream-stats desktop-stream-stats-expanded desktop-stream-exit-confirm)
         add_test(NAME "qml-${overlay}"
                  COMMAND opennow-qt --smoke-test --allow-multiple-instances
                          --desktop --route stream --overlay "${overlay}" --reduced-motion)
@@ -638,6 +647,13 @@ if(BUILD_TESTING)
             TIMEOUT 5
         )
     endforeach()
+    add_test(NAME qml-fullscreen-stream-stats-shortcut
+             COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                     --desktop --route stream --smoke-fullscreen-stats-shortcut --reduced-motion)
+    set_tests_properties(qml-fullscreen-stream-stats-shortcut PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 5
+    )
     add_test(NAME qml-console-mode-persistence-rollback
              COMMAND opennow-qt
                      --smoke-test

@@ -20,6 +20,19 @@ ApplicationWindow {
     property bool pointerRecentlyActive: false
     property bool forceConsole: false
     property bool streamStatsAutoShown: false
+    property bool streamSurfaceLocked: false
+    property bool lockedStreamDesktopSurface: true
+    property int visibilityBeforeFullscreen: ApplicationWindow.Windowed
+    readonly property string configuredStatsShortcut: String(
+        ShellStore.settings.shortcutToggleStats || "Ctrl+N")
+    readonly property bool streamStatsShortcutEnabled: activeRoute === "stream"
+        && (AppController.overlay === ""
+            || AppController.overlay === "desktop-stream-menu"
+            || AppController.overlay === "guide-session"
+            || AppController.overlay === "desktop-stream-stats"
+            || AppController.overlay === "desktop-stream-stats-expanded"
+            || AppController.overlay === "stream-stats"
+            || AppController.overlay === "stream-stats-expanded")
     readonly property bool switchToConsoleOnPad: !settingsLoaded
         || ShellStore.settings.switchToConsoleOnPad !== false
     readonly property bool leaveConsoleOnPointer: !settingsLoaded
@@ -37,7 +50,8 @@ ApplicationWindow {
     readonly property bool desktopEligibleRoute: ["joining",
         "accounts", "profile-pin", "game-accounts", "persistent-storage", "media",
         "diagnostics", "updates", "feedback", "theme-store"].indexOf(activeRoute) < 0
-    readonly property bool targetDesktopSurface: desktopRequested && desktopEligibleRoute
+    readonly property bool targetDesktopSurface: streamSurfaceLocked
+        ? lockedStreamDesktopSurface : desktopRequested && desktopEligibleRoute
     readonly property bool streamQmlOverlayActive: activeRoute === "stream"
         && (AppController.overlay.startsWith("desktop-stream-")
             || AppController.overlay.startsWith("stream-stats"))
@@ -52,6 +66,7 @@ ApplicationWindow {
         ShellStore.consoleSurfaceRequestId !== ""
     readonly property string modePersistenceErrorForSmokeTest: ShellStore.lastError
     readonly property var streamerSnapshotForSmokeTest: ShellStore.streamer
+    readonly property bool shellCaptureEnabledForSmokeTest: ControllerInput.shellCaptureEnabled
     readonly property real designWidth: desktopSurfaceActive ? 1440 : 1920
     readonly property real designHeight: desktopSurfaceActive ? 900 : 1080
     readonly property real designScale: Math.min(width / designWidth, height / designHeight)
@@ -75,11 +90,16 @@ ApplicationWindow {
     onWidthChanged: {
         if (geometryRestored)
             geometrySaveTimer.restart()
+        if (activeRoute === "stream")
+            fullscreenInputSync.restart()
     }
     onHeightChanged: {
         if (geometryRestored)
             geometrySaveTimer.restart()
+        if (activeRoute === "stream")
+            fullscreenInputSync.restart()
     }
+    onVisibilityChanged: if (activeRoute === "stream") fullscreenInputSync.restart()
     onDesktopSurfaceActiveChanged: ShellStore.desktopUiActive = desktopSurfaceActive
 
     Connections {
@@ -92,11 +112,37 @@ ApplicationWindow {
 
     function syncInputOwnership() {
         const shellOwnsInput = AppController.route !== "stream"
-            || AppController.overlay !== ""
+            || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         ControllerInput.shellCaptureEnabled = shellOwnsInput
             && ShellStore.settings.controllerMode !== false
-        if (AppController.route === "stream")
-            ShellStore.setStreamInputPaused(shellOwnsInput)
+    }
+
+    // StreamVideoItem normally owns gameplay keys, but fullscreen transitions
+    // can briefly leave the Qt focus chain without an active item. Register the
+    // shell-owned stats shortcuts at application scope so F3 never leaks to the
+    // remote game or depends on item focus.
+    Shortcut {
+        objectName: "streamStatsShortcut"
+        sequence: "F3"
+        context: Qt.ApplicationShortcut
+        enabled: window.streamStatsShortcutEnabled
+        onActivated: ShellStore.applyStreamShortcutAction("toggle-stats")
+    }
+    Shortcut {
+        sequence: window.configuredStatsShortcut
+        context: Qt.ApplicationShortcut
+        enabled: window.streamStatsShortcutEnabled
+            && window.configuredStatsShortcut !== ""
+            && window.configuredStatsShortcut.toUpperCase() !== "F3"
+        onActivated: ShellStore.applyStreamShortcutAction("toggle-stats")
+    }
+    Shortcut {
+        objectName: "streamStatsCopyShortcut"
+        sequence: "Shift+F3"
+        context: Qt.ApplicationShortcut
+        enabled: window.activeRoute === "stream"
+            && ShellStore.isStreamStatsOverlay(AppController.overlay)
+        onActivated: desktopStreamOverlay.copyStatsToClipboard()
     }
 
     function isGuideShortcut(event) {
@@ -111,13 +157,30 @@ ApplicationWindow {
 
     function toggleFullscreen() {
         const enteringFullscreen = window.visibility !== ApplicationWindow.FullScreen
-        if (enteringFullscreen)
+        if (enteringFullscreen) {
+            window.visibilityBeforeFullscreen = window.visibility
             window.showFullScreen()
-        else
+        } else if (window.visibilityBeforeFullscreen === ApplicationWindow.Maximized) {
+            window.showMaximized()
+        } else {
             window.showNormal()
+        }
+        fullscreenInputSync.restart()
         ShellStore.streamControlMessage = enteringFullscreen
             ? qsTr("Fullscreen on") : qsTr("Fullscreen off")
         ShellStore.accessibilityMessage = ShellStore.streamControlMessage
+    }
+
+    Timer {
+        id: fullscreenInputSync
+        interval: 90
+        repeat: false
+        onTriggered: {
+            if (window.activeRoute !== "stream" || !routeLoader.item)
+                return
+            if (typeof routeLoader.item.resynchronizeStreamInput === "function")
+                routeLoader.item.resynchronizeStreamInput()
+        }
     }
 
     function showConfiguredStreamStats() {
@@ -131,17 +194,6 @@ ApplicationWindow {
             ? "desktop-stream-stats" : "stream-stats")
     }
 
-    function toggleStreamStats() {
-        if (window.activeRoute !== "stream")
-            return false
-        const compact = window.desktopSurfaceActive
-            ? "desktop-stream-stats" : "stream-stats"
-        const expanded = window.desktopSurfaceActive
-            ? "desktop-stream-stats-expanded" : "stream-stats-expanded"
-        if (AppController.overlay === compact || AppController.overlay === expanded)
-            return AppController.showOverlay("")
-        return AppController.showOverlay(compact)
-    }
     Timer {
         id: pointerGrace
         interval: 30000
@@ -154,6 +206,12 @@ ApplicationWindow {
         window.forceConsole = enabled
         if (!enabled)
             window.consoleHeldByPad = false
+        if (window.activeRoute === "stream") {
+            // Automatic pointer/controller heuristics are frozen for a live
+            // stream, but the explicit Session menu command remains supported.
+            window.lockedStreamDesktopSurface = !enabled
+            window.streamSurfaceLocked = true
+        }
         if (ShellStore.signedIn && AppController.route === "sign-in")
             AppController.navigate("home")
         window.synchronizeRenderedSurface()
@@ -178,15 +236,40 @@ ApplicationWindow {
             window.consoleHeldByPad = false
     }
 
-    function syncPadHold() {
-        if (AppController.controllerCount > 0
+    function noteControllerInput() {
+        // Device enumeration is not user intent (virtual/idle pads are common),
+        // and a live stream must never swap render trees because input mode
+        // changed. Only real controller activity outside a stream selects it.
+        if (window.activeRoute !== "stream"
                 && window.switchToConsoleOnPad
                 && !window.pointerRecentlyActive)
             window.consoleHeldByPad = true
     }
 
+    function updateStreamSurfaceLock() {
+        if (window.activeRoute === "stream") {
+            if (!window.streamSurfaceLocked)
+                window.lockedStreamDesktopSurface = window.desktopSurfaceActive
+            window.streamSurfaceLocked = true
+        } else {
+            window.streamSurfaceLocked = false
+        }
+        window.synchronizeRenderedSurface()
+    }
+
+    function restorePassiveStreamInput() {
+        if (window.activeRoute !== "stream"
+                || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
+                || !routeLoader.item)
+            return
+        if (typeof routeLoader.item.resynchronizeStreamInput === "function")
+            routeLoader.item.resynchronizeStreamInput()
+        else
+            routeLoader.item.forceActiveFocus()
+    }
+
     Component.onCompleted: {
-        syncPadHold()
+        updateStreamSurfaceLock()
         modeInitialized = true
         window.synchronizeRenderedSurface()
         ShellStore.desktopUiActive = window.desktopSurfaceActive
@@ -294,6 +377,7 @@ ApplicationWindow {
         Connections {
             target: AppController
             function onRouteChanged() {
+                window.updateStreamSurfaceLock()
                 routeLoader.opacity = 0
                 routeEnter.restart()
                 window.syncInputOwnership()
@@ -307,7 +391,10 @@ ApplicationWindow {
                     return
                 }
                 window.syncInputOwnership()
-                if (AppController.overlay === "" && routeLoader.item)
+                if (window.activeRoute === "stream"
+                        && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay))
+                    Qt.callLater(() => window.restorePassiveStreamInput())
+                else if (AppController.overlay === "" && routeLoader.item)
                     Qt.callLater(() => routeLoader.item.forceActiveFocus())
             }
             function onDirectLaunchRequested(appId, title) {
@@ -342,6 +429,12 @@ ApplicationWindow {
             } else if (event.key === Qt.Key_F10) {
                 window.requestConsoleSurface(window.desktopSurfaceActive)
                 event.accepted = true
+            } else if ((event.key === Qt.Key_Escape || event.key === Qt.Key_Back)
+                    && window.activeRoute === "stream"
+                    && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)) {
+                // The live StreamVideoItem forwards Escape. Do not turn a
+                // transient focus gap into route navigation or session exit.
+                event.accepted = false
             } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
                 event.accepted = AppController.goBack()
             } else if (event.key === Qt.Key_PageUp) {
@@ -355,8 +448,6 @@ ApplicationWindow {
             } else if (window.isGuideShortcut(event)) {
                 event.accepted = AppController.showOverlay(window.desktopSurfaceActive
                     && window.activeRoute === "stream" ? "desktop-stream-menu" : "guide-session")
-            } else if (event.key === Qt.Key_F3 && window.activeRoute === "stream") {
-                event.accepted = window.toggleStreamStats()
             } else if (event.key === Qt.Key_Menu) {
                 event.accepted = AppController.showOverlay("quick-settings")
             } else if (event.key === Qt.Key_Y) {
@@ -383,12 +474,14 @@ ApplicationWindow {
     }
 
     DesktopStreamOverlayHost {
+        id: desktopStreamOverlay
         anchors.fill: parent
         overlay: AppController.overlay
+        inputBlocking: ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         visible: window.streamQmlOverlayActive
-        focus: visible
         z: 1100
-        onVisibleChanged: if (visible) forceActiveFocus()
+        onVisibleChanged: if (visible && inputBlocking) forceActiveFocus()
+        onInputBlockingChanged: if (visible && inputBlocking) forceActiveFocus()
     }
 
     Rectangle {
@@ -506,7 +599,6 @@ ApplicationWindow {
                     : qsTr("%1 overlay opened").arg(accessibilityAnnouncer.routeName(AppController.overlay)))
             }
             function onControllerCountChanged() {
-                window.syncPadHold()
                 accessibilityAnnouncer.announce(AppController.controllerCount === 0
                     ? qsTr("All controllers disconnected")
                     : qsTr("%1 controllers connected").arg(AppController.controllerCount))
@@ -514,6 +606,8 @@ ApplicationWindow {
             function onInputModeChanged() {
                 if (AppController.inputMode === "pointer" || AppController.inputMode === "keyboard")
                     window.notePointerInput()
+                else if (AppController.inputMode === "controller")
+                    window.noteControllerInput()
             }
         }
         Connections {

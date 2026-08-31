@@ -1667,7 +1667,12 @@ mod tests {
                         "signalingUrl": "wss://server.nvidiagrid.net/nvst/"
                     }
                 }),
-                &json!({"codec":"auto","transportMode":"webrtc","resolution":"1920x1080"}),
+                &json!({
+                    "codec":"auto",
+                    "transportMode":"webrtc",
+                    "resolution":"1920x1080",
+                    "maxBitrateMbps":200
+                }),
             )
             .expect("embedded context");
 
@@ -1675,6 +1680,7 @@ mod tests {
         assert_eq!(prepared["context"]["session"]["sessionId"], "session-one");
         assert_eq!(prepared["context"]["settings"]["codec"], "H264");
         assert_eq!(prepared["context"]["settings"]["transportMode"], "nvst");
+        assert_eq!(prepared["context"]["settings"]["maxBitrateMbps"], 200);
         assert_eq!(prepared["context"]["surface"], Value::Null);
         assert!(service.worker.lock().expect("streamer worker").is_none());
     }

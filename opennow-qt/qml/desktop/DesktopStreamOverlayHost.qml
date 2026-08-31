@@ -6,9 +6,11 @@ FocusScope {
     width: 1440
     height: 900
     property string overlay: ""
-    focus: visible
+    property bool inputBlocking: false
+    focus: visible && inputBlocking
 
     readonly property bool menuVisible: overlay === "desktop-stream-menu"
+    readonly property bool exitVisible: overlay === "desktop-stream-exit-confirm"
     readonly property bool statsVisible: overlay === "desktop-stream-stats"
         || overlay === "desktop-stream-stats-expanded"
         || overlay === "stream-stats"
@@ -38,25 +40,24 @@ FocusScope {
     }
     function liveText(value) {
         const number = root.liveNumber(value)
-        return number === null ? "—" : String(Math.round(number))
+        return number === null ? qsTr("N/A") : String(Math.round(number))
     }
     function copyStatsSummary() {
         const live = ShellStore.streamer || ({})
-        const session = ShellStore.activeSession || ({})
-        const region = String(session.regionName || session.region || session.serverRegionId || "").toUpperCase() || "—"
-        const ping = root.liveText(root.firstAvailable(root.liveValue(live, live.pingMs), session.latencyMs))
+        const profile = ShellStore.negotiatedStreamProfile || ({})
+        const fps = root.liveText(root.liveValue(live,
+            root.firstAvailable(live.framesPerSecond, live.fps)))
         const bitrate = root.liveText(root.liveValue(live,
             root.firstAvailable(live.bitrateMbps, live.receiveBitrateMbps)))
-        return qsTr("Stream stats: region %1, ping %2, bitrate %3")
-            .arg(region)
-            .arg(ping === "—" ? ping : ping + " ms")
-            .arg(bitrate === "—" ? bitrate : bitrate + " Mbps")
+        const output = Number(profile.height || live.outputHeight || 0) > 0
+            ? Number(profile.height || live.outputHeight) + "p" : qsTr("pending")
+        return qsTr("Stream stats: %1 FPS, %2 Mbps, %3 output")
+            .arg(fps).arg(bitrate).arg(output)
     }
-
-    Rectangle {
-        anchors.fill: parent
-        visible: root.statsVisible
-        color: "#04060A"
+    function copyStatsToClipboard() {
+        const summary = root.copyStatsSummary()
+        if (AppController.writeClipboardText(summary))
+            ShellStore.accessibilityMessage = summary
     }
 
     DesktopInStreamMenu {
@@ -64,10 +65,6 @@ FocusScope {
         visible: root.menuVisible
         focus: visible
         onResumeRequested: root.closeOverlay()
-        onQualityRequested: {
-            ShellStore.accessibilityMessage = qsTr("Opening live stream quality controls")
-            AppController.showOverlay("quick-settings")
-        }
         onInviteRequested: if (ShellStore.socialCapabilities
                 && ShellStore.socialCapabilities.invitesAvailable)
             AppController.showOverlay("friends")
@@ -78,20 +75,38 @@ FocusScope {
             root.closeOverlay()
         }
         onEndSessionRequested: {
-            root.closeOverlay()
-            ShellStore.stopStreamingSession()
+            ShellStore.requestStreamExitConfirmation()
         }
+        onFullscreenRequested: ShellStore.fullscreenToggleRequested()
         onStatsRequested: AppController.showOverlay("desktop-stream-stats-expanded")
+    }
+
+    DesktopStreamExitConfirm {
+        anchors.fill: parent
+        visible: root.exitVisible
+        focus: visible
+        onCancelRequested: root.closeOverlay()
+        onConfirmRequested: ShellStore.confirmStreamExit()
     }
 
     DesktopStreamStats {
         anchors.fill: parent
         visible: root.statsVisible
-        focus: visible
+        focus: false
         expanded: root.overlay === "desktop-stream-stats-expanded"
             || root.overlay === "stream-stats-expanded"
         onCycleRequested: root.cycleStats()
         onCloseRequested: root.closeOverlay()
-        onCopyRequested: ShellStore.accessibilityMessage = root.copyStatsSummary()
+        onCopyRequested: root.copyStatsToClipboard()
+    }
+
+    Keys.onPressed: event => {
+        const modifiers = event.modifiers & (Qt.ControlModifier | Qt.ShiftModifier
+            | Qt.AltModifier | Qt.MetaModifier)
+        if (!root.exitVisible && event.key === Qt.Key_Q
+                && modifiers === (Qt.ControlModifier | Qt.ShiftModifier)) {
+            ShellStore.requestStreamExitConfirmation()
+            event.accepted = true
+        }
     }
 }

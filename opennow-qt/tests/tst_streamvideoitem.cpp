@@ -83,6 +83,66 @@ private slots:
         QCOMPARE(StreamVideoItem::aspectFitRect(QSize(1920, 1080), QSize()), QRect());
     }
 
+    void mapsScaledStreamBoundsIntoNativeClientCoordinates()
+    {
+        QCOMPARE(StreamVideoItem::scaledCaptureRect(
+                     QRectF(80, 0, 1840, 1080), QSizeF(2000, 1080),
+                     QRect(100, 50, 2500, 1350)),
+                 QRect(200, 50, 2300, 1350));
+        QCOMPARE(StreamVideoItem::scaledCaptureRect(
+                     QRectF(), QSizeF(1920, 1080), QRect(0, 0, 1920, 1080)),
+                 QRect());
+    }
+
+    void mapsAbsoluteMouseAgainstTheRenderedViewport()
+    {
+        QCOMPARE(StreamVideoItem::absoluteMouseCoordinates(
+                     QPointF(500, 500), QSize(1920, 1080), QSizeF(1000, 1000)),
+                 QRect(500, 281, 1000, 562));
+        QCOMPARE(StreamVideoItem::absoluteMouseCoordinates(
+                     QPointF(1920, 1080), QSize(1920, 1080), QSizeF(2560, 1440)),
+                 QRect(1920, 1080, 2560, 1440));
+        QCOMPARE(StreamVideoItem::absoluteMouseCoordinates(
+                     QPointF(-50, 2000), QSize(1920, 1080), QSizeF(2560, 1440)),
+                 QRect(0, 1439, 2560, 1440));
+    }
+
+    void parsesAndMapsRemoteCursorMetadata()
+    {
+        QByteArray systemCursor;
+        systemCursor.append(char(0));
+        systemCursor.append(char(12));
+        systemCursor.append(char(0));
+        systemCursor.append(char(0));
+        systemCursor.append(char(0));
+        systemCursor.append(char(0));
+        systemCursor.append(char(0));
+        systemCursor.append(char(0x00));
+        systemCursor.append(char(0x80));
+        systemCursor.append(char(0xff));
+        systemCursor.append(char(0xff));
+        const auto system = StreamVideoItem::remoteCursorMetadata(systemCursor);
+        QCOMPARE(system.imageOffset, qsizetype(7));
+        QCOMPARE(system.imageLength, qsizetype(0));
+        QVERIFY(system.normalizedPosition.has_value());
+        QCOMPARE(*system.normalizedPosition, QPoint(32768, 65535));
+        QCOMPARE(system.scale, 1.0);
+        QCOMPARE(StreamVideoItem::mapRemoteCursorPosition(
+                     *system.normalizedPosition, QSize(1920, 1080), QSizeF(2560, 1440)),
+                 QPoint(1280, 1439));
+
+        QByteArray scaledCursor = systemCursor;
+        scaledCursor[0] = char(1);
+        scaledCursor.append(char(200));
+        scaledCursor.append(char(0));
+        const auto scaled = StreamVideoItem::remoteCursorMetadata(scaledCursor);
+        QCOMPARE(scaled.scale, 2.0);
+
+        const auto malformed = StreamVideoItem::remoteCursorMetadata(QByteArray::fromHex("01000000000400"));
+        QCOMPARE(malformed.imageOffset, qsizetype(-1));
+        QVERIFY(!malformed.normalizedPosition.has_value());
+    }
+
     void mapsQtKeyboardStateToTypedGfnInputFields()
     {
         QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_W), quint16(0x57));
@@ -103,6 +163,45 @@ private slots:
         QVERIFY(!item.inputEnabled());
         QCOMPARE(changes.size(), 1);
         item.setInputEnabled(false);
+        QCOMPARE(changes.size(), 1);
+    }
+
+    void matchesShellShortcutsWithExactModifiersAndAliases()
+    {
+        const QVariantMap bindings{
+            {QStringLiteral("guide"), QVariantList{QStringLiteral("Ctrl+G")}},
+            {QStringLiteral("request-exit"), QVariantList{QStringLiteral("Escape")}},
+            {QStringLiteral("toggle-fullscreen"), QVariantList{QStringLiteral("F11")}},
+            {QStringLiteral("toggle-stats"),
+             QVariantList{QStringLiteral("F3"), QStringLiteral("Ctrl+N")}},
+        };
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(
+                     bindings, Qt::Key_F3, Qt::NoModifier), QStringLiteral("toggle-stats"));
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(
+                     bindings, Qt::Key_N, Qt::ControlModifier), QStringLiteral("toggle-stats"));
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(
+                     bindings, Qt::Key_F11, Qt::NoModifier), QStringLiteral("toggle-fullscreen"));
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(
+                     bindings, Qt::Key_G, Qt::ControlModifier), QStringLiteral("guide"));
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(
+                     bindings, Qt::Key_Escape, Qt::NoModifier), QStringLiteral("request-exit"));
+        QVERIFY(StreamVideoItem::shortcutActionForInput(
+                    bindings, Qt::Key_F3, Qt::ShiftModifier).isEmpty());
+        QVERIFY(StreamVideoItem::shortcutActionForInput(
+                    bindings, Qt::Key_G, Qt::NoModifier).isEmpty());
+    }
+
+    void shortcutBindingsAreExplicitAndObservable()
+    {
+        StreamVideoItem item;
+        QSignalSpy changes(&item, &StreamVideoItem::shortcutBindingsChanged);
+        const QVariantMap bindings{
+            {QStringLiteral("toggle-pointer-lock"), QVariantList{QStringLiteral("F8")}},
+        };
+        item.setShortcutBindings(bindings);
+        QCOMPARE(item.shortcutBindings(), bindings);
+        QCOMPARE(changes.size(), 1);
+        item.setShortcutBindings(bindings);
         QCOMPARE(changes.size(), 1);
     }
 

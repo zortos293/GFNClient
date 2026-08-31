@@ -160,6 +160,8 @@ int main(int argc, char *argv[])
         && arguments.contains(u"--smoke-console-persistence-rollback"_s);
     const auto smokeStreamerEvent = smokeTest
         && arguments.contains(u"--smoke-streamer-event"_s);
+    const auto smokeFullscreenStatsShortcut = smokeTest
+        && arguments.contains(u"--smoke-fullscreen-stats-shortcut"_s);
 
     const auto performanceReportIndex = arguments.indexOf(u"--performance-report"_s);
     const auto performanceMode = performanceReportIndex >= 0
@@ -317,7 +319,64 @@ int main(int argc, char *argv[])
         }
     } else {
         const auto screenshotIndex = arguments.indexOf(u"--screenshot"_s);
-        if (screenshotIndex >= 0 && screenshotIndex + 1 < arguments.size()) {
+        if (smokeFullscreenStatsShortcut) {
+            auto *window = engine.rootObjects().isEmpty()
+                ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+            if (!window) return EXIT_FAILURE;
+            window->showFullScreen();
+            window->requestActivate();
+            auto *statsShortcut = window->findChild<QObject *>(u"streamStatsShortcut"_s);
+            auto *copyShortcut = window->findChild<QObject *>(u"streamStatsCopyShortcut"_s);
+            if (!statsShortcut || !copyShortcut) return EXIT_FAILURE;
+            const auto activateStatsShortcut = [statsShortcut] {
+                return QMetaObject::invokeMethod(statsShortcut, "activated", Qt::DirectConnection);
+            };
+            const auto activateCopyShortcut = [copyShortcut] {
+                return QMetaObject::invokeMethod(copyShortcut, "activated", Qt::DirectConnection);
+            };
+            const auto streamInputStayedStable = [window] {
+                return window->visibility() == QWindow::FullScreen
+                    && window->property("desktopSurfaceActive").toBool()
+                    && !window->property("shellCaptureEnabledForSmokeTest").toBool();
+            };
+            QTimer::singleShot(150, &application,
+                               [&application, &controller, window, statsShortcut, copyShortcut,
+                                 activateStatsShortcut, activateCopyShortcut, streamInputStayedStable,
+                                 &qmlWarningOccurred] {
+                if (!streamInputStayedStable() || qmlWarningOccurred
+                    || statsShortcut->property("context").toInt() != Qt::ApplicationShortcut
+                    || !statsShortcut->property("enabled").toBool()) {
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                if (!activateStatsShortcut()) {
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                if (controller.overlay() != u"desktop-stream-stats"_s
+                        || !streamInputStayedStable()) {
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                activateStatsShortcut();
+                if (controller.overlay() != u"desktop-stream-stats-expanded"_s
+                        || !streamInputStayedStable()) {
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                if (!copyShortcut->property("enabled").toBool()
+                        || !activateCopyShortcut()
+                        || controller.overlay() != u"desktop-stream-stats-expanded"_s
+                        || !controller.readClipboardText().startsWith(u"Stream stats:"_s)
+                        || !streamInputStayedStable()) {
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                activateStatsShortcut();
+                application.exit(controller.overlay().isEmpty() && streamInputStayedStable()
+                    ? EXIT_SUCCESS : EXIT_FAILURE);
+            });
+        } else if (screenshotIndex >= 0 && screenshotIndex + 1 < arguments.size()) {
             const auto screenshotPath = arguments.at(screenshotIndex + 1);
             QTimer::singleShot(1'000, &application,
                                [&application, &engine, &qmlWarningOccurred, screenshotPath] {

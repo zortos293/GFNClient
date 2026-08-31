@@ -259,7 +259,7 @@ fn software_backend() -> VideoBackendCapability {
         // OpenH264 is bundled for the guaranteed H.264 path. HEVC and AV1 can
         // additionally use a D3D11-aware synchronous Media Foundation decoder.
         let available = true;
-        return VideoBackendCapability {
+        VideoBackendCapability {
             backend: "software",
             platform: "windows",
             codecs: vec![
@@ -286,7 +286,7 @@ fn software_backend() -> VideoBackendCapability {
             zero_copy_modes: Vec::new(),
             available,
             reason: None,
-        };
+        }
     }
     #[cfg(not(target_os = "windows"))]
     VideoBackendCapability {

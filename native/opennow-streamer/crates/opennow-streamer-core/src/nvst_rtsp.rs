@@ -15,6 +15,7 @@ use tungstenite::{Message, WebSocket, connect};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_STREAM_BITRATE_MBPS: u64 = 200;
 
 #[derive(Debug)]
 pub struct NvstRtspError {
@@ -599,7 +600,7 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         .get("maxBitrateMbps")
         .and_then(Value::as_u64)
         .unwrap_or(75)
-        .clamp(1, 150)
+        .clamp(1, MAX_STREAM_BITRATE_MBPS)
         * 1000;
     let codec = negotiated_codec(context);
     let format = if codec.eq_ignore_ascii_case("AV1") {
@@ -1176,6 +1177,29 @@ mod tests {
         assert!(sdp.contains("a=x-nv-general.rtcDataChannelOnNativeBundle:1"));
         assert!(sdp.contains("a=x-nv-runtime.encryptionKey:"));
         assert!(sdp.contains("m=video 5004"));
+    }
+
+    #[test]
+    fn owned_announce_preserves_the_configured_200_mbps_ceiling() {
+        let mut value = context();
+        value.settings["maxBitrateMbps"] = json!(200);
+        let sdp = build_announce(
+            &value,
+            AnnounceParams {
+                key: &"01".repeat(32),
+                key_id: 7,
+                port: 49006,
+                address: "192.0.2.10",
+                ufrag: "abcd",
+                password: "abcdefghijklmnopqrstuv",
+                fingerprint: "AA:BB",
+                video_port: 5004,
+                rtcp_on_sctp: true,
+            },
+        );
+        assert!(sdp.contains("a=x-nv-video[0].initialBitrateKbps:200000"));
+        assert!(sdp.contains("a=x-nv-video[0].initialPeakBitrateKbps:200000"));
+        assert!(sdp.contains("a=x-nv-vqos[0].bw.maximumBitrateKbps:200000"));
     }
 
     #[test]

@@ -28,6 +28,7 @@ private slots:
     void cyclesGuidePagesDeterministically();
     void parsesDirectLaunchArguments();
     void clipboardReadIsBounded();
+    void clipboardWriteIsBounded();
     void screenshotExportIsScoped();
 };
 
@@ -46,6 +47,8 @@ void AppControllerTest::acceptsQtOwnedStreamOverlays()
     QCOMPARE(controller.overlay(), QStringLiteral("stream-stats"));
     QVERIFY(controller.showOverlay(QStringLiteral("stream-stats-expanded")));
     QCOMPARE(controller.overlay(), QStringLiteral("stream-stats-expanded"));
+    QVERIFY(controller.showOverlay(QStringLiteral("desktop-stream-exit-confirm")));
+    QCOMPARE(controller.overlay(), QStringLiteral("desktop-stream-exit-confirm"));
 }
 
 void AppControllerTest::overlayGuardCommitsOnlyAfterNativeHandoff()
@@ -183,6 +186,17 @@ void AppControllerTest::clipboardReadIsBounded()
     AppController controller;
     QGuiApplication::clipboard()->setText(QString(70'000, u'x'));
     QCOMPARE(controller.readClipboardText().size(), 65'536);
+}
+
+void AppControllerTest::clipboardWriteIsBounded()
+{
+    AppController controller;
+    QVERIFY(!controller.writeClipboardText({}));
+    auto value = QString(70'000, u'y');
+    value[100] = QChar::Null;
+    QVERIFY(controller.writeClipboardText(value));
+    QCOMPARE(QGuiApplication::clipboard()->text().size(), 65'535);
+    QVERIFY(!QGuiApplication::clipboard()->text().contains(QChar::Null));
 }
 
 void AppControllerTest::screenshotExportIsScoped()

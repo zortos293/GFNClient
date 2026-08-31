@@ -6,8 +6,10 @@
 #include <QCursor>
 #include <QFocusEvent>
 #include <QGuiApplication>
+#include <QHoverEvent>
 #include <QImage>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPixmap>
@@ -23,6 +25,16 @@
 #include <algorithm>
 #include <cmath>
 #include <utility>
+
+#if defined(Q_OS_WIN)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 QPointer<NativeStreamRuntime> nativeRuntime;
@@ -355,13 +367,40 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
                 this, &StreamVideoItem::requestFrame, Qt::QueuedConnection);
         connect(nativeRuntime, &NativeStreamRuntime::cursorUpdated,
                 this, &StreamVideoItem::applyRemoteCursor, Qt::QueuedConnection);
+        connect(nativeRuntime, &NativeStreamRuntime::runningChanged, this, [this] {
+            if (!nativeRuntime || !nativeRuntime->running()) {
+                m_remoteCursorKnown = false;
+                m_remoteCursorVisible = false;
+                if (m_relativeMouse) setRelativeMouse(false);
+                else unsetCursor();
+            }
+            syncCaptureState();
+        });
     }
     connect(this, &QQuickItem::windowChanged, this, [this](QQuickWindow *currentWindow) {
-        if (currentWindow)
+        if (currentWindow) {
             connect(currentWindow, &QWindow::activeChanged,
                     this, &StreamVideoItem::syncCaptureState, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::xChanged,
+                    this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::yChanged,
+                    this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::widthChanged,
+                    this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::heightChanged,
+                    this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
+        }
         syncCaptureState();
     });
+}
+
+StreamVideoItem::~StreamVideoItem()
+{
+    if (nativeRuntime && nativeRuntime->running()) {
+        bool rawInput = false;
+        nativeRuntime->setCaptureActive(false, false, 0, &rawInput);
+    }
+    releaseInput();
 }
 
 QSize StreamVideoItem::videoSize() const
@@ -409,6 +448,18 @@ bool StreamVideoItem::captureActive() const
 bool StreamVideoItem::relativeMouse() const
 {
     return m_relativeMouse;
+}
+
+QVariantMap StreamVideoItem::shortcutBindings() const
+{
+    return m_shortcutBindings;
+}
+
+void StreamVideoItem::setShortcutBindings(const QVariantMap &bindings)
+{
+    if (m_shortcutBindings == bindings) return;
+    m_shortcutBindings = bindings;
+    emit shortcutBindingsChanged();
 }
 
 std::shared_ptr<StreamVideoRenderCallback> StreamVideoItem::renderCallback() const
@@ -518,6 +569,35 @@ quint16 StreamVideoItem::inputModifiers(Qt::KeyboardModifiers modifiers, int key
     return result;
 }
 
+QString StreamVideoItem::shortcutActionForInput(
+    const QVariantMap &bindings, int key, Qt::KeyboardModifiers modifiers)
+{
+    constexpr auto shortcutModifiers = Qt::ControlModifier | Qt::ShiftModifier
+        | Qt::AltModifier | Qt::MetaModifier;
+    const auto normalizedModifiers = modifiers & shortcutModifiers;
+    for (auto binding = bindings.cbegin(); binding != bindings.cend(); ++binding) {
+        QStringList sequences;
+        if (binding.value().metaType().id() == QMetaType::QString) {
+            sequences.push_back(binding.value().toString());
+        } else {
+            const auto values = binding.value().toList();
+            sequences.reserve(values.size());
+            for (const auto &value : values) sequences.push_back(value.toString());
+        }
+        for (const auto &text : std::as_const(sequences)) {
+            const QKeySequence sequence(text, QKeySequence::PortableText);
+            if (sequence.count() != 1) continue;
+            const auto combination = sequence[0];
+            if (combination.key() == static_cast<Qt::Key>(key)
+                && (combination.keyboardModifiers() & shortcutModifiers)
+                    == normalizedModifiers) {
+                return binding.key();
+            }
+        }
+    }
+    return {};
+}
+
 void StreamVideoItem::focusInEvent(QFocusEvent *event)
 {
     QQuickRhiItem::focusInEvent(event);
@@ -544,12 +624,16 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         return;
     }
     const auto identity = keyIdentity(event);
-    if (event->key() == Qt::Key_G
-        && inputModifiers(event->modifiers(), event->key()) == 0x02) {
-        if (!m_pressedShortcuts.contains(identity)) {
-            m_pressedShortcuts.insert(identity);
-            nativeRuntime->submitLocalAction(OPENNOW_STREAMER_LOCAL_ACTION_GUIDE);
-        }
+    const auto shortcutAction = shortcutActionForInput(
+        m_shortcutBindings, event->key(), event->modifiers());
+    if (!shortcutAction.isEmpty()) {
+        // A fullscreen transition can prevent Windows from delivering the key-up
+        // that belongs to the key which initiated it.  Keep the identity only so
+        // the eventual release is consumed; QKeyEvent::isAutoRepeat() already
+        // prevents repeats, so a stale identity must never suppress the next
+        // deliberate F11 press.
+        m_pressedShortcuts.insert(identity);
+        emit localShortcutRequested(shortcutAction);
         event->accept();
         return;
     }
@@ -606,6 +690,10 @@ void StreamVideoItem::mousePressEvent(QMouseEvent *event)
     const auto button = mouseButton(event->button());
     if (m_captureActive && button != 0) {
         if (!m_rawInputActive && !m_pressedMouseButtons.contains(button)) {
+            // In absolute cursor mode position and button must have one owner and
+            // preserve their queue order.  A move event is not guaranteed before
+            // a click (notably after a fullscreen viewport change).
+            if (!m_relativeMouse) submitAbsoluteMouse(event->position());
             m_pressedMouseButtons.insert(button);
             nativeRuntime->submitMouseButton(button, true);
         }
@@ -620,8 +708,10 @@ void StreamVideoItem::mouseReleaseEvent(QMouseEvent *event)
 {
     const auto button = mouseButton(event->button());
     if (m_captureActive && button != 0) {
-        if (!m_rawInputActive && m_pressedMouseButtons.remove(button))
+        if (!m_rawInputActive && m_pressedMouseButtons.remove(button)) {
+            if (!m_relativeMouse) submitAbsoluteMouse(event->position());
             nativeRuntime->submitMouseButton(button, false);
+        }
         event->accept();
         return;
     }
@@ -653,6 +743,34 @@ void StreamVideoItem::mouseMoveEvent(QMouseEvent *event)
     event->accept();
 }
 
+void StreamVideoItem::hoverEnterEvent(QHoverEvent *event)
+{
+    if (!m_captureActive || m_relativeMouse) {
+        event->ignore();
+        return;
+    }
+    // QQuickItem sends ordinary no-button movement through hover events once
+    // hover delivery is enabled. Publish the entry point as well so the remote
+    // cursor cannot retain a stale position when it re-enters the stream item.
+    submitAbsoluteMouse(event->position());
+    m_lastMousePosition = event->position();
+    event->accept();
+}
+
+void StreamVideoItem::hoverMoveEvent(QHoverEvent *event)
+{
+    if (!m_captureActive || m_relativeMouse) {
+        event->ignore();
+        return;
+    }
+    // With no button held Qt does not call mouseMoveEvent for this item. Keep
+    // the absolute GFN pointer current so remote hover and click hit-testing
+    // use the same coordinates.
+    submitAbsoluteMouse(event->position());
+    m_lastMousePosition = event->position();
+    event->accept();
+}
+
 void StreamVideoItem::wheelEvent(QWheelEvent *event)
 {
     if (!m_captureActive) {
@@ -660,6 +778,7 @@ void StreamVideoItem::wheelEvent(QWheelEvent *event)
         return;
     }
     if (!m_rawInputActive) {
+        if (!m_relativeMouse) submitAbsoluteMouse(event->position());
         const auto delta = event->pixelDelta().isNull() ? event->angleDelta()
                                                         : event->pixelDelta();
         nativeRuntime->submitMouseWheel(
@@ -672,23 +791,138 @@ void StreamVideoItem::wheelEvent(QWheelEvent *event)
 void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
 {
     QQuickRhiItem::itemChange(change, data);
+    if (change == ItemVisibleHasChanged && !isVisible()) {
+        m_remoteCursorKnown = false;
+        m_remoteCursorVisible = false;
+        if (m_relativeMouse) setRelativeMouse(false);
+        else unsetCursor();
+    }
     if (change == ItemVisibleHasChanged || change == ItemSceneChange)
         syncCaptureState();
 }
 
-void StreamVideoItem::submitAbsoluteMouse(const QPointF &position)
+void StreamVideoItem::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry)
 {
-    const auto target = QSize(std::max(1, qRound(width())), std::max(1, qRound(height())));
-    const auto viewport = aspectFitRect(m_videoSize, target);
+    QQuickRhiItem::geometryChange(newGeometry, oldGeometry);
+    updateCursorConfinement();
+}
+
+QRect StreamVideoItem::scaledCaptureRect(const QRectF &itemRect,
+                                         const QSizeF &windowSize,
+                                         const QRect &clientScreenRect)
+{
+    if (!itemRect.isValid() || itemRect.isEmpty() || !windowSize.isValid()
+        || windowSize.isEmpty() || !clientScreenRect.isValid()
+        || clientScreenRect.isEmpty()) {
+        return {};
+    }
+    const auto scaleX = clientScreenRect.width() / windowSize.width();
+    const auto scaleY = clientScreenRect.height() / windowSize.height();
+    const auto left = clientScreenRect.left()
+        + static_cast<int>(std::floor(itemRect.left() * scaleX));
+    const auto top = clientScreenRect.top()
+        + static_cast<int>(std::floor(itemRect.top() * scaleY));
+    const auto right = clientScreenRect.left()
+        + static_cast<int>(std::ceil(itemRect.right() * scaleX));
+    const auto bottom = clientScreenRect.top()
+        + static_cast<int>(std::ceil(itemRect.bottom() * scaleY));
+    return QRect(left, top, std::max(0, right - left),
+                 std::max(0, bottom - top)).intersected(clientScreenRect);
+}
+
+QRect StreamVideoItem::absoluteMouseCoordinates(const QPointF &position,
+                                                const QSize &videoSize,
+                                                const QSizeF &itemSize)
+{
+    const auto target = QSize(std::max(1, qRound(itemSize.width())),
+                              std::max(1, qRound(itemSize.height())));
+    const auto viewport = aspectFitRect(videoSize, target);
     const auto x = std::clamp(qRound(position.x()) - viewport.x(), 0,
                               std::max(0, viewport.width() - 1));
     const auto y = std::clamp(qRound(position.y()) - viewport.y(), 0,
                               std::max(0, viewport.height() - 1));
+    return QRect(x, y, viewport.width(), viewport.height());
+}
+
+StreamVideoItem::RemoteCursorMetadata StreamVideoItem::remoteCursorMetadata(
+    const QByteArray &bytes)
+{
+    RemoteCursorMetadata result;
+    if (bytes.size() < 7) return result;
+    const auto messageType = static_cast<quint8>(bytes[0]);
+    if (messageType > 1) return result;
+    const auto mimeLength = static_cast<qsizetype>(static_cast<quint8>(bytes[4]));
+    const auto lengthOffset = qsizetype{5} + mimeLength;
+    if (lengthOffset < 5 || lengthOffset + 2 > bytes.size()) return result;
+    const auto imageLength = static_cast<qsizetype>(
+        static_cast<quint8>(bytes[lengthOffset])
+        | (static_cast<quint16>(static_cast<quint8>(bytes[lengthOffset + 1])) << 8));
+    const auto imageOffset = lengthOffset + 2;
+    if (imageLength < 0 || imageOffset > bytes.size()
+        || imageLength > bytes.size() - imageOffset) {
+        return result;
+    }
+    result.imageOffset = imageOffset;
+    result.imageLength = imageLength;
+    const auto positionOffset = imageOffset + imageLength;
+    if (positionOffset + 4 <= bytes.size()) {
+        result.normalizedPosition = QPoint(
+            static_cast<quint8>(bytes[positionOffset])
+                | (static_cast<quint16>(static_cast<quint8>(bytes[positionOffset + 1])) << 8),
+            static_cast<quint8>(bytes[positionOffset + 2])
+                | (static_cast<quint16>(static_cast<quint8>(bytes[positionOffset + 3])) << 8));
+    }
+    const auto scaleOffset = positionOffset + 4;
+    if (scaleOffset + 2 <= bytes.size()) {
+        const auto scalePercent = static_cast<quint16>(
+            static_cast<quint8>(bytes[scaleOffset])
+            | (static_cast<quint16>(static_cast<quint8>(bytes[scaleOffset + 1])) << 8));
+        if (scalePercent > 0) result.scale = scalePercent / 100.0;
+    }
+    return result;
+}
+
+QPoint StreamVideoItem::mapRemoteCursorPosition(const QPoint &normalizedPosition,
+                                                const QSize &videoSize,
+                                                const QSizeF &itemSize)
+{
+    const auto target = QSize(std::max(1, qRound(itemSize.width())),
+                              std::max(1, qRound(itemSize.height())));
+    const auto viewport = aspectFitRect(videoSize, target);
+    const auto coordinate = [](int value, int extent) {
+        const auto safeExtent = std::max(1, extent);
+        return static_cast<int>(std::min<qint64>(
+            (static_cast<qint64>(std::clamp(value, 0, 65535)) * safeExtent) / 65535,
+            safeExtent - 1));
+    };
+    return QPoint(viewport.x() + coordinate(normalizedPosition.x(), viewport.width()),
+                  viewport.y() + coordinate(normalizedPosition.y(), viewport.height()));
+}
+
+void StreamVideoItem::resynchronizeInput()
+{
+    syncCaptureState();
+    if (m_captureActive && m_relativeMouse && !m_rawInputActive) {
+        const auto anchor = mapToGlobal(QPointF(width() / 2.0, height() / 2.0)).toPoint();
+        QCursor::setPos(anchor);
+    } else if (m_captureActive && !m_relativeMouse) {
+        // Fullscreen changes the absolute viewport dimensions without requiring
+        // the physical cursor to move. Re-publish the current point immediately.
+        submitAbsoluteMouse(mapFromGlobal(QCursor::pos()));
+    }
+    m_lastMousePosition = mapFromGlobal(QCursor::pos());
+    updateCursorConfinement();
+}
+
+void StreamVideoItem::submitAbsoluteMouse(const QPointF &position)
+{
+    const auto coordinates = absoluteMouseCoordinates(
+        position, m_videoSize, QSizeF(width(), height()));
     nativeRuntime->submitMouseAbsolute(
-        static_cast<quint16>(std::min(x, 65535)),
-        static_cast<quint16>(std::min(y, 65535)),
-        static_cast<quint16>(std::min(viewport.width(), 65535)),
-        static_cast<quint16>(std::min(viewport.height(), 65535)));
+        static_cast<quint16>(std::min(coordinates.x(), 65535)),
+        static_cast<quint16>(std::min(coordinates.y(), 65535)),
+        static_cast<quint16>(std::min(coordinates.width(), 65535)),
+        static_cast<quint16>(std::min(coordinates.height(), 65535)));
 }
 
 void StreamVideoItem::syncCaptureState()
@@ -704,30 +938,104 @@ void StreamVideoItem::syncCaptureState()
             &rawInput);
     }
     m_rawInputActive = desired && rawInput;
-    if (m_captureActive == desired) return;
+    const auto changed = m_captureActive != desired;
     m_captureActive = desired;
-    if (m_captureActive) m_lastMousePosition = mapFromGlobal(QCursor::pos());
-    emit captureActiveChanged();
+    if (m_captureActive) {
+        m_lastMousePosition = mapFromGlobal(QCursor::pos());
+        if (m_relativeMouse) grabMouse();
+    } else {
+        ungrabMouse();
+    }
+    updateCursorConfinement();
+    if (changed) emit captureActiveChanged();
 }
 
 void StreamVideoItem::releaseInput()
 {
-    if (!nativeRuntime) return;
-    for (const auto &pressed : std::as_const(m_pressedKeys))
-        nativeRuntime->submitKey(pressed.virtualKey, 0, false);
+    if (nativeRuntime) {
+        for (const auto &pressed : std::as_const(m_pressedKeys))
+            nativeRuntime->submitKey(pressed.virtualKey, 0, false);
+    }
     m_pressedKeys.clear();
     m_pressedShortcuts.clear();
-    if (!m_rawInputActive) {
+    if (!m_rawInputActive) releaseQtMouseButtons();
+    else m_pressedMouseButtons.clear();
+    ungrabMouse();
+    releaseCursorConfinement();
+}
+
+void StreamVideoItem::releaseQtMouseButtons()
+{
+    if (nativeRuntime) {
         for (const auto button : std::as_const(m_pressedMouseButtons))
             nativeRuntime->submitMouseButton(button, false);
     }
     m_pressedMouseButtons.clear();
-    ungrabMouse();
+}
+
+void StreamVideoItem::updateCursorConfinement()
+{
+#if defined(Q_OS_WIN)
+    if (!m_captureActive || !window() || !window()->isActive()) {
+        releaseCursorConfinement();
+        return;
+    }
+    const auto handle = reinterpret_cast<HWND>(window()->winId());
+    RECT client{};
+    POINT topLeft{};
+    if (!handle || !GetClientRect(handle, &client)
+        || !ClientToScreen(handle, &topLeft)) {
+        releaseCursorConfinement();
+        return;
+    }
+    POINT bottomRight{client.right, client.bottom};
+    if (!ClientToScreen(handle, &bottomRight)) {
+        releaseCursorConfinement();
+        return;
+    }
+    const auto *content = window()->contentItem();
+    if (!content) {
+        releaseCursorConfinement();
+        return;
+    }
+    const auto first = mapToItem(content, QPointF(0, 0));
+    const auto second = mapToItem(content, QPointF(width(), height()));
+    const QRectF itemRect(QPointF(std::min(first.x(), second.x()),
+                                 std::min(first.y(), second.y())),
+                          QPointF(std::max(first.x(), second.x()),
+                                  std::max(first.y(), second.y())));
+    const auto captureRect = scaledCaptureRect(
+        itemRect, QSizeF(window()->width(), window()->height()),
+        QRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x,
+              bottomRight.y - topLeft.y));
+    if (captureRect.isEmpty()) {
+        releaseCursorConfinement();
+        return;
+    }
+    const RECT screenRect{captureRect.left(), captureRect.top(),
+                          captureRect.left() + captureRect.width(),
+                          captureRect.top() + captureRect.height()};
+    m_cursorConfined = ClipCursor(&screenRect) != FALSE;
+#else
+    m_cursorConfined = false;
+#endif
+}
+
+void StreamVideoItem::releaseCursorConfinement()
+{
+#if defined(Q_OS_WIN)
+    if (m_cursorConfined) ClipCursor(nullptr);
+#endif
+    m_cursorConfined = false;
 }
 
 void StreamVideoItem::setRelativeMouse(bool relative)
 {
     if (m_relativeMouse == relative) return;
+    // Qt owns buttons while the remote cursor is visible; Windows Raw Input
+    // owns them in relative mode. A raw release cannot match a button that Qt
+    // pressed, so close the old ownership epoch before enabling Raw Input.
+    if (relative && !m_rawInputActive) releaseQtMouseButtons();
     m_relativeMouse = relative;
     if (relative) {
         setCursor(Qt::BlankCursor);
@@ -739,6 +1047,7 @@ void StreamVideoItem::setRelativeMouse(bool relative)
         }
     } else {
         ungrabMouse();
+        releaseCursorConfinement();
         unsetCursor();
     }
     syncCaptureState();
@@ -752,27 +1061,38 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
     const auto cursorId = static_cast<quint8>(bytes[1]);
     if (messageType > 1) return;
     const auto hidden = messageType == 0 && cursorId == 0;
+    const auto reposition = !m_remoteCursorKnown || !m_remoteCursorVisible;
+    const auto metadata = remoteCursorMetadata(bytes);
+    m_remoteCursorKnown = true;
+    m_remoteCursorVisible = !hidden;
     setRelativeMouse(hidden);
     if (hidden) return;
 
-    if (messageType == 1 && bytes.size() >= 7) {
-        const auto mimeLength = static_cast<quint8>(bytes[4]);
-        const auto lengthOffset = 5 + mimeLength;
-        if (lengthOffset + 2 <= bytes.size()) {
-            const auto imageLength = static_cast<quint16>(
-                static_cast<quint8>(bytes[lengthOffset])
-                | (static_cast<quint16>(static_cast<quint8>(bytes[lengthOffset + 1])) << 8));
-            const auto imageStart = lengthOffset + 2;
-            if (imageStart + imageLength <= bytes.size()) {
-                QPixmap pixmap;
-                const auto image = QByteArray::fromBase64(bytes.mid(imageStart, imageLength));
-                if (pixmap.loadFromData(image)) {
-                    setCursor(QCursor(pixmap,
-                                      static_cast<quint8>(bytes[2]),
-                                      static_cast<quint8>(bytes[3])));
-                    return;
-                }
-            }
+    if (reposition && metadata.normalizedPosition) {
+        const auto local = mapRemoteCursorPosition(
+            *metadata.normalizedPosition, m_videoSize, QSizeF(width(), height()));
+        QCursor::setPos(mapToGlobal(local).toPoint());
+        m_lastMousePosition = local;
+    }
+
+    if (messageType == 1 && metadata.imageOffset >= 0 && metadata.imageLength > 0) {
+        QPixmap pixmap;
+        const auto image = QByteArray::fromBase64(
+            bytes.mid(metadata.imageOffset, metadata.imageLength));
+        if (pixmap.loadFromData(image) && pixmap.width() <= 256 && pixmap.height() <= 256) {
+            const auto scaledSize = QSize(
+                std::clamp(qRound(pixmap.width() / metadata.scale), 1, 256),
+                std::clamp(qRound(pixmap.height() / metadata.scale), 1, 256));
+            if (scaledSize != pixmap.size())
+                pixmap = pixmap.scaled(scaledSize, Qt::IgnoreAspectRatio,
+                                       Qt::SmoothTransformation);
+            const auto hotspot = QPoint(
+                std::clamp(qRound(static_cast<quint8>(bytes[2]) / metadata.scale),
+                           0, pixmap.width() - 1),
+                std::clamp(qRound(static_cast<quint8>(bytes[3]) / metadata.scale),
+                           0, pixmap.height() - 1));
+            setCursor(QCursor(pixmap, hotspot.x(), hotspot.y()));
+            return;
         }
     }
     switch (cursorId) {

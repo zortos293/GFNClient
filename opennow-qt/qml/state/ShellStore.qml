@@ -155,6 +155,7 @@ QtObject {
     property int screenshotRequestGeneration: 0
     property int recordingToggleRequestGeneration: 0
     property int shortcutActionGeneration: 0
+    property var runtimeStreamProfile: ({})
     property bool antiAfkEnabled: false
     property var lastSessionReport: null
     property bool desiredStreamInputPaused: false
@@ -1052,6 +1053,7 @@ QtObject {
         const previousSession = activeSession
         activeSession = normalizedStreamingSession(session)
         if (!activeSession) {
+            runtimeStreamProfile = ({})
             if (previousSession && streamer && streamer.status !== "stopped")
                 stopNativeStreamer("The remote session ended")
             streamRecordingActive = false
@@ -1172,7 +1174,12 @@ QtObject {
     }
 
     function acceptStreamerSnapshot(snapshot) {
-        streamer = snapshot || null
+        streamer = snapshot ? Object.assign({}, snapshot, {
+            codec: snapshot.codec || runtimeStreamProfile.codec || "",
+            outputWidth: snapshot.outputWidth || runtimeStreamProfile.width || 0,
+            outputHeight: snapshot.outputHeight || runtimeStreamProfile.height || 0,
+            outputFps: snapshot.outputFps || runtimeStreamProfile.fps || 0
+        }) : null
         if (!streamer) {
             return
         }
@@ -1328,8 +1335,8 @@ QtObject {
         if (streamerStopRequestId !== "")
             return
         // A runtime that never started, or that already reported "stopped", has
-        // nothing left to reap. Without this an Escape held down during a failing
-        // session issues one native stop command per key repeat.
+        // nothing left to reap. Without this a repeated stop request during a
+        // failing session could issue multiple native stop commands.
         const status = streamer ? String(streamer.status || "") : ""
         if (status === "" || status === "stopped")
             return
@@ -1384,7 +1391,6 @@ QtObject {
         if (generation <= overlayRequestGeneration)
             return
         overlayRequestGeneration = generation
-        AppController.activateWindow()
         AppController.showOverlay(desktopUiActive ? "desktop-stream-menu" : "guide-session")
     }
 
@@ -1421,29 +1427,65 @@ QtObject {
         toggleStreamRecording()
     }
 
-    function inspectStreamerShortcutAction(value) {
-        const generation = Number(value && value.shortcutActionGeneration || 0)
-        if (generation <= shortcutActionGeneration)
+    function streamShortcutBindings() {
+        return {
+            "guide": ["Ctrl+G"],
+            "toggle-pointer-lock": [String(settings.shortcutTogglePointerLock || "F8")],
+            "toggle-fullscreen": [String(settings.shortcutToggleFullscreen || "F11")],
+            "stop-stream": [String(settings.shortcutStopStream || "Ctrl+Shift+Q")],
+            "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk || "Ctrl+Shift+K")],
+            "toggle-microphone": [String(settings.shortcutToggleMicrophone || "Ctrl+Shift+M")],
+            "screenshot": [String(settings.shortcutScreenshot || "Ctrl+F11")],
+            "toggle-recording": [String(settings.shortcutToggleRecording || "F12")]
+        }
+    }
+
+    function isStreamStatsOverlay(overlay) {
+        return ["desktop-stream-stats", "desktop-stream-stats-expanded",
+                "stream-stats", "stream-stats-expanded"]
+            .indexOf(String(overlay || "")) >= 0
+    }
+
+    // Statistics are a heads-up display, not a shell modal. Gameplay input must
+    // stay owned by StreamVideoItem while the panel is visible.
+    function streamOverlayBlocksGameplayInput(overlay) {
+        const name = String(overlay || "")
+        return name !== "" && !isStreamStatsOverlay(name)
+    }
+
+    function requestStreamExitConfirmation() {
+        if (AppController.route !== "stream")
             return
-        shortcutActionGeneration = generation
-        const action = String(value.shortcutAction || "")
-        if (action === "stop-stream") {
-            stopStreamingSession()
+        AppController.showOverlay("desktop-stream-exit-confirm")
+        accessibilityMessage = qsTr("Confirm ending the cloud session")
+    }
+
+    function confirmStreamExit() {
+        stopStreamingSession()
+        AppController.showOverlay("")
+    }
+
+    function applyStreamShortcutAction(action) {
+        action = String(action || "")
+        if (action === "guide") {
+            AppController.showOverlay(desktopUiActive ? "desktop-stream-menu" : "guide-session")
+        } else if (action === "request-exit" || action === "stop-stream") {
+            requestStreamExitConfirmation()
         } else if (action === "toggle-anti-afk") {
             antiAfkEnabled = !antiAfkEnabled
             streamControlMessage = antiAfkEnabled ? qsTr("Anti-AFK on") : qsTr("Anti-AFK off")
             accessibilityMessage = streamControlMessage
         } else if (action === "toggle-stats") {
-            AppController.activateWindow()
             const compact = desktopUiActive ? "desktop-stream-stats" : "stream-stats"
             const expanded = desktopUiActive
                 ? "desktop-stream-stats-expanded" : "stream-stats-expanded"
-            if (AppController.overlay === compact || AppController.overlay === expanded)
+            if (AppController.overlay === compact)
+                AppController.showOverlay(expanded)
+            else if (AppController.overlay === expanded)
                 AppController.showOverlay("")
             else
                 AppController.showOverlay(compact)
         } else if (action === "toggle-fullscreen") {
-            AppController.activateWindow()
             fullscreenToggleRequested()
         } else if (action === "toggle-pointer-lock") {
             pointerLockToggleRequested()
@@ -1452,6 +1494,14 @@ QtObject {
         } else if (action === "toggle-recording") {
             toggleStreamRecording()
         }
+    }
+
+    function inspectStreamerShortcutAction(value) {
+        const generation = Number(value && value.shortcutActionGeneration || 0)
+        if (generation <= shortcutActionGeneration)
+            return
+        shortcutActionGeneration = generation
+        applyStreamShortcutAction(value.shortcutAction)
     }
 
     function toggleStreamRecording() {
@@ -2246,6 +2296,19 @@ QtObject {
                     }))
                     return
                 }
+                const preparedSettings = result.context.settings || ({})
+                root.runtimeStreamProfile = {
+                    codec: String(preparedSettings.codec || "").toUpperCase(),
+                    width: Number(preparedSettings.width || root.negotiatedStreamProfile.width || 0),
+                    height: Number(preparedSettings.height || root.negotiatedStreamProfile.height || 0),
+                    fps: Number(preparedSettings.fps || root.negotiatedStreamProfile.fps || 0)
+                }
+                root.acceptStreamerSnapshot(Object.assign({}, root.streamer || ({}), {
+                    codec: root.runtimeStreamProfile.codec,
+                    outputWidth: root.runtimeStreamProfile.width,
+                    outputHeight: root.runtimeStreamProfile.height,
+                    outputFps: root.runtimeStreamProfile.fps
+                }))
                 root.streamerStartRequestId = root.sendNativeCommand("start", {
                     context: result.context
                 }, "start")

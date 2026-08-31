@@ -46,6 +46,14 @@ FocusScope {
         ShellStore.streamCaptureRect = Qt.rect(
             window.x + point.x, window.y + point.y, root.width, root.height)
     }
+    function resynchronizeStreamInput() {
+        root.publishCaptureRect()
+        if (!root.visible || !root.streaming
+                || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay))
+            return
+        streamVideo.forceActiveFocus()
+        streamVideo.resynchronizeInput()
+    }
 
     onXChanged: publishCaptureRect()
     onYChanged: publishCaptureRect()
@@ -55,8 +63,12 @@ FocusScope {
 
     Connections {
         target: root.Window.window
-        function onXChanged() { root.publishCaptureRect() }
-        function onYChanged() { root.publishCaptureRect() }
+        function onXChanged() { root.resynchronizeStreamInput() }
+        function onYChanged() { root.resynchronizeStreamInput() }
+        function onWidthChanged() { Qt.callLater(root.resynchronizeStreamInput) }
+        function onHeightChanged() { Qt.callLater(root.resynchronizeStreamInput) }
+        function onVisibilityChanged() { Qt.callLater(root.resynchronizeStreamInput) }
+        function onActiveChanged() { Qt.callLater(root.resynchronizeStreamInput) }
     }
 
     StreamVideoItem {
@@ -65,9 +77,12 @@ FocusScope {
         anchors.fill: parent
         visible: root.visible && root.streaming
         focus: visible
-        inputEnabled: visible && AppController.overlay === ""
+        inputEnabled: visible
+            && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
+        shortcutBindings: ShellStore.streamShortcutBindings()
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         z: 0
+        onLocalShortcutRequested: action => ShellStore.applyStreamShortcutAction(action)
     }
 
     Connections {
@@ -220,7 +235,7 @@ FocusScope {
         if (root.statusVisible)
             primaryAction.forceActiveFocus()
         else
-            root.forceActiveFocus()
+            streamVideo.forceActiveFocus()
     }
 
     onVisibleChanged: {
@@ -233,7 +248,8 @@ FocusScope {
     Keys.onPressed: event => {
         if (event.isAutoRepeat)
             return
-        if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
+        if (!root.streaming
+                && (event.key === Qt.Key_Escape || event.key === Qt.Key_Back)) {
             root.stopRequested()
             event.accepted = true
         }

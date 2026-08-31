@@ -2205,7 +2205,7 @@ fn native_input_capture_enabled_value(owner: Option<&str>) -> bool {
 pub(crate) enum ActiveOutput {
     Software(Box<SoftwareOutput>),
     #[cfg(target_os = "windows")]
-    Windows(WindowsOutput),
+    Windows(Box<WindowsOutput>),
     #[cfg(target_os = "linux")]
     LinuxHardware(Box<LinuxHardwareOutput>),
     #[cfg(target_os = "macos")]
@@ -2254,6 +2254,7 @@ impl ActiveOutput {
                 WindowsDecoderMode::Software
             };
             return WindowsOutput::initialize(windows_bridge, output, stream, decoder_mode)
+                .map(Box::new)
                 .map(Self::Windows);
         }
         #[cfg(target_os = "linux")]
@@ -2604,20 +2605,6 @@ impl WindowsExternalSdlSurface {
                 if let Some(raw_input) = self.raw_input.as_ref() {
                     raw_input.release_buttons();
                 }
-            } else if matches!(
-                event,
-                sdl2::event::Event::Window {
-                    window_id,
-                    win_event: sdl2::event::WindowEvent::FocusGained,
-                    ..
-                } if window_id == stream_window_id
-            ) {
-                self.input_capture.handle_event(
-                    &self.sdl,
-                    &mut self.window,
-                    self.stream_size,
-                    event,
-                );
             } else {
                 self.input_capture.handle_event(
                     &self.sdl,

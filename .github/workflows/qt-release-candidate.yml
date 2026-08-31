@@ -73,14 +73,14 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-8vcpu-ubuntu-2404
             qt_host: linux
             qt_arch: linux_gcc_64
             linuxdeploy_arch: x86_64
             linuxdeploy_sha256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
             qt_plugin_sha256: 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
           - arch: arm64
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: blacksmith-8vcpu-ubuntu-2404-arm
             qt_host: linux_arm64
             qt_arch: linux_gcc_arm64
             linuxdeploy_arch: aarch64
@@ -119,7 +119,7 @@ jobs:
           git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
           cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL-build" -DCMAKE_BUILD_TYPE=Release \
             -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF
-          cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel
+          cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel 6
           cmake --install "$RUNNER_TEMP/SDL-build" --config Release --prefix "$RUNNER_TEMP/SDL-install"
 
       - name: Configure, build, and test release
@@ -132,7 +132,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
-          cmake --build build/qt-release --config Release --parallel
+          cmake --build build/qt-release --config Release --parallel 6
           ctest --test-dir build/qt-release -C Release --output-on-failure --parallel 4
 
       - name: Build DEB and AppImage

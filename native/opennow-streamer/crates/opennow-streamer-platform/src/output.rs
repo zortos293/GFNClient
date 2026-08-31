@@ -1369,6 +1369,7 @@ impl SdlInputCapture {
         std::mem::take(&mut self.captured)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub(crate) const fn relative_mouse_enabled(&self) -> bool {
         self.relative_mouse
     }

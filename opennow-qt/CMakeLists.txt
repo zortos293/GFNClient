@@ -287,6 +287,9 @@ if(WIN32)
             REQUIRED)
         list(PREPEND OPENNOW_WINDEPLOYQT_ARGS
             --qtpaths "${OPENNOW_TARGET_QTPATHS_EXECUTABLE}")
+        set(OPENNOW_QT_DEPLOY_TOOL_ARGS
+            DEPLOY_TOOL_OPTIONS
+            --qtpaths "${OPENNOW_TARGET_QTPATHS_EXECUTABLE}")
     else()
         find_program(WINDEPLOYQT_EXECUTABLE NAMES windeployqt
             HINTS "${OPENNOW_QT_TARGET_BIN}"
@@ -824,6 +827,7 @@ if(WIN32 OR APPLE)
         TARGET opennow-qt
         OUTPUT_SCRIPT opennow_deploy_script
         NO_UNSUPPORTED_PLATFORM_ERROR
+        ${OPENNOW_QT_DEPLOY_TOOL_ARGS}
     )
     install(SCRIPT "${opennow_deploy_script}")
 endif()

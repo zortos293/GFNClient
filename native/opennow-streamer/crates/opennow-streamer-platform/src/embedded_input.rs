@@ -1,5 +1,7 @@
+use std::sync::Arc;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use crate::{CapturedInput, CapturedInputQueue};
 

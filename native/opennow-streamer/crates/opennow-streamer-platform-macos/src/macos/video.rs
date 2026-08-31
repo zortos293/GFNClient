@@ -162,7 +162,7 @@ impl VideoDecoder {
         let hardware_decoder_key =
             unsafe { kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder };
         let mut destination_entries = vec![
-            (cf_ptr(metal_compatibility_key), cf_ptr(true_value)),
+            (cf_ptr(metal_compatibility_key), cf_ptr(&*true_value)),
             (
                 cf_ptr(io_surface_properties_key),
                 cf_ptr(&*empty_properties),
@@ -171,7 +171,7 @@ impl VideoDecoder {
         destination_entries.insert(0, (cf_ptr(pixel_format_key), cf_ptr(&*pixel_format_number)));
         let destination_attributes = make_dictionary(&destination_entries)?;
         let decoder_specification =
-            make_dictionary(&[(cf_ptr(hardware_decoder_key), cf_ptr(true_value))])?;
+            make_dictionary(&[(cf_ptr(hardware_decoder_key), cf_ptr(&*true_value))])?;
 
         let mut session_ptr = ptr::null_mut();
         let status = unsafe {

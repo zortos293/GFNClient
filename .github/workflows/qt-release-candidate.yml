@@ -109,7 +109,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdrm-dev libpulse-dev libsecret-1-dev \
+          sudo apt-get install -y libasound2-dev libdbus-1-dev libdrm-dev libpulse-dev libsecret-1-dev \
             libva-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
             libxrandr-dev libxrender-dev libxss-dev make nasm pkg-config
 
@@ -129,7 +129,7 @@ jobs:
           UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
         run: |
           cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
-            -DSDL3_DIR="$RUNNER_TEMP/SDL-install/lib/cmake/SDL3" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
           cmake --build build/qt-release --config Release --parallel
@@ -232,6 +232,19 @@ jobs:
         with:
           arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
 
+      - name: Install LLVM
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install llvm -y --no-progress
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "clang.exe")) -or
+              -not (Test-Path (Join-Path $llvmBin "libclang.dll"))) {
+            throw "LLVM installation is missing libclang.dll"
+          }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Install WiX Toolset
         shell: pwsh
         run: |
@@ -290,7 +303,7 @@ jobs:
           if [[ -n "${{ matrix.rust_target }}" ]]; then args+=("-DOPENNOW_RUST_TARGET=${{ matrix.rust_target }}"); fi
           if [[ -n "${OPENNOW_QT_HOST_PATH:-}" ]]; then args+=("-DQT_HOST_PATH=${OPENNOW_QT_HOST_PATH}"); fi
           cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
-            -DSDL3_DIR="$RUNNER_TEMP/SDL-install/lib/cmake/SDL3" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY" "${args[@]}"
           cmake --build build/qt-release --config Release --parallel
@@ -418,7 +431,7 @@ jobs:
           cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} \
             -DOPENNOW_RUST_TARGET=${{ matrix.rust_target }} \
-            -DSDL3_DIR="$RUNNER_TEMP/SDL-install/lib/cmake/SDL3" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
           cmake --build build/qt-release --config Release --parallel

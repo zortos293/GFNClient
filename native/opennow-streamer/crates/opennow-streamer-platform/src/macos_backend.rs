@@ -331,7 +331,7 @@ impl MacExternalSurface {
         eprintln!(
             "External macOS stream window ready (native keyboard/mouse capture: {capture_input})"
         );
-        let mut input_capture = SdlInputCapture::new(capture_input, false, stream.shortcuts);
+        let mut input_capture = SdlInputCapture::new(capture_input, false, false, stream.shortcuts);
         input_capture.enable_gamepads(&sdl);
         Ok(Self {
             input_capture,

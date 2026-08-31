@@ -129,6 +129,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Enable Windows Media Foundation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: .
+        run: .github/scripts/ensure-windows-media-foundation.ps1
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -242,6 +248,7 @@ jobs:
         run: npm run build
 
       - name: Test and build native streamer v2
+        shell: bash
         env:
           OPENNOW_NATIVE_STREAMER_TARGET: ${{ matrix.native_target }}
           OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: ${{ matrix.native_platform_key }}

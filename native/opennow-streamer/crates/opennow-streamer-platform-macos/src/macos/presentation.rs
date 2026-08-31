@@ -658,7 +658,7 @@ impl MetalPresenter {
         // SAFETY: `presented_handler` is a valid Objective-C block. Metal copies the escaping
         // handler and invokes it after the drawable reaches scanout.
         unsafe {
-            drawable_as_base.addPresentedHandler(&presented_handler);
+            drawable_as_base.addPresentedHandler(RcBlock::as_ptr(&presented_handler));
         }
         command_buffer.presentDrawable(drawable_as_base);
         command_buffer.commit();

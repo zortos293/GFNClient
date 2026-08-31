@@ -181,7 +181,7 @@ jobs:
           set -euo pipefail
           appimage=$(find build/release-artifacts -maxdepth 1 -type f -name '*.AppImage' -print -quit)
           "$appimage" --smoke-test --allow-multiple-instances --route home --reduced-motion
-          (cd build/release-artifacts && sha256sum *.AppImage *.deb > SHA256SUMS)
+          (cd build/release-artifacts && sha256sum -- *.AppImage *.deb > SHA256SUMS)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -210,6 +210,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.source_sha }}
+
+      - name: Enable Windows Media Foundation
+        shell: pwsh
+        run: .github/scripts/ensure-windows-media-foundation.ps1
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -512,7 +516,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd build/release-artifacts && shasum -a 256 *.dmg *.zip > SHA256SUMS)
+          (cd build/release-artifacts && shasum -a 256 -- *.dmg *.zip > SHA256SUMS)
 
       - name: Remove temporary signing material
         if: always()

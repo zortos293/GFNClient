@@ -603,6 +603,8 @@ if(BUILD_TESTING)
         # directory, so deploy the test runtime explicitly and make the runners
         # depend on it. This keeps a clean build directly runnable by CTest.
         add_custom_target(opennow-qt-test-runtime ALL
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:opennow-qt>"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:Qt6::Test>"
                 "$<TARGET_FILE_DIR:opennow-qt>/"

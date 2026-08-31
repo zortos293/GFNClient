@@ -190,6 +190,7 @@ jobs:
             libpulse-dev \
             libsecret-1-dev \
             libva-dev \
+            libvulkan-dev \
             libx11-dev \
             libxcursor-dev \
             libxext-dev \

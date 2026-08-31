@@ -74,6 +74,8 @@ fragment float4 video_fragment(
 }
 "#;
 
+type PresentedHandler = RcBlock<dyn Fn(NonNull<ProtocolObject<dyn MTLDrawable>>)>;
+
 pub(super) struct PresenterHandle {
     queue: Arc<BoundedQueue<DecodedFrame>>,
     worker: Option<JoinHandle<()>>,
@@ -378,7 +380,7 @@ unsafe impl Send for PendingFrame {}
 
 struct MetalPresenter {
     layer: Retained<CAMetalLayer>,
-    device: Retained<ProtocolObject<dyn MTLDevice>>,
+    _device: Retained<ProtocolObject<dyn MTLDevice>>,
     command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     texture_cache: CFRetained<CVMetalTextureCache>,
@@ -530,7 +532,7 @@ impl MetalPresenter {
         let texture_cache = unsafe { CFRetained::from_raw(cache_ptr) };
         Ok(Self {
             layer,
-            device,
+            _device: device,
             command_queue,
             pipeline,
             texture_cache,
@@ -649,7 +651,7 @@ impl MetalPresenter {
         }
         let telemetry = Arc::clone(&self.telemetry);
         let expected_period = frame.minimum_frame_duration_seconds;
-        let presented_handler: RcBlock<dyn Fn(NonNull<ProtocolObject<dyn MTLDrawable>>)> =
+        let presented_handler: PresentedHandler =
             RcBlock::new(move |drawable: NonNull<ProtocolObject<dyn MTLDrawable>>| {
                 // SAFETY: Metal supplies a valid drawable pointer for the duration of this block.
                 let presented_time = unsafe { drawable.as_ref() }.presentedTime();

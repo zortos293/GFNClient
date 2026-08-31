@@ -105,22 +105,22 @@ fragment float4 embedded_video_fragment(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BiPlanarFormat {
-    Nv12VideoRange,
-    Nv12FullRange,
-    P010VideoRange,
-    P010FullRange,
+    Nv12Video,
+    Nv12Full,
+    P010Video,
+    P010Full,
 }
 
 impl BiPlanarFormat {
     fn from_pixel_format(pixel_format: u32) -> Option<Self> {
         if pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange {
-            Some(Self::Nv12VideoRange)
+            Some(Self::Nv12Video)
         } else if pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
-            Some(Self::Nv12FullRange)
+            Some(Self::Nv12Full)
         } else if pixel_format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange {
-            Some(Self::P010VideoRange)
+            Some(Self::P010Video)
         } else if pixel_format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
-            Some(Self::P010FullRange)
+            Some(Self::P010Full)
         } else {
             None
         }
@@ -128,10 +128,8 @@ impl BiPlanarFormat {
 
     const fn plane_formats(self) -> (MTLPixelFormat, MTLPixelFormat) {
         match self {
-            Self::Nv12VideoRange | Self::Nv12FullRange => {
-                (MTLPixelFormat::R8Unorm, MTLPixelFormat::RG8Unorm)
-            }
-            Self::P010VideoRange | Self::P010FullRange => {
+            Self::Nv12Video | Self::Nv12Full => (MTLPixelFormat::R8Unorm, MTLPixelFormat::RG8Unorm),
+            Self::P010Video | Self::P010Full => {
                 (MTLPixelFormat::R16Unorm, MTLPixelFormat::RG16Unorm)
             }
         }
@@ -144,12 +142,12 @@ impl BiPlanarFormat {
                 VideoColorSpace::Bt709 => 1,
             },
             sample_format: match self {
-                Self::Nv12VideoRange | Self::Nv12FullRange => 0,
-                Self::P010VideoRange | Self::P010FullRange => 1,
+                Self::Nv12Video | Self::Nv12Full => 0,
+                Self::P010Video | Self::P010Full => 1,
             },
             full_range: match self {
-                Self::Nv12VideoRange | Self::P010VideoRange => 0,
-                Self::Nv12FullRange | Self::P010FullRange => 1,
+                Self::Nv12Video | Self::P010Video => 0,
+                Self::Nv12Full | Self::P010Full => 1,
             },
         }
     }
@@ -558,19 +556,19 @@ mod tests {
     fn accepts_nv12_and_p010_ranges_only() {
         assert_eq!(
             BiPlanarFormat::from_pixel_format(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-            Some(BiPlanarFormat::Nv12VideoRange)
+            Some(BiPlanarFormat::Nv12Video)
         );
         assert_eq!(
             BiPlanarFormat::from_pixel_format(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
-            Some(BiPlanarFormat::Nv12FullRange)
+            Some(BiPlanarFormat::Nv12Full)
         );
         assert_eq!(
             BiPlanarFormat::from_pixel_format(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
-            Some(BiPlanarFormat::P010VideoRange)
+            Some(BiPlanarFormat::P010Video)
         );
         assert_eq!(
             BiPlanarFormat::from_pixel_format(kCVPixelFormatType_420YpCbCr10BiPlanarFullRange),
-            Some(BiPlanarFormat::P010FullRange)
+            Some(BiPlanarFormat::P010Full)
         );
         assert_eq!(BiPlanarFormat::from_pixel_format(0), None);
     }

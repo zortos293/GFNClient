@@ -27,16 +27,57 @@ use crate::failure::FailureReporter;
 use crate::format::{Av1Format, FrameTiming, H264Format, H265Format, VideoColorSpace, VideoFormat};
 use crate::queue::{BoundedQueue, PushResult};
 
+use super::mailbox::LatestMailbox;
 use super::{BackendError, Counters};
 
+#[derive(Clone)]
 pub(super) struct DecodedFrame {
     pub(super) image: CFRetained<CVImageBuffer>,
     pub(super) color_space: VideoColorSpace,
     pub(super) minimum_frame_duration_seconds: f64,
+    pub(super) timestamp_100ns: i64,
 }
 
 // The callback retains the CVImageBuffer and no code mutates it after publication to the queue.
 unsafe impl Send for DecodedFrame {}
+unsafe impl Sync for DecodedFrame {}
+
+#[derive(Clone)]
+pub(super) enum DecodedFrameOutput {
+    PresentationQueue(Arc<BoundedQueue<DecodedFrame>>),
+    EmbeddedMailbox {
+        mailbox: Arc<LatestMailbox<DecodedFrame>>,
+        frame_available: Option<Arc<dyn Fn() + Send + Sync>>,
+    },
+}
+
+impl DecodedFrameOutput {
+    fn publish(&self, frame: DecodedFrame) -> bool {
+        match self {
+            Self::PresentationQueue(queue) => matches!(
+                queue.push_drop_oldest(frame),
+                PushResult::Replaced(_) | PushResult::Closed(_)
+            ),
+            Self::EmbeddedMailbox {
+                mailbox,
+                frame_available,
+            } => {
+                let replaced = mailbox.replace(frame);
+                if let Some(frame_available) = frame_available {
+                    frame_available();
+                }
+                replaced
+            }
+        }
+    }
+
+    pub(super) fn clear(&self) -> usize {
+        match self {
+            Self::PresentationQueue(queue) => queue.clear(),
+            Self::EmbeddedMailbox { mailbox, .. } => usize::from(mailbox.clear()),
+        }
+    }
+}
 
 struct InFlight {
     count: AtomicUsize,
@@ -59,7 +100,7 @@ impl InFlight {
 }
 
 struct CallbackContext {
-    queue: Arc<BoundedQueue<DecodedFrame>>,
+    output: DecodedFrameOutput,
     counters: Arc<Counters>,
     failures: Arc<FailureReporter>,
     in_flight: Arc<InFlight>,
@@ -80,7 +121,7 @@ unsafe impl Send for VideoDecoder {}
 impl VideoDecoder {
     pub(super) fn new(
         format: &VideoFormat,
-        queue: Arc<BoundedQueue<DecodedFrame>>,
+        output: DecodedFrameOutput,
         counters: Arc<Counters>,
         failures: Arc<FailureReporter>,
         maximum_in_flight: usize,
@@ -91,7 +132,7 @@ impl VideoDecoder {
             maximum: maximum_in_flight,
         });
         let mut callback_context = Box::new(CallbackContext {
-            queue,
+            output,
             counters,
             failures,
             in_flight: Arc::clone(&in_flight),
@@ -120,14 +161,15 @@ impl VideoDecoder {
         let io_surface_properties_key = unsafe { kCVPixelBufferIOSurfacePropertiesKey };
         let hardware_decoder_key =
             unsafe { kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder };
-        let destination_attributes = make_dictionary(&[
-            (cf_ptr(pixel_format_key), cf_ptr(&*pixel_format_number)),
+        let mut destination_entries = vec![
             (cf_ptr(metal_compatibility_key), cf_ptr(true_value)),
             (
                 cf_ptr(io_surface_properties_key),
                 cf_ptr(&*empty_properties),
             ),
-        ])?;
+        ];
+        destination_entries.insert(0, (cf_ptr(pixel_format_key), cf_ptr(&*pixel_format_number)));
+        let destination_attributes = make_dictionary(&destination_entries)?;
         let decoder_specification =
             make_dictionary(&[(cf_ptr(hardware_decoder_key), cf_ptr(true_value))])?;
 
@@ -271,7 +313,7 @@ unsafe extern "C-unwind" fn decompression_callback(
     status: i32,
     _info_flags: VTDecodeInfoFlags,
     image_buffer: *mut CVImageBuffer,
-    _presentation_time_stamp: CMTime,
+    presentation_time_stamp: CMTime,
     presentation_duration: CMTime,
 ) {
     let Some(context) = NonNull::new(output_refcon.cast::<CallbackContext>()) else {
@@ -285,16 +327,14 @@ unsafe extern "C-unwind" fn decompression_callback(
                 image,
                 color_space: context.color_space,
                 minimum_frame_duration_seconds: frame_duration_seconds(presentation_duration),
+                timestamp_100ns: time_to_100ns(presentation_time_stamp),
             };
             context
                 .counters
                 .video_decoded
                 .fetch_add(1, Ordering::Relaxed);
             context.failures.video_decode_succeeded();
-            if matches!(
-                context.queue.push_drop_oldest(frame),
-                PushResult::Replaced(_) | PushResult::Closed(_)
-            ) {
+            if context.output.publish(frame) {
                 context
                     .counters
                     .video_frames_dropped
@@ -329,9 +369,26 @@ fn frame_duration_seconds(duration: CMTime) -> f64 {
     }
 }
 
+fn time_to_100ns(time: CMTime) -> i64 {
+    if time.timescale <= 0 {
+        return 0;
+    }
+    i128::from(time.value)
+        .saturating_mul(10_000_000)
+        .checked_div(i128::from(time.timescale))
+        .and_then(|value| i64::try_from(value).ok())
+        .unwrap_or_else(|| {
+            if time.value.is_negative() {
+                i64::MIN
+            } else {
+                i64::MAX
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::frame_duration_seconds;
+    use super::{frame_duration_seconds, time_to_100ns};
     use objc2_core_media::{CMTime, CMTimeFlags};
 
     #[test]
@@ -343,6 +400,17 @@ mod tests {
             epoch: 0,
         };
         assert!((frame_duration_seconds(duration) - 1.0 / 120.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn converts_core_media_time_to_cross_platform_100ns_units() {
+        let time = CMTime {
+            value: 90_000,
+            timescale: 90_000,
+            flags: CMTimeFlags(1),
+            epoch: 0,
+        };
+        assert_eq!(time_to_100ns(time), 10_000_000);
     }
 }
 

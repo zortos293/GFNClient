@@ -178,7 +178,7 @@
       <div class="pair">
         <article class="card on">
           <div class="tag">OpenNOW native · Qt</div>
-          <p>Owned RTSPS. Mjolnir video. Bundle audio and input. Media Foundation plus tearing present. Raw Input thread for relative mouse. Client-side type-7 tuning. No captured host mouse-settings frame. Native CloudMatch forces 8-bit 4:2:0. Audio has no jitter buffer and no RED. Mic is advertised, then refused.</p>
+          <p>Owned RTSPS. Mjolnir video. Bundle audio and input. Media Foundation plus tearing present. Raw Input thread for relative mouse. Client-side type-7 tuning. No captured host mouse-settings frame. Native CloudMatch forces 8-bit 4:2:0. Audio has no jitter buffer and no RED. There is no microphone capture or send path.</p>
         </article>
         <article class="card gfn">
           <div class="tag">Official GFN · this machine</div>
@@ -257,7 +257,7 @@
       <h2>Audio</h2>
       <p>Read the long form in <a href="audio.md">audio.md</a>.</p>
       <p>Official concealment is a timestamped buffer plus RED. OpenNOW concealment is “drop the packet.” WASAPI underrun stops the client and raises preroll. That is a hole, not a fade.</p>
-      <p>ANNOUNCE still writes <code>rtcMicOnNativeBundle:1</code>. Core then refuses NVST mic. There is no send path. Official mic this session was 20 ms, 2 ch, 16 kbps, RED 3.</p>
+      <p>ANNOUNCE still writes <code>rtcMicOnNativeBundle:1</code> for compatibility, but the runtime has no microphone capture, encoder, queue or send path. Official mic this session was 20 ms, 2 ch, 16 kbps, RED 3.</p>
     </section>
 
     <section id="mouse">

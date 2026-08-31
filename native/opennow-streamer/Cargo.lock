@@ -1634,15 +1634,23 @@ dependencies = [
  "opennow-streamer-transport",
  "rustls",
  "serde_json",
- "str0m",
  "tungstenite",
+]
+
+[[package]]
+name = "opennow-streamer-ffi"
+version = "0.2.0"
+dependencies = [
+ "opennow-streamer-core",
+ "opennow-streamer-platform",
+ "opennow-streamer-protocol",
+ "serde_json",
 ]
 
 [[package]]
 name = "opennow-streamer-platform"
 version = "0.2.0"
 dependencies = [
- "audiopus_sys",
  "base64",
  "image",
  "libc",

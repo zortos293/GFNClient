@@ -10,9 +10,9 @@ use openh264::decoder::{Decoder as OpenH264Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 use opus::{Channels, Decoder as OpusNativeDecoder};
 
-#[cfg(target_os = "windows")]
-use crate::output::WindowsBridge;
 use crate::output::{DecodedVideoFrame, OutputBuffers};
+#[cfg(target_os = "windows")]
+use crate::output::{HeadlessAudioOutput, WindowsBridge};
 use crate::queue::{BoundedQueue, PushResult};
 use crate::runtime::HostCommand;
 
@@ -217,7 +217,6 @@ pub enum StreamShortcutAction {
     ToggleFullscreen,
     StopStream,
     ToggleAntiAfk,
-    ToggleMicrophone,
     Screenshot,
     ToggleRecording,
 }
@@ -230,7 +229,6 @@ impl StreamShortcutAction {
             Self::ToggleFullscreen => "toggle-fullscreen",
             Self::StopStream => "stop-stream",
             Self::ToggleAntiAfk => "toggle-anti-afk",
-            Self::ToggleMicrophone => "toggle-microphone",
             Self::Screenshot => "screenshot",
             Self::ToggleRecording => "toggle-recording",
         }
@@ -239,7 +237,7 @@ impl StreamShortcutAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamShortcutBindings {
-    bindings: [(StreamShortcutAction, Option<ShortcutChord>); 8],
+    bindings: [(StreamShortcutAction, Option<ShortcutChord>); 7],
 }
 
 impl StreamShortcutBindings {
@@ -272,10 +270,6 @@ impl StreamShortcutBindings {
                 (
                     StreamShortcutAction::ToggleAntiAfk,
                     read("toggleAntiAfk", "Ctrl+Shift+K"),
-                ),
-                (
-                    StreamShortcutAction::ToggleMicrophone,
-                    read("toggleMicrophone", "Ctrl+Shift+M"),
                 ),
                 (
                     StreamShortcutAction::Screenshot,
@@ -653,6 +647,12 @@ pub struct MediaSession {
     audio_worker: Option<JoinHandle<()>>,
     #[cfg(target_os = "linux")]
     linux_monitor: Option<JoinHandle<()>>,
+    embedded_host_worker: Option<JoinHandle<()>>,
+    #[cfg(target_os = "windows")]
+    headless_audio: Option<HeadlessAudioOutput>,
+    #[cfg(target_os = "windows")]
+    embedded_d3d11: Option<Arc<Mutex<EmbeddedD3d11State>>>,
+    embedded_frames: Option<crate::GraphicsFramePublisher>,
     host_commands: Sender<HostCommand>,
 }
 
@@ -785,6 +785,12 @@ impl MediaSession {
             audio_worker: Some(audio_worker),
             #[cfg(target_os = "linux")]
             linux_monitor: None,
+            embedded_host_worker: None,
+            #[cfg(target_os = "windows")]
+            headless_audio: None,
+            #[cfg(target_os = "windows")]
+            embedded_d3d11: None,
+            embedded_frames: None,
             host_commands,
         })
     }
@@ -849,6 +855,10 @@ impl MediaSession {
             audio_worker: Some(audio_worker),
             #[cfg(target_os = "linux")]
             linux_monitor: None,
+            embedded_host_worker: None,
+            #[cfg(target_os = "windows")]
+            headless_audio: None,
+            embedded_frames: None,
             host_commands,
         })
     }
@@ -934,6 +944,507 @@ impl MediaSession {
             video_worker: Some(video_worker),
             audio_worker: Some(audio_worker),
             linux_monitor: Some(linux_monitor),
+            embedded_host_worker: None,
+            #[cfg(target_os = "windows")]
+            headless_audio: None,
+            embedded_frames: None,
+            host_commands,
+        })
+    }
+
+    pub(crate) fn spawn_embedded(
+        output: Arc<OutputBuffers>,
+        feedback: Sender<MediaFeedback>,
+        host_commands: Sender<HostCommand>,
+        stream: MediaStreamConfig,
+        frames: crate::GraphicsFramePublisher,
+        #[cfg(target_os = "linux")] linux_selection: LinuxVideoSelection,
+    ) -> Result<Self, String> {
+        #[cfg(target_os = "linux")]
+        {
+            return Self::spawn_embedded_linux(
+                output,
+                feedback,
+                host_commands,
+                stream,
+                frames,
+                linux_selection,
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            return Self::spawn_embedded_macos(output, feedback, host_commands, stream, frames);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return Self::spawn_embedded_windows(output, feedback, host_commands, stream, frames);
+        }
+        #[allow(unreachable_code)]
+        Err("embedded media is unsupported on this platform".to_owned())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn spawn_embedded_linux(
+        output: Arc<OutputBuffers>,
+        feedback: Sender<MediaFeedback>,
+        host_commands: Sender<HostCommand>,
+        stream: MediaStreamConfig,
+        frames: crate::GraphicsFramePublisher,
+        linux_selection: LinuxVideoSelection,
+    ) -> Result<Self, String> {
+        let LinuxVideoPath::Hardware(decoder_preference) = linux_selection.path else {
+            return Err(linux_selection.fallback_reason.unwrap_or_else(|| {
+                "embedded Linux output requires a native NV12 decoder".to_owned()
+            }));
+        };
+        let format = opennow_streamer_platform_linux::StreamFormat::video_default(
+            stream.width,
+            stream.height,
+        )
+        .map_err(|error| error.to_string())?;
+        let mut config = opennow_streamer_platform_linux::SessionConfig::new(format);
+        config.codec = match stream.codec {
+            MediaVideoCodec::H264 => opennow_streamer_platform_linux::VideoCodec::H264,
+            MediaVideoCodec::H265 => opennow_streamer_platform_linux::VideoCodec::H265,
+            MediaVideoCodec::Av1 => opennow_streamer_platform_linux::VideoCodec::Av1,
+        };
+        config.decoder_preference = decoder_preference;
+        let session = opennow_streamer_platform_linux::LinuxSession::start(config)
+            .map_err(|error| error.to_string())?;
+        let shared = Arc::new(SharedPipeline {
+            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
+            output,
+            feedback,
+            paused: AtomicBool::new(false),
+            video_desynced: AtomicBool::new(true),
+            keyframe_requested: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            recording_tap: RecordingTap::default(),
+            stream,
+            linux_session: Mutex::new(Some(session)),
+            linux_software_fallback: Arc::new(AtomicBool::new(false)),
+            linux_video_mid: Mutex::new(String::new()),
+            linux_codec: stream.codec,
+        });
+        let video_shared = Arc::clone(&shared);
+        let video_worker = thread::Builder::new()
+            .name("opennow-embedded-linux-video-submit".to_owned())
+            .spawn(move || run_embedded_linux_video(video_shared))
+            .map_err(|error| format!("failed to start embedded Linux video submitter: {error}"))?;
+        let audio_shared = Arc::clone(&shared);
+        let audio_worker = match thread::Builder::new()
+            .name("opennow-embedded-linux-audio-submit".to_owned())
+            .spawn(move || run_embedded_linux_audio(audio_shared))
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                shared.video.close();
+                let _ = video_worker.join();
+                stop_linux_session(&shared);
+                return Err(format!(
+                    "failed to start embedded Linux audio submitter: {error}"
+                ));
+            }
+        };
+        let producer = crate::LinuxGpuFrameProducer::new(8).map_err(|error| error.to_string())?;
+        let embedded_frames = frames.clone();
+        let monitor_shared = Arc::clone(&shared);
+        let linux_monitor = match thread::Builder::new()
+            .name("opennow-embedded-linux-frame-publisher".to_owned())
+            .spawn(move || run_embedded_linux_monitor(monitor_shared, frames, producer))
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                shared.video.close();
+                shared.audio.close();
+                let _ = video_worker.join();
+                let _ = audio_worker.join();
+                stop_linux_session(&shared);
+                return Err(format!(
+                    "failed to start embedded Linux frame publisher: {error}"
+                ));
+            }
+        };
+        Ok(Self {
+            sink: MediaSink { shared },
+            video_worker: Some(video_worker),
+            audio_worker: Some(audio_worker),
+            linux_monitor: Some(linux_monitor),
+            embedded_host_worker: None,
+            #[cfg(target_os = "windows")]
+            headless_audio: None,
+            embedded_frames: Some(embedded_frames),
+            host_commands,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_embedded_macos(
+        output: Arc<OutputBuffers>,
+        feedback: Sender<MediaFeedback>,
+        _host_commands: Sender<HostCommand>,
+        stream: MediaStreamConfig,
+        frames: crate::GraphicsFramePublisher,
+    ) -> Result<Self, String> {
+        let shared = Arc::new(SharedPipeline {
+            video: Arc::new(BoundedQueue::new(macos_video_queue_capacity(stream.fps))),
+            audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
+            output,
+            feedback,
+            paused: AtomicBool::new(false),
+            video_desynced: AtomicBool::new(true),
+            keyframe_requested: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            recording_tap: RecordingTap::default(),
+            stream,
+            mac_sink: Mutex::new(None),
+            mac_software_fallback: AtomicBool::new(false),
+        });
+        let (host_commands, host_receiver) = std::sync::mpsc::channel();
+        let embedded_frames = frames.clone();
+        let embedded_host_worker = thread::Builder::new()
+            .name("opennow-embedded-videotoolbox-host".to_owned())
+            .spawn(move || {
+                use opennow_streamer_platform_macos::{
+                    AudioFormat, EmbeddedBackendConfig, H264Format, H265Format, MacOsBackend,
+                    QueueLimits, VideoColorSpace,
+                };
+
+                let mut backend: Option<MacOsBackend> = None;
+                let mut paused = false;
+                while let Ok(command) = host_receiver.recv() {
+                    let start = |video| {
+                        let publisher = frames.clone();
+                        MacOsBackend::start_embedded_with_publisher(
+                            EmbeddedBackendConfig {
+                                video,
+                                audio: AudioFormat::OPUS_STEREO_48KHZ,
+                                queues: QueueLimits::default(),
+                            },
+                            move |frame| {
+                                let Some(lease) = publisher.context() else {
+                                    return false;
+                                };
+                                matches!(
+                                    publisher.publish(lease, Arc::new(frame)),
+                                    Ok(crate::GraphicsPublishOutcome::Replaced)
+                                )
+                            },
+                        )
+                    };
+                    match command {
+                        HostCommand::Start { reply, .. } => {
+                            let _ = reply
+                                .send(Err("embedded VideoToolbox host is already session-scoped"
+                                    .to_owned()));
+                        }
+                        HostCommand::ConfigureMacH264 {
+                            parameter_sets,
+                            reply,
+                        } => {
+                            let result = start(
+                                H264Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
+                            )
+                            .and_then(|mut started| {
+                                started.set_paused(paused)?;
+                                let sink = started.sink();
+                                backend = Some(started);
+                                Ok(crate::runtime::MacH264Configuration::Hardware(sink))
+                            })
+                            .map_err(|error| error.to_string());
+                            let _ = reply.send(result);
+                        }
+                        HostCommand::ConfigureMacH265 {
+                            parameter_sets,
+                            reply,
+                        } => {
+                            let result = start(
+                                H265Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
+                            )
+                            .and_then(|mut started| {
+                                started.set_paused(paused)?;
+                                let sink = started.sink();
+                                backend = Some(started);
+                                Ok(sink)
+                            })
+                            .map_err(|error| error.to_string());
+                            let _ = reply.send(result);
+                        }
+                        HostCommand::ConfigureMacAv1 { format, reply } => {
+                            let result = start(format.into())
+                                .and_then(|mut started| {
+                                    started.set_paused(paused)?;
+                                    let sink = started.sink();
+                                    backend = Some(started);
+                                    Ok(sink)
+                                })
+                                .map_err(|error| error.to_string());
+                            let _ = reply.send(result);
+                        }
+                        HostCommand::Pause {
+                            paused: new_paused,
+                            reply,
+                        } => {
+                            let result = backend.as_mut().map_or(Ok(()), |backend| {
+                                backend
+                                    .set_paused(new_paused)
+                                    .map_err(|error| error.to_string())
+                            });
+                            if result.is_ok() {
+                                paused = new_paused;
+                            }
+                            if let Some(reply) = reply {
+                                let _ = reply.send(result);
+                            }
+                        }
+                        HostCommand::Stop | HostCommand::Shutdown => break,
+                        HostCommand::Surface { reply, .. } | HostCommand::Control { reply, .. } => {
+                            let _ = reply.send(Ok(()));
+                        }
+                        HostCommand::Cursor(_) => {}
+                    }
+                }
+            })
+            .map_err(|error| format!("failed to start embedded VideoToolbox host: {error}"))?;
+        let video_shared = Arc::clone(&shared);
+        let video_commands = host_commands.clone();
+        let video_worker = match thread::Builder::new()
+            .name(format!(
+                "opennow-embedded-videotoolbox-{}-submit",
+                stream.codec.label()
+            ))
+            .spawn(move || match stream.codec {
+                MediaVideoCodec::H264 => {
+                    run_macos_h264_video(video_shared, video_commands, stream.fps);
+                }
+                MediaVideoCodec::H265 => {
+                    run_macos_h265_video(video_shared, video_commands, stream.fps);
+                }
+                MediaVideoCodec::Av1 => run_macos_av1_video(video_shared, video_commands, stream),
+            }) {
+            Ok(worker) => worker,
+            Err(error) => {
+                let _ = host_commands.send(HostCommand::Shutdown);
+                let _ = embedded_host_worker.join();
+                return Err(format!(
+                    "failed to start embedded VideoToolbox submitter: {error}"
+                ));
+            }
+        };
+        let audio_shared = Arc::clone(&shared);
+        let audio_worker = match thread::Builder::new()
+            .name("opennow-embedded-coreaudio-submit".to_owned())
+            .spawn(move || run_macos_audio(audio_shared))
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                shared.video.close();
+                let _ = video_worker.join();
+                let _ = host_commands.send(HostCommand::Shutdown);
+                let _ = embedded_host_worker.join();
+                return Err(format!(
+                    "failed to start embedded CoreAudio submitter: {error}"
+                ));
+            }
+        };
+        Ok(Self {
+            sink: MediaSink { shared },
+            video_worker: Some(video_worker),
+            audio_worker: Some(audio_worker),
+            embedded_host_worker: Some(embedded_host_worker),
+            embedded_frames: Some(embedded_frames),
+            host_commands,
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    fn spawn_embedded_windows(
+        output: Arc<OutputBuffers>,
+        feedback: Sender<MediaFeedback>,
+        host_commands: Sender<HostCommand>,
+        stream: MediaStreamConfig,
+        frames: crate::GraphicsFramePublisher,
+    ) -> Result<Self, String> {
+        let audio = HeadlessAudioOutput::start(Arc::clone(&output))?;
+        let bridge = Arc::new(WindowsBridge::new());
+        let shared = Arc::new(SharedPipeline {
+            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
+            output,
+            feedback,
+            paused: AtomicBool::new(false),
+            video_desynced: AtomicBool::new(true),
+            keyframe_requested: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            recording_tap: RecordingTap::default(),
+            stream,
+            windows_bridge: bridge,
+        });
+        let producer = Arc::new(Mutex::new(EmbeddedD3d11State::new(stream)));
+        let embedded_frames = frames.clone();
+        let video_shared = Arc::clone(&shared);
+        let video_producer = Arc::clone(&producer);
+        let video_worker = thread::Builder::new()
+            .name("opennow-embedded-d3d11-submit".to_owned())
+            .spawn(move || {
+                let mut clock = AdaptiveSampleClock::new(stream.fps);
+                let mut sequence = 0_u64;
+                while let Some(frame) = video_shared.video.pop() {
+                    if video_shared.paused.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    if video_shared.video_desynced.load(Ordering::Acquire) && !frame.keyframe {
+                        continue;
+                    }
+                    let timestamp_100ns =
+                        media_timestamp_100ns(frame.timestamp, frame.clock_rate_hz);
+                    let duration_100ns = clock.observe(timestamp_100ns);
+                    let encoded = opennow_streamer_platform_windows::EncodedVideoFrame {
+                        codec: match frame.codec {
+                            MediaCodec::H264 => opennow_streamer_platform_windows::VideoCodec::H264,
+                            MediaCodec::H265 => opennow_streamer_platform_windows::VideoCodec::H265,
+                            MediaCodec::Av1 => opennow_streamer_platform_windows::VideoCodec::Av1,
+                            _ => continue,
+                        },
+                        data: frame.data.to_vec(),
+                        timestamp_100ns,
+                        duration_100ns,
+                        key_frame: frame.keyframe,
+                        reset_decoder: frame.keyframe
+                            && video_shared.video_desynced.load(Ordering::Acquire),
+                    };
+                    let dropped = video_producer
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(encoded);
+                    if dropped {
+                        video_shared.video_desynced.store(true, Ordering::Release);
+                        let _ = video_shared.feedback.send(MediaFeedback::QueueDropped {
+                            media: "d3d11-video",
+                            count: 1,
+                        });
+                    } else {
+                        report_video_frame_accepted(&video_shared, &frame);
+                        if frame.keyframe {
+                            video_shared.video_desynced.store(false, Ordering::Release);
+                            video_shared
+                                .keyframe_requested
+                                .store(false, Ordering::Release);
+                        }
+                    }
+                    let Some(lease) = frames.context() else {
+                        continue;
+                    };
+                    sequence = sequence.wrapping_add(1).max(1);
+                    let pending = PendingD3d11Frame {
+                        state: Arc::clone(&video_producer),
+                        info: crate::GraphicsFrameInfo {
+                            width: stream.width,
+                            height: stream.height,
+                            sequence,
+                            presentation_time_ns: u64::try_from(timestamp_100ns.max(0))
+                                .unwrap_or(0)
+                                .saturating_mul(100),
+                        },
+                    };
+                    let _ = frames.publish(lease, Arc::new(pending));
+                }
+            })
+            .map_err(|error| format!("failed to start embedded D3D11 submitter: {error}"))?;
+        let audio_shared = Arc::clone(&shared);
+        let audio_decoder = OpusDecoder::new(2)?;
+        let audio_worker = match thread::Builder::new()
+            .name("opennow-embedded-opus-decode".to_owned())
+            .spawn(move || run_audio_decoder(audio_shared, audio_decoder))
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                shared.video.close();
+                let _ = video_worker.join();
+                return Err(format!("failed to start embedded Opus decoder: {error}"));
+            }
+        };
+        Ok(Self {
+            sink: MediaSink { shared },
+            video_worker: Some(video_worker),
+            audio_worker: Some(audio_worker),
+            embedded_host_worker: None,
+            headless_audio: Some(audio),
+            embedded_d3d11: Some(producer),
+            embedded_frames: Some(embedded_frames),
+            host_commands,
+        })
+    }
+
+    #[cfg(feature = "test-runtime")]
+    pub(crate) fn spawn_test(
+        output: Arc<OutputBuffers>,
+        feedback: Sender<MediaFeedback>,
+        host_commands: Sender<HostCommand>,
+        stream: MediaStreamConfig,
+        #[cfg(target_os = "windows")] windows_bridge: Arc<WindowsBridge>,
+        #[cfg(target_os = "linux")] linux_software_fallback: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        let shared = Arc::new(SharedPipeline {
+            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
+            output,
+            feedback,
+            paused: AtomicBool::new(false),
+            video_desynced: AtomicBool::new(false),
+            keyframe_requested: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            recording_tap: RecordingTap::default(),
+            stream,
+            #[cfg(target_os = "macos")]
+            mac_sink: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            mac_software_fallback: AtomicBool::new(false),
+            #[cfg(target_os = "windows")]
+            windows_bridge,
+            #[cfg(target_os = "linux")]
+            linux_session: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            linux_software_fallback,
+            #[cfg(target_os = "linux")]
+            linux_video_mid: Mutex::new(String::new()),
+            #[cfg(target_os = "linux")]
+            linux_codec: stream.codec,
+        });
+        let video_shared = Arc::clone(&shared);
+        let video_worker = thread::Builder::new()
+            .name("opennow-test-video-consumer".to_owned())
+            .spawn(move || {
+                while let Some(frame) = video_shared.video.pop() {
+                    report_video_frame_accepted(&video_shared, &frame);
+                }
+            })
+            .map_err(|error| format!("failed to start test video consumer: {error}"))?;
+        let audio_shared = Arc::clone(&shared);
+        let audio_worker = match thread::Builder::new()
+            .name("opennow-test-audio-consumer".to_owned())
+            .spawn(move || while audio_shared.audio.pop().is_some() {})
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                shared.video.close();
+                let _ = video_worker.join();
+                return Err(format!("failed to start test audio consumer: {error}"));
+            }
+        };
+        Ok(Self {
+            sink: MediaSink { shared },
+            video_worker: Some(video_worker),
+            audio_worker: Some(audio_worker),
+            #[cfg(target_os = "linux")]
+            linux_monitor: None,
+            embedded_host_worker: None,
+            #[cfg(target_os = "windows")]
+            headless_audio: None,
+            #[cfg(target_os = "windows")]
+            embedded_d3d11: None,
+            embedded_frames: None,
             host_commands,
         })
     }
@@ -954,6 +1465,16 @@ impl MediaSession {
         self.sink.shared.video.clear();
         self.sink.shared.audio.clear();
         self.sink.shared.output.clear();
+        if let Some(frames) = &self.embedded_frames {
+            frames.clear();
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(state) = &self.embedded_d3d11 {
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .reset();
+        }
         #[cfg(target_os = "linux")]
         if let Some(session) = self
             .sink
@@ -974,6 +1495,10 @@ impl MediaSession {
                 .shared
                 .keyframe_requested
                 .store(false, Ordering::Release);
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(audio) = self.headless_audio.as_ref() {
+            audio.set_paused(paused);
         }
         let _ = self.host_commands.send(HostCommand::Pause {
             paused,
@@ -1006,6 +1531,168 @@ impl MediaSession {
                 .unwrap_or_else(|error| error.into_inner())
                 .take();
         }
+        if let Some(worker) = self.embedded_host_worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct EmbeddedD3d11State {
+    format: opennow_streamer_platform_windows::VideoFormat,
+    pending: VecDeque<opennow_streamer_platform_windows::EncodedVideoFrame>,
+    producer: Option<(
+        crate::GraphicsContext,
+        crate::D3d11FrameProducer,
+        crate::D3d11FrameSubmitter,
+    )>,
+}
+
+#[cfg(target_os = "windows")]
+impl EmbeddedD3d11State {
+    fn new(stream: MediaStreamConfig) -> Self {
+        use opennow_streamer_platform_windows::{
+            VideoChromaFormat, VideoCodec, VideoFormat, VideoPixelFormat,
+        };
+        use std::num::NonZeroU32;
+
+        Self {
+            format: VideoFormat {
+                codec: match stream.codec {
+                    MediaVideoCodec::H264 => VideoCodec::H264,
+                    MediaVideoCodec::H265 => VideoCodec::H265,
+                    MediaVideoCodec::Av1 => VideoCodec::Av1,
+                },
+                width: stream.width,
+                height: stream.height,
+                frame_rate_numerator: NonZeroU32::new(stream.fps.max(1)).expect("non-zero fps"),
+                frame_rate_denominator: NonZeroU32::new(1).expect("one is non-zero"),
+                average_bitrate: stream.bitrate_bps.max(1),
+                pixel_format: match (
+                    stream.color_quality.bit_depth(),
+                    stream.color_quality.is_444(),
+                ) {
+                    (10, true) => VideoPixelFormat::Y410,
+                    (10, false) => VideoPixelFormat::P010,
+                    (_, true) => VideoPixelFormat::Ayuv,
+                    _ => VideoPixelFormat::Nv12,
+                },
+                chroma_format: if stream.color_quality.is_444() {
+                    VideoChromaFormat::Cs444
+                } else {
+                    VideoChromaFormat::Cs420
+                },
+                full_range: false,
+            },
+            pending: VecDeque::with_capacity(
+                opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY,
+            ),
+            producer: None,
+        }
+    }
+
+    fn push(&mut self, frame: opennow_streamer_platform_windows::EncodedVideoFrame) -> bool {
+        let dropped = if self.pending.len()
+            == opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY
+        {
+            self.pending.pop_front();
+            true
+        } else {
+            false
+        };
+        self.pending.push_back(frame);
+        dropped
+    }
+
+    fn reset(&mut self) {
+        self.pending.clear();
+        self.producer = None;
+    }
+
+    fn record(
+        &mut self,
+        context: crate::GraphicsContext,
+        command: crate::GraphicsRecordCommand,
+    ) -> Result<crate::GraphicsRecordedFrame, String> {
+        use opennow_streamer_platform_windows::{
+            AdoptedD3d11Context, D3d11FrameProducer, WindowsDecoderMode,
+        };
+
+        if context.api != crate::GraphicsApi::D3d11 {
+            return Err("an embedded Windows frame requires a D3D11 graphics context".to_owned());
+        }
+        if self
+            .producer
+            .as_ref()
+            .is_none_or(|(adopted, _, _)| *adopted != context)
+        {
+            self.producer = None;
+            let (producer, submitter) = unsafe {
+                D3d11FrameProducer::new(
+                    AdoptedD3d11Context {
+                        device: context.device as *mut std::ffi::c_void,
+                        immediate_context: context.queue as *mut std::ffi::c_void,
+                    },
+                    self.format,
+                    WindowsDecoderMode::Hardware,
+                )
+            }
+            .map_err(|error| error.to_string())?;
+            self.producer = Some((context, producer, submitter));
+        }
+        let (_, producer, submitter) = self.producer.as_ref().expect("producer initialized");
+        while let Some(frame) = self.pending.pop_front() {
+            submitter
+                .submit_video(frame)
+                .map_err(|error| error.to_string())?;
+        }
+        let frame = producer
+            .acquire_latest()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "the D3D11 decoder has not produced a frame yet".to_owned())?;
+        let recorded = unsafe {
+            frame.record(
+                AdoptedD3d11Context {
+                    device: context.device as *mut std::ffi::c_void,
+                    immediate_context: context.queue as *mut std::ffi::c_void,
+                },
+                command.frame_slot,
+            )
+        }
+        .map_err(|error| error.to_string())?;
+        Ok(crate::GraphicsRecordedFrame {
+            resource: recorded.texture as usize as u64,
+            resource_view: 0,
+            width: recorded.width,
+            height: recorded.height,
+            frame_slot: recorded.frame_slot,
+            generation: recorded.generation,
+            presentation_time_ns: recorded.presentation_time_ns,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct PendingD3d11Frame {
+    state: Arc<Mutex<EmbeddedD3d11State>>,
+    info: crate::GraphicsFrameInfo,
+}
+
+#[cfg(target_os = "windows")]
+impl crate::GraphicsFrame for PendingD3d11Frame {
+    fn info(&self) -> crate::GraphicsFrameInfo {
+        self.info
+    }
+
+    fn record(
+        &self,
+        context: crate::GraphicsContext,
+        command: crate::GraphicsRecordCommand,
+    ) -> Result<crate::GraphicsRecordedFrame, String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record(context, command)
     }
 }
 
@@ -1527,6 +2214,236 @@ fn run_linux_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
             ),
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn run_embedded_linux_video(shared: Arc<SharedPipeline>) {
+    while let Some(frame) = shared.video.pop() {
+        if shared.paused.load(Ordering::Acquire) {
+            continue;
+        }
+        *shared
+            .linux_video_mid
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = frame.mid.clone();
+        let encoded = match opennow_streamer_platform_linux::EncodedVideoFrame::new(
+            Arc::clone(&frame.data),
+            media_timestamp_us(frame.timestamp, frame.clock_rate_hz),
+            frame.keyframe,
+        ) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: shared.linux_codec.label(),
+                    message: error.to_string(),
+                });
+                request_linux_keyframe(&shared, "Linux decoder rejected encoded video framing");
+                continue;
+            }
+        };
+        let result = shared
+            .linux_session
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .ok_or_else(|| "embedded Linux media session is unavailable".to_owned())
+            .and_then(|session| {
+                session
+                    .submit_video(encoded)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(opennow_streamer_platform_linux::PushOutcome::Queued) => {
+                report_video_frame_accepted(&shared, &frame);
+                if frame.keyframe {
+                    shared.video_desynced.store(false, Ordering::Release);
+                    shared.keyframe_requested.store(false, Ordering::Release);
+                }
+            }
+            Ok(opennow_streamer_platform_linux::PushOutcome::DroppedOldest) => {
+                shared.video_desynced.store(true, Ordering::Release);
+                request_linux_keyframe(&shared, "embedded Linux decoder queue overflow");
+            }
+            Ok(opennow_streamer_platform_linux::PushOutcome::Paused) => {}
+            Err(message) => {
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: shared.linux_codec.label(),
+                    message,
+                });
+                request_linux_keyframe(&shared, "embedded Linux video submission failed");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_embedded_linux_audio(shared: Arc<SharedPipeline>) {
+    while let Some(frame) = shared.audio.pop() {
+        if shared.paused.load(Ordering::Acquire) {
+            continue;
+        }
+        let MediaCodec::Opus { .. } = frame.codec else {
+            continue;
+        };
+        let packet = match opennow_streamer_platform_linux::AudioPacket::new(
+            Arc::clone(&frame.data),
+            media_timestamp_us(frame.timestamp, frame.clock_rate_hz),
+        ) {
+            Ok(packet) => packet,
+            Err(error) => {
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: "opus",
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let result = shared
+            .linux_session
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .ok_or_else(|| "embedded Linux media session is unavailable".to_owned())
+            .and_then(|session| {
+                session
+                    .submit_audio(packet)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(opennow_streamer_platform_linux::PushOutcome::DroppedOldest) => {
+                let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                    media: "linux-audio",
+                    count: 1,
+                });
+            }
+            Ok(opennow_streamer_platform_linux::PushOutcome::Queued)
+            | Ok(opennow_streamer_platform_linux::PushOutcome::Paused) => {}
+            Err(message) => {
+                let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                    codec: "opus",
+                    message,
+                });
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_embedded_linux_monitor(
+    shared: Arc<SharedPipeline>,
+    publisher: crate::GraphicsFramePublisher,
+    producer: crate::LinuxGpuFrameProducer,
+) {
+    use std::time::Duration;
+
+    let mut playback_started = false;
+    while !shared.stopped.load(Ordering::Acquire) {
+        let (frames, events) = {
+            let session = shared
+                .linux_session
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(session) = session.as_ref() else {
+                return;
+            };
+            let mut decoded = Vec::new();
+            while let Some(frame) = session.try_recv_frame() {
+                decoded.push(frame);
+            }
+            let mut events = Vec::new();
+            while let Some(event) = session.try_recv_event() {
+                events.push(event);
+            }
+            (decoded, events)
+        };
+        if !shared.paused.load(Ordering::Acquire) {
+            for decoded in frames {
+                let Some(lease) = publisher.context() else {
+                    continue;
+                };
+                match producer
+                    .frame(decoded)
+                    .map_err(|error| error.to_string())
+                    .and_then(|frame| {
+                        publisher
+                            .publish(lease, Arc::new(frame))
+                            .map_err(|error| error.to_string())
+                    }) {
+                    Ok(_) if !playback_started => {
+                        playback_started = true;
+                        let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
+                            backend: "Linux decoder/embedded Vulkan",
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(message) => {
+                        let _ = shared.feedback.send(MediaFeedback::OutputError { message });
+                    }
+                }
+            }
+        }
+        for event in events {
+            match event {
+                opennow_streamer_platform_linux::BackendEvent::DecoderChanged {
+                    from,
+                    to,
+                    reason,
+                } => {
+                    let _ = shared.feedback.send(MediaFeedback::BackendFallback {
+                        from: linux_decoder_name(from),
+                        to: linux_decoder_name(to),
+                        reason,
+                    });
+                }
+                opennow_streamer_platform_linux::BackendEvent::NeedKeyframe => {
+                    request_linux_keyframe(&shared, "Linux decoder requires a fresh keyframe");
+                }
+                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media } => {
+                    let _ = shared
+                        .feedback
+                        .send(MediaFeedback::QueueDropped { media, count: 1 });
+                }
+                opennow_streamer_platform_linux::BackendEvent::DeviceLost { subsystem, reason } => {
+                    let _ = shared.feedback.send(MediaFeedback::DeviceLost {
+                        subsystem: linux_subsystem_name(subsystem),
+                        recovered: false,
+                        message: Some(reason),
+                    });
+                    request_linux_keyframe(&shared, "Linux decoder device was lost");
+                }
+                opennow_streamer_platform_linux::BackendEvent::Error(message) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: shared.linux_codec.label(),
+                        message,
+                    });
+                    shared.stopped.store(true, Ordering::Release);
+                    shared.video.close();
+                    shared.audio.close();
+                    stop_linux_session(&shared);
+                    return;
+                }
+                opennow_streamer_platform_linux::BackendEvent::StateChanged(
+                    opennow_streamer_platform_linux::LifecycleState::Failed,
+                ) => {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: shared.linux_codec.label(),
+                        message: "embedded Linux media session failed".to_owned(),
+                    });
+                    shared.stopped.store(true, Ordering::Release);
+                    shared.video.close();
+                    shared.audio.close();
+                    stop_linux_session(&shared);
+                    return;
+                }
+                opennow_streamer_platform_linux::BackendEvent::StateChanged(_)
+                | opennow_streamer_platform_linux::BackendEvent::DecoderSelected(_)
+                | opennow_streamer_platform_linux::BackendEvent::AudioSelected(_)
+                | opennow_streamer_platform_linux::BackendEvent::FormatChanged(_) => {}
+            }
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    stop_linux_session(&shared);
 }
 
 #[cfg(target_os = "linux")]

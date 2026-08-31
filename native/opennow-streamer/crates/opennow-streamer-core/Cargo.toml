@@ -14,6 +14,3 @@ opennow-streamer-transport = { path = "../opennow-streamer-transport" }
 rustls.workspace = true
 serde_json.workspace = true
 tungstenite.workspace = true
-
-[dev-dependencies]
-str0m.workspace = true

@@ -20,15 +20,12 @@ Use an authorized test account with no production secrets in reports. Sign in in
 not put NVIDIA credentials, refresh tokens, signing keys, or notarization passwords in command
 arguments, logs, issue trackers, or acceptance artifacts.
 
-The presenter remains out of process. Windows reparents its HWND as a child of the Qt top-level
-window. X11, Wayland and macOS use a paired native top-level window aligned to the stream region.
-The surface contract carries a window handle, host-local and screen geometry, visibility, and scale,
-but it does not establish cross-process Qt texture embedding. Foreign children and paired windows
-cannot be covered reliably by ordinary Qt Quick items, so the shell hides the presenter before it
-shows a QML menu, stats panel, reconnect screen, or error screen. The result is Qt-owned UI with a
-temporarily suspended video surface, not a composited overlay over live video. No matrix row may
-claim single-window composition or zero-copy into the Qt scene graph without a separate implementation
-and measurement evidence.
+The streamer is loaded by the Qt executable as an in-process Rust library. Platform decoders publish
+native GPU frames through a bounded FFI mailbox; `StreamVideoItem` records conversion and
+synchronization into the active QRhi command buffer and samples the imported texture in the Qt scene
+graph. There is no child streamer process, child HWND or paired native video window. Acceptance must
+still prove each platform's native texture import and synchronization on real hardware; the design
+alone is not performance or zero-copy evidence.
 
 ## Performance evidence
 
@@ -56,7 +53,7 @@ requires `pass: true` for both reports. The hardware flag rejects offscreen/mini
 software/null renderers, missing screens, and workloads that do not receive the requested physical
 dimensions. It also rejects the test-only refresh-rate override, so release evidence always uses
 the display-reported rate. This measures the Qt shell workload; it does not prove stream-window
-embedding, native decoder throughput or a zero-copy handoff into Qt.
+native decoder throughput or GPU texture-import behavior.
 
 ## Authorized stream evidence
 
@@ -66,32 +63,30 @@ ten minutes. Exercise the following without restarting the app:
 1. Complete device login, account switching, subscription and region refresh.
 2. Create a session, pass queue/ads if present, reach native NVST first-frame playback, and confirm
    the live evidence reports `stream.transport: "nvst"`.
-3. Open and close every guide and stats page while video is live. Confirm the presenter hides before
-   QML appears, returns after QML closes, never leaves a stale native handle, and transfers controller
-   input atomically. Record Windows as child-HWND behavior and the other platforms as paired-window
-   behavior rather than claiming a composited live-video overlay.
+3. Open and close every guide and stats page while video is live. Confirm QML composes above the
+   scene-graph video item without suspending playback, stale frame tokens or input leakage.
 4. Exercise keyboard, relative mouse, and every connected controller. Validate neutral controller
    state after overlay entry, reconnect, pause, and resume.
 5. Test window resize, fullscreen, display migration, the display's highest supported refresh
    rate, and VRR/HDR only where the machine advertises them.
 6. Load a profile that previously selected WebRTC or another legacy transport and confirm settings,
    session creation, streamer status and exported evidence all resolve it to NVST. If a persisted
-   microphone mode is armed, confirm the runtime reports upstream audio as unavailable without
-   changing transport; microphone audio is not a release gate for the NVST-only client.
+   microphone mode is armed, confirm settings migration disables it without changing transport;
+   microphone capture is not part of the native runtime.
 7. Capture a screenshot, start and stop a source-stream Matroska recording, play the resulting
    media, verify the generated thumbnail, and reveal both files through the Media screen.
-8. Rebind and exercise all eight stream shortcuts. Confirm stats and fullscreen reach Qt exactly once,
-   pointer lock remains native, microphone reports unavailable, screenshot, recording and stop reach
-   the shell exactly once, and anti-AFK produces an F13 pulse after four minutes without leaking the
-   key into the game.
+8. Rebind and exercise all seven active stream shortcuts. Confirm stats and fullscreen reach Qt
+   exactly once, pointer lock remains native, screenshot, recording and stop reach the shell exactly
+   once, and anti-AFK produces an F13 pulse after four minutes without leaking the key into the game.
 9. Enable the anti-AFK indicator/reminder and session clock, then confirm the post-session report
    reflects NVST transport, elapsed time, backend, first-frame latency, recovery/error counters and
    diagnostics navigation.
 10. Exercise favorites, entitlement-filtered aspect ratio/resolution/FPS choices, keyboard layout,
     game language, console-friendly launch and in-game-settings persistence on a title that advertises
     the corresponding NVIDIA feature.
-11. Force one recoverable network interruption and one streamer-process failure. Confirm bounded
-   reconnect/restart behavior, no stuck input, and a usable error if recovery is exhausted.
+11. Force one recoverable network interruption and one graphics-device or native-runtime failure.
+   Confirm bounded reconnect/reinitialization behavior, no stuck input, and a usable error if
+   recovery is exhausted.
 12. Export both the redacted diagnostic report and **live evidence** from the Diagnostics screen
    after the run. The live export is direct machine-readable JSON and must report
    `observedPass: true`; it includes hashed screenshot/recording/thumbnail metadata and bounded

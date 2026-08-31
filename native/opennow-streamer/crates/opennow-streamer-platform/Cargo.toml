@@ -7,12 +7,12 @@ rust-version.workspace = true
 
 [features]
 default = []
+test-runtime = []
 linux-vaapi = ["opennow-streamer-platform-linux/vaapi"]
 linux-ffmpeg = ["opennow-streamer-platform-linux/ffmpeg"]
 linux-ffmpeg-bundled = ["opennow-streamer-platform-linux/ffmpeg-bundled"]
 
 [dependencies]
-audiopus_sys.workspace = true
 base64.workspace = true
 image.workspace = true
 openh264.workspace = true

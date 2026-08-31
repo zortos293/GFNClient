@@ -1,3 +1,5 @@
+mod embedded_input;
+mod graphics;
 #[cfg(target_os = "linux")]
 mod linux_backend;
 #[cfg(target_os = "linux")]
@@ -7,24 +9,45 @@ mod linux_xinput;
 #[cfg(target_os = "macos")]
 mod macos_backend;
 mod media;
-mod microphone;
 mod native_surface;
 mod output;
 mod queue;
 mod recording;
 mod runtime;
 #[cfg(target_os = "windows")]
+mod windows_graphics;
+#[cfg(target_os = "windows")]
 mod windows_raw_input;
 
+pub use embedded_input::{EmbeddedInputCapture, EmbeddedLocalAction};
+pub use graphics::{
+    GraphicsApi, GraphicsContext, GraphicsContextLease, GraphicsFrame, GraphicsFrameInfo,
+    GraphicsFramePublisher, GraphicsFrameToken, GraphicsPublishOutcome, GraphicsRecordCommand,
+    GraphicsRecordedFrame, GraphicsRuntimeError, RenderThreadGraphics,
+};
 pub use media::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedRecordingReceiver,
     MediaCodec, MediaColorQuality, MediaControl, MediaFeedback, MediaSession, MediaSink,
     MediaStreamConfig, MediaVideoCodec, PushOutcome, ShortcutChord, StreamShortcutAction,
     StreamShortcutBindings,
 };
-pub use microphone::{EncodedMicrophonePacket, EncodedMicrophoneQueue, MicrophoneCapture};
+#[cfg(target_os = "linux")]
+pub use opennow_streamer_platform_linux::{LinuxGpuFrame, LinuxGpuFrameProducer};
+#[cfg(target_os = "macos")]
+pub use opennow_streamer_platform_macos::{
+    AdoptedMetalContext, EmbeddedFrameProducer, MetalFrame, MetalRecordedFrame,
+};
+#[cfg(target_os = "windows")]
+pub use opennow_streamer_platform_windows::{
+    AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
+};
 pub use recording::{RecordingSummary, record_matroska};
-pub use runtime::{MainThreadHost, MediaRuntime, MediaRuntimeControl, create_runtime};
+pub use runtime::{
+    MainThreadHost, MediaRuntime, MediaRuntimeControl, create_embedded_runtime,
+    create_embedded_runtime_with_input, create_runtime,
+};
+#[cfg(feature = "test-runtime")]
+pub use runtime::{TestMediaRuntimeHost, create_test_runtime};
 
 use opennow_streamer_protocol::{CodecCapability, VideoBackendCapability};
 
@@ -46,6 +69,31 @@ pub fn video_backends() -> Vec<VideoBackendCapability> {
     };
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     let mut backends = vec![hardware_backend(), software_backend()];
+    apply_backend_policy(
+        &mut backends,
+        std::env::var("OPENNOW_NATIVE_VIDEO_BACKEND")
+            .ok()
+            .as_deref(),
+    );
+    backends
+}
+
+pub fn embedded_video_backends() -> Vec<VideoBackendCapability> {
+    #[cfg(target_os = "linux")]
+    let mut backends = linux_backend::video_backends();
+    #[cfg(target_os = "windows")]
+    let mut backends = {
+        use opennow_streamer_platform_windows::WindowsGraphicsApi;
+        vec![windows_hardware_backend(
+            WindowsGraphicsApi::D3d11,
+            "d3d11",
+            "d3d11-nv12",
+        )]
+    };
+    #[cfg(target_os = "macos")]
+    let mut backends = vec![hardware_backend()];
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let mut backends = Vec::new();
     apply_backend_policy(
         &mut backends,
         std::env::var("OPENNOW_NATIVE_VIDEO_BACKEND")
@@ -420,5 +468,27 @@ mod tests {
                     .available
             );
         }
+    }
+
+    #[test]
+    fn embedded_capabilities_exclude_standalone_only_backends() {
+        let backends = embedded_video_backends();
+        assert!(backends.iter().all(|backend| backend.backend != "software"));
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            backends
+                .iter()
+                .map(|backend| backend.backend)
+                .collect::<Vec<_>>(),
+            vec!["d3d11"]
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            backends
+                .iter()
+                .map(|backend| backend.backend)
+                .collect::<Vec<_>>(),
+            vec!["videotoolbox"]
+        );
     }
 }

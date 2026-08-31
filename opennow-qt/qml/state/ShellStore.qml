@@ -90,8 +90,7 @@ QtObject {
     property string streamPollRequestId: ""
     property string streamStopRequestId: ""
     property string streamerStartRequestId: ""
-    property string streamerDetectRequestId: ""
-    property string streamerStatusRequestId: ""
+    property string streamerPrepareRequestId: ""
     property string streamerStopRequestId: ""
     property bool streamerStopExpected: false
     property var artworkUrls: ({})
@@ -146,7 +145,12 @@ QtObject {
     property string streamControlRequestId: ""
     property string streamControlAction: ""
     property string streamControlMessage: ""
-    readonly property var streamSurface: StreamSurfaceController.surface
+    property rect streamCaptureRect: Qt.rect(0, 0, 0, 0)
+    property bool nativeRuntimeReady: false
+    readonly property int nativeProtocolVersion: 5
+    property var nativeRuntimeCapabilities: ({})
+    property int nativeRequestSequence: 0
+    property var nativeRequests: ({})
     property int overlayRequestGeneration: 0
     property int screenshotRequestGeneration: 0
     property int recordingToggleRequestGeneration: 0
@@ -175,6 +179,7 @@ QtObject {
     readonly property bool streamBusy: streamCreateRequestId !== "" || streamStopRequestId !== ""
 
     signal fullscreenToggleRequested()
+    signal pointerLockToggleRequested()
     readonly property var resumableSession: {
         if (root.activeSession) {
             const localStatus = Number(root.activeSession.status || 0)
@@ -223,13 +228,6 @@ QtObject {
         running: root.antiAfkEnabled && root.activeSession && root.streamer
             && root.streamer.status === "streaming"
         onTriggered: root.controlStream("anti-afk-pulse")
-    }
-
-    property Timer streamerStatusTimer: Timer {
-        interval: 1000
-        repeat: true
-        running: false
-        onTriggered: root.refreshStreamerStatus()
     }
 
     property Timer artworkRetryTimer: Timer {
@@ -284,28 +282,17 @@ QtObject {
         providersRequestId = CoreClient.request("auth.providers.list", {}, 25000)
         authSessionRequestId = CoreClient.request("auth.session.get", {})
         activeSessionRequestId = CoreClient.request("session.active.get", {})
-        if (streamerStatusRequestId === "")
-            streamerStatusRequestId = CoreClient.request("streamer.status.get", {})
+        ensureNativeRuntimeReady()
         updaterStateRequestId = CoreClient.request("updater.state.get", {})
         socialCapabilitiesRequestId = CoreClient.request("social.capabilities.get", {})
         refreshCatalog()
     }
 
     function refreshStreamerDetection() {
-        if (!ready || streamerDetectRequestId !== "")
-            return
-        if (streamer && streamer.status && streamer.status !== "stopped" && streamer.status !== "error") {
-            if (streamer.capabilities) {
-                streamerDetection = Object.assign({}, streamerDetection, {
-                    available: true,
-                    capabilities: streamer.capabilities,
-                    availableCodecs: codecNamesFromCapabilities(streamer.capabilities)
-                })
-            }
-            return
-        }
         streamerDetectionMessage = qsTr("Checking native codec support…")
-        streamerDetectRequestId = CoreClient.request("streamer.detect", {}, 15000)
+        ensureNativeRuntimeReady()
+        if (nativeRuntimeReady)
+            acceptNativeCapabilities(nativeRuntimeCapabilities)
     }
 
     function refreshRemoteSessions() {
@@ -390,6 +377,66 @@ QtObject {
             }
         }
         return result
+    }
+
+    function acceptNativeCapabilities(capabilities) {
+        nativeRuntimeCapabilities = capabilities || ({})
+        const codecs = codecNamesFromCapabilities(nativeRuntimeCapabilities)
+        streamerDetection = {
+            available: Boolean(nativeRuntimeCapabilities.supportsVideoDecode
+                && nativeRuntimeCapabilities.supportsVideoPresent),
+            capabilities: nativeRuntimeCapabilities,
+            availableCodecs: codecs
+        }
+        streamerDetectionMessage = codecs.length
+            ? qsTr("Available: ") + codecs.map(codec => String(codec).toUpperCase()).join(", ")
+            : qsTr("No native video decoder is available")
+    }
+
+    function sendNativeCommand(type, params, operation) {
+        if (!NativeStreamRuntime.running && !NativeStreamRuntime.start()) {
+            const message = NativeStreamRuntime.lastError || qsTr("The embedded media runtime could not start")
+            lastError = message
+            return ""
+        }
+        nativeRequestSequence += 1
+        const requestId = "qt-" + nativeRequestSequence
+        const command = Object.assign({id: requestId, type: type}, params || ({}))
+        if (!NativeStreamRuntime.send(command)) {
+            lastError = NativeStreamRuntime.lastError || qsTr("The embedded media runtime rejected a command")
+            return ""
+        }
+        const requests = Object.assign({}, nativeRequests)
+        requests[requestId] = Object.assign({operation: operation || type}, params || ({}))
+        nativeRequests = requests
+        return requestId
+    }
+
+    function takeNativeRequest(requestId) {
+        const pending = nativeRequests[requestId]
+        if (pending === undefined)
+            return null
+        const requests = Object.assign({}, nativeRequests)
+        delete requests[requestId]
+        nativeRequests = requests
+        return pending
+    }
+
+    function ensureNativeRuntimeReady() {
+        if (nativeRuntimeReady)
+            return
+        const requests = nativeRequests || ({})
+        for (const requestId in requests) {
+            if (requests[requestId].operation === "hello")
+                return
+        }
+        const requestId = sendNativeCommand("hello", {
+            protocolVersion: nativeProtocolVersion
+        }, "hello")
+        if (requestId === "" && streamer && streamer.status === "starting")
+            updateStreamerFields({status: "error",
+                message: lastError || qsTr("The embedded media runtime could not start"),
+                errorCode: "streamer_start_failed"})
     }
 
     function codecAvailable(codec) {
@@ -1082,23 +1129,40 @@ QtObject {
     }
 
     function startNativeStreamer() {
-        if (!ready || !activeSession || streamerStartRequestId !== "")
+        if (!ready || !activeSession || streamerStartRequestId !== ""
+                || streamerPrepareRequestId !== "")
             return
         if (streamer && streamer.sessionId === activeSession.sessionId
-                && streamer.status !== "stopped" && streamer.status !== "error")
+                && streamer.status !== "stopped" && streamer.status !== "error"
+                && streamer.status !== "starting")
             return
         streamer = {
             status: "starting",
-            message: qsTr("Launching the native media runtime…"),
-            sessionId: activeSession.sessionId
+            message: qsTr("Preparing the embedded native media runtime…"),
+            sessionId: activeSession.sessionId,
+            sessionStartedAtMs: String(Date.now()),
+            inputReady: false,
+            inputPauseCount: 0,
+            inputResumeCount: 0,
+            recordingStartCount: 0,
+            recordingStopCount: 0,
+            queueDropCount: 0
         }
         streamInputStateKnown = false
         streamerStopExpected = false
-        streamerStartRequestId = CoreClient.request("streamer.start", {
-            session: activeSession,
-            surface: streamSurface
-        }, 50000)
-        streamerStatusTimer.restart()
+        if (!nativeRuntimeReady) {
+            ensureNativeRuntimeReady()
+            return
+        }
+        streamerPrepareRequestId = CoreClient.request("streamer.prepare", {
+            session: activeSession
+        }, 15000)
+        if (streamerPrepareRequestId === "")
+            acceptStreamerSnapshot(Object.assign({}, streamer, {
+                status: "error",
+                message: qsTr("The core could not prepare the native stream context"),
+                errorCode: "core_not_ready"
+            }))
     }
 
     function retryNativeStreamer() {
@@ -1110,7 +1174,6 @@ QtObject {
     function acceptStreamerSnapshot(snapshot) {
         streamer = snapshot || null
         if (!streamer) {
-            streamerStatusTimer.stop()
             return
         }
         inspectStreamerOverlayRequest(streamer)
@@ -1126,7 +1189,6 @@ QtObject {
         if (activeSession && status !== "stopped" && status !== "error") {
             streamState = status
             streamMessage = streamer.message || streamMessage
-            streamerStatusTimer.restart()
             setStreamInputPaused(desiredStreamInputPaused)
         }
         if (status === "streaming") {
@@ -1139,7 +1201,6 @@ QtObject {
         if (status !== "error" && status !== "stopped")
             return
 
-        streamerStatusTimer.stop()
         streamInputStateKnown = false
         if (streamRecordingActive) {
             streamRecordingActive = false
@@ -1184,12 +1245,6 @@ QtObject {
             appId: String(activeSession.appId || "0"),
             recoveryMode: true
         }, 35000)
-    }
-
-    function refreshStreamerStatus() {
-        if (!ready || streamerStatusRequestId !== "")
-            return
-        streamerStatusRequestId = CoreClient.request("streamer.status.get", {})
     }
 
     function artworkUrl(sourceUrl) {
@@ -1270,35 +1325,36 @@ QtObject {
     }
 
     function stopNativeStreamer(reason) {
-        streamerStatusTimer.stop()
-        if (!ready || streamerStopRequestId !== "")
+        if (streamerStopRequestId !== "")
             return
         // A runtime that never started, or that already reported "stopped", has
         // nothing left to reap. Without this an Escape held down during a failing
-        // session issues one streamer.stop per key repeat.
+        // session issues one native stop command per key repeat.
         const status = streamer ? String(streamer.status || "") : ""
         if (status === "" || status === "stopped")
             return
         streamerStopExpected = true
-        streamerStopRequestId = CoreClient.request("streamer.stop", {
+        streamerStopRequestId = sendNativeCommand("stop", {
             reason: reason || "User stopped the session"
-        }, 10000)
+        }, "stop")
+        if (streamerStopRequestId === "")
+            streamerStopExpected = false
     }
 
     function setStreamInputPaused(paused) {
         desiredStreamInputPaused = Boolean(paused)
-        if (!ready || streamInputPauseRequestId !== "" || !streamer
+        if (streamInputPauseRequestId !== "" || !streamer
                 || streamer.status === "stopped" || streamer.status === "error")
             return
         if (streamInputStateKnown && currentStreamInputPaused === desiredStreamInputPaused)
             return
-        streamInputPauseRequestId = CoreClient.request("streamer.input.pause", {
+        streamInputPauseRequestId = sendNativeCommand("input-paused", {
             paused: desiredStreamInputPaused
-        }, 5000)
+        }, "input")
     }
 
     function controlStream(action) {
-        if (!ready || streamControlRequestId !== "")
+        if (streamControlRequestId !== "")
             return
         if (!activeSession || !streamer || streamer.status !== "streaming") {
             streamControlMessage = qsTr("Stream controls are available once the session is live.")
@@ -1306,9 +1362,21 @@ QtObject {
         }
         streamControlMessage = qsTr("")
         streamControlAction = action
-        streamControlRequestId = CoreClient.request("streamer.control", {
-            action: action
-        }, 5000)
+        const commandTypes = {
+            "toggle-fullscreen": "fullscreen-toggle",
+            "anti-afk-pulse": "anti-afk-pulse"
+        }
+        const commandType = commandTypes[action]
+        if (!commandType) {
+            streamControlAction = ""
+            streamControlMessage = qsTr("This stream control is unavailable")
+            return
+        }
+        streamControlRequestId = sendNativeCommand(commandType, {}, "control")
+        if (streamControlRequestId === "") {
+            streamControlAction = ""
+            streamControlMessage = lastError
+        }
     }
 
     function inspectStreamerOverlayRequest(value) {
@@ -1329,8 +1397,7 @@ QtObject {
     }
 
     function captureStreamScreenshot() {
-        const rect = streamSurface && streamSurface.logicalScreenRect
-            ? streamSurface.logicalScreenRect : ({x: 0, y: 0, width: 0, height: 0})
+        const rect = streamCaptureRect
         const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
         const path = AppController.captureScreenRegion(
             Number(rect.x || 0), Number(rect.y || 0),
@@ -1366,8 +1433,6 @@ QtObject {
             antiAfkEnabled = !antiAfkEnabled
             streamControlMessage = antiAfkEnabled ? qsTr("Anti-AFK on") : qsTr("Anti-AFK off")
             accessibilityMessage = streamControlMessage
-        } else if (action === "toggle-microphone") {
-            toggleMicrophoneMode()
         } else if (action === "toggle-stats") {
             AppController.activateWindow()
             const compact = desktopUiActive ? "desktop-stream-stats" : "stream-stats"
@@ -1380,6 +1445,8 @@ QtObject {
         } else if (action === "toggle-fullscreen") {
             AppController.activateWindow()
             fullscreenToggleRequested()
+        } else if (action === "toggle-pointer-lock") {
+            pointerLockToggleRequested()
         } else if (action === "screenshot") {
             captureStreamScreenshot()
         } else if (action === "toggle-recording") {
@@ -1392,8 +1459,9 @@ QtObject {
                 || mediaRecordingTargetRequestId !== "")
             return
         if (streamRecordingActive) {
-            streamRecordingStopRequestId = CoreClient.request("streamer.recording.stop", {}, 15000)
-            mediaMessage = qsTr("Finalizing recording…")
+            streamRecordingStopRequestId = sendNativeCommand("recording-stop", {}, "recording-stop")
+            mediaMessage = streamRecordingStopRequestId === ""
+                ? lastError : qsTr("Finalizing recording…")
             accessibilityMessage = mediaMessage
             return
         }
@@ -1409,15 +1477,6 @@ QtObject {
         }, 5000)
         mediaMessage = qsTr("Preparing source-quality recording…")
         accessibilityMessage = mediaMessage
-    }
-
-    function toggleMicrophoneMode() {
-        if (settings.microphoneMode !== "disabled") {
-            applySetting("microphoneMode", "disabled")
-            setSetting("microphoneMode", "disabled")
-        }
-        streamControlMessage = qsTr("Microphone upstream is unavailable for NVST sessions")
-        accessibilityMessage = streamControlMessage
     }
 
     function pollStreamingSession() {
@@ -1604,6 +1663,216 @@ QtObject {
         focusPositions = updated
     }
 
+    function updateStreamerFields(fields) {
+        acceptStreamerSnapshot(Object.assign({}, streamer || ({}), fields || ({})))
+    }
+
+    function acceptNativeResponse(response) {
+        const requestId = String(response && response.id || "")
+        const pending = takeNativeRequest(requestId)
+        if (!pending)
+            return
+        const responseType = String(response.type || "")
+        if (responseType === "error") {
+            const message = String(response.message || qsTr("The embedded media runtime rejected a command"))
+            if (pending.operation === "hello") {
+                nativeRuntimeReady = false
+                streamerDetection = {available: false, availableCodecs: [], capabilities: ({})}
+                streamerDetectionMessage = message
+            } else if (pending.operation === "start") {
+                streamerStartRequestId = ""
+                updateStreamerFields({status: "error", message: message,
+                                      errorCode: String(response.code || "native_stream_error")})
+            } else if (pending.operation === "stop") {
+                streamerStopRequestId = ""
+                lastError = message
+            } else if (pending.operation === "input") {
+                streamInputPauseRequestId = ""
+            } else if (pending.operation === "control") {
+                streamControlRequestId = ""
+                streamControlAction = ""
+                streamControlMessage = message
+            } else if (pending.operation === "recording-start") {
+                streamRecordingStartRequestId = ""
+                mediaMessage = message
+            } else if (pending.operation === "recording-stop") {
+                streamRecordingStopRequestId = ""
+                mediaMessage = message
+            }
+            lastError = message
+            return
+        }
+
+        if (pending.operation === "hello") {
+            const protocolVersion = Number(response.capabilities
+                && response.capabilities.protocolVersion || 0)
+            nativeRuntimeReady = responseType === "ready"
+                && protocolVersion === nativeProtocolVersion
+            if (!nativeRuntimeReady) {
+                lastError = qsTr("The embedded media runtime returned an invalid handshake")
+                streamerDetection = {available: false, availableCodecs: [], capabilities: ({})}
+                streamerDetectionMessage = lastError
+                return
+            }
+            acceptNativeCapabilities(response.capabilities || ({}))
+            if (activeSession && (!streamer || streamer.status === "starting"))
+                Qt.callLater(() => root.startNativeStreamer())
+        } else if (pending.operation === "start") {
+            streamerStartRequestId = ""
+            updateStreamerFields({
+                status: "streaming",
+                message: qsTr("Native-owned NVST media transport is active"),
+                transport: String(response.transport || "nvst"),
+                capabilities: Object.assign({}, nativeRuntimeCapabilities,
+                                            response.capabilities || ({})),
+                errorCode: null
+            })
+        } else if (pending.operation === "stop") {
+            streamerStopRequestId = ""
+            updateStreamerFields({status: "stopped", message: pending.reason || qsTr("Stream stopped"),
+                                  sessionId: null, transport: null, inputReady: false})
+        } else if (pending.operation === "input") {
+            streamInputPauseRequestId = ""
+            currentStreamInputPaused = Boolean(pending.paused)
+            streamInputStateKnown = true
+            const counter = currentStreamInputPaused ? "inputPauseCount" : "inputResumeCount"
+            const values = {}
+            values[counter] = Number(streamer && streamer[counter] || 0) + 1
+            updateStreamerFields(values)
+            if (currentStreamInputPaused !== desiredStreamInputPaused)
+                Qt.callLater(() => root.setStreamInputPaused(root.desiredStreamInputPaused))
+        } else if (pending.operation === "control") {
+            streamControlRequestId = ""
+            streamControlAction = ""
+            streamControlMessage = qsTr("Stream control applied")
+        } else if (pending.operation === "recording-start") {
+            streamRecordingStartRequestId = ""
+            streamRecordingActive = true
+            streamRecordingStartedAtMs = Date.now()
+            streamRecordingElapsedMs = 0
+            updateStreamerFields({recordingStartCount: Number(streamer && streamer.recordingStartCount || 0) + 1})
+            const rect = streamCaptureRect
+            if (pendingRecordingThumbnailPath) {
+                AppController.captureScreenRegionTo(
+                    Number(rect.x || 0), Number(rect.y || 0),
+                    Number(rect.width || 0), Number(rect.height || 0),
+                    pendingRecordingThumbnailPath)
+            }
+            mediaMessage = qsTr("Recording source video + stream audio")
+            accessibilityMessage = qsTr("Recording started")
+        } else if (pending.operation === "recording-stop") {
+            streamRecordingStopRequestId = ""
+            streamRecordingActive = false
+            streamRecordingElapsedMs = 0
+            pendingRecordingPath = ""
+            pendingRecordingThumbnailPath = ""
+            updateStreamerFields({recordingStopCount: Number(streamer && streamer.recordingStopCount || 0) + 1})
+            mediaMessage = response.path ? qsTr("Recording saved") : qsTr("Recording stopped")
+            accessibilityMessage = response.path
+                ? qsTr("Recording saved to %1").arg(response.path) : mediaMessage
+            refreshMedia()
+        }
+    }
+
+    function acceptNativeEvent(event) {
+        const type = String(event && event.type || "")
+        const fields = {}
+        if (event.framesPerSecond !== undefined)
+            fields.framesPerSecond = Number(event.framesPerSecond)
+        if (event.bitrateMbps !== undefined)
+            fields.bitrateMbps = Number(event.bitrateMbps)
+        if (event.peakBitrateMbps !== undefined)
+            fields.peakBitrateMbps = Number(event.peakBitrateMbps)
+        if (event.event === "first-frame") {
+            if (streamer && (streamer.firstFrameLatencyMs === undefined
+                    || streamer.firstFrameLatencyMs === null)) {
+                fields.firstFrameLatencyMs = Math.max(0,
+                    Date.now() - Number(streamer.sessionStartedAtMs || Date.now()))
+            }
+            fields.mediaBackend = String(event.backend || "")
+        } else if (event.event === "backend-fallback") {
+            fields.backendFallbackCount = Number(streamer && streamer.backendFallbackCount || 0) + 1
+        } else if (event.event === "decoder-error") {
+            fields.decoderErrorCount = Number(streamer && streamer.decoderErrorCount || 0) + 1
+        } else if (event.event === "output-error") {
+            fields.outputErrorCount = Number(streamer && streamer.outputErrorCount || 0) + 1
+        } else if (event.event === "device-state") {
+            const key = event.recovered ? "deviceRecoveryCount" : "deviceLossCount"
+            fields[key] = Number(streamer && streamer[key] || 0) + 1
+        } else if (event.event === "queue-dropped") {
+            fields.queueDropCount = Number(streamer && streamer.queueDropCount || 0)
+                + Number(event.count || 0)
+        }
+
+        if (type === "status") {
+            fields.status = event.status === "ready" ? "streaming" : String(event.status || "streaming")
+            fields.message = String(event.message || streamMessage)
+        } else if (type === "error") {
+            fields.status = "error"
+            fields.message = String(event.message || qsTr("Native media runtime failed"))
+            fields.errorCode = String(event.code || "native_stream_error")
+            sendNativeCommand("stop", {reason: fields.message}, "error-stop")
+        } else if (type === "input-ready") {
+            fields.inputReady = true
+            fields.inputUnavailableReason = null
+        } else if (type === "input-unavailable") {
+            fields.inputReady = false
+            fields.inputUnavailableReason = String(event.reason || "")
+        } else if (type === "recording-state") {
+            if (event.state === "saved" || event.state === "failed") {
+                streamRecordingActive = false
+                streamRecordingElapsedMs = 0
+                mediaMessage = event.state === "saved"
+                    ? qsTr("Recording saved")
+                    : String(event.message || qsTr("Recording failed"))
+                if (event.state === "failed")
+                    lastError = mediaMessage
+                refreshMedia()
+            }
+        } else if (type === "overlay-request") {
+            fields.overlayRequestGeneration = Number(streamer && streamer.overlayRequestGeneration || 0) + 1
+        } else if (type === "screenshot-request") {
+            fields.screenshotRequestGeneration = Number(streamer && streamer.screenshotRequestGeneration || 0) + 1
+        } else if (type === "recording-toggle-request") {
+            fields.recordingToggleRequestGeneration = Number(streamer && streamer.recordingToggleRequestGeneration || 0) + 1
+        } else if (type === "shortcut-action") {
+            fields.shortcutActionGeneration = Number(streamer && streamer.shortcutActionGeneration || 0) + 1
+            fields.shortcutAction = String(event.action || "")
+            if (fields.shortcutAction === "toggle-stats")
+                fields.statsToggleCount = Number(streamer && streamer.statsToggleCount || 0) + 1
+            else if (fields.shortcutAction === "toggle-fullscreen")
+                fields.fullscreenToggleCount = Number(streamer && streamer.fullscreenToggleCount || 0) + 1
+        }
+        updateStreamerFields(fields)
+    }
+
+    property Connections nativeRuntimeConnections: Connections {
+        target: NativeStreamRuntime
+        function onResponseReceived(response) { root.acceptNativeResponse(response) }
+        function onEventReceived(event) { root.acceptNativeEvent(event) }
+        function onCallbacksDropped(count) {
+            root.updateStreamerFields({queueDropCount:
+                Number(root.streamer && root.streamer.queueDropCount || 0) + Number(count || 0)})
+        }
+        function onRunningChanged() {
+            if (NativeStreamRuntime.running)
+                return
+            root.nativeRuntimeReady = false
+            root.nativeRequests = ({})
+            root.streamerStartRequestId = ""
+            root.streamerStopRequestId = ""
+            root.streamInputPauseRequestId = ""
+            root.streamControlRequestId = ""
+            root.streamRecordingStartRequestId = ""
+            root.streamRecordingStopRequestId = ""
+            if (root.streamer && root.streamer.status !== "stopped"
+                    && root.streamer.status !== "error")
+                root.updateStreamerFields({status: "error",
+                    message: NativeStreamRuntime.lastError || qsTr("The embedded media runtime stopped"),
+                    errorCode: "streamer_closed"})
+        }
+    }
+
     property Connections coreConnections: Connections {
         target: CoreClient
         function onStateChanged() {
@@ -1644,13 +1913,6 @@ QtObject {
                 } else {
                     root.beginConsoleSurfacePersistence()
                 }
-            } else if (requestId === root.streamerDetectRequestId) {
-                root.streamerDetectRequestId = ""
-                root.streamerDetection = result
-                const codecs = result.availableCodecs || []
-                root.streamerDetectionMessage = codecs.length
-                    ? qsTr("Available: ") + codecs.map(codec => String(codec).toUpperCase()).join(", ")
-                    : qsTr("No native video decoder is available")
             } else if (requestId === root.providersRequestId) {
                 root.providers = result.providers || []
                 root.providersRequestId = ""
@@ -1870,35 +2132,14 @@ QtObject {
                 root.mediaRecordingTargetRequestId = ""
                 root.pendingRecordingPath = String(result.path || "")
                 root.pendingRecordingThumbnailPath = String(result.thumbnailPath || "")
-                root.streamRecordingStartRequestId = CoreClient.request("streamer.recording.start", {
+                root.streamRecordingStartRequestId = root.sendNativeCommand("recording-start", {
                     outputPath: root.pendingRecordingPath
-                }, 15000)
-            } else if (requestId === root.streamRecordingStartRequestId) {
-                root.streamRecordingStartRequestId = ""
-                root.streamRecordingActive = true
-                root.streamRecordingStartedAtMs = Date.now()
-                root.streamRecordingElapsedMs = 0
-                const rect = root.streamSurface && root.streamSurface.logicalScreenRect
-                    ? root.streamSurface.logicalScreenRect : ({x: 0, y: 0, width: 0, height: 0})
-                if (root.pendingRecordingThumbnailPath) {
-                    AppController.captureScreenRegionTo(
-                        Number(rect.x || 0), Number(rect.y || 0),
-                        Number(rect.width || 0), Number(rect.height || 0),
-                        root.pendingRecordingThumbnailPath)
+                }, "recording-start")
+                if (root.streamRecordingStartRequestId === "") {
+                    root.pendingRecordingPath = ""
+                    root.pendingRecordingThumbnailPath = ""
+                    root.mediaMessage = root.lastError
                 }
-                root.mediaMessage = qsTr("Recording source video + stream audio")
-                root.accessibilityMessage = qsTr("Recording started")
-            } else if (requestId === root.streamRecordingStopRequestId) {
-                root.streamRecordingStopRequestId = ""
-                root.streamRecordingActive = false
-                root.streamRecordingElapsedMs = 0
-                root.pendingRecordingPath = ""
-                root.pendingRecordingThumbnailPath = ""
-                root.mediaMessage = result.path ? qsTr("Recording saved") : qsTr("Recording stopped")
-                root.accessibilityMessage = result.path
-                    ? qsTr("Recording saved to %1").arg(result.path)
-                    : root.mediaMessage
-                root.refreshMedia()
             } else if (requestId === root.diagnosticsRequestId) {
                 root.diagnosticsRequestId = ""
                 root.diagnostics = result
@@ -1995,28 +2236,25 @@ QtObject {
                 if (!wasForceNewAfterStop && Boolean(root.settings.showSessionReport)
                         && root.lastSessionReport)
                     AppController.showOverlay("session-report")
-            } else if (requestId === root.streamerStartRequestId) {
-                root.streamerStartRequestId = ""
-                root.acceptStreamerSnapshot(result.streamer || result || null)
-            } else if (requestId === root.streamerStatusRequestId) {
-                root.streamerStatusRequestId = ""
-                root.acceptStreamerSnapshot(result.streamer || result || root.streamer)
-            } else if (requestId === root.streamerStopRequestId) {
-                root.streamerStopRequestId = ""
-                root.acceptStreamerSnapshot(result.streamer || result || null)
-            } else if (requestId === root.streamInputPauseRequestId) {
-                root.streamInputPauseRequestId = ""
-                if (result.streamerRunning)
-                    root.currentStreamInputPaused = Boolean(result.paused)
-                root.streamInputStateKnown = Boolean(result.streamerRunning)
-                if (result.streamerRunning
-                        && root.currentStreamInputPaused !== root.desiredStreamInputPaused)
-                    Qt.callLater(() => root.setStreamInputPaused(root.desiredStreamInputPaused))
-            } else if (requestId === root.streamControlRequestId) {
-                root.streamControlRequestId = ""
-                root.streamControlAction = ""
-                root.streamControlMessage = qsTr("Stream control applied")
-                root.refreshStreamerStatus()
+            } else if (requestId === root.streamerPrepareRequestId) {
+                root.streamerPrepareRequestId = ""
+                if (!result.context) {
+                    root.acceptStreamerSnapshot(Object.assign({}, root.streamer || ({}), {
+                        status: "error",
+                        message: qsTr("The core returned an invalid embedded stream context"),
+                        errorCode: "invalid_stream_context"
+                    }))
+                    return
+                }
+                root.streamerStartRequestId = root.sendNativeCommand("start", {
+                    context: result.context
+                }, "start")
+                if (root.streamerStartRequestId === "")
+                    root.acceptStreamerSnapshot(Object.assign({}, root.streamer || ({}), {
+                        status: "error",
+                        message: NativeStreamRuntime.lastError || qsTr("The embedded media runtime could not start the stream"),
+                        errorCode: "streamer_start_failed"
+                    }))
             }
         }
         function onRequestFailed(requestId, code, message) {
@@ -2039,10 +2277,6 @@ QtObject {
             } else if (requestId === root.catalogRequestId) {
                 root.catalogState = "error"
                 root.catalogRequestId = ""
-            } else if (requestId === root.streamerDetectRequestId) {
-                root.streamerDetectRequestId = ""
-                root.streamerDetection = {available: false, availableCodecs: [], capabilities: ({})}
-                root.streamerDetectionMessage = message
             } else if (requestId === root.providersRequestId) {
                 root.providersRequestId = ""
             } else if (requestId === root.authSessionRequestId) {
@@ -2115,20 +2349,6 @@ QtObject {
                 root.pendingRecordingPath = ""
                 root.pendingRecordingThumbnailPath = ""
                 root.mediaMessage = message
-            } else if (requestId === root.streamRecordingStartRequestId) {
-                root.streamRecordingStartRequestId = ""
-                root.pendingRecordingPath = ""
-                root.pendingRecordingThumbnailPath = ""
-                root.streamRecordingActive = false
-                root.mediaMessage = message
-            } else if (requestId === root.streamRecordingStopRequestId) {
-                root.streamRecordingStopRequestId = ""
-                root.streamRecordingActive = false
-                root.streamRecordingElapsedMs = 0
-                root.pendingRecordingPath = ""
-                root.pendingRecordingThumbnailPath = ""
-                root.mediaMessage = message
-                root.refreshMedia()
             } else if (requestId === root.diagnosticsRequestId) {
                 root.diagnosticsRequestId = ""
                 root.diagnosticsMessage = message
@@ -2215,21 +2435,9 @@ QtObject {
                 root.streamStopRequestId = ""
                 root.streamState = "error"
                 root.streamMessage = message
-            } else if (requestId === root.streamerStartRequestId) {
-                root.streamerStartRequestId = ""
-                root.streamerStatusTimer.stop()
+            } else if (requestId === root.streamerPrepareRequestId) {
+                root.streamerPrepareRequestId = ""
                 root.acceptStreamerSnapshot({ status: "error", message: message, errorCode: code })
-            } else if (requestId === root.streamerStatusRequestId) {
-                root.streamerStatusRequestId = ""
-            } else if (requestId === root.streamerStopRequestId) {
-                root.streamerStopRequestId = ""
-                root.lastError = message
-            } else if (requestId === root.streamInputPauseRequestId) {
-                root.streamInputPauseRequestId = ""
-            } else if (requestId === root.streamControlRequestId) {
-                root.streamControlRequestId = ""
-                root.streamControlAction = ""
-                root.streamControlMessage = message
             }
         }
         function onEventReceived(name, payload) {

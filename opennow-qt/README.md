@@ -49,23 +49,27 @@ The versioned Rust core owns settings, NVIDIA device login and token refresh,
 OS-protected accounts, PINs, catalogs, subscriptions, regions and latency tests,
 account connections, persistent storage, CloudMatch lifecycle/recovery/ads,
 NVST session orchestration, diagnostics, media listing, Discord, telemetry,
-feedback and update discovery. The supervised protocol-v5 native streamer owns
-the complete NVST negotiation, its media sockets, hardware/software decode,
-audio, native input and presentation controls. Qt/QML owns stream status, stats,
-menus, recovery, failure and fullscreen chrome. The Qt shell sends one
-complete CloudMatch session context and never proxies RTSPS or ICE/SRTP state.
-CPack installs the shell, core and streamer together and can generate
-a Linux deb locally, while CI defines a checksum-pinned x64 AppImage build.
+feedback and update discovery. The protocol-v5 native streamer is linked into
+the Qt executable as an in-process Rust library. It owns NVST RTSPS negotiation,
+Mjolnir video, the ICE/DTLS/SCTP control bundle, decode, audio and native input.
+Qt/QML owns stream status, stats, menus, recovery, failure and fullscreen
+chrome. The shell sends one complete CloudMatch session context and never
+proxies RTSPS, ICE, SRTP or encoded media. Decoders publish native GPU frames
+through the C FFI; `StreamVideoItem` imports and samples them on Qt's QRhi
+render command stream without a child streamer process or native presenter
+window. CPack installs the Qt executable, `opennow-core` and the runtime library;
+there is no separate streamer application. CI produces the platform packages
+from that layout.
 The screenshot shortcut captures the exact stream region, and F12 records the
 negotiated H.264/H.265/AV1 source stream plus Opus audio atomically into Matroska
-before generating a media thumbnail. NVST microphone upstream is not currently
-supported and fails closed. Live multi-OS streaming, window-composition and
+before generating a media thumbnail. Microphone capture is not part of the
+native NVST runtime. Live multi-OS streaming, GPU interop and
 hardware validation plus production signing/notarization remain removal gates,
 so Electron is still retained as the shipping fallback.
 
-The current presenter is not a Qt scene-graph texture. Windows reparents its native
-presenter HWND into the Qt top-level window, while macOS, X11 and Wayland use paired
-native top-level windows. Ordinary QML cannot reliably cover those surfaces, so
-opening Qt-owned stream UI temporarily hides native presentation and restores it
-afterward. This is deliberately not described as a composited live-video overlay or
-cross-platform zero-copy.
+The current presenter is a Qt scene-graph item. Platform decoders retain native
+textures, record any required conversion and synchronization into the active
+QRhi command buffer, and expose only opaque frame tokens across the FFI. QML
+overlays therefore compose normally above the stream. No CPU frame callback,
+standalone SDL presenter, child HWND or paired top-level video window participates
+in the Qt path.

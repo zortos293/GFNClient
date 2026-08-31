@@ -13,6 +13,8 @@ mod error;
 #[cfg(target_os = "linux")]
 mod format;
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
+mod frame_producer;
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
 mod presentation;
 #[cfg(target_os = "linux")]
 mod queue;
@@ -35,6 +37,12 @@ pub use format::{
     ChromaLocation, ColorMatrix, ColorRange, DecodedVideoFrame, DmaBufFrame, DmaBufLayer,
     DmaBufObject, DmaBufPlane, EncodedVideoFrame, FramePlane, PixelFormat, StreamFormat,
     VideoCodec, VulkanImage, VulkanVideoFrame,
+};
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+pub use frame_producer::{
+    CpuNv12Frame, ImportedNv12Frame, LinuxFrameProducer, LinuxGpuFrame, LinuxGpuFrameProducer,
+    PreparedLinuxFrame, PreparedVulkanFrame, PreparedVulkanImage, RecordedGpuFrame,
+    VulkanRenderDevice,
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use presentation::{NativeSurface, VulkanPresenter};

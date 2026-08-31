@@ -523,6 +523,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 .map(|value| (value.clone(), Some(("streamer.changed", value))))
                 .map_err(streamer_error)
         }
+        "streamer.prepare" => {
+            let settings = core.settings.lock().expect("settings poisoned").all();
+            core.streamer
+                .prepare_embedded(params, &settings)
+                .map(|value| (value, None))
+                .map_err(streamer_error)
+        }
         "streamer.status.get" => Ok((core.streamer.status(), None)),
         "streamer.stop" => core
             .streamer

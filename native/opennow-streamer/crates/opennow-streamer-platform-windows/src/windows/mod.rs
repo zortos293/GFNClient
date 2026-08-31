@@ -1,6 +1,11 @@
 mod audio;
 mod decoder;
+mod embedded;
 mod graphics;
+
+pub use embedded::{
+    AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
+};
 
 use std::collections::VecDeque;
 use std::sync::{Arc, mpsc};

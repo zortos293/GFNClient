@@ -220,6 +220,7 @@ pub struct VulkanVideoFrame {
     device_context: usize,
     lock_queue: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32)>,
     unlock_queue: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32)>,
+    cpu_nv12_fallback: Option<Arc<dyn Fn() -> Result<Vec<FramePlane>> + Send + Sync>>,
     owner: Arc<dyn Send + Sync>,
 }
 
@@ -249,8 +250,26 @@ impl VulkanVideoFrame {
             device_context,
             lock_queue,
             unlock_queue,
+            cpu_nv12_fallback: None,
             owner,
         }
+    }
+
+    pub fn with_cpu_nv12_fallback(
+        mut self,
+        fallback: Arc<dyn Fn() -> Result<Vec<FramePlane>> + Send + Sync>,
+    ) -> Self {
+        self.cpu_nv12_fallback = Some(fallback);
+        self
+    }
+
+    pub fn download_nv12(&self) -> Result<Vec<FramePlane>> {
+        self.cpu_nv12_fallback.as_ref().ok_or_else(|| {
+            Error::unavailable(
+                crate::Subsystem::Vulkan,
+                "Vulkan frame has no CPU NV12 fallback",
+            )
+        })?()
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -477,5 +496,52 @@ mod tests {
             timestamp_us: 1,
         };
         assert!(frame.validate().is_err());
+    }
+
+    #[test]
+    fn vulkan_frame_cpu_fallback_is_lazy_and_typed_as_nv12_planes() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fallback_calls = Arc::clone(&calls);
+        let frame = VulkanVideoFrame::new(
+            1,
+            2,
+            3,
+            vec![0],
+            0,
+            0,
+            vec![VulkanImage {
+                image: 4,
+                format: 1,
+                width: 4,
+                height: 4,
+                layout: 1,
+                access: 0,
+                semaphore: 5,
+                semaphore_value: 1,
+                queue_family: 0,
+            }],
+            0,
+            None,
+            None,
+            Arc::new(()),
+        )
+        .with_cpu_nv12_fallback(Arc::new(move || {
+            fallback_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![
+                FramePlane {
+                    data: Arc::from(vec![0_u8; 16]),
+                    stride: 4,
+                    rows: 4,
+                },
+                FramePlane {
+                    data: Arc::from(vec![0_u8; 8]),
+                    stride: 4,
+                    rows: 2,
+                },
+            ])
+        }));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(frame.download_nv12().unwrap().len(), 2);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

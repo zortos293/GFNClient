@@ -8,19 +8,20 @@ until every removal gate at the end of this document passes.
 
 ```text
 Qt Quick/QML shell
-  -> thin Qt/C++ bridge
-  -> versioned OpenNOW core RPC
-  -> Rust application services
-  -> Rust native streamer process
+  -> thin Qt/C++ bridge -> linked Rust NVST runtime
+  -> versioned OpenNOW core RPC -> Rust application services
 ```
 
 The QML layer owns presentation, motion, spatial focus, responsive layout and
 accessible interaction. It must not own GFN protocol details, credentials,
 filesystem access, native process management or stream transport.
 
-The Rust application core owns authentication, GFN orchestration, settings,
-storage, updates, diagnostics and platform services. The native streamer remains
-out of process so decoder or driver failures cannot take down the shell.
+The Rust application core remains out of process and owns authentication, GFN
+orchestration, settings, storage, updates, diagnostics and platform services.
+The NVST media runtime is a shared library loaded into the Qt process. Qt owns
+the D3D11, Metal or Vulkan graphics device and scene-graph presentation; Rust
+decodes into native GPU frames and records conversion work on Qt's command
+stream without creating another application window or presenter process.
 
 ## Phase checklist
 
@@ -118,18 +119,15 @@ out of process so decoder or driver failures cannot take down the shell.
 
 ### 6. Native streaming
 
-- [x] Replace Electron-specific surface ownership with a shell-neutral external-window contract. The
-  core preserves `windowHandle`, `rect`, `screenRect`, visibility and scale updates and always starts
-  the out-of-process presenter with `OPENNOW_NATIVE_EXTERNAL_RENDERER=1`.
-- [x] Implement native frame presentation and shell/streamer window ordering for Windows, macOS,
-  X11 and Wayland, with controller ownership transferred atomically while QML guide overlays are
-  active. Windows reparents the presenter HWND into the Qt top-level window; X11, Wayland and macOS
-  currently use paired native top-level windows. None is a texture embedded in the Qt scene graph.
-  Because ordinary QML cannot reliably cover these native surfaces, the typed controller hides
-  presentation for QML menus, stats, reconnect and error states, then restores it from fresh host
-  geometry. Cross-OS live-stream ordering proof remains an acceptance gate, and this implementation
-  does not claim a live-video QML overlay or cross-platform zero-copy.
-- [x] Preserve out-of-process lifecycle, protocol-v5 health checks and restart isolation.
+- [x] Replace Electron-specific surface ownership with an in-process GPU frame contract. The Qt
+  render thread lends QRhi native objects to the in-process Rust library, acquires opaque frame tokens,
+  records conversion/synchronization into Qt's command buffer and samples the imported texture in
+  `StreamVideoItem`.
+- [x] Present native decoder frames inside the Qt scene graph on Windows, macOS, X11 and Wayland.
+  QML menus, stats, reconnect and error states compose above live video without child HWNDs, paired
+  windows or presenter hide/show ordering. Cross-OS live GPU interop remains an acceptance gate.
+- [x] Replace the streamer subprocess with a bounded C FFI linked into `opennow-qt`; preserve the
+  protocol-v5 engine contract internally without packaging a helper executable.
 - [x] Preserve hardware decode selection and safe fallback behavior for every negotiable codec. NVST
   H.264/H.265/AV1 profiles, strict automatic/hardware/software selection, prelaunch capability
   probing, Windows class-separated Media Foundation hardware and system-software probing/fallback,
@@ -143,13 +141,12 @@ out of process so decoder or driver failures cannot take down the shell.
 - [x] Integrate stream statistics, next-session bitrate, recording and Cloud G-Sync quick controls.
   The configurable stats shortcut is forwarded as `shortcut-action: toggle-stats`; Qt owns the
   overlay and renders core telemetry instead of asking the native presenter to draw it.
-- [x] Fail closed when a persisted microphone mode is selected: upstream microphone audio is not
-  implemented by the NVST runtime, and diagnostics report it as unavailable rather than selecting a
-  WebRTC media session.
-- [x] Apply all eight configurable native shortcuts, including pointer lock, recording, screenshot,
-  microphone, stop and real four-minute anti-AFK F13 pulses. Stats and fullscreen are forwarded to
-  Qt instead of mutating native presentation; pointer lock remains native. The microphone shortcut
-  retains settings compatibility but reports NVST upstream audio as unavailable.
+- [x] Migrate persisted microphone modes to disabled. Microphone capture and upstream audio are not
+  part of the NVST runtime, and legacy values cannot select another transport.
+- [x] Apply the seven active native shortcuts, including pointer lock, recording, screenshot, stop
+  and real four-minute anti-AFK F13 pulses. Stats and fullscreen are forwarded to Qt; pointer lock
+  remains native. The removed microphone shortcut key remains accepted only as persisted settings
+  data so upgrades do not fail to load.
 - [ ] Validate HDR, high-refresh, VRR, resize, fullscreen and display migration.
 - [ ] Validate screenshots and source-stream recording with an authorized live session on each supported OS.
 
@@ -187,7 +184,7 @@ out of process so decoder or driver failures cannot take down the shell.
 - [ ] Performance budgets pass on representative low-end hardware.
 - [x] Ship a fail-closed acceptance verifier for live evidence, 1080p/4K reports, manual hardware
   attestations, required platform package types, package hashes, signing and update verification.
-- [x] Offline, partial-stream, core-restart and streamer-crash tests pass with bounded queues, typed failures, graceful EOF shutdown and supervised child recovery.
+- [x] Offline, partial-stream, core-restart and native-runtime failure tests pass with bounded queues, typed failures, graceful shutdown and bounded recovery.
 - [ ] Authorized live sessions pass on every supported OS/window-system pair.
 - [x] Upgrade, downgrade and rollback fixtures preserve user data: unknown Electron fields survive Qt saves, imported credentials leave the Electron source untouched, and failed AppImage replacement restores the previous executable.
 - [ ] Qt release has completed a staged rollout with diagnostics monitored.
@@ -220,26 +217,12 @@ codec-specific tracking, main-thread configuration commands, reconfiguration and
 handling. Full wrapper linking and execution require the Apple SDK and therefore still run only
 on the macOS CI/hardware gate.
 
-The same checkpoint builds the release shell with bundled FFmpeg and produces a
-20,623,628-byte amd64 DEB (49,695 KiB installed). An extracted-package smoke
-launch passed while explicitly using the packaged `opennow-core` and
-`opennow-streamer`, and the archive contains the desktop entry, AppStream
-metadata, icon, license and generated third-party notices. The exact local artifact has SHA-256
-`e1d076182530a3e128f18708371bdbe6c936cdc9fd6dbcaad826121e13cfa1bf`.
-
-The native NVST launch context now carries exactly the CloudMatch codec configured
-for the active decoder. A protocol-v5 child-process probe applies the selected
-decoder policy before CloudMatch allocates a session, including automatic H.264;
-explicit HEVC/AV1 sessions remain available only where the selected native backend
-honestly reports them. CPack packages the Qt shell, Rust core, native streamer,
-desktop metadata, Qt deployment output and exact dependency notices; the CI path
-builds the distributable Linux streamer with bundled FFmpeg and smoke-tests the
-checksum-pinned x64 AppImage.
-
-The extracted DEB starts the Qt shell against its packaged core and streamer.
-Its live protocol-v5 probe reports the bundled H.264/H.265/AV1 codecs, applies an
-explicit unavailable V4L2 policy as zero available codecs, and rejects
-`session.create` with `streamer_codec_unavailable` before any provider request.
+The Qt target links `opennow-streamer-ffi` as an in-process Rust shared library and packages no
+`opennow-streamer` executable. `opennow-core` remains a separate account/session service, but it
+only prepares the normalized NVST launch context; Qt sends media lifecycle and input commands to
+the linked runtime. The native launch context carries exactly the CloudMatch codec configured for
+the active decoder, and explicit HEVC/AV1 sessions remain available only where the linked backend
+reports them.
 
 These are development-host checkpoints, not live-account or representative-GPU
 acceptance results. Production update keys/assets, signed/notarized multi-arch
@@ -256,19 +239,23 @@ manifest with both hardware performance reports, the explicit manual-attestation
 required platform packages; it fails closed on any false/mismatched gate and emits a path-free
 verification result.
 
-The NVST-only core no longer contains its former browser WebSocket/SDP/ICE media fallback or the
-associated Tungstenite dependency. Persisted `transportMode` remains part of the settings contract
+The NVST-only core no longer contains its former browser offer/answer, trickle-ICE, RTP media,
+data-channel input or microphone fallback. Persisted `transportMode` remains part of the settings contract
 for rollback compatibility, but every legacy value normalizes to `nvst` before session creation or
-streamer launch. NVIDIA still requires some protocol labels whose names contain `WEBRTC`: device
+runtime launch. NVIDIA still requires some protocol labels whose names contain `WEBRTC`: device
 authorization and browser-style region discovery retain the `nv-client-streamer: WEBRTC` identity.
-The native streamer also retains DTLS/SCTP-named bundle, input and control structures because NVST
-audio, input and RTCP use that encrypted bundle. Those names are wire compatibility, not a second
-media transport.
+The runtime also retains Tungstenite/rustls for NVIDIA's RTSPS-over-WebSocket negotiation and
+str0m-backed ICE/DTLS/SCTP bundle, input and control structures because NVST audio, input and RTCP
+use that encrypted bundle. Those dependencies are NVST wire compatibility, not a second media
+transport.
 
-No cross-process zero-copy path into the Qt scene graph is implemented or claimed. Hardware decode
-and native presentation can still avoid software decode, but acceptance must treat that separately
-from Qt texture sharing. macOS and Wayland acceptance therefore verifies the supported two-window
-ordering and input-ownership model rather than requiring single-window embedding.
+Qt owns the graphics API and scene graph: D3D11 on Windows, Metal on macOS and Vulkan on Linux.
+Decoded frames stay in-process and are converted into frame-slot RGBA textures on Qt's device and
+command stream before `StreamVideoItem` samples them. QML overlays therefore remain in the same
+scene graph, and embedded mode creates no presenter window, child window, swapchain or platform
+surface. Linux retains a synchronized CPU-plane-to-GPU upload fallback for unsupported direct
+imports; this is not described as zero-copy. Live device, high-refresh, display-transition and
+device-loss acceptance remains required separately on each target operating system.
 
 The exact live-account, hardware, signing and rollout procedure is maintained in
 [`docs/qt-acceptance.md`](qt-acceptance.md). It defines which artifacts constitute proof, so an

@@ -21,8 +21,8 @@ use ::windows::Win32::Graphics::Direct3D11::{
 use ::windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709,
     DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709, DXGI_FORMAT, DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12,
-    DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_Y410, DXGI_RATIONAL,
-    DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_Y410,
+    DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use ::windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use ::windows::Win32::Media::MediaFoundation::{
@@ -57,8 +57,15 @@ pub struct AdoptedD3d11Context {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum D3d11TextureFormat {
+    Rgba8,
+    Rgb10A2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct D3d11RecordedFrame {
     pub texture: *mut c_void,
+    pub texture_format: D3d11TextureFormat,
     pub width: u32,
     pub height: u32,
     pub frame_slot: u32,
@@ -133,6 +140,7 @@ struct ProcessorResources {
     input_format: DXGI_FORMAT,
     output_width: u32,
     output_height: u32,
+    output_format: DXGI_FORMAT,
     enumerator: ID3D11VideoProcessorEnumerator,
     processor: ID3D11VideoProcessor,
     input_views: HashMap<(usize, u32), ID3D11VideoProcessorInputView>,
@@ -357,6 +365,7 @@ impl AdoptedResources {
         self.generation = self.generation.wrapping_add(1).max(1);
         Ok(D3d11RecordedFrame {
             texture: processor.slots[slot].texture.as_raw(),
+            texture_format: d3d11_texture_format(processor.output_format),
             width: processor.output_width,
             height: processor.output_height,
             frame_slot,
@@ -375,12 +384,14 @@ impl AdoptedResources {
         output_width: u32,
         output_height: u32,
     ) -> Result<(), String> {
+        let output_format = output_dxgi_format(self.format.pixel_format);
         if self.processor.as_ref().is_some_and(|processor| {
             processor.input_width == input_width
                 && processor.input_height == input_height
                 && processor.input_format == input_format
                 && processor.output_width == output_width
                 && processor.output_height == output_height
+                && processor.output_format == output_format
         }) {
             return Ok(());
         }
@@ -405,7 +416,7 @@ impl AdoptedResources {
                 .CreateVideoProcessorEnumerator(&description)
                 .map_err(|error| format!("CreateVideoProcessorEnumerator: {error}"))?
         };
-        validate_conversion(&enumerator, input_format, self.format)?;
+        validate_conversion(&enumerator, input_format, output_format, self.format)?;
         let processor = unsafe {
             self.video_device
                 .CreateVideoProcessor(&enumerator, 0)
@@ -426,7 +437,7 @@ impl AdoptedResources {
         }
         let mut slots = Vec::with_capacity(MAX_FRAME_SLOTS);
         for _ in 0..MAX_FRAME_SLOTS {
-            let description = frame_slot_description(output_width, output_height);
+            let description = frame_slot_description(output_width, output_height, output_format);
             let mut texture = None;
             unsafe {
                 self.device
@@ -462,6 +473,7 @@ impl AdoptedResources {
             input_format,
             output_width,
             output_height,
+            output_format,
             enumerator,
             processor,
             input_views: HashMap::new(),
@@ -546,7 +558,7 @@ impl D3d11Frame {
             .saturating_mul(100)
     }
 
-    /// Converts this decoded surface into Qt's current RGBA8 frame-slot target.
+    /// Converts this decoded surface into Qt's matching 8-bit or 10-bit RGB frame-slot target.
     ///
     /// # Safety
     ///
@@ -773,13 +785,13 @@ fn decoder_array_slice(subresource: u32, mip_levels: u32, array_size: u32) -> Re
     Ok(subresource / mip_levels)
 }
 
-fn frame_slot_description(width: u32, height: u32) -> D3D11_TEXTURE2D_DESC {
+fn frame_slot_description(width: u32, height: u32, format: DXGI_FORMAT) -> D3D11_TEXTURE2D_DESC {
     D3D11_TEXTURE2D_DESC {
         Width: width,
         Height: height,
         MipLevels: 1,
         ArraySize: 1,
-        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        Format: format,
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: 1,
             Quality: 0,
@@ -794,33 +806,52 @@ fn frame_slot_description(width: u32, height: u32) -> D3D11_TEXTURE2D_DESC {
 fn validate_conversion(
     enumerator: &ID3D11VideoProcessorEnumerator,
     input_format: DXGI_FORMAT,
+    output_format: DXGI_FORMAT,
     format: VideoFormat,
 ) -> Result<(), String> {
     unsafe {
         let support = enumerator
-            .CheckVideoProcessorFormat(DXGI_FORMAT_R8G8B8A8_UNORM)
-            .map_err(|error| format!("query RGBA8 video-processor output: {error}"))?;
+            .CheckVideoProcessorFormat(output_format)
+            .map_err(|error| format!("query RGB video-processor output: {error}"))?;
         if support & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0 as u32 == 0 {
-            return Err("D3D11 video processor does not support RGBA8 output".to_owned());
+            return Err(format!(
+                "D3D11 video processor does not support output format {}",
+                output_format.0
+            ));
         }
         if let Ok(enumerator_1) = enumerator.cast::<ID3D11VideoProcessorEnumerator1>() {
             let supported = enumerator_1
                 .CheckVideoProcessorFormatConversion(
                     input_format,
                     input_color_space(format),
-                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    output_format,
                     DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
                 )
                 .map_err(|error| format!("query D3D11 embedded conversion: {error}"))?;
             if !supported.as_bool() {
                 return Err(format!(
-                    "D3D11 driver rejects embedded video conversion {} -> RGBA8",
-                    input_format.0
+                    "D3D11 driver rejects embedded video conversion {} -> {}",
+                    input_format.0, output_format.0
                 ));
             }
         }
     }
     Ok(())
+}
+
+fn output_dxgi_format(format: VideoPixelFormat) -> DXGI_FORMAT {
+    match format {
+        VideoPixelFormat::P010 | VideoPixelFormat::Y410 => DXGI_FORMAT_R10G10B10A2_UNORM,
+        VideoPixelFormat::Nv12 | VideoPixelFormat::Ayuv => DXGI_FORMAT_R8G8B8A8_UNORM,
+    }
+}
+
+fn d3d11_texture_format(format: DXGI_FORMAT) -> D3d11TextureFormat {
+    if format == DXGI_FORMAT_R10G10B10A2_UNORM {
+        D3d11TextureFormat::Rgb10A2
+    } else {
+        D3d11TextureFormat::Rgba8
+    }
 }
 
 fn input_color_space(
@@ -896,8 +927,8 @@ mod tests {
     }
 
     #[test]
-    fn frame_slots_require_rgba8_shader_readable_render_targets() {
-        let description = frame_slot_description(1920, 1080);
+    fn frame_slots_preserve_source_bit_depth_in_shader_readable_render_targets() {
+        let description = frame_slot_description(1920, 1080, DXGI_FORMAT_R8G8B8A8_UNORM);
         assert_eq!(description.Width, 1920);
         assert_eq!(description.Height, 1080);
         assert_eq!(description.Format, DXGI_FORMAT_R8G8B8A8_UNORM);
@@ -906,6 +937,15 @@ mod tests {
             0
         );
         assert_ne!(description.BindFlags & D3D11_BIND_RENDER_TARGET.0 as u32, 0);
+
+        let ten_bit = frame_slot_description(2560, 1440, DXGI_FORMAT_R10G10B10A2_UNORM);
+        assert_eq!(ten_bit.Format, DXGI_FORMAT_R10G10B10A2_UNORM);
+        assert_eq!(output_dxgi_format(VideoPixelFormat::P010), ten_bit.Format);
+        assert_eq!(output_dxgi_format(VideoPixelFormat::Y410), ten_bit.Format);
+        assert_eq!(
+            d3d11_texture_format(ten_bit.Format),
+            D3d11TextureFormat::Rgb10A2
+        );
     }
 
     #[test]

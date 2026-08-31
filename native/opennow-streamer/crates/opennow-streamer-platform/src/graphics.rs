@@ -11,6 +11,12 @@ pub enum GraphicsApi {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphicsTextureFormat {
+    Rgba8,
+    Rgb10A2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphicsContext {
     pub api: GraphicsApi,
     pub instance: usize,
@@ -57,6 +63,7 @@ impl GraphicsRecordCommand {
 pub struct GraphicsRecordedFrame {
     pub resource: u64,
     pub resource_view: u64,
+    pub texture_format: GraphicsTextureFormat,
     pub width: u32,
     pub height: u32,
     pub frame_slot: u32,
@@ -117,6 +124,7 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
         Ok(GraphicsRecordedFrame {
             resource: frame.image,
             resource_view: frame.image_view,
+            texture_format: GraphicsTextureFormat::Rgba8,
             width: frame.width,
             height: frame.height,
             frame_slot: frame.slot,
@@ -158,6 +166,7 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
         Ok(GraphicsRecordedFrame {
             resource: frame.texture as usize as u64,
             resource_view: 0,
+            texture_format: GraphicsTextureFormat::Rgba8,
             width: frame.width,
             height: frame.height,
             frame_slot: frame.frame_slot,
@@ -458,6 +467,7 @@ mod tests {
             Ok(GraphicsRecordedFrame {
                 resource: 10,
                 resource_view: 11,
+                texture_format: GraphicsTextureFormat::Rgba8,
                 width: 1920,
                 height: 1080,
                 frame_slot: command.frame_slot,

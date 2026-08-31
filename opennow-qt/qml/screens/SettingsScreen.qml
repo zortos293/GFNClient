@@ -20,6 +20,7 @@ FocusScope {
     property string dropdownKey: ""
     property var dropdownLabels: []
     property var dropdownValues: []
+    property var dropdownDisabledValues: []
     property int resolutionMenuCurrentIndex: 1
     readonly property real dropdownPanelY: dropdownKey === "resolution" ? 320
         : Math.max(110, Math.min(height - dropdownPanelHeight - 110,
@@ -50,10 +51,10 @@ FocusScope {
         return words.join(" ")
     }
 
-    function choice(title, description, key, values, labels, control) {
+    function choice(title, description, key, values, labels, control, disabledValues) {
         const current = ShellStore.settings[key]
         const index = values.indexOf(current)
-        return {t:title, d:description, v:index >= 0 ? labels[index] : root.titleCase(current), key:key, values:values, labels:labels, control:control || "dropdown"}
+        return {t:title, d:description, v:index >= 0 ? labels[index] : root.titleCase(current), key:key, values:values, labels:labels, control:control || "dropdown", disabledValues:disabledValues || []}
     }
 
     function toggle(title, description, key, onLabel, offLabel) {
@@ -323,11 +324,15 @@ FocusScope {
         if (root.selectedSection === 1) {
             const codecValues = ShellStore.availableCodecValues()
             const codecLabels = codecValues.map(value => value === "auto" ? "Auto" : value === "h264" ? "H.264" : value === "h265" ? "H.265" : String(value).toUpperCase())
+            const selectedCodec = String(settings.codec || "auto").toLowerCase()
+            const colorDisabled = selectedCodec === "h264"
+                ? ["8bit_444", "10bit_420", "10bit_444"]
+                : selectedCodec === "av1" ? ["8bit_444", "10bit_444"] : []
             const interpolation = settings.frameInterpolation || ({enabled:false, factor:2, quality:480})
             return [
                 {t:"Codec", d:"Auto prefers AV1, then H.264, then H.265", v:root.titleCase(settings.codec || "auto"), key:"codec", values:codecValues, labels:codecLabels, segmentLabels:["Auto","AV1","H.264","H.265"], control:"segments", selectedIndex:["auto","av1","h264","h265"].indexOf(String(settings.codec || "auto"))},
                 choice("Fallback codec", "Used when the preferred codec isn't offered by the rig", "fallbackCodec", codecValues, codecLabels),
-                choice("Colour quality", "10-bit and 4:4:4 need HEVC or AV1", "colorQuality", ["8bit_420","8bit_444","10bit_420","10bit_444"], ["8-bit 4:2:0","8-bit 4:4:4","10-bit 4:2:0 · HDR","10-bit 4:4:4"], "segments"),
+                choice("Color quality", "10-bit needs H.265 or AV1; 4:4:4 needs H.265", "colorQuality", ["8bit_420","8bit_444","10bit_420","10bit_444"], ["8-bit, YUV 4:2:0","8-bit, YUV 4:4:4","10-bit, YUV 4:2:0","10-bit, YUV 4:4:4"], "segments", colorDisabled),
                 {t:"Max bitrate", d:"Maximum requested stream bitrate", v:Number(settings.maxBitrateMbps || 75) + " Mbps", key:"maxBitrateMbps", values:[25,50,75,100,150,200], labels:["25 Mbps","50 Mbps","75 Mbps","100 Mbps","150 Mbps","200 Mbps"], control:"slider", sliderPercent:Number(settings.maxBitrateMbps || 75) / 106},
                 {t:"Frame generation", d:"Interpolates after decode — 60 stream FPS presents at 120", v:interpolation.enabled ? Number(interpolation.factor) + "×" : "Off", key:"frameInterpolation", values:[{enabled:false,factor:2,quality:480},{enabled:true,factor:2,quality:480},{enabled:true,factor:3,quality:480}], labels:["Off","2×","3×"], control:"segments", selectedIndex:interpolation.enabled ? (Number(interpolation.factor) === 3 ? 2 : 1) : 0},
                 toggle("Cloud G-Sync", "Variable refresh on G-Sync and FreeSync displays", "enableCloudGsync"),
@@ -444,6 +449,7 @@ FocusScope {
         dropdownKey = row.key
         dropdownLabels = row.labels
         dropdownValues = row.values
+        dropdownDisabledValues = row.disabledValues || []
         if (row.key === "resolution")
             prepareResolutionMenu()
         dropdownPresented = true
@@ -464,6 +470,27 @@ FocusScope {
         if (typeof current === "object" || typeof candidate === "object")
             return JSON.stringify(current) === JSON.stringify(candidate)
         return current === candidate
+    }
+
+    function dropdownChoiceDisabled(index) {
+        return root.dropdownDisabledValues.indexOf(root.dropdownValues[index]) >= 0
+    }
+
+    function commitDropdownChoice(index) {
+        if (index < 0 || index >= root.dropdownValues.length || root.dropdownChoiceDisabled(index))
+            return
+        const key = root.dropdownKey
+        const value = root.dropdownValues[index]
+        const currentQuality = String(ShellStore.settings.colorQuality || "8bit_420")
+        ShellStore.setSetting(key, value)
+        if (key === "codec") {
+            const codec = String(value).toLowerCase()
+            if (codec === "h264" && currentQuality !== "8bit_420")
+                ShellStore.setSetting("colorQuality", "8bit_420")
+            else if (codec === "av1" && currentQuality.indexOf("444") >= 0)
+                ShellStore.setSetting("colorQuality", currentQuality.replace("444", "420"))
+        }
+        root.closeDropdown()
     }
 
     function activate(row) {
@@ -821,11 +848,10 @@ FocusScope {
                     width: ListView.view.width
                     height: 38
                     padding: 0
-                    highlighted: ListView.isCurrentItem
-                    onClicked: {
-                        ShellStore.setSetting(root.dropdownKey, root.dropdownValues[index])
-                        root.closeDropdown()
-                    }
+                    enabled: !root.dropdownChoiceDisabled(index)
+                    highlighted: ListView.isCurrentItem && enabled
+                    opacity: enabled ? 1 : 0.42
+                    onClicked: root.commitDropdownChoice(index)
                     background: Rectangle {
                         radius: 19
                         color: dropdownItem.highlighted ? Theme.face : "transparent"
@@ -846,7 +872,7 @@ FocusScope {
                         Text {
                             x: root.dropdownChoiceSelected(index) ? 38 : 12
                             anchors.verticalCenter: parent.verticalCenter
-                            width: parent.width - x - 12
+                            width: parent.width - x - (disabledReason.visible ? disabledReason.width + 18 : 12)
                             text: I18n.source(modelData, I18n.revision)
                             color: dropdownItem.highlighted ? Theme.faceText : Theme.label
                             font.family: Theme.bodyFont
@@ -854,10 +880,23 @@ FocusScope {
                             font.weight: Font.Black
                             elide: Text.ElideRight
                         }
+                        Text {
+                            id: disabledReason
+                            visible: root.dropdownChoiceDisabled(index)
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: String(root.dropdownValues[index]).indexOf("444") >= 0
+                                ? qsTr("H.265") : qsTr("H.265 / AV1")
+                            color: Theme.textMuted
+                            font.family: Theme.bodyFont
+                            font.pixelSize: 12
+                            font.weight: Font.Bold
+                        }
                     }
                 }
-                Keys.onReturnPressed: if (currentItem) currentItem.clicked()
-                Keys.onEnterPressed: if (currentItem) currentItem.clicked()
+                Keys.onReturnPressed: root.commitDropdownChoice(currentIndex)
+                Keys.onEnterPressed: root.commitDropdownChoice(currentIndex)
                 Keys.onEscapePressed: root.closeDropdown()
             }
 

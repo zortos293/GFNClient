@@ -625,12 +625,12 @@ fn public_ipv6(address: Ipv6Addr) -> bool {
         return public_ipv4(mapped);
     }
     let segments = address.segments();
-    !address.is_loopback()
-        && !address.is_unspecified()
-        && !address.is_multicast()
-        && !address.is_unique_local()
-        && !address.is_unicast_link_local()
-        && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+    !(address.is_loopback()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || address.is_unique_local()
+        || address.is_unicast_link_local()
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8))
 }
 
 fn fallback(source_url: &str, reason: &str) -> Value {

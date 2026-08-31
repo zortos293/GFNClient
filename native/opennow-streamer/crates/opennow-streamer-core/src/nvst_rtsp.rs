@@ -761,10 +761,15 @@ fn negotiated_color_format(context: &SessionContext, codec: &str) -> (u8, u8) {
         .or_else(|| context.settings.get("colorQuality").and_then(Value::as_str))
         .unwrap_or("8bit_420")
         .to_ascii_lowercase();
-    (
-        if quality.starts_with("10bit") { 10 } else { 8 },
-        if quality.ends_with("444") { 1 } else { 0 },
-    )
+    let bit_depth = if quality.starts_with("10bit") { 10 } else { 8 };
+    let chroma_format = if codec.eq_ignore_ascii_case("AV1") {
+        0
+    } else if quality.ends_with("444") {
+        1
+    } else {
+        0
+    };
+    (bit_depth, chroma_format)
 }
 
 fn resolution(context: &SessionContext) -> (u64, u64) {
@@ -1170,7 +1175,7 @@ mod tests {
         );
         assert!(sdp.contains("a=x-nv-video[0].maxFPS:120"));
         assert!(sdp.contains("a=x-nv-video[0].bitDepth:10"));
-        assert!(sdp.contains("a=x-nv-video[0].chromaFormat:1"));
+        assert!(sdp.contains("a=x-nv-video[0].chromaFormat:0"));
         assert!(sdp.contains("a=x-nv-video[0].encoderCscMode:2"));
         assert!(sdp.contains("a=x-nv-vqos[0].bitStreamFormat:2"));
         assert!(sdp.contains("a=x-nv-general.clientBundlePort:49006"));
@@ -1208,6 +1213,21 @@ mod tests {
         value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H264");
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
         assert_eq!(negotiated_color_format(&value, "H264"), (8, 0));
+    }
+
+    #[test]
+    fn av1_announce_stays_420_but_preserves_ten_bit_depth() {
+        let mut value = context();
+        value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
+        assert_eq!(negotiated_color_format(&value, "AV1"), (10, 0));
+    }
+
+    #[test]
+    fn h265_announce_supports_ten_bit_444() {
+        let mut value = context();
+        value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H265");
+        value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
+        assert_eq!(negotiated_color_format(&value, "H265"), (10, 1));
     }
 
     #[test]

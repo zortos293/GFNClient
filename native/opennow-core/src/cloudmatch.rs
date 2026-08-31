@@ -603,10 +603,14 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     let bitrate = setting_i64(settings, "maxBitrateMbps", 75).clamp(1, 200) * 1000;
     let codec = codec_wire(&setting_string(settings, "codec", "auto"));
     let requested_color = color_quality_wire(&setting_string(settings, "colorQuality", "8bit_420"));
-    // Keep a manually selected codec fixed. H.264 has no supported 10-bit or
-    // 4:4:4 native profile, so constrain color instead of silently switching
-    // the codec back to Auto/HEVC.
-    let (bit_depth, chroma) = if codec == 1 { (0, 0) } else { requested_color };
+    // Keep a manually selected codec fixed. H.264 supports only 8-bit 4:2:0,
+    // while the official Windows client exposes AV1 at 4:2:0 only. Constrain
+    // color instead of silently switching an explicit codec back to Auto/HEVC.
+    let (bit_depth, chroma) = match codec {
+        1 => (0, 0),
+        3 => (requested_color.0, 0),
+        _ => requested_color,
+    };
     let cloud_gsync = resolved_cloud_gsync(settings);
     let reflex = cloud_gsync || fps >= 120;
     let persistence = setting_bool(settings, "enablePersistingInGameSettings", false)
@@ -1516,6 +1520,20 @@ mod tests {
             0
         );
         assert_eq!(request["secureRTSPSupported"], true);
+    }
+
+    #[test]
+    fn manual_av1_preserves_ten_bit_but_constrains_unsupported_444_chroma() {
+        let body = build_create_body(
+            "12345",
+            &json!({"title":"Portal 2"}),
+            &json!({"codec":"av1", "colorQuality":"10bit_444"}),
+            "device-id",
+        );
+        let features = &body["sessionRequestData"]["requestedStreamingFeatures"];
+        assert_eq!(features["codec"], 3);
+        assert_eq!(features["bitDepth"], 1);
+        assert_eq!(features["chromaFormat"], 0);
     }
 
     #[test]

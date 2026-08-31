@@ -152,13 +152,16 @@ public:
         const auto status = m_runtime->recordLatestFrame(command, &info, &recorded, &frame);
         if (status == OPENNOW_STREAMER_NO_FRAME) return;
         if (status != OPENNOW_STREAMER_OK || !frame || recorded.resource == 0
-            || recorded.width == 0 || recorded.height == 0) {
+            || recorded.width == 0 || recorded.height == 0
+            || (recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8
+                && recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2)) {
             if (frame) m_runtime->releaseFrame(frame);
             return;
         }
         m_preparedFrame = frame;
 
         if (m_texture && m_textureObject == recorded.resource
+            && m_textureFormat == recorded.texture_format
             && m_textureSize == QSize(static_cast<int>(recorded.width),
                                       static_cast<int>(recorded.height))) {
             m_frameReady = true;
@@ -168,8 +171,11 @@ public:
         delete m_bindings;
         m_bindings = nullptr;
         delete m_texture;
+        const auto textureFormat = recorded.texture_format
+                == OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2
+            ? QRhiTexture::RGB10A2 : QRhiTexture::RGBA8;
         m_texture = m_rhi->newTexture(
-            QRhiTexture::RGBA8,
+            textureFormat,
             QSize(static_cast<int>(recorded.width), static_cast<int>(recorded.height)), 1);
         QRhiTexture::NativeTexture nativeTexture{};
         nativeTexture.object = recorded.resource;
@@ -183,6 +189,7 @@ public:
             return;
         }
         m_textureObject = recorded.resource;
+        m_textureFormat = recorded.texture_format;
         m_textureSize = m_texture->pixelSize();
 
         if (!m_sampler) {
@@ -247,6 +254,7 @@ public:
         delete m_texture;
         m_texture = nullptr;
         m_textureObject = 0;
+        m_textureFormat = 0;
         m_textureSize = {};
         if (m_graphicsReady && m_runtime)
             m_runtime->sceneGraphShutdown();
@@ -265,6 +273,7 @@ private:
     QRhiGraphicsPipeline *m_pipeline = nullptr;
     QSize m_textureSize;
     std::uint64_t m_textureObject = 0;
+    std::uint32_t m_textureFormat = 0;
     OpenNowStreamerFrame *m_preparedFrame = nullptr;
     bool m_graphicsReady = false;
     bool m_frameReady = false;
@@ -358,6 +367,11 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
 {
     setAlphaBlending(false);
     setSampleCount(1);
+#if defined(Q_OS_WIN)
+    // The D3D11 producer publishes RGB10A2 for negotiated 10-bit streams. Keeping the item's
+    // intermediate target at the same precision avoids quantizing it before Qt composites it.
+    setColorBufferFormat(QQuickRhiItem::TextureFormat::RGB10A2);
+#endif
     setActiveFocusOnTab(true);
     setAcceptedMouseButtons(Qt::AllButtons);
     setAcceptHoverEvents(true);

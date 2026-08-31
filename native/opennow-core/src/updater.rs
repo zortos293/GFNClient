@@ -514,7 +514,7 @@ fn launch_verified_update(path: &Path) -> Result<&'static str, String> {
             Command::new(path).spawn()
         };
         child.map_err(|error| format!("Could not launch the verified installer: {error}"))?;
-        return Ok("installer");
+        Ok("installer")
     }
     #[cfg(target_os = "macos")]
     {
@@ -522,7 +522,7 @@ fn launch_verified_update(path: &Path) -> Result<&'static str, String> {
             .arg(path)
             .spawn()
             .map_err(|error| format!("Could not open the verified update package: {error}"))?;
-        return Ok("package-opened");
+        Ok("package-opened")
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {

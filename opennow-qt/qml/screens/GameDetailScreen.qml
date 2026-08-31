@@ -36,7 +36,9 @@ FocusScope {
     function codecLabel() {
         const codec = String(ShellStore.settings.codec || "auto").toUpperCase()
         const quality = String(ShellStore.settings.colorQuality || "")
-        return quality.indexOf("10bit") === 0 ? qsTr("%1 · HDR").arg(codec) : codec
+        const bitDepth = quality.indexOf("10bit") === 0 ? qsTr("10-bit") : qsTr("8-bit")
+        const chroma = quality.indexOf("444") >= 0 ? "4:4:4" : "4:2:0"
+        return qsTr("%1 · %2 · %3").arg(codec).arg(bitDepth).arg(chroma)
     }
 
     function regionLabel() {

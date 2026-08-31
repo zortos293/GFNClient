@@ -9,6 +9,7 @@ mod windows;
 #[cfg(windows)]
 pub use windows::{
     AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
+    D3d11TextureFormat,
 };
 
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};

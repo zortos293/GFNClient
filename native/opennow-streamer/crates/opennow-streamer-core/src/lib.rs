@@ -1883,9 +1883,10 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .or_else(|| context.settings.get("colorQuality").and_then(Value::as_str))
         .unwrap_or("8bit_420");
     let color_quality = match color_quality_name.trim().to_ascii_lowercase().as_str() {
-        "8bit_444" if codec != MediaVideoCodec::H264 => MediaColorQuality::EightBit444,
+        "8bit_444" if codec == MediaVideoCodec::H265 => MediaColorQuality::EightBit444,
         "10bit_420" if codec != MediaVideoCodec::H264 => MediaColorQuality::TenBit420,
-        "10bit_444" if codec != MediaVideoCodec::H264 => MediaColorQuality::TenBit444,
+        "10bit_444" if codec == MediaVideoCodec::H265 => MediaColorQuality::TenBit444,
+        "10bit_444" if codec == MediaVideoCodec::Av1 => MediaColorQuality::TenBit420,
         _ => MediaColorQuality::EightBit420,
     };
     let resolution = context
@@ -2726,7 +2727,7 @@ mod tests {
         assert_eq!(media_stream_config(&high_fps).fps, 240);
         assert_eq!(
             media_stream_config(&high_fps).color_quality,
-            MediaColorQuality::TenBit444
+            MediaColorQuality::TenBit420
         );
 
         let mut rejected_vrr = synthetic_context("rejected-vrr-config", json!([]));

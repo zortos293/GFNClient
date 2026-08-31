@@ -9,13 +9,16 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 2u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 3u
 #define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 1u
 #define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 1u
 
 #define OPENNOW_STREAMER_GRAPHICS_API_D3D11 1u
 #define OPENNOW_STREAMER_GRAPHICS_API_VULKAN 2u
 #define OPENNOW_STREAMER_GRAPHICS_API_METAL 3u
+
+#define OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8 1u
+#define OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2 2u
 
 #define OPENNOW_STREAMER_LOCAL_ACTION_GUIDE 1u
 #define OPENNOW_STREAMER_LOCAL_ACTION_SCREENSHOT 2u
@@ -83,15 +86,16 @@ typedef struct OpenNowStreamerFrameInfo {
 } OpenNowStreamerFrameInfo;
 
 /*
- * One RGBA8 GPU texture populated by record_frame. On D3D and Metal, resource is the native
- * texture pointer encoded as uint64_t and resource_view is zero. On Vulkan, resource is VkImage
- * and resource_view is VkImageView. The producer owns both handles; the frame token retains their
- * backing slot until release.
+ * One GPU texture populated by record_frame. texture_format identifies RGBA8 or RGB10A2. On D3D
+ * and Metal, resource is the native texture pointer encoded as uint64_t and resource_view is zero.
+ * On Vulkan, resource is VkImage and resource_view is VkImageView. The producer owns both handles;
+ * the frame token retains their backing slot until release.
  */
 typedef struct OpenNowStreamerRecordedFrame {
     uint64_t resource;
     uint64_t resource_view;
     uint32_t graphics_api;
+    uint32_t texture_format;
     uint32_t width;
     uint32_t height;
     uint32_t frame_slot;

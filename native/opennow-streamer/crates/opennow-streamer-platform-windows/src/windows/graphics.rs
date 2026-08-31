@@ -14,8 +14,10 @@ use ::windows::Win32::Graphics::Direct3D::{
 };
 use ::windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use ::windows::Win32::Graphics::Direct3D11::{
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
-    D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+    D3D11_BIND_DECODER, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11_TEX2D_VPIV,
+    D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
     D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT,
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
@@ -1228,5 +1230,55 @@ mod tests {
             graphics.swap_format == DXGI_FORMAT_R10G10B10A2_UNORM
                 || graphics.swap_format == DXGI_FORMAT_R8G8B8A8_UNORM
         );
+    }
+
+    #[test]
+    fn p010_presentation_executes_a_video_processor_blit() {
+        let mut graphics = Graphics::new(
+            WindowsGraphicsApi::D3d11,
+            SurfaceTarget::Owned(OwnedWindow {
+                parent: None,
+                bounds: Bounds {
+                    x: 0,
+                    y: 0,
+                    width: 64,
+                    height: 64,
+                },
+                visible: false,
+            }),
+            video_format(VideoPixelFormat::P010),
+        )
+        .expect("P010 presentation must initialize");
+        let description = D3D11_TEXTURE2D_DESC {
+            Width: 64,
+            Height: 64,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_P010,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_DECODER.0 as u32 | D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut texture = None;
+        unsafe {
+            graphics
+                .resources
+                .device
+                .CreateTexture2D(&description, None, Some(&mut texture))
+                .expect("create synthetic P010 decoder surface");
+        }
+        graphics
+            .present(
+                &texture.expect("D3D11 returned a P010 surface"),
+                0,
+                0,
+                166_667,
+            )
+            .expect("P010 video-processor blit must complete");
     }
 }

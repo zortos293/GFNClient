@@ -107,6 +107,7 @@ Item {
                         required property var modelData
                         readonly property bool heading: modelData.kind === "heading"
                         readonly property bool on: !heading && modelData.value === root.selectedValue
+                        readonly property bool unavailable: !heading && Boolean(modelData.disabled)
                         width: choiceColumn.width
                         height: heading ? 24 : 32
 
@@ -125,6 +126,7 @@ Item {
 
                         Rectangle {
                             visible: !heading
+                            opacity: parent.unavailable ? 0.42 : 1
                             anchors.fill: parent
                             radius: 8
                             color: rowHover.hovered ? "#0FFFFFFF" : (on ? "#17FFFFFF" : "transparent")
@@ -173,8 +175,15 @@ Item {
                                 }
                             }
 
-                            HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: { root.chosen(modelData.value); root.dismiss() } }
+                            HoverHandler {
+                                id: rowHover
+                                enabled: !parent.parent.unavailable
+                                cursorShape: Qt.PointingHandCursor
+                            }
+                            TapHandler {
+                                enabled: !parent.parent.unavailable
+                                onTapped: { root.chosen(modelData.value); root.dismiss() }
+                            }
                         }
                     }
                 }

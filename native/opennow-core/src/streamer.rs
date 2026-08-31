@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use rand::RngCore as _;
 use serde_json::{Value, json};
 use std::fs;
@@ -1458,7 +1458,7 @@ fn unix_time_millis() -> u128 {
         .as_millis()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn random_u64() -> u64 {
     let mut bytes = [0_u8; 8];
     rand::rng().fill_bytes(&mut bytes);

@@ -68,8 +68,59 @@ FocusScope {
         ShellStore.setSetting(key, value)
     }
 
+    function setChoice(key, value) {
+        const normalized = String(value || "").toLowerCase()
+        const codec = String(root.valueSetting("codec", "auto")).toLowerCase()
+        if (key === "colorQuality") {
+            if (codec === "h264" && normalized !== "8bit_420")
+                return
+            if (codec === "av1" && normalized.indexOf("444") >= 0)
+                return
+        }
+        const currentQuality = String(root.valueSetting("colorQuality", "8bit_420"))
+        root.setSetting(key, value)
+        if (key === "codec") {
+            if (normalized === "h264" && currentQuality !== "8bit_420")
+                root.setSetting("colorQuality", "8bit_420")
+            else if (normalized === "av1" && currentQuality.indexOf("444") >= 0)
+                root.setSetting("colorQuality", currentQuality.replace("444", "420"))
+        }
+    }
+
     function choices(values) {
         return values.map(value => typeof value === "object" ? value : ({ kind: "choice", label: String(value), value: value }))
+    }
+
+    function colorQualityItems() {
+        const codec = String(root.valueSetting("codec", "auto")).toLowerCase()
+        const h264 = codec === "h264"
+        const chroma444Unavailable = h264 || codec === "av1"
+        return [
+            {kind:"choice", label:qsTr("8-bit, YUV 4:2:0"), detail:qsTr("All codecs"), value:"8bit_420"},
+            {kind:"choice", label:qsTr("8-bit, YUV 4:4:4"), detail:chroma444Unavailable ? qsTr("H.265 required") : qsTr("Sharper color"), value:"8bit_444", disabled:chroma444Unavailable},
+            {kind:"choice", label:qsTr("10-bit, YUV 4:2:0"), detail:h264 ? qsTr("H.265 / AV1 required") : qsTr("Smoother gradients"), value:"10bit_420", disabled:h264},
+            {kind:"choice", label:qsTr("10-bit, YUV 4:4:4"), detail:chroma444Unavailable ? qsTr("H.265 required") : qsTr("Highest color quality"), value:"10bit_444", disabled:chroma444Unavailable}
+        ]
+    }
+
+    function colorQualityFooter() {
+        const codec = String(root.valueSetting("codec", "auto")).toLowerCase()
+        if (codec === "h264")
+            return qsTr("H.264 supports 8-bit YUV 4:2:0 only")
+        if (codec === "av1")
+            return qsTr("AV1 supports YUV 4:2:0; use H.265 for 4:4:4")
+        return qsTr("4:4:4 profiles use H.265")
+    }
+
+    function colorQualityLabel() {
+        const labels = {
+            "8bit_420": qsTr("8-bit, YUV 4:2:0"),
+            "8bit_444": qsTr("8-bit, YUV 4:4:4"),
+            "10bit_420": qsTr("10-bit, YUV 4:2:0"),
+            "10bit_444": qsTr("10-bit, YUV 4:4:4")
+        }
+        const value = String(root.valueSetting("colorQuality", "8bit_420"))
+        return labels[value] || labels["8bit_420"]
     }
 
     function openChoices(anchor, key, items, footer) {
@@ -436,7 +487,7 @@ FocusScope {
 
     DesktopSettingsDropdown {
         id: choiceOverlay
-        onChosen: value => root.setSetting(root.dropdownKey, value)
+        onChosen: value => root.setChoice(root.dropdownKey, value)
     }
 
     Component {
@@ -626,8 +677,8 @@ FocusScope {
                 DesktopSettingsRow { width: parent.width; rowHeight: 64; title: "Frame rate"; description: "Requested frame rate for new sessions"
                     DesktopSettingsSegmented { options: ["AUTO","30","60","90","120","144","165","240"]; optionWidth: 44; selectedIndex: Math.max(0, [0,30,60,90,120,144,165,240].indexOf(Number(root.valueSetting("fps", 60)))); onSelected: (index, value) => root.setSetting("fps", value === "AUTO" ? 0 : Number(value)) }
                 }
-                DesktopSettingsRow { width: parent.width; rowHeight: 56; title: "10-bit color"; description: "Request a 10-bit stream when the session supports it"; showDivider: false
-                    DesktopSettingsToggle { checked: String(root.valueSetting("colorQuality", "8bit_420")).indexOf("10bit") === 0; onValueChangedByUser: value => root.setSetting("colorQuality", value ? "10bit_420" : "8bit_420") }
+                DesktopSettingsRow { width: parent.width; rowHeight: 64; title: qsTr("Color quality"); description: qsTr("Bit depth and chroma format for new sessions"); showDivider: false
+                    DesktopSettingsButton { id: colorQualityButton; menu: true; text: root.colorQualityLabel(); compact: true; onClicked: root.openChoices(colorQualityButton, "colorQuality", root.colorQualityItems(), root.colorQualityFooter()) }
                 }
             }
             DesktopSettingsPanel {

@@ -327,21 +327,32 @@ int main(int argc, char *argv[])
             window->requestActivate();
             auto *statsShortcut = window->findChild<QObject *>(u"streamStatsShortcut"_s);
             auto *copyShortcut = window->findChild<QObject *>(u"streamStatsCopyShortcut"_s);
-            if (!statsShortcut || !copyShortcut) return EXIT_FAILURE;
+            auto *streamSurface = window->findChild<QObject *>(u"streamSurfaceHost"_s);
+            if (!statsShortcut || !copyShortcut || !streamSurface) return EXIT_FAILURE;
             const auto activateStatsShortcut = [statsShortcut] {
                 return QMetaObject::invokeMethod(statsShortcut, "activated", Qt::DirectConnection);
             };
             const auto activateCopyShortcut = [copyShortcut] {
                 return QMetaObject::invokeMethod(copyShortcut, "activated", Qt::DirectConnection);
             };
-            const auto streamInputStayedStable = [window] {
+            const auto activateGuideShortcut = [streamSurface] {
+                return QMetaObject::invokeMethod(
+                    streamSurface, "localShortcutRequested", Qt::DirectConnection,
+                    Q_ARG(QString, QStringLiteral("guide")));
+            };
+            const auto windowStayedFullscreen = [window] {
                 return window->visibility() == QWindow::FullScreen
-                    && window->property("desktopSurfaceActive").toBool()
+                    && window->property("desktopSurfaceActive").toBool();
+            };
+            const auto streamInputStayedStable = [window, windowStayedFullscreen] {
+                return windowStayedFullscreen()
                     && !window->property("shellCaptureEnabledForSmokeTest").toBool();
             };
             QTimer::singleShot(150, &application,
-                               [&application, &controller, window, statsShortcut, copyShortcut,
-                                 activateStatsShortcut, activateCopyShortcut, streamInputStayedStable,
+                               [&application, &controller, statsShortcut, copyShortcut,
+                                 activateStatsShortcut, activateCopyShortcut,
+                                 activateGuideShortcut, windowStayedFullscreen,
+                                 streamInputStayedStable,
                                  &qmlWarningOccurred] {
                 if (!streamInputStayedStable() || qmlWarningOccurred
                     || statsShortcut->property("context").toInt() != Qt::ApplicationShortcut
@@ -373,8 +384,15 @@ int main(int argc, char *argv[])
                     return;
                 }
                 activateStatsShortcut();
-                application.exit(controller.overlay().isEmpty() && streamInputStayedStable()
-                    ? EXIT_SUCCESS : EXIT_FAILURE);
+                if (!controller.overlay().isEmpty() || !streamInputStayedStable()
+                        || !activateGuideShortcut()
+                        || controller.overlay() != u"desktop-stream-menu"_s
+                        || !windowStayedFullscreen()) {
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                controller.showOverlay({});
+                application.exit(streamInputStayedStable() ? EXIT_SUCCESS : EXIT_FAILURE);
             });
         } else if (screenshotIndex >= 0 && screenshotIndex + 1 < arguments.size()) {
             const auto screenshotPath = arguments.at(screenshotIndex + 1);

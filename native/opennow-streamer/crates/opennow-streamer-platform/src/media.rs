@@ -1318,12 +1318,18 @@ impl MediaSession {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .push(encoded);
-                    if dropped {
+                    if dropped > 0 {
                         video_shared.video_desynced.store(true, Ordering::Release);
+                        request_keyframe(
+                            &video_shared,
+                            &frame.mid,
+                            "embedded D3D11 compressed-video queue overflow",
+                        );
                         let _ = video_shared.feedback.send(MediaFeedback::QueueDropped {
                             media: "d3d11-video",
-                            count: 1,
+                            count: dropped,
                         });
+                        continue;
                     } else {
                         report_video_frame_accepted(&video_shared, &frame);
                         if frame.keyframe {
@@ -1339,6 +1345,8 @@ impl MediaSession {
                     sequence = sequence.wrapping_add(1).max(1);
                     let pending = PendingD3d11Frame {
                         state: Arc::clone(&video_producer),
+                        shared: Arc::clone(&video_shared),
+                        mid: frame.mid.clone(),
                         info: crate::GraphicsFrameInfo {
                             width: stream.width,
                             height: stream.height,
@@ -1546,6 +1554,7 @@ struct EmbeddedD3d11State {
         crate::D3d11FrameProducer,
         crate::D3d11FrameSubmitter,
     )>,
+    keyframe_required: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -1588,25 +1597,30 @@ impl EmbeddedD3d11State {
                 opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY,
             ),
             producer: None,
+            keyframe_required: false,
         }
     }
 
-    fn push(&mut self, frame: opennow_streamer_platform_windows::EncodedVideoFrame) -> bool {
-        let dropped = if self.pending.len()
-            == opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY
-        {
-            self.pending.pop_front();
-            true
-        } else {
-            false
-        };
+    /// Queues one compressed access unit without retaining a broken inter-frame chain.
+    /// Returns the number of pending/incoming units discarded on overflow.
+    fn push(&mut self, frame: opennow_streamer_platform_windows::EncodedVideoFrame) -> usize {
+        if self.pending.len() == opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY {
+            let dropped = self.pending.len().saturating_add(1);
+            self.pending.clear();
+            return dropped;
+        }
         self.pending.push_back(frame);
-        dropped
+        0
     }
 
     fn reset(&mut self) {
         self.pending.clear();
         self.producer = None;
+        self.keyframe_required = false;
+    }
+
+    fn take_keyframe_required(&mut self) -> bool {
+        std::mem::take(&mut self.keyframe_required)
     }
 
     fn record(
@@ -1642,9 +1656,18 @@ impl EmbeddedD3d11State {
         }
         let (_, producer, submitter) = self.producer.as_ref().expect("producer initialized");
         while let Some(frame) = self.pending.pop_front() {
-            submitter
+            let outcome = submitter
                 .submit_video(frame)
                 .map_err(|error| error.to_string())?;
+            if outcome == opennow_streamer_platform_windows::PushOutcome::DroppedOldest {
+                // The submitter cleared its entire compressed queue. Everything still pending
+                // here belongs to the same now-incomplete reference chain.
+                self.pending.clear();
+                self.keyframe_required = true;
+                return Err(
+                    "embedded D3D11 decoder queue overflowed; waiting for a keyframe".to_owned(),
+                );
+            }
         }
         let frame = producer
             .acquire_latest()
@@ -1663,6 +1686,14 @@ impl EmbeddedD3d11State {
         Ok(crate::GraphicsRecordedFrame {
             resource: recorded.texture as usize as u64,
             resource_view: 0,
+            texture_format: match recorded.texture_format {
+                opennow_streamer_platform_windows::D3d11TextureFormat::Rgba8 => {
+                    crate::GraphicsTextureFormat::Rgba8
+                }
+                opennow_streamer_platform_windows::D3d11TextureFormat::Rgb10A2 => {
+                    crate::GraphicsTextureFormat::Rgb10A2
+                }
+            },
             width: recorded.width,
             height: recorded.height,
             frame_slot: recorded.frame_slot,
@@ -1675,6 +1706,8 @@ impl EmbeddedD3d11State {
 #[cfg(target_os = "windows")]
 struct PendingD3d11Frame {
     state: Arc<Mutex<EmbeddedD3d11State>>,
+    shared: Arc<SharedPipeline>,
+    mid: String,
     info: crate::GraphicsFrameInfo,
 }
 
@@ -1689,10 +1722,23 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
         context: crate::GraphicsContext,
         command: crate::GraphicsRecordCommand,
     ) -> Result<crate::GraphicsRecordedFrame, String> {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .record(context, command)
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let result = state.record(context, command);
+        let keyframe_required = state.take_keyframe_required();
+        drop(state);
+        if keyframe_required {
+            self.shared.video_desynced.store(true, Ordering::Release);
+            request_keyframe(
+                &self.shared,
+                &self.mid,
+                "embedded D3D11 decoder queue overflow",
+            );
+            let _ = self.shared.feedback.send(MediaFeedback::QueueDropped {
+                media: "d3d11-decode",
+                count: 1,
+            });
+        }
+        result
     }
 }
 
@@ -3315,6 +3361,42 @@ fn mark_macos_video_desynced(shared: &SharedPipeline, mid: &str, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    fn embedded_h264_frame(
+        timestamp_100ns: i64,
+        key_frame: bool,
+    ) -> opennow_streamer_platform_windows::EncodedVideoFrame {
+        opennow_streamer_platform_windows::EncodedVideoFrame {
+            codec: opennow_streamer_platform_windows::VideoCodec::H264,
+            data: vec![0, 0, 0, 1, if key_frame { 0x65 } else { 0x41 }],
+            timestamp_100ns,
+            duration_100ns: 166_667,
+            key_frame,
+            reset_decoder: key_frame,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn embedded_d3d11_overflow_discards_the_entire_reference_chain() {
+        let mut state = EmbeddedD3d11State::new(MediaStreamConfig::default());
+        let capacity = opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY;
+        for index in 0..capacity {
+            assert_eq!(state.push(embedded_h264_frame(index as i64, index == 0)), 0);
+        }
+        assert_eq!(state.pending.len(), capacity);
+
+        assert_eq!(
+            state.push(embedded_h264_frame(capacity as i64, false)),
+            capacity + 1
+        );
+        assert!(state.pending.is_empty());
+
+        assert_eq!(state.push(embedded_h264_frame(100, true)), 0);
+        assert_eq!(state.pending.len(), 1);
+        assert!(state.pending.front().is_some_and(|frame| frame.key_frame));
+    }
 
     #[test]
     fn shortcut_chords_parse_supported_keys_and_reject_ambiguous_input() {

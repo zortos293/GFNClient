@@ -88,12 +88,15 @@ ItemDelegate {
                     Rectangle {
                         required property string modelData
                         required property int index
+                        readonly property bool available: (root.rowData.disabledValues || []).indexOf(
+                            root.rowData.values ? root.rowData.values[index] : undefined) < 0
                         height: 38
                         width: segmentLabel.implicitWidth + 28
                         radius: 19
                         color: index === root.selectedChoice ? Theme.face : "transparent"
                         border.color: index === root.selectedChoice ? "transparent" : Theme.seam
                         border.width: index === root.selectedChoice ? 0 : 1
+                        opacity: available ? 1 : 0.38
                         Text {
                             id: segmentLabel
                             anchors.centerIn: parent

@@ -9,13 +9,13 @@ use opennow_streamer_core::{Engine, EventSender};
 use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, EmbeddedInputCapture, EmbeddedLocalAction, GraphicsApi,
     GraphicsContext, GraphicsFramePublisher, GraphicsFrameToken, GraphicsRecordCommand,
-    GraphicsRecordedFrame, GraphicsRuntimeError, RenderThreadGraphics,
+    GraphicsRecordedFrame, GraphicsRuntimeError, GraphicsTextureFormat, RenderThreadGraphics,
     create_embedded_runtime_with_input,
 };
 use opennow_streamer_protocol::{Command, error};
 use serde_json::Value;
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 2;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 3;
 const DEFAULT_MAX_COMMAND_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_CAPACITY: usize = 4096;
 const MAX_COMMAND_BYTES: usize = 16 * 1024 * 1024;
@@ -67,6 +67,8 @@ pub const OPENNOW_STREAMER_RENDER_COMMAND_VERSION: u32 = 1;
 pub const OPENNOW_STREAMER_GRAPHICS_API_D3D11: u32 = 1;
 pub const OPENNOW_STREAMER_GRAPHICS_API_VULKAN: u32 = 2;
 pub const OPENNOW_STREAMER_GRAPHICS_API_METAL: u32 = 3;
+pub const OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8: u32 = 1;
+pub const OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2: u32 = 2;
 pub const OPENNOW_STREAMER_LOCAL_ACTION_GUIDE: u32 = 1;
 pub const OPENNOW_STREAMER_LOCAL_ACTION_SCREENSHOT: u32 = 2;
 pub const OPENNOW_STREAMER_LOCAL_ACTION_RECORDING_TOGGLE: u32 = 3;
@@ -108,6 +110,7 @@ pub struct OpenNowStreamerRecordedFrame {
     pub resource: u64,
     pub resource_view: u64,
     pub graphics_api: u32,
+    pub texture_format: u32,
     pub width: u32,
     pub height: u32,
     pub frame_slot: u32,
@@ -452,6 +455,10 @@ fn recorded_frame(
             GraphicsApi::D3d11 => OPENNOW_STREAMER_GRAPHICS_API_D3D11,
             GraphicsApi::Vulkan => OPENNOW_STREAMER_GRAPHICS_API_VULKAN,
             GraphicsApi::Metal => OPENNOW_STREAMER_GRAPHICS_API_METAL,
+        },
+        texture_format: match frame.texture_format {
+            GraphicsTextureFormat::Rgba8 => OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8,
+            GraphicsTextureFormat::Rgb10A2 => OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2,
         },
         width: frame.width,
         height: frame.height,
@@ -1119,6 +1126,7 @@ mod tests {
             Ok(GraphicsRecordedFrame {
                 resource: 0xfeed,
                 resource_view: 0xbeef,
+                texture_format: GraphicsTextureFormat::Rgb10A2,
                 width: 2560,
                 height: 1440,
                 frame_slot: command.frame_slot,
@@ -1338,6 +1346,10 @@ mod tests {
             OpenNowStreamerStatus::Ok
         );
         assert_eq!(output.graphics_api, OPENNOW_STREAMER_GRAPHICS_API_VULKAN);
+        assert_eq!(
+            output.texture_format,
+            OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2
+        );
         assert_eq!(output.width, 2560);
         assert_eq!(output.height, 1440);
         assert_eq!(output.frame_slot, 2);

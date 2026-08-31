@@ -2,7 +2,7 @@ use opennow_streamer_platform_windows::{AdoptedD3d11Context, D3d11Frame};
 
 use crate::{
     GraphicsApi, GraphicsContext, GraphicsFrame, GraphicsFrameInfo, GraphicsRecordCommand,
-    GraphicsRecordedFrame,
+    GraphicsRecordedFrame, GraphicsTextureFormat,
 };
 
 impl GraphicsFrame for D3d11Frame {
@@ -41,6 +41,14 @@ impl GraphicsFrame for D3d11Frame {
         Ok(GraphicsRecordedFrame {
             resource: frame.texture as usize as u64,
             resource_view: 0,
+            texture_format: match frame.texture_format {
+                opennow_streamer_platform_windows::D3d11TextureFormat::Rgba8 => {
+                    GraphicsTextureFormat::Rgba8
+                }
+                opennow_streamer_platform_windows::D3d11TextureFormat::Rgb10A2 => {
+                    GraphicsTextureFormat::Rgb10A2
+                }
+            },
             width: frame.width,
             height: frame.height,
             frame_slot: frame.frame_slot,

@@ -23,7 +23,7 @@ pub use embedded_input::{EmbeddedInputCapture, EmbeddedLocalAction};
 pub use graphics::{
     GraphicsApi, GraphicsContext, GraphicsContextLease, GraphicsFrame, GraphicsFrameInfo,
     GraphicsFramePublisher, GraphicsFrameToken, GraphicsPublishOutcome, GraphicsRecordCommand,
-    GraphicsRecordedFrame, GraphicsRuntimeError, RenderThreadGraphics,
+    GraphicsRecordedFrame, GraphicsRuntimeError, GraphicsTextureFormat, RenderThreadGraphics,
 };
 pub use media::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedRecordingReceiver,
@@ -40,6 +40,7 @@ pub use opennow_streamer_platform_macos::{
 #[cfg(target_os = "windows")]
 pub use opennow_streamer_platform_windows::{
     AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
+    D3d11TextureFormat,
 };
 pub use recording::{RecordingSummary, record_matroska};
 pub use runtime::{

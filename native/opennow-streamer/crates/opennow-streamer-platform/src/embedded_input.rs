@@ -117,6 +117,7 @@ impl EmbeddedInputCapture {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 const fn raw_capture_enabled(active: bool, relative_mouse: bool) -> bool {
     active && relative_mouse
 }

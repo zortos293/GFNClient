@@ -230,7 +230,12 @@ jobs:
             $arguments = "modify --installPath `"$installPath`" --quiet --norestart --add Microsoft.VisualStudio.Component.VC.Tools.ARM64"
             $install = Start-Process "$installerRoot\vs_installer.exe" -Wait -PassThru -ArgumentList $arguments
             if ($install.ExitCode -notin 0, 3010) { throw "ARM64 compiler installation failed" }
+            $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           }
+          if (-not $compiler) { throw "ARM64 compiler is unavailable after installation" }
+          $linker = Join-Path $compiler.Directory.FullName "link.exe"
+          if (-not (Test-Path $linker)) { throw "ARM64 linker is unavailable after installation" }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - uses: ilammy/msvc-dev-cmd@v1
         with:

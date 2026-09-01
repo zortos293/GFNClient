@@ -198,7 +198,13 @@ jobs:
           if (-not $compiler) {
             throw "Visual Studio ARM64 compiler is unavailable after installation."
           }
+          $linker = Join-Path $compiler.Directory.FullName "link.exe"
+          if (-not (Test-Path $linker)) {
+            throw "Visual Studio ARM64 linker is unavailable after installation."
+          }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Using Windows ARM64 compiler: $($compiler.FullName)"
+          Write-Host "Using Windows ARM64 linker: $linker"
 
       - name: Setup Windows ARM64 build tools
         if: matrix.native_target == 'aarch64-pc-windows-msvc'

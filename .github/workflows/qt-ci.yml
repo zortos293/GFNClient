@@ -205,6 +205,7 @@ jobs:
             libdbus-1-dev \
             libdrm-dev \
             libgstreamer-plugins-bad1.0-0 \
+            libgstreamer-plugins-good1.0-0 \
             libpulse-dev \
             libsecret-1-dev \
             libva-dev \

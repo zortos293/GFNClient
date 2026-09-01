@@ -451,21 +451,28 @@ mod tests {
                 .iter()
                 .find(|backend| backend.backend == "videotoolbox")
                 .expect("VideoToolbox backend");
-            assert!(
-                hardware
-                    .codecs
-                    .iter()
-                    .filter(|codec| codec.codec != "h264")
-                    .all(|codec| !codec.available)
-            );
+            for (codec, expected) in [
+                ("h264", macos_backend::h264_available()),
+                ("h265", macos_backend::h265_available()),
+                ("av1", macos_backend::av1_available()),
+            ] {
+                assert_eq!(
+                    hardware
+                        .codecs
+                        .iter()
+                        .find(|capability| capability.codec == codec)
+                        .expect(codec)
+                        .available,
+                    expected,
+                );
+            }
+            assert_eq!(hardware.available, macos_backend::available());
             assert_eq!(
                 hardware.available,
                 hardware
                     .codecs
                     .iter()
-                    .find(|codec| codec.codec == "h264")
-                    .expect("h264")
-                    .available
+                    .any(|capability| capability.available)
             );
         }
     }

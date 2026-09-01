@@ -857,6 +857,18 @@ else()
     set(CPACK_DEBIAN_PACKAGE_SECTION "games")
     set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS TRUE)
+    get_target_property(OPENNOW_SDL3_RUNTIME_LOCATION
+        ${OPENNOW_SDL3_RUNTIME_TARGET} IMPORTED_LOCATION_RELEASE)
+    if(NOT OPENNOW_SDL3_RUNTIME_LOCATION)
+        get_target_property(OPENNOW_SDL3_RUNTIME_LOCATION
+            ${OPENNOW_SDL3_RUNTIME_TARGET} IMPORTED_LOCATION)
+    endif()
+    if(OPENNOW_SDL3_RUNTIME_LOCATION)
+        get_filename_component(OPENNOW_SDL3_RUNTIME_DIRECTORY
+            "${OPENNOW_SDL3_RUNTIME_LOCATION}" DIRECTORY)
+        set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS
+            "${OPENNOW_SDL3_RUNTIME_DIRECTORY}")
+    endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS
         "libqt6core6 (>= 6.8) | libqt6core6t64 (>= 6.8), libqt6gui6 (>= 6.8), libqt6network6 (>= 6.8), libqt6qml6 (>= 6.8), libqt6quick6 (>= 6.8), libqt6quickcontrols2-6 (>= 6.8), libqt6multimedia6 (>= 6.8), qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-dialogs, qml6-module-qtquick-effects, qml6-module-qtmultimedia, libsdl3-0 | libsdl3-0.0")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")

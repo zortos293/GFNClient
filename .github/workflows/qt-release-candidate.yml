@@ -110,7 +110,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libdbus-1-dev libdrm-dev libpulse-dev libsecret-1-dev \
-            libva-dev libvulkan-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+            libgstreamer-plugins-bad1.0-0 libva-dev libvulkan-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
             libxrandr-dev libxrender-dev libxss-dev make nasm pkg-config
 
       - name: Build SDL3
@@ -532,6 +532,8 @@ jobs:
           rm -f "$RUNNER_TEMP/opennow-signing.p12" "$RUNNER_TEMP/AuthKey.p8"
 
       - uses: actions/upload-artifact@v4
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         with:
           name: opennow-qt-${{ inputs.version }}-macos-${{ matrix.arch }}-signed-notarized
           path: build/release-artifacts/*

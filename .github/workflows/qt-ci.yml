@@ -204,6 +204,7 @@ jobs:
             libasound2-dev \
             libdbus-1-dev \
             libdrm-dev \
+            libgstreamer-plugins-bad1.0-0 \
             libpulse-dev \
             libsecret-1-dev \
             libva-dev \
@@ -367,6 +368,8 @@ jobs:
 
       - name: Upload unsigned validation package
         uses: actions/upload-artifact@v4
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         with:
           name: opennow-qt-${{ matrix.label }}-unsigned
           path: build/qt-packages/*

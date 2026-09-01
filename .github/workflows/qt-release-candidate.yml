@@ -188,7 +188,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: opennow-qt-${{ inputs.version }}-linux-${{ matrix.arch }}-signed
-          path: build/release-artifacts/*
+          path: |
+            build/release-artifacts/*.AppImage
+            build/release-artifacts/*.deb
+            build/release-artifacts/SHA256SUMS
           if-no-files-found: error
 
   windows:
@@ -386,7 +389,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: opennow-qt-${{ inputs.version }}-windows-${{ matrix.arch }}-signed
-          path: build/release-artifacts/*
+          path: |
+            build/release-artifacts/*.msi
+            build/release-artifacts/*.zip
+            build/release-artifacts/SHA256SUMS
           if-no-files-found: error
 
   macos:
@@ -533,11 +539,12 @@ jobs:
           rm -f "$RUNNER_TEMP/opennow-signing.p12" "$RUNNER_TEMP/AuthKey.p8"
 
       - uses: actions/upload-artifact@v4
-        env:
-          NODE_OPTIONS: --max-old-space-size=8192
         with:
           name: opennow-qt-${{ inputs.version }}-macos-${{ matrix.arch }}-signed-notarized
-          path: build/release-artifacts/*
+          path: |
+            build/release-artifacts/*.dmg
+            build/release-artifacts/*.zip
+            build/release-artifacts/SHA256SUMS
           if-no-files-found: error
 
   inventory:

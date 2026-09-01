@@ -369,11 +369,13 @@ jobs:
 
       - name: Upload unsigned validation package
         uses: actions/upload-artifact@v4
-        env:
-          NODE_OPTIONS: --max-old-space-size=8192
         with:
           name: opennow-qt-${{ matrix.label }}-unsigned
-          path: build/qt-packages/*
+          path: |
+            build/qt-packages/*.AppImage
+            build/qt-packages/*.deb
+            build/qt-packages/*.dmg
+            build/qt-packages/*.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

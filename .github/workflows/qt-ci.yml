@@ -332,6 +332,7 @@ jobs:
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy-sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt-plugin-sha256 }}
         run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           cmake --install build/opennow-qt-release --config Release \
             --prefix "$PWD/build/AppDir/usr"
           curl --fail --location --retry 3 \

@@ -143,6 +143,7 @@ jobs:
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt_plugin_sha256 }}
         run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           mkdir -p build/release-artifacts
           cpack --config build/qt-release/CPackConfig.cmake -C Release -G DEB -B build/release-artifacts
           cmake --install build/qt-release --config Release --prefix "$PWD/build/AppDir/usr"

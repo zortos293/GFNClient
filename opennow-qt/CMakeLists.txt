@@ -17,7 +17,7 @@ set(CMAKE_AUTOMOC ON)
 # propagated by the targets below, so avoid the redundant compiler subprocess.
 set(CMAKE_AUTOMOC_COMPILER_PREDEFINES OFF)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 GuiPrivate Network Multimedia Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui Network Multimedia Test)
 find_package(SDL3 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -271,16 +271,39 @@ if(WIN32)
                 "$<TARGET_FILE:${OPENNOW_SDL3_RUNTIME_TARGET}>"
                 "$<TARGET_FILE_DIR:opennow-qt>"
         COMMENT "Copying SDL3 next to the OpenNOW executable")
-    find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${Qt6_DIR}/../../../bin")
-    if(WINDEPLOYQT_EXECUTABLE)
-        add_custom_command(TARGET opennow-qt POST_BUILD
-            COMMAND "${WINDEPLOYQT_EXECUTABLE}" --no-translations --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml"
-                    "$<TARGET_FILE:opennow-qt>"
-            COMMAND "${CMAKE_COMMAND}" -E rm -f
-                    "$<TARGET_FILE_DIR:opennow-qt>/tls/qopensslbackend.dll"
-                    "$<TARGET_FILE_DIR:opennow-qt>/plugins/tls/qopensslbackend.dll"
-            COMMENT "Deploying Qt runtime plugins and preferring Windows Schannel TLS")
+    get_filename_component(OPENNOW_QT_TARGET_BIN "${Qt6_DIR}/../../../bin" ABSOLUTE)
+    set(OPENNOW_WINDEPLOYQT_ARGS
+        --no-translations
+        --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    if(QT_HOST_PATH)
+        find_program(WINDEPLOYQT_EXECUTABLE NAMES windeployqt
+            HINTS "${QT_HOST_PATH}/bin"
+            NO_DEFAULT_PATH
+            REQUIRED)
+        find_file(OPENNOW_TARGET_QTPATHS_EXECUTABLE
+            NAMES qtpaths6.bat qtpaths.bat
+            HINTS "${OPENNOW_QT_TARGET_BIN}"
+            NO_DEFAULT_PATH
+            REQUIRED)
+        list(PREPEND OPENNOW_WINDEPLOYQT_ARGS
+            --qtpaths "${OPENNOW_TARGET_QTPATHS_EXECUTABLE}")
+        set(OPENNOW_QT_DEPLOY_TOOL_ARGS
+            DEPLOY_TOOL_OPTIONS
+            --qtpaths "${OPENNOW_TARGET_QTPATHS_EXECUTABLE}")
+    else()
+        find_program(WINDEPLOYQT_EXECUTABLE NAMES windeployqt
+            HINTS "${OPENNOW_QT_TARGET_BIN}"
+            NO_DEFAULT_PATH
+            REQUIRED)
     endif()
+    add_custom_command(TARGET opennow-qt POST_BUILD
+        COMMAND "${WINDEPLOYQT_EXECUTABLE}" ${OPENNOW_WINDEPLOYQT_ARGS}
+                "$<TARGET_FILE:opennow-qt>"
+        COMMAND "${CMAKE_COMMAND}" -E rm -f
+                "$<TARGET_FILE_DIR:opennow-qt>/tls/qopensslbackend.dll"
+                "$<TARGET_FILE_DIR:opennow-qt>/plugins/tls/qopensslbackend.dll"
+        COMMENT "Deploying Qt runtime plugins and preferring Windows Schannel TLS"
+        COMMAND_EXPAND_LISTS)
     # windeployqt intentionally deploys only the production `windows` QPA
     # plugin. CTest runs the GUI/QML smoke suite with `QT_QPA_PLATFORM=offscreen`,
     # so keep that test-only plugin beside the deployed application as well.
@@ -461,6 +484,11 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    set(OPENNOW_QT_SMOKE_TIMEOUT 5)
+    if(APPLE AND "x86_64" IN_LIST CMAKE_OSX_ARCHITECTURES)
+        set(OPENNOW_QT_SMOKE_TIMEOUT 15)
+    endif()
+
     add_executable(opennow-fake-core tests/fake_core.cpp)
 
     qt_add_executable(opennow-localization-tests
@@ -537,6 +565,28 @@ if(BUILD_TESTING)
              COMMAND opennow-nativestreamruntime-tests -o -,txt)
     set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 8)
 
+    if(APPLE)
+        add_custom_target(opennow-streamer-ffi-test-runtime ALL
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:opennow-streamvideo-tests>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${OPENNOW_STREAMER_FFI_RUNTIME}"
+                "$<TARGET_FILE_DIR:opennow-streamvideo-tests>/"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:opennow-nativestreamruntime-tests>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${OPENNOW_STREAMER_FFI_RUNTIME}"
+                "$<TARGET_FILE_DIR:opennow-nativestreamruntime-tests>/"
+            DEPENDS opennow-streamer-ffi-build
+            COMMENT "Deploying the embedded streamer runtime for CTest")
+        foreach(test_target IN ITEMS
+                opennow-streamvideo-tests
+                opennow-nativestreamruntime-tests)
+            add_dependencies(${test_target} opennow-streamer-ffi-test-runtime)
+            set_property(TARGET ${test_target} APPEND PROPERTY BUILD_RPATH "@loader_path")
+        endforeach()
+    endif()
+
     qt_add_executable(opennow-embedded-orchestration-tests
         tests/tst_embeddedorchestration.cpp
     )
@@ -603,6 +653,8 @@ if(BUILD_TESTING)
         # directory, so deploy the test runtime explicitly and make the runners
         # depend on it. This keeps a clean build directly runnable by CTest.
         add_custom_target(opennow-qt-test-runtime ALL
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:opennow-qt>"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:Qt6::Test>"
                 "$<TARGET_FILE_DIR:opennow-qt>/"
@@ -627,7 +679,7 @@ if(BUILD_TESTING)
                          --console --route "${route}" --reduced-motion)
         set_tests_properties("qml-route-${route}" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-            TIMEOUT 5
+            TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
         )
     endforeach()
     foreach(route home library store friends settings stream)
@@ -635,7 +687,7 @@ if(BUILD_TESTING)
                  COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop --route "${route}" --reduced-motion)
         set_tests_properties("qml-desktop-route-${route}" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-            TIMEOUT 5
+            TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
         )
     endforeach()
     foreach(overlay desktop-stream-menu desktop-stream-stats desktop-stream-stats-expanded desktop-stream-exit-confirm)
@@ -644,7 +696,7 @@ if(BUILD_TESTING)
                          --desktop --route stream --overlay "${overlay}" --reduced-motion)
         set_tests_properties("qml-${overlay}" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-            TIMEOUT 5
+            TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
         )
     endforeach()
     add_test(NAME qml-fullscreen-stream-stats-shortcut
@@ -663,7 +715,7 @@ if(BUILD_TESTING)
                      --reduced-motion)
     set_tests_properties(qml-console-mode-persistence-rollback PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-        TIMEOUT 5
+        TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
     )
     add_test(NAME qml-streamer-event-contract
              COMMAND opennow-qt
@@ -674,14 +726,14 @@ if(BUILD_TESTING)
                      --reduced-motion)
     set_tests_properties(qml-streamer-event-contract PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-        TIMEOUT 5
+        TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
     )
     foreach(overlay friends friend-actions quick-settings session-conflict session-report queue-ad guide-session guide-controls guide-media guide-shortcuts)
         add_test(NAME "qml-overlay-${overlay}"
                  COMMAND opennow-qt --smoke-test --allow-multiple-instances --route home --overlay "${overlay}" --reduced-motion)
         set_tests_properties("qml-overlay-${overlay}" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-            TIMEOUT 5
+            TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
         )
     endforeach()
     add_test(NAME opennow-performance-report-harness
@@ -775,6 +827,7 @@ if(WIN32 OR APPLE)
         TARGET opennow-qt
         OUTPUT_SCRIPT opennow_deploy_script
         NO_UNSUPPORTED_PLATFORM_ERROR
+        ${OPENNOW_QT_DEPLOY_TOOL_ARGS}
     )
     install(SCRIPT "${opennow_deploy_script}")
 endif()
@@ -804,6 +857,18 @@ else()
     set(CPACK_DEBIAN_PACKAGE_SECTION "games")
     set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS TRUE)
+    get_target_property(OPENNOW_SDL3_RUNTIME_LOCATION
+        ${OPENNOW_SDL3_RUNTIME_TARGET} IMPORTED_LOCATION_RELEASE)
+    if(NOT OPENNOW_SDL3_RUNTIME_LOCATION)
+        get_target_property(OPENNOW_SDL3_RUNTIME_LOCATION
+            ${OPENNOW_SDL3_RUNTIME_TARGET} IMPORTED_LOCATION)
+    endif()
+    if(OPENNOW_SDL3_RUNTIME_LOCATION)
+        get_filename_component(OPENNOW_SDL3_RUNTIME_DIRECTORY
+            "${OPENNOW_SDL3_RUNTIME_LOCATION}" DIRECTORY)
+        set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS
+            "${OPENNOW_SDL3_RUNTIME_DIRECTORY}")
+    endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS
         "libqt6core6 (>= 6.8) | libqt6core6t64 (>= 6.8), libqt6gui6 (>= 6.8), libqt6network6 (>= 6.8), libqt6qml6 (>= 6.8), libqt6quick6 (>= 6.8), libqt6quickcontrols2-6 (>= 6.8), libqt6multimedia6 (>= 6.8), qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-dialogs, qml6-module-qtquick-effects, qml6-module-qtmultimedia, libsdl3-0 | libsdl3-0.0")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")

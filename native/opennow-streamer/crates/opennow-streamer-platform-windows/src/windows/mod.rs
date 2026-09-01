@@ -13,12 +13,15 @@ use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use ::windows::Win32::Foundation::FreeLibrary;
 use ::windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_LITE, MFShutdown, MFStartup};
 use ::windows::Win32::Media::{TIMERR_NOERROR, timeBeginPeriod, timeEndPeriod};
 use ::windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use ::windows::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 use ::windows::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
 };
+use ::windows::core::w;
 
 use crate::{
     ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendConfig, BackendError, BackendEvent, CapabilityProbe,
@@ -252,8 +255,17 @@ impl Drop for LowLatencyThreadGuard {
 
 struct MediaRuntime;
 
+fn ensure_media_foundation_available() -> Result<(), String> {
+    unsafe {
+        let module = LoadLibraryExW(w!("mfplat.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32)
+            .map_err(|error| format!("Media Foundation is unavailable: {error}"))?;
+        FreeLibrary(module).map_err(|error| format!("FreeLibrary(mfplat.dll): {error}"))
+    }
+}
+
 impl MediaRuntime {
     fn initialize() -> Result<Self, BackendError> {
+        ensure_media_foundation_available().map_err(BackendError::Startup)?;
         unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED)
                 .ok()

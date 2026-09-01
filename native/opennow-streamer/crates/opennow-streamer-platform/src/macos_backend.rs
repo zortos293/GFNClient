@@ -17,6 +17,8 @@ use crate::output::{
 
 const HIDDEN_SURFACE: ScreenRect = ScreenRect::new(0.0, 0.0, 2.0, 2.0);
 const ORDERING_POLL_INTERVAL: Duration = Duration::from_millis(100);
+type H264ParameterSetBytes = (Option<Vec<u8>>, Option<Vec<u8>>);
+type H265ParameterSetBytes = (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
 
 pub(crate) fn available() -> bool {
     h264_available() || h265_available() || av1_available()
@@ -331,7 +333,7 @@ impl MacExternalSurface {
         eprintln!(
             "External macOS stream window ready (native keyboard/mouse capture: {capture_input})"
         );
-        let mut input_capture = SdlInputCapture::new(capture_input, false, stream.shortcuts);
+        let mut input_capture = SdlInputCapture::new(capture_input, false, false, stream.shortcuts);
         input_capture.enable_gamepads(&sdl);
         Ok(Self {
             input_capture,
@@ -508,9 +510,7 @@ impl H264ParameterSetTracker {
         self.candidate = None;
     }
 
-    fn parameter_sets_from_annex_b(
-        access_unit: &[u8],
-    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), String> {
+    fn parameter_sets_from_annex_b(access_unit: &[u8]) -> Result<H264ParameterSetBytes, String> {
         let Some((mut start, prefix)) = find_start_code(access_unit, 0) else {
             return Err("H.264 access unit has no Annex B start code".to_owned());
         };
@@ -531,9 +531,7 @@ impl H264ParameterSetTracker {
         }
     }
 
-    fn parameter_sets_from_avcc(
-        access_unit: &[u8],
-    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), String> {
+    fn parameter_sets_from_avcc(access_unit: &[u8]) -> Result<H264ParameterSetBytes, String> {
         let mut offset = 0usize;
         let mut sequence = None;
         let mut picture = None;
@@ -640,9 +638,7 @@ impl H265ParameterSetTracker {
         self.candidate = None;
     }
 
-    fn parameter_sets_from_annex_b(
-        access_unit: &[u8],
-    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>), String> {
+    fn parameter_sets_from_annex_b(access_unit: &[u8]) -> Result<H265ParameterSetBytes, String> {
         let Some((mut start, prefix)) = find_start_code(access_unit, 0) else {
             return Err("H.265 access unit has no Annex B start code".to_owned());
         };
@@ -669,9 +665,7 @@ impl H265ParameterSetTracker {
         }
     }
 
-    fn parameter_sets_from_avcc(
-        access_unit: &[u8],
-    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>), String> {
+    fn parameter_sets_from_avcc(access_unit: &[u8]) -> Result<H265ParameterSetBytes, String> {
         let mut offset = 0usize;
         let mut video = None;
         let mut sequence = None;

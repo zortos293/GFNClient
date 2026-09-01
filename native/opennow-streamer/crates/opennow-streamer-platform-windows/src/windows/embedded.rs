@@ -103,6 +103,7 @@ struct EmbeddedMediaRuntime {
 
 impl EmbeddedMediaRuntime {
     fn initialize() -> Result<Self, String> {
+        super::ensure_media_foundation_available()?;
         unsafe {
             let mta_cookie =
                 CoIncrementMTAUsage().map_err(|error| format!("CoIncrementMTAUsage: {error}"))?;

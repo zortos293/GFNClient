@@ -386,34 +386,6 @@ fn time_to_100ns(time: CMTime) -> i64 {
         })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{frame_duration_seconds, time_to_100ns};
-    use objc2_core_media::{CMTime, CMTimeFlags};
-
-    #[test]
-    fn converts_120_hz_core_media_duration_to_seconds() {
-        let duration = CMTime {
-            value: 750,
-            timescale: 90_000,
-            flags: CMTimeFlags(1),
-            epoch: 0,
-        };
-        assert!((frame_duration_seconds(duration) - 1.0 / 120.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn converts_core_media_time_to_cross_platform_100ns_units() {
-        let time = CMTime {
-            value: 90_000,
-            timescale: 90_000,
-            flags: CMTimeFlags(1),
-            epoch: 0,
-        };
-        assert_eq!(time_to_100ns(time), 10_000_000);
-    }
-}
-
 fn create_format_description(
     format: &VideoFormat,
 ) -> Result<CFRetained<CMFormatDescription>, BackendError> {
@@ -557,5 +529,33 @@ fn check_status(api: &'static str, status: i32) -> Result<(), BackendError> {
         Ok(())
     } else {
         Err(BackendError::AppleApi { api, status })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{frame_duration_seconds, time_to_100ns};
+    use objc2_core_media::{CMTime, CMTimeFlags};
+
+    #[test]
+    fn converts_120_hz_core_media_duration_to_seconds() {
+        let duration = CMTime {
+            value: 750,
+            timescale: 90_000,
+            flags: CMTimeFlags(1),
+            epoch: 0,
+        };
+        assert!((frame_duration_seconds(duration) - 1.0 / 120.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn converts_core_media_time_to_cross_platform_100ns_units() {
+        let time = CMTime {
+            value: 90_000,
+            timescale: 90_000,
+            flags: CMTimeFlags(1),
+            epoch: 0,
+        };
+        assert_eq!(time_to_100ns(time), 10_000_000);
     }
 }

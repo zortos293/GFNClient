@@ -73,14 +73,14 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-8vcpu-ubuntu-2404
             qt_host: linux
             qt_arch: linux_gcc_64
             linuxdeploy_arch: x86_64
             linuxdeploy_sha256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
             qt_plugin_sha256: 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
           - arch: arm64
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: blacksmith-8vcpu-ubuntu-2404-arm
             qt_host: linux_arm64
             qt_arch: linux_gcc_arm64
             linuxdeploy_arch: aarch64
@@ -109,8 +109,9 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdrm-dev libpulse-dev libsecret-1-dev \
-            libva-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+          sudo apt-get install -y libasound2-dev libdbus-1-dev libdrm-dev libpulse-dev libsecret-1-dev \
+            libgstreamer-plugins-bad1.0-0 libgstreamer-plugins-good1.0-0 libva-dev libvulkan-dev libx11-dev \
+            libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
             libxrandr-dev libxrender-dev libxss-dev make nasm pkg-config
 
       - name: Build SDL3
@@ -119,7 +120,7 @@ jobs:
           git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
           cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL-build" -DCMAKE_BUILD_TYPE=Release \
             -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF
-          cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel
+          cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel 6
           cmake --install "$RUNNER_TEMP/SDL-build" --config Release --prefix "$RUNNER_TEMP/SDL-install"
 
       - name: Configure, build, and test release
@@ -129,10 +130,10 @@ jobs:
           UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
         run: |
           cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
-            -DSDL3_DIR="$RUNNER_TEMP/SDL-install/lib/cmake/SDL3" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
-          cmake --build build/qt-release --config Release --parallel
+          cmake --build build/qt-release --config Release --parallel 6
           ctest --test-dir build/qt-release -C Release --output-on-failure --parallel 4
 
       - name: Build DEB and AppImage
@@ -143,6 +144,7 @@ jobs:
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt_plugin_sha256 }}
         run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           mkdir -p build/release-artifacts
           cpack --config build/qt-release/CPackConfig.cmake -C Release -G DEB -B build/release-artifacts
           cmake --install build/qt-release --config Release --prefix "$PWD/build/AppDir/usr"
@@ -181,12 +183,15 @@ jobs:
           set -euo pipefail
           appimage=$(find build/release-artifacts -maxdepth 1 -type f -name '*.AppImage' -print -quit)
           "$appimage" --smoke-test --allow-multiple-instances --route home --reduced-motion
-          (cd build/release-artifacts && sha256sum *.AppImage *.deb > SHA256SUMS)
+          (cd build/release-artifacts && sha256sum -- *.AppImage *.deb > SHA256SUMS)
 
       - uses: actions/upload-artifact@v4
         with:
           name: opennow-qt-${{ inputs.version }}-linux-${{ matrix.arch }}-signed
-          path: build/release-artifacts/*
+          path: |
+            build/release-artifacts/*.AppImage
+            build/release-artifacts/*.deb
+            build/release-artifacts/SHA256SUMS
           if-no-files-found: error
 
   windows:
@@ -211,6 +216,10 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.source_sha }}
 
+      - name: Enable Windows Media Foundation
+        shell: pwsh
+        run: .github/scripts/ensure-windows-media-foundation.ps1
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install ARM64 compiler and Rust target
@@ -226,11 +235,29 @@ jobs:
             $arguments = "modify --installPath `"$installPath`" --quiet --norestart --add Microsoft.VisualStudio.Component.VC.Tools.ARM64"
             $install = Start-Process "$installerRoot\vs_installer.exe" -Wait -PassThru -ArgumentList $arguments
             if ($install.ExitCode -notin 0, 3010) { throw "ARM64 compiler installation failed" }
+            $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           }
+          if (-not $compiler) { throw "ARM64 compiler is unavailable after installation" }
+          $linker = Join-Path $compiler.Directory.FullName "link.exe"
+          if (-not (Test-Path $linker)) { throw "ARM64 linker is unavailable after installation" }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
+
+      - name: Install LLVM
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install llvm -y --no-progress
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "clang.exe")) -or
+              -not (Test-Path (Join-Path $llvmBin "libclang.dll"))) {
+            throw "LLVM installation is missing libclang.dll"
+          }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install WiX Toolset
         shell: pwsh
@@ -290,7 +317,7 @@ jobs:
           if [[ -n "${{ matrix.rust_target }}" ]]; then args+=("-DOPENNOW_RUST_TARGET=${{ matrix.rust_target }}"); fi
           if [[ -n "${OPENNOW_QT_HOST_PATH:-}" ]]; then args+=("-DQT_HOST_PATH=${OPENNOW_QT_HOST_PATH}"); fi
           cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
-            -DSDL3_DIR="$RUNNER_TEMP/SDL-install/lib/cmake/SDL3" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY" "${args[@]}"
           cmake --build build/qt-release --config Release --parallel
@@ -362,7 +389,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: opennow-qt-${{ inputs.version }}-windows-${{ matrix.arch }}-signed
-          path: build/release-artifacts/*
+          path: |
+            build/release-artifacts/*.msi
+            build/release-artifacts/*.zip
+            build/release-artifacts/SHA256SUMS
           if-no-files-found: error
 
   macos:
@@ -418,7 +448,7 @@ jobs:
           cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} \
             -DOPENNOW_RUST_TARGET=${{ matrix.rust_target }} \
-            -DSDL3_DIR="$RUNNER_TEMP/SDL-install/lib/cmake/SDL3" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
           cmake --build build/qt-release --config Release --parallel
@@ -499,7 +529,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd build/release-artifacts && shasum -a 256 *.dmg *.zip > SHA256SUMS)
+          (cd build/release-artifacts && shasum -a 256 -- *.dmg *.zip > SHA256SUMS)
 
       - name: Remove temporary signing material
         if: always()
@@ -511,7 +541,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: opennow-qt-${{ inputs.version }}-macos-${{ matrix.arch }}-signed-notarized
-          path: build/release-artifacts/*
+          path: |
+            build/release-artifacts/*.dmg
+            build/release-artifacts/*.zip
+            build/release-artifacts/SHA256SUMS
           if-no-files-found: error
 
   inventory:

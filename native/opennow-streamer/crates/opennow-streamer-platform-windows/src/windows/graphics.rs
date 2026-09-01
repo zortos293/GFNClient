@@ -1125,6 +1125,10 @@ mod tests {
         }
     }
 
+    fn is_missing_hardware_video_support(error: &str) -> bool {
+        error.contains("0x80004002") || error.contains("0x887A0004")
+    }
+
     #[test]
     fn swap_chain_formats_match_official_windows_client() {
         assert_eq!(
@@ -1204,14 +1208,18 @@ mod tests {
     }
 
     #[test]
-    fn d3d11_on_12_exposes_video_processing_interfaces() {
-        Graphics::probe(WindowsGraphicsApi::D3d12)
-            .expect("D3D11-on-12 must support the complete graphics presentation path");
+    fn d3d11_on_12_exposes_video_processing_or_reports_unsupported_hardware() {
+        if let Err(error) = Graphics::probe(WindowsGraphicsApi::D3d12) {
+            assert!(
+                is_missing_hardware_video_support(&error),
+                "D3D11-on-12 probe failed unexpectedly: {error}"
+            );
+        }
     }
 
     #[test]
-    fn p010_presentation_selects_a_driver_supported_scanout() {
-        let graphics = Graphics::new(
+    fn p010_presentation_selects_a_scanout_or_reports_unsupported_hardware() {
+        let result = Graphics::new(
             WindowsGraphicsApi::D3d11,
             SurfaceTarget::Owned(OwnedWindow {
                 parent: None,
@@ -1224,12 +1232,17 @@ mod tests {
                 visible: false,
             }),
             video_format(VideoPixelFormat::P010),
-        )
-        .expect("P010 must use either native 10-bit scan-out or the SDR fallback");
-        assert!(
-            graphics.swap_format == DXGI_FORMAT_R10G10B10A2_UNORM
-                || graphics.swap_format == DXGI_FORMAT_R8G8B8A8_UNORM
         );
+        match result {
+            Ok(graphics) => assert!(
+                graphics.swap_format == DXGI_FORMAT_R10G10B10A2_UNORM
+                    || graphics.swap_format == DXGI_FORMAT_R8G8B8A8_UNORM
+            ),
+            Err(error) => assert!(
+                is_missing_hardware_video_support(&error),
+                "P010 presenter failed unexpectedly: {error}"
+            ),
+        }
     }
 
     #[test]

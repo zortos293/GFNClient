@@ -19,7 +19,7 @@ private slots:
 
         std::atomic_bool secondaryCompleted = false;
         std::atomic_bool secondaryBecamePrimary = true;
-        std::jthread secondary([&] {
+        std::thread secondary([&] {
             SingleInstance instance;
             secondaryBecamePrimary = instance.acquire(
                 {QStringLiteral("opennow"), QStringLiteral("opennow://launch/99")});
@@ -27,6 +27,7 @@ private slots:
         });
         QTRY_COMPARE_WITH_TIMEOUT(activation.size(), 1, 2'000);
         QTRY_VERIFY_WITH_TIMEOUT(secondaryCompleted.load(), 2'000);
+        secondary.join();
         QVERIFY(!secondaryBecamePrimary.load());
         const auto arguments = activation.first().first().toStringList();
         QCOMPARE(arguments.value(1), QStringLiteral("opennow://launch/99"));

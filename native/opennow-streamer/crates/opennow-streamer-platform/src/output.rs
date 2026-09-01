@@ -1369,6 +1369,7 @@ impl SdlInputCapture {
         std::mem::take(&mut self.captured)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub(crate) const fn relative_mouse_enabled(&self) -> bool {
         self.relative_mouse
     }
@@ -2588,30 +2589,22 @@ impl WindowsExternalSdlSurface {
                 if let Err(error) = self.release() {
                     eprintln!("{error}");
                 }
-            } else if matches!(
+                continue;
+            }
+            let focus_lost = matches!(
                 event,
                 sdl2::event::Event::Window {
                     window_id,
                     win_event: sdl2::event::WindowEvent::FocusLost,
                     ..
                 } if window_id == stream_window_id
-            ) {
-                self.input_capture.handle_event(
-                    &self.sdl,
-                    &mut self.window,
-                    self.stream_size,
-                    event,
-                );
+            );
+            self.input_capture
+                .handle_event(&self.sdl, &mut self.window, self.stream_size, event);
+            if focus_lost {
                 if let Some(raw_input) = self.raw_input.as_ref() {
                     raw_input.release_buttons();
                 }
-            } else {
-                self.input_capture.handle_event(
-                    &self.sdl,
-                    &mut self.window,
-                    self.stream_size,
-                    event,
-                );
             }
         }
         self.sync_raw_input();

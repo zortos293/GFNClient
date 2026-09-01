@@ -10,6 +10,7 @@ on:
       - ".github/workflows/qt-ci.yml"
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/actionlint.yaml"
+      - ".github/scripts/ensure-windows-media-foundation.ps1"
       - "opennow-qt/**"
       - "native/opennow-core/**"
       - "native/opennow-streamer/**"
@@ -18,6 +19,7 @@ on:
       - ".github/workflows/qt-ci.yml"
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/actionlint.yaml"
+      - ".github/scripts/ensure-windows-media-foundation.ps1"
       - "opennow-qt/**"
       - "native/opennow-core/**"
       - "native/opennow-streamer/**"
@@ -38,7 +40,8 @@ jobs:
       matrix:
         include:
           - label: linux-x64
-            os: blacksmith-4vcpu-ubuntu-2404
+            os: blacksmith-8vcpu-ubuntu-2404
+            build-parallel: 6
             qt-host: linux
             qt-arch: linux_gcc_64
             package-generator: DEB
@@ -48,7 +51,8 @@ jobs:
             linuxdeploy-sha256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
             qt-plugin-sha256: 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
           - label: linux-arm64
-            os: blacksmith-4vcpu-ubuntu-2404-arm
+            os: blacksmith-8vcpu-ubuntu-2404-arm
+            build-parallel: 6
             qt-host: linux_arm64
             qt-arch: linux_gcc_arm64
             package-generator: DEB
@@ -59,6 +63,7 @@ jobs:
             qt-plugin-sha256: bf1c24aff6d749b5cf423afad6f15abd4440f81dec1aab95706b25f6667cdcf1
           - label: windows-x64
             os: blacksmith-4vcpu-windows-2025
+            build-parallel: 4
             qt-host: windows
             qt-arch: win64_msvc2022_64
             package-generator: ZIP
@@ -66,6 +71,7 @@ jobs:
             cmake-arch: ""
           - label: windows-arm64
             os: blacksmith-4vcpu-windows-2025
+            build-parallel: 4
             qt-host: windows
             qt-arch: win64_msvc2022_arm64_cross_compiled
             package-generator: ZIP
@@ -73,6 +79,7 @@ jobs:
             cmake-arch: ARM64
           - label: macos-arm64
             os: blacksmith-6vcpu-macos-15
+            build-parallel: 6
             qt-host: mac
             qt-arch: clang_64
             package-generator: "DragNDrop;ZIP"
@@ -80,6 +87,7 @@ jobs:
             cmake-arch: arm64
           - label: macos-x64
             os: blacksmith-6vcpu-macos-15
+            build-parallel: 6
             qt-host: mac
             qt-arch: clang_64
             package-generator: "DragNDrop;ZIP"
@@ -93,6 +101,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Enable Windows Media Foundation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/ensure-windows-media-foundation.ps1
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -121,13 +134,38 @@ jobs:
             if ($install.ExitCode -notin 0, 3010) {
               throw "Visual Studio ARM64 compiler installation failed with exit code $($install.ExitCode)."
             }
+            $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           }
+          if (-not $compiler) {
+            throw "Visual Studio ARM64 compiler is unavailable after installation."
+          }
+          $linker = Join-Path $compiler.Directory.FullName "link.exe"
+          if (-not (Test-Path $linker)) {
+            throw "Visual Studio ARM64 linker is unavailable after installation."
+          }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using Windows ARM64 compiler: $($compiler.FullName)"
+          Write-Host "Using Windows ARM64 linker: $linker"
 
       - name: Setup Windows ARM64 build tools
         if: matrix.label == 'windows-arm64'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64_arm64
+
+      - name: Install Windows LLVM
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install llvm -y --no-progress
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "clang.exe")) -or
+              -not (Test-Path (Join-Path $llvmBin "libclang.dll"))) {
+            throw "LLVM installation is missing libclang.dll"
+          }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install Windows host Qt tools
         if: matrix.label == 'windows-arm64'
@@ -164,10 +202,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libasound2-dev \
+            libdbus-1-dev \
             libdrm-dev \
+            libgstreamer-plugins-bad1.0-0 \
+            libgstreamer-plugins-good1.0-0 \
             libpulse-dev \
             libsecret-1-dev \
             libva-dev \
+            libvulkan-dev \
             libx11-dev \
             libxcursor-dev \
             libxext-dev \
@@ -197,7 +239,7 @@ jobs:
             -DSDL_TEST_LIBRARY=OFF \
             -DSDL_TESTS=OFF \
             "${SDL_CMAKE_ARGS[@]}"
-          cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel
+          cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel "${{ matrix.build-parallel }}"
           cmake --install "$RUNNER_TEMP/SDL-build" --config Release --prefix "$RUNNER_TEMP/SDL-install"
 
       - name: Rust format and lint
@@ -213,10 +255,24 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          case "$(uname -m)" in
+            x86_64)
+              actionlint_arch=amd64
+              actionlint_sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+              ;;
+            aarch64)
+              actionlint_arch=arm64
+              actionlint_sha256=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+              ;;
+            *)
+              echo "Unsupported actionlint architecture: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
           curl --fail --location --retry 3 \
-            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_${actionlint_arch}.tar.gz" \
             --output "$RUNNER_TEMP/actionlint.tar.gz"
-          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" \
+          echo "$actionlint_sha256  $RUNNER_TEMP/actionlint.tar.gz" \
             | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color=false \
@@ -246,12 +302,12 @@ jobs:
           fi
           cmake -S opennow-qt -B build/opennow-qt-release \
             -DCMAKE_BUILD_TYPE=Release \
-            -DSDL3_DIR="$RUNNER_TEMP/SDL-install/lib/cmake/SDL3" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             "${OPENNOW_CMAKE_ARGS[@]}"
 
       - name: Build Qt release
         shell: bash
-        run: cmake --build build/opennow-qt-release --config Release --parallel
+        run: cmake --build build/opennow-qt-release --config Release --parallel "${{ matrix.build-parallel }}"
 
       - name: Test Qt shell
         if: matrix.label != 'windows-arm64'
@@ -278,6 +334,7 @@ jobs:
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy-sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt-plugin-sha256 }}
         run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           cmake --install build/opennow-qt-release --config Release \
             --prefix "$PWD/build/AppDir/usr"
           curl --fail --location --retry 3 \
@@ -314,6 +371,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: opennow-qt-${{ matrix.label }}-unsigned
-          path: build/qt-packages/*
+          path: |
+            build/qt-packages/*.AppImage
+            build/qt-packages/*.deb
+            build/qt-packages/*.dmg
+            build/qt-packages/*.zip
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0

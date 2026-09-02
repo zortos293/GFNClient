@@ -1,11 +1,14 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
-use std::thread::{self, ThreadId};
+use std::thread::{self, JoinHandle, ThreadId};
+use std::time::{Duration, Instant};
 
 use ::windows::Win32::Foundation::{LUID, RECT};
+use ::windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use ::windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
@@ -30,7 +33,11 @@ use ::windows::Win32::Media::MediaFoundation::{
     MFStartup,
 };
 use ::windows::Win32::System::Com::{
-    CO_MTA_USAGE_COOKIE, CoDecrementMTAUsage, CoIncrementMTAUsage,
+    CO_MTA_USAGE_COOKIE, COINIT_MULTITHREADED, CoDecrementMTAUsage, CoIncrementMTAUsage,
+    CoInitializeEx, CoUninitialize,
+};
+use ::windows::Win32::System::Threading::{
+    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
 };
 use ::windows::core::{IUnknown, Interface};
 
@@ -42,7 +49,11 @@ use crate::{
 
 use super::decoder::{DecodedVideoFrame, Decoder, DecoderDevice};
 
-const MAX_DECODE_STEPS_PER_RECORD: usize = ADAPTIVE_VIDEO_QUEUE_CAPACITY * 2;
+// Async Media Foundation transforms do not provide a waitable output handle. Polling at one
+// millisecond keeps decoder progress independent from Qt's render cadence without spinning an
+// entire core. In particular, the final HaveOutput event must be drained even when transport has
+// stopped delivering compressed access units temporarily.
+const DECODER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const MAX_FRAME_SLOTS: usize = 8;
 
 /// Borrowed Qt D3D11 objects used by the embedded frame producer.
@@ -82,15 +93,18 @@ pub struct D3d11FrameSubmitter {
 impl D3d11FrameSubmitter {
     pub fn submit_video(&self, frame: EncodedVideoFrame) -> Result<PushOutcome, BackendError> {
         frame.validate()?;
+        let key_frame = frame.key_frame;
         let outcome = self
             .encoded
-            .push_or_clear_on_overflow(frame)
+            .push_or_clear_on_overflow(frame, key_frame)
             .map_err(|_| BackendError::WorkerDisconnected)?;
         if outcome == PushOutcome::DroppedOldest {
             let _ = self
                 .events
                 .push(BackendEvent::QueueOverflow(Subsystem::VideoDecode));
-            let _ = self.events.push(BackendEvent::KeyFrameRequired);
+            if !key_frame {
+                let _ = self.events.push(BackendEvent::KeyFrameRequired);
+            }
         }
         Ok(outcome)
     }
@@ -176,6 +190,7 @@ impl AdoptedResources {
                 "Qt D3D11 immediate context does not belong to the adopted device".to_owned(),
             );
         }
+        enable_multithread_protection(&context)?;
         let video_device = device
             .cast()
             .map_err(|error| format!("Qt D3D11 device has no video interface: {error}"))?;
@@ -484,6 +499,24 @@ impl AdoptedResources {
     }
 }
 
+fn enable_multithread_protection(context: &ID3D11DeviceContext) -> Result<(), String> {
+    // Media Foundation may use the adopted device and immediate context from an asynchronous
+    // decoder work-queue thread while Qt records and presents on QSGRenderThread. D3D11 immediate
+    // contexts are not thread-safe unless ID3D10Multithread protection is enabled. Without it,
+    // NVIDIA's user-mode driver can deadlock one thread in decoder-buffer acquisition and the
+    // other in DXGI Present.
+    let multithread: ID3D10Multithread = context
+        .cast()
+        .map_err(|error| format!("Qt D3D11 context has no multithread interface: {error}"))?;
+    unsafe {
+        let _ = multithread.SetMultithreadProtected(true);
+        if !multithread.GetMultithreadProtected().as_bool() {
+            return Err("Qt D3D11 context rejected multithread protection".to_owned());
+        }
+    }
+    Ok(())
+}
+
 impl DecoderDevice for AdoptedResources {
     fn device_manager(&self) -> &IMFDXGIDeviceManager {
         &self.manager
@@ -510,14 +543,62 @@ impl DecoderDevice for AdoptedResources {
     }
 }
 
+#[derive(Clone)]
+struct DecoderDeviceSnapshot {
+    manager: IMFDXGIDeviceManager,
+    adapter_luid: LUID,
+    format: VideoFormat,
+}
+
+// IMFDXGIDeviceManager is the documented synchronization boundary for sharing one D3D11 device
+// with Media Foundation. The adopted immediate context has ID3D10Multithread protection enabled
+// before this snapshot is created, and the snapshot remains alive until the decoder thread joins.
+unsafe impl Send for DecoderDeviceSnapshot {}
+
+impl DecoderDeviceSnapshot {
+    fn new(resources: &AdoptedResources) -> Result<Self, String> {
+        Ok(Self {
+            manager: resources.manager.clone(),
+            adapter_luid: resources.adapter_luid()?,
+            format: resources.format,
+        })
+    }
+}
+
+impl DecoderDevice for DecoderDeviceSnapshot {
+    fn device_manager(&self) -> &IMFDXGIDeviceManager {
+        &self.manager
+    }
+
+    fn adapter_luid(&self) -> Result<LUID, String> {
+        Ok(self.adapter_luid)
+    }
+
+    fn video_format(&self) -> VideoFormat {
+        self.format
+    }
+}
+
+struct ReadyDecodedFrame {
+    frame: DecodedVideoFrame,
+    format: VideoFormat,
+    decoder_generation: u64,
+}
+
+// The decoder surface is a reference-counted D3D11 resource from the same protected device. It is
+// produced by Media Foundation and consumed by the Qt render thread only after ownership moves
+// through the mutex-protected ready queue.
+unsafe impl Send for ReadyDecodedFrame {}
+
 struct D3d11Pipeline {
     owner_thread: ThreadId,
-    mode: WindowsDecoderMode,
     resources: AdoptedResources,
-    decoder: Option<Decoder>,
-    decoded: VecDeque<DecodedVideoFrame>,
+    decoded: Arc<Mutex<VecDeque<ReadyDecodedFrame>>>,
     encoded: Arc<BoundedQueue<EncodedVideoFrame>>,
     events: Arc<BoundedQueue<BackendEvent>>,
+    presented_decoder_generation: u64,
+    stopping: Arc<AtomicBool>,
+    decoder_worker: Option<JoinHandle<()>>,
     _runtime: EmbeddedMediaRuntime,
 }
 
@@ -612,27 +693,78 @@ impl D3d11FrameProducer {
         adopted: AdoptedD3d11Context,
         format: VideoFormat,
         decoder_mode: WindowsDecoderMode,
+        frame_ready: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<(Self, D3d11FrameSubmitter), BackendError> {
         format.validate()?;
         let runtime = EmbeddedMediaRuntime::initialize().map_err(BackendError::Startup)?;
         let resources =
             unsafe { AdoptedResources::new(adopted, format) }.map_err(BackendError::Startup)?;
-        let decoder = Decoder::new(&resources, format, decoder_mode)
-            .map_err(|error| BackendError::Startup(format!("Media Foundation decoder: {error}")))?;
+        let decoder_device =
+            DecoderDeviceSnapshot::new(&resources).map_err(BackendError::Startup)?;
         let encoded = Arc::new(BoundedQueue::new(ADAPTIVE_VIDEO_QUEUE_CAPACITY));
         let events = Arc::new(BoundedQueue::new(64));
+        let decoded = Arc::new(Mutex::new(VecDeque::with_capacity(
+            ADAPTIVE_VIDEO_QUEUE_CAPACITY,
+        )));
+        let decoder_generation = Arc::new(AtomicU64::new(1));
+        let stopping = Arc::new(AtomicBool::new(false));
         let submitter = D3d11FrameSubmitter {
             encoded: Arc::clone(&encoded),
             events: Arc::clone(&events),
         };
+        let (startup_sender, startup_receiver) = sync_channel(1);
+        let worker_encoded = Arc::clone(&encoded);
+        let worker_decoded = Arc::clone(&decoded);
+        let worker_events = Arc::clone(&events);
+        let worker_generation = Arc::clone(&decoder_generation);
+        let worker_stopping = Arc::clone(&stopping);
+        let decoder_worker = thread::Builder::new()
+            .name("opennow-mf-video-decode".to_owned())
+            .spawn(move || {
+                run_decoder_worker(
+                    decoder_device,
+                    format,
+                    decoder_mode,
+                    worker_encoded,
+                    worker_decoded,
+                    worker_events,
+                    worker_generation,
+                    worker_stopping,
+                    frame_ready,
+                    startup_sender,
+                );
+            })
+            .map_err(|error| {
+                BackendError::Startup(format!("start embedded decoder worker: {error}"))
+            })?;
+        match startup_receiver.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                stopping.store(true, Ordering::Release);
+                encoded.close();
+                let _ = decoder_worker.join();
+                return Err(BackendError::Startup(format!(
+                    "Media Foundation decoder: {error}"
+                )));
+            }
+            Err(error) => {
+                stopping.store(true, Ordering::Release);
+                encoded.close();
+                let _ = decoder_worker.join();
+                return Err(BackendError::Startup(format!(
+                    "embedded decoder worker exited during startup: {error}"
+                )));
+            }
+        }
         let state = Arc::new(Mutex::new(D3d11Pipeline {
             owner_thread: thread::current().id(),
-            mode: decoder_mode,
             resources,
-            decoder: Some(decoder),
-            decoded: VecDeque::with_capacity(ADAPTIVE_VIDEO_QUEUE_CAPACITY),
+            decoded,
             encoded,
             events,
+            presented_decoder_generation: 0,
+            stopping,
+            decoder_worker: Some(decoder_worker),
             _runtime: runtime,
         }));
         Ok((
@@ -669,72 +801,26 @@ impl D3d11FrameProducer {
 impl D3d11Pipeline {
     fn acquire_latest(&mut self) -> Result<Option<DecodedVideoFrame>, BackendError> {
         self.ensure_render_thread()?;
-        for _ in 0..MAX_DECODE_STEPS_PER_RECORD {
-            let decoder = self
-                .decoder
-                .as_mut()
-                .ok_or_else(|| BackendError::DeviceLost {
-                    subsystem: Subsystem::VideoDecode,
-                    message: "embedded decoder is unavailable".to_owned(),
-                })?;
-            let produced = decoder
-                .poll_output(&mut self.decoded, &self.events)
-                .map_err(|error| BackendError::DeviceLost {
-                    subsystem: Subsystem::VideoDecode,
-                    message: error,
-                })?;
-            let decoded_format = decoder.format();
-            self.resources.reconfigure(decoded_format);
-            let mut submitted = false;
-            while self.decoder.as_ref().is_some_and(Decoder::wants_input) {
-                let Some(frame) = self.encoded.try_pop() else {
-                    break;
-                };
-                submitted = true;
-                if frame.reset_decoder {
-                    self.reset_decoder()
-                        .map_err(|message| BackendError::DeviceLost {
-                            subsystem: Subsystem::VideoDecode,
-                            message,
-                        })?;
-                }
-                self.decoder
-                    .as_mut()
-                    .expect("decoder restored before submission")
-                    .submit(frame)
-                    .map_err(|message| BackendError::DeviceLost {
-                        subsystem: Subsystem::VideoDecode,
-                        message,
-                    })?;
-            }
-            if produced == 0 && !submitted {
-                break;
-            }
-        }
-        let Some(frame) = self.decoded.pop_back() else {
+        let mut decoded = self
+            .decoded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(ready) = decoded.pop_back() else {
             return Ok(None);
         };
-        if !self.decoded.is_empty() {
-            self.decoded.clear();
+        if !decoded.is_empty() {
+            decoded.clear();
             let _ = self
                 .events
                 .push(BackendEvent::QueueOverflow(Subsystem::VideoPresentation));
         }
-        Ok(Some(frame))
-    }
-
-    fn reset_decoder(&mut self) -> Result<(), String> {
-        if let Some(mut decoder) = self.decoder.take() {
-            decoder.stop();
+        drop(decoded);
+        if ready.decoder_generation != self.presented_decoder_generation {
+            self.resources.reset_decoder_views();
+            self.presented_decoder_generation = ready.decoder_generation;
         }
-        self.decoded.clear();
-        self.resources.reset_decoder_views();
-        self.decoder = Some(Decoder::new(
-            &self.resources,
-            self.resources.format,
-            self.mode,
-        )?);
-        Ok(())
+        self.resources.reconfigure(ready.format);
+        Ok(Some(ready.frame))
     }
 
     fn ensure_render_thread(&self) -> Result<(), BackendError> {
@@ -750,9 +836,296 @@ impl D3d11Pipeline {
 
 impl Drop for D3d11Pipeline {
     fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
         self.encoded.close();
-        if let Some(mut decoder) = self.decoder.take() {
-            decoder.stop();
+        if let Some(worker) = self.decoder_worker.take() {
+            let _ = worker.join();
+        }
+        self.decoded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+}
+
+struct DecoderThreadApartment;
+
+impl DecoderThreadApartment {
+    fn initialize() -> Result<Self, String> {
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED)
+                .ok()
+                .map_err(|error| format!("CoInitializeEx: {error}"))?;
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for DecoderThreadApartment {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_decoder_worker(
+    device: DecoderDeviceSnapshot,
+    format: VideoFormat,
+    mode: WindowsDecoderMode,
+    encoded: Arc<BoundedQueue<EncodedVideoFrame>>,
+    decoded: Arc<Mutex<VecDeque<ReadyDecodedFrame>>>,
+    events: Arc<BoundedQueue<BackendEvent>>,
+    decoder_generation: Arc<AtomicU64>,
+    stopping: Arc<AtomicBool>,
+    frame_ready: Arc<dyn Fn() + Send + Sync>,
+    startup_sender: std::sync::mpsc::SyncSender<Result<(), String>>,
+) {
+    let _apartment = match DecoderThreadApartment::initialize() {
+        Ok(apartment) => apartment,
+        Err(error) => {
+            let _ = startup_sender.send(Err(error));
+            return;
+        }
+    };
+    let mut decoder = match Decoder::new(&device, format, mode) {
+        Ok(decoder) => decoder,
+        Err(error) => {
+            let _ = startup_sender.send(Err(error));
+            return;
+        }
+    };
+    if startup_sender.send(Ok(())).is_err() {
+        decoder.stop();
+        return;
+    }
+
+    eprintln!(
+        "Embedded D3D11 decoder worker started codec={} pollMs={}",
+        format.codec.label(),
+        DECODER_POLL_INTERVAL.as_millis()
+    );
+    let mut submitted_any = false;
+    let mut submitted_frames = 0_u64;
+    let mut produced_frames = 0_u64;
+    let mut last_progress_log = Instant::now();
+    while !stopping.load(Ordering::Acquire) {
+        let mut made_progress = false;
+        let mut output = VecDeque::with_capacity(2);
+        match decoder.poll_output(&mut output, &events) {
+            Ok(produced) => {
+                made_progress |= produced > 0;
+                produced_frames = produced_frames.saturating_add(produced as u64);
+                if produced > 0 {
+                    let output_format = decoder.format();
+                    let generation = decoder_generation.load(Ordering::Acquire);
+                    let mut ready = decoded
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    while let Some(frame) = output.pop_front() {
+                        if ready.len() == ADAPTIVE_VIDEO_QUEUE_CAPACITY {
+                            ready.pop_front();
+                            let _ = events
+                                .push(BackendEvent::QueueOverflow(Subsystem::VideoPresentation));
+                        }
+                        ready.push_back(ReadyDecodedFrame {
+                            frame,
+                            format: output_format,
+                            decoder_generation: generation,
+                        });
+                    }
+                    drop(ready);
+                    frame_ready();
+                }
+            }
+            Err(message) => {
+                decoder.stop();
+                decoded
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
+                encoded.clear();
+                decoder_generation.fetch_add(1, Ordering::AcqRel);
+                eprintln!("Embedded D3D11 decoder failed: {message}");
+                let _ = events.push(BackendEvent::DeviceLost {
+                    subsystem: Subsystem::VideoDecode,
+                    message,
+                });
+                let _ = events.push(BackendEvent::KeyFrameRequired);
+                frame_ready();
+                wait_for_recovery_keyframe(
+                    &device,
+                    format,
+                    mode,
+                    &encoded,
+                    &decoded,
+                    &events,
+                    &decoder_generation,
+                    &stopping,
+                    frame_ready.as_ref(),
+                    &mut decoder,
+                    &mut submitted_any,
+                );
+                continue;
+            }
+        }
+
+        while decoder.wants_input() {
+            let Some(frame) = encoded.try_pop() else {
+                break;
+            };
+            if frame.reset_decoder && submitted_any {
+                decoder.stop();
+                decoded
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
+                decoder_generation.fetch_add(1, Ordering::AcqRel);
+                match Decoder::new(&device, format, mode) {
+                    Ok(replacement) => {
+                        decoder = replacement;
+                        submitted_any = false;
+                        // A newly-created asynchronous MFT must first publish NeedInput. Put the
+                        // recovery keyframe back at the front by clearing the stale queue and
+                        // retaining it as the only valid prediction-chain root.
+                        encoded.clear();
+                        let _ = encoded.push_or_clear_on_overflow(frame, true);
+                        made_progress = true;
+                        break;
+                    }
+                    Err(message) => {
+                        eprintln!("Embedded D3D11 decoder reset failed: {message}");
+                        let _ = events.push(BackendEvent::DeviceLost {
+                            subsystem: Subsystem::VideoDecode,
+                            message,
+                        });
+                        let _ = events.push(BackendEvent::KeyFrameRequired);
+                        frame_ready();
+                        wait_for_recovery_keyframe(
+                            &device,
+                            format,
+                            mode,
+                            &encoded,
+                            &decoded,
+                            &events,
+                            &decoder_generation,
+                            &stopping,
+                            frame_ready.as_ref(),
+                            &mut decoder,
+                            &mut submitted_any,
+                        );
+                        made_progress = true;
+                        break;
+                    }
+                }
+            }
+            if let Err(message) = decoder.submit(frame) {
+                decoder.stop();
+                decoded
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
+                encoded.clear();
+                decoder_generation.fetch_add(1, Ordering::AcqRel);
+                eprintln!("Embedded D3D11 decoder input failed: {message}");
+                let _ = events.push(BackendEvent::DeviceLost {
+                    subsystem: Subsystem::VideoDecode,
+                    message,
+                });
+                let _ = events.push(BackendEvent::KeyFrameRequired);
+                frame_ready();
+                wait_for_recovery_keyframe(
+                    &device,
+                    format,
+                    mode,
+                    &encoded,
+                    &decoded,
+                    &events,
+                    &decoder_generation,
+                    &stopping,
+                    frame_ready.as_ref(),
+                    &mut decoder,
+                    &mut submitted_any,
+                );
+                made_progress = true;
+                break;
+            }
+            submitted_any = true;
+            submitted_frames = submitted_frames.saturating_add(1);
+            made_progress = true;
+        }
+
+        if last_progress_log.elapsed() >= Duration::from_secs(2) {
+            let decoded_ready = decoded
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len();
+            eprintln!(
+                "Embedded D3D11 decoder progress codec={} submitted={submitted_frames} produced={produced_frames} encodedQueued={} decodedReady={decoded_ready} generation={}",
+                format.codec.label(),
+                encoded.len(),
+                decoder_generation.load(Ordering::Acquire),
+            );
+            last_progress_log = Instant::now();
+        }
+
+        if !made_progress {
+            let _ = encoded.wait_for_value(DECODER_POLL_INTERVAL);
+        } else {
+            thread::yield_now();
+        }
+    }
+    decoder.stop();
+    eprintln!("Embedded D3D11 decoder worker stopped");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn wait_for_recovery_keyframe(
+    device: &DecoderDeviceSnapshot,
+    format: VideoFormat,
+    mode: WindowsDecoderMode,
+    encoded: &BoundedQueue<EncodedVideoFrame>,
+    decoded: &Mutex<VecDeque<ReadyDecodedFrame>>,
+    events: &BoundedQueue<BackendEvent>,
+    decoder_generation: &AtomicU64,
+    stopping: &AtomicBool,
+    frame_ready: &dyn Fn(),
+    decoder: &mut Decoder,
+    submitted_any: &mut bool,
+) {
+    while !stopping.load(Ordering::Acquire) {
+        let Some(frame) = encoded.pop_timeout(DECODER_POLL_INTERVAL) else {
+            continue;
+        };
+        if !frame.key_frame {
+            continue;
+        }
+        match Decoder::new(device, format, mode) {
+            Ok(replacement) => {
+                *decoder = replacement;
+                *submitted_any = false;
+                decoded
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
+                decoder_generation.fetch_add(1, Ordering::AcqRel);
+                encoded.clear();
+                let _ = encoded.push_or_clear_on_overflow(frame, true);
+                let _ = events.push(BackendEvent::DeviceRecovered(Subsystem::VideoDecode));
+                frame_ready();
+                return;
+            }
+            Err(message) => {
+                eprintln!("Embedded D3D11 decoder recovery failed: {message}");
+                let _ = events.push(BackendEvent::DeviceLost {
+                    subsystem: Subsystem::VideoDecode,
+                    message,
+                });
+                let _ = events.push(BackendEvent::KeyFrameRequired);
+                frame_ready();
+            }
         }
     }
 }
@@ -840,11 +1213,13 @@ fn validate_conversion(
     Ok(())
 }
 
-fn output_dxgi_format(format: VideoPixelFormat) -> DXGI_FORMAT {
-    match format {
-        VideoPixelFormat::P010 | VideoPixelFormat::Y410 => DXGI_FORMAT_R10G10B10A2_UNORM,
-        VideoPixelFormat::Nv12 | VideoPixelFormat::Ayuv => DXGI_FORMAT_R8G8B8A8_UNORM,
-    }
+fn output_dxgi_format(_format: VideoPixelFormat) -> DXGI_FORMAT {
+    // The embedded Qt window currently presents through an SDR 8-bit swapchain. Publishing an
+    // RGB10A2 intermediate therefore cannot produce 10-bit scan-out, but it does add a second
+    // cross-owned 10-bit render target between the D3D11 video processor and QRhi. Keep the
+    // negotiated ten-bit bitstream and P010/Y410 decode surface, then let the video processor
+    // perform the final SDR conversion into Qt's native RGBA8 composition format.
+    DXGI_FORMAT_R8G8B8A8_UNORM
 }
 
 fn d3d11_texture_format(format: DXGI_FORMAT) -> D3d11TextureFormat {
@@ -885,6 +1260,114 @@ fn chroma_format(format: VideoPixelFormat) -> VideoChromaFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::windows::Win32::Foundation::HMODULE;
+    use ::windows::Win32::Graphics::Direct3D::{
+        D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
+    };
+    use ::windows::Win32::Graphics::Direct3D11::{
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice,
+    };
+    use ::windows::Win32::Graphics::Dxgi::IDXGIAdapter;
+
+    fn encoded_frame(sequence: i64, key_frame: bool) -> EncodedVideoFrame {
+        EncodedVideoFrame {
+            codec: crate::VideoCodec::H264,
+            data: vec![0, 0, 0, 1, if key_frame { 0x65 } else { 0x41 }],
+            timestamp_100ns: sequence * 166_667,
+            duration_100ns: 166_667,
+            key_frame,
+            reset_decoder: key_frame,
+        }
+    }
+
+    #[test]
+    fn adopted_context_enables_d3d11_multithread_protection() {
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .expect("D3D11 test device");
+        }
+        let context = context.expect("D3D11 immediate context");
+        let multithread: ID3D10Multithread = context.cast().expect("multithread interface");
+        unsafe {
+            let _ = multithread.SetMultithreadProtected(false);
+        }
+        assert!(!unsafe { multithread.GetMultithreadProtected().as_bool() });
+
+        enable_multithread_protection(&context).expect("enable multithread protection");
+
+        assert!(unsafe { multithread.GetMultithreadProtected().as_bool() });
+    }
+
+    #[test]
+    fn full_decode_queue_retains_an_incoming_recovery_keyframe() {
+        let encoded = Arc::new(BoundedQueue::new(2));
+        let events = Arc::new(BoundedQueue::new(8));
+        let submitter = D3d11FrameSubmitter {
+            encoded: Arc::clone(&encoded),
+            events: Arc::clone(&events),
+        };
+        assert_eq!(
+            submitter.submit_video(encoded_frame(0, false)),
+            Ok(PushOutcome::Queued)
+        );
+        assert_eq!(
+            submitter.submit_video(encoded_frame(1, false)),
+            Ok(PushOutcome::Queued)
+        );
+
+        assert_eq!(
+            submitter.submit_video(encoded_frame(2, true)),
+            Ok(PushOutcome::DroppedOldest)
+        );
+        assert!(encoded.try_pop().is_some_and(|frame| frame.key_frame));
+        assert!(encoded.try_pop().is_none());
+        assert_eq!(
+            events.try_pop(),
+            Some(BackendEvent::QueueOverflow(Subsystem::VideoDecode))
+        );
+        assert!(events.try_pop().is_none());
+    }
+
+    #[test]
+    fn full_decode_queue_requests_a_keyframe_after_dropping_a_delta_frame() {
+        let encoded = Arc::new(BoundedQueue::new(2));
+        let events = Arc::new(BoundedQueue::new(8));
+        let submitter = D3d11FrameSubmitter {
+            encoded: Arc::clone(&encoded),
+            events: Arc::clone(&events),
+        };
+        assert_eq!(
+            submitter.submit_video(encoded_frame(0, false)),
+            Ok(PushOutcome::Queued)
+        );
+        assert_eq!(
+            submitter.submit_video(encoded_frame(1, false)),
+            Ok(PushOutcome::Queued)
+        );
+
+        assert_eq!(
+            submitter.submit_video(encoded_frame(2, false)),
+            Ok(PushOutcome::DroppedOldest)
+        );
+        assert!(encoded.try_pop().is_none());
+        assert_eq!(
+            events.try_pop(),
+            Some(BackendEvent::QueueOverflow(Subsystem::VideoDecode))
+        );
+        assert_eq!(events.try_pop(), Some(BackendEvent::KeyFrameRequired));
+    }
 
     #[test]
     fn decoder_subresource_preserves_array_slice() {
@@ -928,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_slots_preserve_source_bit_depth_in_shader_readable_render_targets() {
+    fn frame_slots_convert_decoder_surfaces_to_qt_sdr_composition_targets() {
         let description = frame_slot_description(1920, 1080, DXGI_FORMAT_R8G8B8A8_UNORM);
         assert_eq!(description.Width, 1920);
         assert_eq!(description.Height, 1080);
@@ -939,13 +1422,13 @@ mod tests {
         );
         assert_ne!(description.BindFlags & D3D11_BIND_RENDER_TARGET.0 as u32, 0);
 
-        let ten_bit = frame_slot_description(2560, 1440, DXGI_FORMAT_R10G10B10A2_UNORM);
-        assert_eq!(ten_bit.Format, DXGI_FORMAT_R10G10B10A2_UNORM);
-        assert_eq!(output_dxgi_format(VideoPixelFormat::P010), ten_bit.Format);
+        let ten_bit =
+            frame_slot_description(2560, 1440, output_dxgi_format(VideoPixelFormat::P010));
+        assert_eq!(ten_bit.Format, DXGI_FORMAT_R8G8B8A8_UNORM);
         assert_eq!(output_dxgi_format(VideoPixelFormat::Y410), ten_bit.Format);
         assert_eq!(
             d3d11_texture_format(ten_bit.Format),
-            D3d11TextureFormat::Rgb10A2
+            D3d11TextureFormat::Rgba8
         );
     }
 

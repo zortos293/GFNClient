@@ -324,10 +324,11 @@ impl WindowsBackend {
         if self.shared.paused.load(Ordering::Acquire) {
             return Ok(PushOutcome::Paused);
         }
+        let key_frame = frame.key_frame;
         let outcome = self
             .shared
             .video
-            .push_or_clear_on_overflow(frame)
+            .push_or_clear_on_overflow(frame, key_frame)
             .map_err(|_| BackendError::NotRunning(self.state()))?;
         if outcome == PushOutcome::DroppedOldest {
             let _ = self

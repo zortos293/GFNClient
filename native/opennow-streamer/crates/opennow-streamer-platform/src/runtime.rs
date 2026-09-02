@@ -1078,6 +1078,7 @@ mod tests {
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: Arc::from([0_u8, 0, 0, 1, 0x65]),
+                frame_index: Some(9),
                 timestamp: 90_000,
                 clock_rate_hz: 90_000,
                 keyframe: true,

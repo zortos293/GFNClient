@@ -36,8 +36,8 @@ use str0m::rtp::Ssrc;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
 use super::nvst_control::{
-    DEFAULT_FRAME_TIME_US, FRAMES_PER_PACING_REPORT, QOS_REPORT_INTERVAL, QOS_WARM_UP, QosReport,
-    frame_ack, frame_pacing_report, idr_request,
+    DEFAULT_FRAME_TIME_US, QOS_REPORT_INTERVAL, QOS_WARM_UP, QosReport, frame_ack,
+    frame_pacing_report, idr_request,
 };
 use super::nvst_input::{
     NvstInputChannelState, NvstInputChannels, NvstInputCodec, native_input_type_is_motion,
@@ -341,7 +341,6 @@ pub struct NvstFeedbackState {
     completed_frames: AtomicU32,
     completed_frame_bytes: AtomicU64,
     last_completed_rtp_timestamp: AtomicU32,
-    accepted_frame_sequence: AtomicU32,
     pending_frame_acks: Mutex<VecDeque<CompletedFrameFeedback>>,
 }
 
@@ -359,7 +358,6 @@ impl Default for NvstFeedbackState {
             completed_frames: AtomicU32::new(0),
             completed_frame_bytes: AtomicU64::new(0),
             last_completed_rtp_timestamp: AtomicU32::new(0),
-            accepted_frame_sequence: AtomicU32::new(0),
             pending_frame_acks: Mutex::new(VecDeque::new()),
         }
     }
@@ -488,11 +486,7 @@ impl NvstFeedbackState {
         }
     }
 
-    pub fn publish_accepted_frame(&self, bytes: u32, accepted_at: Instant) {
-        let frame_number = self
-            .accepted_frame_sequence
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
+    pub fn publish_accepted_frame(&self, frame_number: u32, bytes: u32, accepted_at: Instant) {
         let mut pending = self
             .pending_frame_acks
             .lock()
@@ -1135,17 +1129,7 @@ pub fn parse_nvst_video_handoff(
         return Ok(None);
     };
     let settings_codec = context.pointer("/settings/codec").and_then(Value::as_str);
-    let mut config = NvstVideoConfig::from_legacy_handoff(handoff, settings_codec)?;
-    if let Some(fps) = context
-        .pointer("/session/negotiatedStreamProfile/fps")
-        .or_else(|| context.pointer("/settings/fps"))
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .map(|value| value.clamp(1, 240))
-    {
-        config.frame_time_us = 1_000_000 / fps;
-    }
-    Ok(Some(config))
+    NvstVideoConfig::from_legacy_handoff(handoff, settings_codec).map(Some)
 }
 
 fn required_string<'a>(
@@ -4647,6 +4631,13 @@ fn run_nvst_webrtc_bundle(
     let mut rtcp_reports_sent = 0_u64;
     let mut qos_sequence = 0_u32;
     let mut last_qos_send = Instant::now() - QOS_REPORT_INTERVAL;
+    let mut last_frame_pacing_send = Instant::now() - QOS_REPORT_INTERVAL;
+    let control_stats_origin = Instant::now();
+    let mut last_control_stats_log = Instant::now();
+    let mut frame_acks_sent = 0_u64;
+    let mut frame_pacing_reports_sent = 0_u64;
+    let mut qos_reports_sent = 0_u64;
+    let mut last_ack_frame = None;
     let mut sctp_started_at: Option<Instant> = None;
     let mut input_channels: Option<NvstInputChannels> = None;
     let mut input_state = NvstInputChannelState::default();
@@ -4864,14 +4855,17 @@ fn run_nvst_webrtc_bundle(
 
         if control_partial_open && let Some(channels) = input_channels {
             while let Some(frame) = feedback.take_completed_frame() {
-                if frame.frame_number % FRAMES_PER_PACING_REPORT == 1 {
+                if now.duration_since(last_frame_pacing_send) >= QOS_REPORT_INTERVAL {
                     // Packet-completion intervals are intentionally bursty and are not display
                     // pacing error. Feeding that network jitter into the server PID made its
                     // encoder cadence oscillate. Until a real vsync timestamp is available,
                     // report a neutral error exactly as the unavailable ACK stage metrics do.
                     let pacing =
                         frame_pacing_report(frame.frame_number, frame_time_us, 0).encoded();
-                    let _ = channels.send_partial_control(&mut rtc, &pacing);
+                    if channels.send_partial_control(&mut rtc, &pacing) {
+                        frame_pacing_reports_sent = frame_pacing_reports_sent.saturating_add(1);
+                    }
+                    last_frame_pacing_send = now;
                 }
                 let client_time_ms = frame
                     .accepted_at
@@ -4889,6 +4883,8 @@ fn run_nvst_webrtc_bundle(
                 if !channels.send_partial_control(&mut rtc, &ack) {
                     break;
                 }
+                frame_acks_sent = frame_acks_sent.saturating_add(1);
+                last_ack_frame = Some(frame.frame_number);
             }
         }
 
@@ -4909,8 +4905,19 @@ fn run_nvst_webrtc_bundle(
             }
             .command()
             .encoded();
-            let _ = channels.send_partial_control(&mut rtc, &command);
+            if channels.send_partial_control(&mut rtc, &command) {
+                qos_reports_sent = qos_reports_sent.saturating_add(1);
+            }
             last_qos_send = now;
+        }
+
+        if now.duration_since(last_control_stats_log) >= Duration::from_secs(2) {
+            eprintln!(
+                "NVST control-stats elapsed={:.1}s frameAck={frame_acks_sent} lastAck={last_ack_frame:?} pacing={frame_pacing_reports_sent} qos={qos_reports_sent}",
+                now.saturating_duration_since(control_stats_origin)
+                    .as_secs_f64(),
+            );
+            last_control_stats_log = now;
         }
 
         // Send RTCP feedback over the rtcp1 SCTP channel once it is open and the
@@ -5254,6 +5261,7 @@ fn run_nvst_webrtc_bundle(
                                             mid: audio.mid.clone(),
                                             codec: "opus".to_owned(),
                                             payload: Arc::from(block.payload),
+                                            frame_index: None,
                                             rtp_timestamp: u64::from(
                                                 packet.header.timestamp.wrapping_sub(u32::from(
                                                     block.timestamp_offset,
@@ -5274,6 +5282,7 @@ fn run_nvst_webrtc_bundle(
                                 mid: audio.mid.clone(),
                                 codec: "opus".to_owned(),
                                 payload: primary,
+                                frame_index: None,
                                 rtp_timestamp: u64::from(packet.header.timestamp),
                                 clock_rate_hz: audio.clock_rate_hz,
                                 channels: Some(audio.channels),
@@ -5633,6 +5642,7 @@ fn forward_receive_event(
             mid: "nvst-video-0".to_owned(),
             codec: frame.codec.label().to_owned(),
             payload: Arc::from(frame.bytes),
+            frame_index: Some(frame.frame_index),
             rtp_timestamp: u64::from(frame.timestamp),
             clock_rate_hz: 90_000,
             channels: None,
@@ -5669,6 +5679,28 @@ mod tests {
     const TEST_KEY: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F";
     const TEST_SALT: &str = "000102030405060708090A0B0C0D";
     const TEST_PEER: &str = "192.0.2.20";
+
+    #[test]
+    fn video_delivery_preserves_the_server_frame_index_for_feedback() {
+        let (media_consumer, media_receiver) = std::sync::mpsc::sync_channel(1);
+        let (event_sender, _event_receiver) = std::sync::mpsc::channel();
+        assert!(forward_receive_event(
+            &media_consumer,
+            &event_sender,
+            Instant::now(),
+            NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
+                codec: NvstVideoCodec::Av1,
+                timestamp: 90_000,
+                frame_index: 2_417,
+                first_stream_packet_index: 90,
+                keyframe: false,
+                contiguous: true,
+                bytes: vec![0x12, 0],
+            }),
+        ));
+        let delivered = media_receiver.recv().expect("video frame");
+        assert_eq!(delivered.frame_index, Some(2_417));
+    }
 
     #[test]
     fn transient_video_consumer_backpressure_does_not_stop_receiver() {
@@ -6159,14 +6191,14 @@ mod tests {
         }))
         .expect("valid NVST context")
         .expect("NVST handoff");
-        assert_eq!(configured.frame_time_us, 8_333);
+        assert_eq!(configured.frame_time_us, DEFAULT_FRAME_TIME_US);
         let capped = parse_nvst_video_handoff(&json!({
             "nvstVideo": legacy_handoff(),
             "settings": { "fps": 360 }
         }))
         .expect("valid high-FPS NVST context")
         .expect("NVST handoff");
-        assert_eq!(capped.frame_time_us, 4_166);
+        assert_eq!(capped.frame_time_us, DEFAULT_FRAME_TIME_US);
         assert!(matches!(
             parse_nvst_video_handoff(&json!({ "nvstTransport": { "tracks": [] } })),
             Err(NvstConfigError::MissingNvstVideoHandoff)
@@ -6748,19 +6780,19 @@ mod tests {
         assert_eq!(feedback.take_nack(Instant::now()), None);
         assert_eq!(feedback.completed_frame_snapshot(), (1, 7, frame.timestamp));
         assert!(feedback.take_completed_frame().is_none());
-        feedback.publish_accepted_frame(7, Instant::now());
+        feedback.publish_accepted_frame(frame.frame_index, 7, Instant::now());
         let pending_ack = feedback
             .take_completed_frame()
             .expect("accepted frame acknowledgment");
-        assert_eq!(pending_ack.frame_number, 1);
+        assert_eq!(pending_ack.frame_number, 9);
         assert_eq!(pending_ack.bytes, 7);
     }
 
     #[test]
     fn accepted_frame_queue_discards_stale_feedback_and_preserves_sequence_numbers() {
         let feedback = NvstFeedbackState::default();
-        for bytes in 1..=u32::try_from(MAX_PENDING_FRAME_ACKS + 2).unwrap() {
-            feedback.publish_accepted_frame(bytes, Instant::now());
+        for frame_number in 1..=u32::try_from(MAX_PENDING_FRAME_ACKS + 2).unwrap() {
+            feedback.publish_accepted_frame(frame_number, frame_number, Instant::now());
         }
 
         let first = feedback.take_completed_frame().expect("newest queue head");

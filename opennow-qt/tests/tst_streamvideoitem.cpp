@@ -237,6 +237,7 @@ private slots:
         QVERIFY(qmlTypeId("OpenNOW", 1, 0, "StreamVideoItem") >= 0);
         StreamVideoItem item;
         QVERIFY(qobject_cast<QQuickRhiItem *>(&item));
+        QCOMPARE(item.colorBufferFormat(), QQuickRhiItem::TextureFormat::RGBA8);
     }
 
     void createsRenderCallbackFromTheSharedNativeRuntime()

@@ -16,6 +16,11 @@ use tungstenite::{Message, WebSocket, connect};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_STREAM_BITRATE_MBPS: u64 = 200;
+// GeForce NOW 2.0.87.131 reports video[0].timeoutLengthMs=8000 and
+// video[0].sendFrameTimeoutMs=7000. Waiting sixty seconds left a dead Mjolnir media leg on screen
+// while audio/control remained alive; use the official receiver timeout so the existing bounded
+// transport recovery runs promptly.
+const VIDEO_TIMEOUT_MS: u64 = 8_000;
 
 #[derive(Debug)]
 pub struct NvstRtspError {
@@ -531,7 +536,7 @@ pub fn prepare_owned_nvst(
         "rtcpOnSctp":rtcp_on_sctp,
         "codec":codec,
         "audioTrack":{"payloadType":111,"codec":"opus","clockRateHz":48000,"channels":2,"mid":"0"},
-        "timeoutMs":60000
+        "timeoutMs":VIDEO_TIMEOUT_MS
     });
     if let Some(media) = context.session.media_connection_info.as_ref() {
         handoff["bundlePeerIp"] = json!(media.ip);

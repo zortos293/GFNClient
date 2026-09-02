@@ -667,6 +667,7 @@ mod tests {
             mid: if is_audio { "audio" } else { "video" }.to_owned(),
             codec,
             data: Arc::from(data),
+            frame_index: (!is_audio).then_some(1),
             timestamp,
             clock_rate_hz: if is_audio { 48_000 } else { 90_000 },
             keyframe,

@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <limits>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <utility>
 
@@ -84,7 +85,11 @@ struct NativeStreamRuntime::Private {
     }
 
     Api api;
-    std::mutex handleMutex;
+    // FFI input queues and render-thread graphics state are independent and thread-safe. An
+    // exclusive mutex here made every GUI input/overlay call wait behind Media Foundation and
+    // D3D work performed by the render thread. Keep lifetime/scene-graph transitions exclusive,
+    // while ordinary commands, input, and frame recording share the live-handle lease.
+    std::shared_mutex handleMutex;
     OpenNowStreamer *handle = nullptr;
     std::shared_ptr<CallbackState> callbackState;
     QString lastError;
@@ -139,7 +144,7 @@ NativeStreamRuntime::~NativeStreamRuntime()
 
 bool NativeStreamRuntime::running() const
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     return d->handle != nullptr;
 }
 
@@ -208,7 +213,7 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
 
     OpenNowStreamerStatus status = OPENNOW_STREAMER_CLOSED;
     {
-        const std::lock_guard lock(d->handleMutex);
+        const std::shared_lock lock(d->handleMutex);
         if (d->handle) {
             status = d->api.send(
                 d->handle, reinterpret_cast<const std::uint8_t *>(command.constData()),
@@ -296,7 +301,7 @@ bool NativeStreamRuntime::shutdown(int timeoutMs)
 OpenNowStreamerStatus NativeStreamRuntime::setGraphicsContext(
     const OpenNowStreamerGraphicsContext &context)
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::unique_lock lock(d->handleMutex);
     if (!d->handle || !d->api.setGraphicsContext) return OPENNOW_STREAMER_CLOSED;
     const auto status = d->api.setGraphicsContext(d->handle, &context);
     if (status == OPENNOW_STREAMER_OK) d->graphicsActive = true;
@@ -313,7 +318,7 @@ OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(
     *info = {};
     *recorded = {};
     *frame = nullptr;
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     if (!d->handle || !d->api.acquireLatestFrame || !d->api.recordFrame
         || !d->api.releaseFrame) {
         return OPENNOW_STREAMER_CLOSED;
@@ -332,12 +337,14 @@ OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(
 OpenNowStreamerStatus NativeStreamRuntime::releaseFrame(OpenNowStreamerFrame *frame)
 {
     if (!frame) return OPENNOW_STREAMER_NULL_POINTER;
+    // A frame token owns its backing resources and the release ABI deliberately does not take the
+    // runtime handle. Avoid serializing this cheap drop with decoder/render work.
     return d->api.releaseFrame ? d->api.releaseFrame(frame) : OPENNOW_STREAMER_CLOSED;
 }
 
 OpenNowStreamerStatus NativeStreamRuntime::sceneGraphShutdown()
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::unique_lock lock(d->handleMutex);
     if (!d->handle || !d->api.sceneGraphShutdown) return OPENNOW_STREAMER_CLOSED;
     const auto status = d->api.sceneGraphShutdown(d->handle);
     if (status == OPENNOW_STREAMER_OK) d->graphicsActive = false;
@@ -347,7 +354,7 @@ OpenNowStreamerStatus NativeStreamRuntime::sceneGraphShutdown()
 OpenNowStreamerStatus NativeStreamRuntime::submitKey(std::uint16_t virtualKey,
                                                      std::uint16_t modifiers, bool pressed)
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     return d->handle && d->api.submitKey
         ? d->api.submitKey(d->handle, virtualKey, modifiers, pressed)
         : OPENNOW_STREAMER_CLOSED;
@@ -356,7 +363,7 @@ OpenNowStreamerStatus NativeStreamRuntime::submitKey(std::uint16_t virtualKey,
 OpenNowStreamerStatus NativeStreamRuntime::submitMouseRelative(std::int16_t deltaX,
                                                                std::int16_t deltaY)
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     return d->handle && d->api.submitMouseRelative
         ? d->api.submitMouseRelative(d->handle, deltaX, deltaY)
         : OPENNOW_STREAMER_CLOSED;
@@ -365,7 +372,7 @@ OpenNowStreamerStatus NativeStreamRuntime::submitMouseRelative(std::int16_t delt
 OpenNowStreamerStatus NativeStreamRuntime::submitMouseAbsolute(
     std::uint16_t x, std::uint16_t y, std::uint16_t width, std::uint16_t height)
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     return d->handle && d->api.submitMouseAbsolute
         ? d->api.submitMouseAbsolute(d->handle, x, y, width, height)
         : OPENNOW_STREAMER_CLOSED;
@@ -374,7 +381,7 @@ OpenNowStreamerStatus NativeStreamRuntime::submitMouseAbsolute(
 OpenNowStreamerStatus NativeStreamRuntime::submitMouseButton(std::uint8_t button,
                                                              bool pressed)
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     return d->handle && d->api.submitMouseButton
         ? d->api.submitMouseButton(d->handle, button, pressed)
         : OPENNOW_STREAMER_CLOSED;
@@ -383,7 +390,7 @@ OpenNowStreamerStatus NativeStreamRuntime::submitMouseButton(std::uint8_t button
 OpenNowStreamerStatus NativeStreamRuntime::submitMouseWheel(std::int16_t deltaX,
                                                             std::int16_t deltaY)
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     return d->handle && d->api.submitMouseWheel
         ? d->api.submitMouseWheel(d->handle, deltaX, deltaY)
         : OPENNOW_STREAMER_CLOSED;
@@ -394,7 +401,7 @@ OpenNowStreamerStatus NativeStreamRuntime::submitGamepad(
     std::uint8_t leftTrigger, std::uint8_t rightTrigger, std::int16_t leftStickX,
     std::int16_t leftStickY, std::int16_t rightStickX, std::int16_t rightStickY)
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     return d->handle && d->api.submitGamepad
         ? d->api.submitGamepad(d->handle, controllerId, bitmap, buttons,
                                leftTrigger, rightTrigger, leftStickX, leftStickY,
@@ -404,7 +411,7 @@ OpenNowStreamerStatus NativeStreamRuntime::submitGamepad(
 
 OpenNowStreamerStatus NativeStreamRuntime::submitLocalAction(std::uint32_t action)
 {
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     return d->handle && d->api.submitLocalAction
         ? d->api.submitLocalAction(d->handle, action) : OPENNOW_STREAMER_CLOSED;
 }
@@ -414,7 +421,7 @@ OpenNowStreamerStatus NativeStreamRuntime::setCaptureActive(
 {
     if (!rawInputActive) return OPENNOW_STREAMER_NULL_POINTER;
     *rawInputActive = false;
-    const std::lock_guard lock(d->handleMutex);
+    const std::shared_lock lock(d->handleMutex);
     return d->handle && d->api.setCaptureActive
         ? d->api.setCaptureActive(d->handle, active, relativeMouse, windowHandle,
                                   rawInputActive)

@@ -468,6 +468,17 @@ add_custom_command(TARGET opennow-qt POST_BUILD
             "${OPENNOW_STREAMER_FFI_RUNTIME}"
             "$<TARGET_FILE_DIR:opennow-qt>/${OPENNOW_STREAMER_FFI_RUNTIME_NAME}"
     VERBATIM)
+# POST_BUILD only runs when the C++ executable itself relinks. Rust-only edits rebuild the FFI
+# artifact without relinking OpenNOW, which previously left a stale streamer DLL beside the app.
+# Keep the post-build hook for target-specific builds and add an always-considered deployment
+# target for normal/default builds; copy_if_different makes the up-to-date case inexpensive.
+add_custom_target(opennow-streamer-ffi-deploy ALL
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${OPENNOW_STREAMER_FFI_RUNTIME}"
+            "$<TARGET_FILE_DIR:opennow-qt>/${OPENNOW_STREAMER_FFI_RUNTIME_NAME}"
+    COMMENT "Deploying the embedded OpenNOW streamer runtime"
+    VERBATIM)
+add_dependencies(opennow-streamer-ffi-deploy opennow-streamer-ffi-build opennow-qt)
 if(APPLE)
     set_property(TARGET opennow-qt APPEND PROPERTY BUILD_RPATH "@loader_path")
     set_property(TARGET opennow-qt APPEND PROPERTY INSTALL_RPATH "@loader_path")

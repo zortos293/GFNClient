@@ -16,13 +16,14 @@ use ::windows::Win32::Media::MediaFoundation::{
     MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
     MFNominalRange_0_255, MFSampleExtension_CleanPoint, MFT_CATEGORY_VIDEO_DECODER,
     MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE,
-    MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_FLUSH,
-    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM,
-    MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
-    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES,
-    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_AV1,
-    MFVideoFormat_AYUV, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
-    MFVideoFormat_P010, MFVideoFormat_Y410, MFVideoInterlace_MixedInterlaceOrProgressive,
+    MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_ENUM_HARDWARE_URL_Attribute,
+    MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
+    MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
+    MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_AV1, MFVideoFormat_AYUV, MFVideoFormat_H264,
+    MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_P010, MFVideoFormat_Y410,
+    MFVideoInterlace_MixedInterlaceOrProgressive,
 };
 use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::core::Interface;
@@ -96,9 +97,15 @@ impl Decoder {
                     full_range,
                 )) => {
                     let input_credits = u32::from(events.is_none());
+                    let friendly_name =
+                        activation_string(&activation, &MFT_FRIENDLY_NAME_Attribute)
+                            .unwrap_or_else(|| "unknown".to_owned());
+                    let hardware_registered =
+                        activation_string(&activation, &MFT_ENUM_HARDWARE_URL_Attribute).is_some();
                     eprintln!(
-                        "Windows decoder configured codec={} output={pixel_format:?} bitDepth={} chroma={:?} range={}",
+                        "Windows decoder configured codec={} mft={friendly_name:?} hardwareRegistered={hardware_registered} async={} output={pixel_format:?} bitDepth={} chroma={:?} range={}",
                         format.codec.label(),
+                        events.is_some(),
                         pixel_format.bit_depth(),
                         chroma_format(pixel_format),
                         if full_range { "full" } else { "limited" },
@@ -349,6 +356,15 @@ impl Decoder {
                 nominal_range == MFNominalRange_0_255.0 as u32,
             ))
         }
+    }
+}
+
+fn activation_string(activation: &IMFActivate, key: &::windows::core::GUID) -> Option<String> {
+    unsafe {
+        let length = activation.GetStringLength(key).ok()? as usize;
+        let mut value = vec![0_u16; length.saturating_add(1)];
+        activation.GetString(key, &mut value, None).ok()?;
+        String::from_utf16(&value[..length]).ok()
     }
 }
 

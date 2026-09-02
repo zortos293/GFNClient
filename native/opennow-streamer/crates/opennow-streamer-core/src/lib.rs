@@ -78,7 +78,7 @@ const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
 
 trait NvstSessionResources {
     fn request_keyframe(&self);
-    fn acknowledge_video_frame(&self, bytes: u32);
+    fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32);
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String>;
     fn apply_cursor(&self, bytes: Vec<u8>);
     fn recover(&self) -> Result<(), String>;
@@ -97,8 +97,9 @@ impl NvstSessionResources for ActiveNvstResources {
         self.feedback.request_keyframe();
     }
 
-    fn acknowledge_video_frame(&self, bytes: u32) {
-        self.feedback.publish_accepted_frame(bytes, Instant::now());
+    fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32) {
+        self.feedback
+            .publish_accepted_frame(frame_index, bytes, Instant::now());
     }
 
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String> {
@@ -1560,9 +1561,14 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
     }
     match feedback {
         MediaFeedback::VideoFrameAccepted {
-            bytes, keyframe, ..
+            frame_index,
+            bytes,
+            keyframe,
+            ..
         } => {
-            resources.acknowledge_video_frame(bytes);
+            if let Some(frame_index) = frame_index {
+                resources.acknowledge_video_frame(frame_index, bytes);
+            }
             if keyframe {
                 state.recovery_attempts = 0;
             }
@@ -1980,6 +1986,7 @@ fn consume_encoded_media(
             mid: frame.mid,
             codec,
             data: frame.payload,
+            frame_index: frame.frame_index,
             timestamp: frame.rtp_timestamp,
             clock_rate_hz: frame.clock_rate_hz,
             keyframe: frame.keyframe,
@@ -2115,6 +2122,7 @@ mod tests {
     struct TestNvstResources {
         keyframe_requests: AtomicUsize,
         acknowledged_frames: AtomicUsize,
+        acknowledged_frame_data: Mutex<Vec<(u32, u32)>>,
         recoveries: AtomicUsize,
         stops: AtomicUsize,
         captured_inputs: Mutex<Vec<Vec<u8>>>,
@@ -2125,8 +2133,12 @@ mod tests {
             self.keyframe_requests.fetch_add(1, Ordering::Relaxed);
         }
 
-        fn acknowledge_video_frame(&self, _bytes: u32) {
+        fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32) {
             self.acknowledged_frames.fetch_add(1, Ordering::Relaxed);
+            self.acknowledged_frame_data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((frame_index, bytes));
         }
 
         fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String> {
@@ -2205,6 +2217,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(71),
                 timestamp: 90_000,
                 bytes: 1_024,
                 keyframe: true,
@@ -2213,6 +2226,13 @@ mod tests {
         );
 
         assert_eq!(resources.acknowledged_frames.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            *resources
+                .acknowledged_frame_data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [(71, 1_024)]
+        );
         assert_eq!(state.recovery_attempts, 0);
     }
 
@@ -2231,6 +2251,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(72),
                 timestamp: 90_000,
                 bytes: 125_000,
                 keyframe: false,

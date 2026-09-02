@@ -6,6 +6,8 @@
 #include <QTest>
 
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 
 namespace {
@@ -15,6 +17,11 @@ struct FakeRuntime {
 };
 
 int nextDestroyDelayMs = 0;
+std::mutex graphicsCallMutex;
+std::condition_variable graphicsCallChanged;
+bool recordCallEntered = false;
+bool allowRecordCallToFinish = false;
+bool inputCallFinished = false;
 
 OpenNowStreamerStatus fakeCreate(const OpenNowStreamerConfig *config,
                                  OpenNowStreamer **output)
@@ -66,6 +73,60 @@ NativeStreamRuntime::Api fakeApi()
 {
     return {&fakeCreate, &fakeSend, &fakeDestroy};
 }
+
+OpenNowStreamerStatus fakeAcquireLatestFrame(
+    const OpenNowStreamer *handle, OpenNowStreamerFrame **frame,
+    OpenNowStreamerFrameInfo *info)
+{
+    if (!handle || !frame || !info) return OPENNOW_STREAMER_NULL_POINTER;
+    *frame = reinterpret_cast<OpenNowStreamerFrame *>(new int(1));
+    *info = OpenNowStreamerFrameInfo{1920, 1080, 1, 0};
+    return OPENNOW_STREAMER_OK;
+}
+
+OpenNowStreamerStatus fakeRecordFrame(
+    const OpenNowStreamer *handle, const OpenNowStreamerFrame *frame,
+    const OpenNowStreamerRecordCommand *, OpenNowStreamerRecordedFrame *recorded)
+{
+    if (!handle || !frame || !recorded) return OPENNOW_STREAMER_NULL_POINTER;
+    std::unique_lock lock(graphicsCallMutex);
+    recordCallEntered = true;
+    graphicsCallChanged.notify_all();
+    graphicsCallChanged.wait(lock, [] { return allowRecordCallToFinish; });
+    *recorded = OpenNowStreamerRecordedFrame{
+        1, 0, OPENNOW_STREAMER_GRAPHICS_API_D3D11,
+        OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, 1920, 1080, 0, 1, 0};
+    return OPENNOW_STREAMER_OK;
+}
+
+OpenNowStreamerStatus fakeReleaseFrame(OpenNowStreamerFrame *frame)
+{
+    if (!frame) return OPENNOW_STREAMER_NULL_POINTER;
+    delete reinterpret_cast<int *>(frame);
+    return OPENNOW_STREAMER_OK;
+}
+
+OpenNowStreamerStatus fakeSubmitKey(
+    const OpenNowStreamer *handle, std::uint16_t, std::uint16_t, bool)
+{
+    if (!handle) return OPENNOW_STREAMER_NULL_POINTER;
+    {
+        const std::lock_guard lock(graphicsCallMutex);
+        inputCallFinished = true;
+    }
+    graphicsCallChanged.notify_all();
+    return OPENNOW_STREAMER_OK;
+}
+
+NativeStreamRuntime::Api blockingGraphicsApi()
+{
+    auto api = fakeApi();
+    api.acquireLatestFrame = &fakeAcquireLatestFrame;
+    api.recordFrame = &fakeRecordFrame;
+    api.releaseFrame = &fakeReleaseFrame;
+    api.submitKey = &fakeSubmitKey;
+    return api;
+}
 }
 
 class NativeStreamRuntimeTest final : public QObject
@@ -76,6 +137,10 @@ private slots:
     void init()
     {
         nextDestroyDelayMs = 0;
+        const std::lock_guard lock(graphicsCallMutex);
+        recordCallEntered = false;
+        allowRecordCallToFinish = false;
+        inputCallFinished = false;
     }
 
     void copiesAndMarshalsWorkerCallbacksToTheQtThread()
@@ -112,6 +177,52 @@ private slots:
         QVERIFY(!runtime.running());
         QVERIFY(runtime.lastError().contains(QStringLiteral("Timed out")));
         QTest::qWait(350);
+    }
+
+    void inputDoesNotQueueBehindAStalledRenderCall()
+    {
+        NativeStreamRuntime runtime(blockingGraphicsApi());
+        QVERIFY(runtime.start());
+        OpenNowStreamerRecordCommand command{};
+        OpenNowStreamerFrameInfo info{};
+        OpenNowStreamerRecordedFrame recorded{};
+        OpenNowStreamerFrame *frame = nullptr;
+        OpenNowStreamerStatus recordStatus = OPENNOW_STREAMER_CLOSED;
+        std::thread render([&] {
+            recordStatus = runtime.recordLatestFrame(command, &info, &recorded, &frame);
+        });
+        bool recordStarted = false;
+        {
+            std::unique_lock lock(graphicsCallMutex);
+            recordStarted = graphicsCallChanged.wait_for(
+                lock, std::chrono::seconds(1), [] { return recordCallEntered; });
+            if (!recordStarted) allowRecordCallToFinish = true;
+        }
+        graphicsCallChanged.notify_all();
+        if (!recordStarted) {
+            render.join();
+            QVERIFY2(recordStarted, "graphics FFI call did not start");
+            return;
+        }
+
+        OpenNowStreamerStatus inputStatus = OPENNOW_STREAMER_CLOSED;
+        std::thread input([&] { inputStatus = runtime.submitKey(0x57, 0, true); });
+        bool inputWasConcurrent = false;
+        {
+            std::unique_lock lock(graphicsCallMutex);
+            inputWasConcurrent = graphicsCallChanged.wait_for(
+                lock, std::chrono::milliseconds(200), [] { return inputCallFinished; });
+            allowRecordCallToFinish = true;
+        }
+        graphicsCallChanged.notify_all();
+        input.join();
+        render.join();
+
+        QVERIFY2(inputWasConcurrent, "gameplay input waited behind the graphics FFI call");
+        QCOMPARE(inputStatus, OPENNOW_STREAMER_OK);
+        QCOMPARE(recordStatus, OPENNOW_STREAMER_OK);
+        QCOMPARE(runtime.releaseFrame(frame), OPENNOW_STREAMER_OK);
+        QVERIFY(runtime.shutdown());
     }
 
     void roundTripsThroughTheLinkedRustFfi()

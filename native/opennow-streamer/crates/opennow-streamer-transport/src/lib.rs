@@ -49,6 +49,9 @@ pub struct EncodedMediaFrame {
     pub mid: String,
     pub codec: String,
     pub payload: Arc<[u8]>,
+    /// Sender-authored video frame index from the NVST GS packet header.
+    /// Audio and transports without an equivalent identifier leave this unset.
+    pub frame_index: Option<u32>,
     pub rtp_timestamp: u64,
     pub clock_rate_hz: u32,
     pub channels: Option<u8>,
@@ -82,6 +85,7 @@ mod tests {
             mid: "video-0".to_owned(),
             codec: "H264".to_owned(),
             payload: Arc::from([1_u8, 2, 3, 4]),
+            frame_index: Some(42),
             rtp_timestamp: 180_000,
             clock_rate_hz: 90_000,
             channels: None,

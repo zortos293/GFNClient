@@ -44,6 +44,27 @@ QShader streamShader(const char *encoded)
     return QShader::fromSerialized(QByteArray::fromBase64(encoded));
 }
 
+class ExternalCommandScope final
+{
+public:
+    explicit ExternalCommandScope(QRhiCommandBuffer *commandBuffer)
+        : m_commandBuffer(commandBuffer)
+    {
+        m_commandBuffer->beginExternal();
+    }
+
+    ~ExternalCommandScope()
+    {
+        m_commandBuffer->endExternal();
+    }
+
+    ExternalCommandScope(const ExternalCommandScope &) = delete;
+    ExternalCommandScope &operator=(const ExternalCommandScope &) = delete;
+
+private:
+    QRhiCommandBuffer *m_commandBuffer;
+};
+
 class NativeStreamRenderCallback final : public StreamVideoRenderCallback
 {
 public:
@@ -52,58 +73,68 @@ public:
     {
     }
 
-    void initialize(QRhi *rhi, QRhiCommandBuffer *, QRhiRenderTarget *renderTarget) override
+    void initialize(QRhi *rhi, QRhiCommandBuffer *commandBuffer,
+                    QRhiRenderTarget *renderTarget) override
     {
         if (m_rhi == rhi && m_renderTarget == renderTarget) return;
         releaseResources();
         m_rhi = rhi;
         m_renderTarget = renderTarget;
+        if (!commandBuffer) return;
 
         OpenNowStreamerGraphicsContext context{};
         context.version = OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION;
         context.struct_size = sizeof(context);
-        switch (rhi->backend()) {
+        OpenNowStreamerStatus status = OPENNOW_STREAMER_GRAPHICS_UNAVAILABLE;
+        {
+            // The native streamer creates decoder/video-processor resources on Qt's adopted
+            // graphics device. QRhi requires every external native command to be bracketed so it
+            // can invalidate and restore its internal backend state.
+            ExternalCommandScope externalCommands(commandBuffer);
+            switch (rhi->backend()) {
 #if defined(Q_OS_WIN)
-        case QRhi::D3D11: {
-            const auto *handles = static_cast<const QRhiD3D11NativeHandles *>(
-                rhi->nativeHandles());
-            if (!handles) return;
-            context.graphics_api = OPENNOW_STREAMER_GRAPHICS_API_D3D11;
-            context.device = handles->dev;
-            context.queue = handles->context;
-            break;
-        }
+            case QRhi::D3D11: {
+                const auto *handles = static_cast<const QRhiD3D11NativeHandles *>(
+                    rhi->nativeHandles());
+                if (!handles) return;
+                context.graphics_api = OPENNOW_STREAMER_GRAPHICS_API_D3D11;
+                context.device = handles->dev;
+                context.queue = handles->context;
+                break;
+            }
 #endif
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
-        case QRhi::Vulkan: {
-            const auto *handles = static_cast<const QRhiVulkanNativeHandles *>(
-                rhi->nativeHandles());
-            if (!handles || !handles->inst) return;
-            context.graphics_api = OPENNOW_STREAMER_GRAPHICS_API_VULKAN;
-            context.instance = reinterpret_cast<void *>(handles->inst->vkInstance());
-            context.physical_device = reinterpret_cast<void *>(handles->physDev);
-            context.device = reinterpret_cast<void *>(handles->dev);
-            context.queue = reinterpret_cast<void *>(handles->gfxQueue);
-            context.queue_family_index = handles->gfxQueueFamilyIdx;
-            break;
-        }
+            case QRhi::Vulkan: {
+                const auto *handles = static_cast<const QRhiVulkanNativeHandles *>(
+                    rhi->nativeHandles());
+                if (!handles || !handles->inst) return;
+                context.graphics_api = OPENNOW_STREAMER_GRAPHICS_API_VULKAN;
+                context.instance = reinterpret_cast<void *>(handles->inst->vkInstance());
+                context.physical_device = reinterpret_cast<void *>(handles->physDev);
+                context.device = reinterpret_cast<void *>(handles->dev);
+                context.queue = reinterpret_cast<void *>(handles->gfxQueue);
+                context.queue_family_index = handles->gfxQueueFamilyIdx;
+                break;
+            }
 #endif
 #if QT_CONFIG(metal)
-        case QRhi::Metal: {
-            const auto *handles = static_cast<const QRhiMetalNativeHandles *>(
-                rhi->nativeHandles());
-            if (!handles) return;
-            context.graphics_api = OPENNOW_STREAMER_GRAPHICS_API_METAL;
-            context.device = handles->dev;
-            context.queue = handles->cmdQueue;
-            break;
-        }
+            case QRhi::Metal: {
+                const auto *handles = static_cast<const QRhiMetalNativeHandles *>(
+                    rhi->nativeHandles());
+                if (!handles) return;
+                context.graphics_api = OPENNOW_STREAMER_GRAPHICS_API_METAL;
+                context.device = handles->dev;
+                context.queue = handles->cmdQueue;
+                break;
+            }
 #endif
-        default:
-            return;
+            default:
+                return;
+            }
+            status = m_runtime ? m_runtime->setGraphicsContext(context)
+                               : OPENNOW_STREAMER_CLOSED;
         }
-        m_graphicsReady = m_runtime
-            && m_runtime->setGraphicsContext(context) == OPENNOW_STREAMER_OK;
+        m_graphicsReady = status == OPENNOW_STREAMER_OK;
     }
 
     void prepareFrame(QRhiCommandBuffer *commandBuffer) override
@@ -115,41 +146,47 @@ public:
         command.struct_size = sizeof(command);
         command.frame_slot = static_cast<std::uint32_t>(m_rhi->currentFrameSlot());
         finishFrame();
-        switch (m_rhi->backend()) {
-#if defined(Q_OS_WIN)
-        case QRhi::D3D11: {
-            const auto *handles = static_cast<const QRhiD3D11NativeHandles *>(
-                m_rhi->nativeHandles());
-            command.command_buffer = handles ? handles->context : nullptr;
-            break;
-        }
-#endif
-#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
-        case QRhi::Vulkan: {
-            const auto *handles = static_cast<const QRhiVulkanCommandBufferNativeHandles *>(
-                commandBuffer->nativeHandles());
-            command.command_buffer = handles
-                ? reinterpret_cast<void *>(handles->commandBuffer) : nullptr;
-            break;
-        }
-#endif
-#if QT_CONFIG(metal)
-        case QRhi::Metal: {
-            const auto *handles = static_cast<const QRhiMetalCommandBufferNativeHandles *>(
-                commandBuffer->nativeHandles());
-            command.command_buffer = handles ? handles->commandBuffer : nullptr;
-            break;
-        }
-#endif
-        default:
-            return;
-        }
-        if (!command.command_buffer) return;
-
         OpenNowStreamerFrameInfo info{};
         OpenNowStreamerRecordedFrame recorded{};
         OpenNowStreamerFrame *frame = nullptr;
-        const auto status = m_runtime->recordLatestFrame(command, &info, &recorded, &frame);
+        OpenNowStreamerStatus status = OPENNOW_STREAMER_GRAPHICS_UNAVAILABLE;
+        {
+            ExternalCommandScope externalCommands(commandBuffer);
+            // Native command-buffer handles can change when QRhi begins an external section, so
+            // query them only after beginExternal(), as required by the QRhi contract.
+            switch (m_rhi->backend()) {
+#if defined(Q_OS_WIN)
+            case QRhi::D3D11: {
+                const auto *handles = static_cast<const QRhiD3D11NativeHandles *>(
+                    m_rhi->nativeHandles());
+                command.command_buffer = handles ? handles->context : nullptr;
+                break;
+            }
+#endif
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+            case QRhi::Vulkan: {
+                const auto *handles = static_cast<const QRhiVulkanCommandBufferNativeHandles *>(
+                    commandBuffer->nativeHandles());
+                command.command_buffer = handles
+                    ? reinterpret_cast<void *>(handles->commandBuffer) : nullptr;
+                break;
+            }
+#endif
+#if QT_CONFIG(metal)
+            case QRhi::Metal: {
+                const auto *handles = static_cast<const QRhiMetalCommandBufferNativeHandles *>(
+                    commandBuffer->nativeHandles());
+                command.command_buffer = handles ? handles->commandBuffer : nullptr;
+                break;
+            }
+#endif
+            default:
+                return;
+            }
+            if (!command.command_buffer) return;
+            status = m_runtime->recordLatestFrame(command, &info, &recorded, &frame);
+        }
+
         if (status == OPENNOW_STREAMER_NO_FRAME) return;
         if (status != OPENNOW_STREAMER_OK || !frame || recorded.resource == 0
             || recorded.width == 0 || recorded.height == 0
@@ -367,11 +404,6 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
 {
     setAlphaBlending(false);
     setSampleCount(1);
-#if defined(Q_OS_WIN)
-    // The D3D11 producer publishes RGB10A2 for negotiated 10-bit streams. Keeping the item's
-    // intermediate target at the same precision avoids quantizing it before Qt composites it.
-    setColorBufferFormat(QQuickRhiItem::TextureFormat::RGB10A2);
-#endif
     setActiveFocusOnTab(true);
     setAcceptedMouseButtons(Qt::AllButtons);
     setAcceptHoverEvents(true);

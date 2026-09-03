@@ -9,6 +9,20 @@
 
 If a tradeoff is required, choose correctness and robustness over short-term convenience.
 
+## Active Product Scope
+
+- The supported desktop product is the Qt 6 application in `opennow-qt/` backed by
+  `native/opennow-core/` and `native/opennow-streamer/`.
+- Interpret unqualified references to OpenNOW, the desktop app, the client, the stream view, or
+  the streamer as referring to this Qt/native stack.
+- Electron implementations, Node-based desktop shells, browser renderer processes, preload
+  scripts, and Electron IPC are legacy or out of scope. Do not modify, restore, build, test, or
+  copy architecture from them unless the user explicitly requests historical comparison or a
+  migration task.
+- Do not introduce Electron, an embedded web application, or a second desktop runtime to solve a
+  Qt problem. JavaScript tooling may still be used for repository-only tasks such as localization
+  validation; it must not become part of the desktop application's runtime architecture.
+
 ## Repository Layout
 
 - `opennow-qt/` is the current OpenNOW desktop application. C++ shell/runtime integration lives
@@ -40,6 +54,45 @@ If a tradeoff is required, choose correctness and robustness over short-term con
   a second presenter window or CPU-copy frame path to the normal embedded flow.
 - `native/opennow-core` prepares one complete session context. Qt must not duplicate GFN request,
   authentication, endpoint, proxy, session-refresh, or error-parsing logic.
+
+## Qt Desktop Rules
+
+- Implement application UI in QML and keep operating-system, graphics, input, process, and FFI
+  integration in narrowly owned C++ types. Do not reproduce native integration in QML.
+- Keep the stream video item alive while local overlays are shown. F3 statistics, Ctrl+G menus,
+  exit confirmations, and other stream chrome must compose above the same native video surface;
+  they must not navigate away from the stream, recreate the session, or replace the presenter.
+- Treat fullscreen transitions, window resizing, display scaling, and device-pixel-ratio changes as
+  coordinate-space changes. Recompute pointer mapping and confinement from the current video
+  viewport and native window geometry; never reuse stale pre-fullscreen dimensions.
+- Local shortcuts are handled before gameplay forwarding. A consumed local shortcut must not leak
+  to the remote session, while unconsumed gameplay keys such as Escape must reach the stream.
+- Any action that ends a session or quits OpenNOW must use the Qt confirmation flow unless the
+  shutdown is already unavoidable. Showing or dismissing a confirmation must not disturb media.
+- Test behavior in windowed and fullscreen modes, with overlays both open and closed, whenever a
+  change touches focus, pointer mapping, keyboard routing, video composition, or scene-graph state.
+
+## Native Streamer Rules
+
+- Treat sender-authored packet, frame, timestamp, and stream identifiers as protocol data. Preserve
+  them end to end through transport, media queues, decode, feedback, diagnostics, and recording;
+  do not replace them with locally synthesized counters.
+- Keep network receive, depacketization, decode, audio, input, recording, and Qt presentation on
+  explicit ownership/thread boundaries. Blocking codec work must not run on the Qt GUI or scene
+  graph render thread.
+- Queues must be bounded and observable. Define what happens on overflow, discontinuity, missing
+  references, late frames, decoder drain, graphics-device loss, and surface recreation. Recovery
+  must request a valid reference frame where required and must not silently present corrupt data.
+- Match negotiated codec, bit depth, chroma, color range, color space, and HDR metadata across
+  NVST, decoder output, texture import, and Qt presentation. Do not infer one of these values from
+  resolution or codec name alone.
+- Protocol feedback such as frame acknowledgements, loss reports, pacing, QoS, and keyframe
+  requests must use negotiated or sender-provided values and documented wire formats. Validate
+  changes against captured diagnostics and focused protocol tests rather than timing guesses.
+- Audio continuing does not prove that video transport or decode is healthy. Diagnostics must make
+  the receive, assembly, submission, decode, presentation, and feedback stages distinguishable.
+- Prefer opaque GPU surfaces and zero-copy presentation. Any CPU-copy or fallback presenter must be
+  explicit, bounded, measurable, and outside the normal embedded streaming path.
 
 ## Process and Contract Boundaries
 

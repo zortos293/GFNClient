@@ -36,6 +36,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
@@ -106,6 +107,9 @@ import com.opencloudgaming.opennow.ui.theme.tint
 internal fun StreamKeyboardBar(
     value: TextFieldValue,
     onValueChange: (TextFieldValue) -> Unit,
+    clearConfirmationEnabled: Boolean,
+    onClear: () -> Unit,
+    onDisableClearConfirmation: () -> Unit,
     onEnter: () -> Unit,
     onEsc: () -> Unit,
     onDone: () -> Unit,
@@ -114,6 +118,8 @@ internal fun StreamKeyboardBar(
     val inputFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    var clearConfirmationOpen by remember { mutableStateOf(false) }
+    var neverAskAgain by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         delay(80)
         runCatching { inputFocusRequester.requestFocus() }
@@ -165,6 +171,19 @@ internal fun StreamKeyboardBar(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { onEnter() }),
             )
+            TextButton(
+                onClick = {
+                    if (clearConfirmationEnabled) {
+                        neverAskAgain = false
+                        clearConfirmationOpen = true
+                    } else {
+                        onClear()
+                    }
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp),
+            ) {
+                Text(stringResource(R.string.stream_panel_clear))
+            }
             OutlinedButton(onClick = onEnter, contentPadding = PaddingValues(horizontal = 12.dp)) { Text(stringResource(R.string.stream_panel_key_enter)) }
             TextButton(onClick = onEsc, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(stringResource(R.string.stream_panel_key_esc)) }
             TextButton(
@@ -176,6 +195,45 @@ internal fun StreamKeyboardBar(
                 contentPadding = PaddingValues(horizontal = 10.dp),
             ) { Text(stringResource(R.string.stream_panel_done)) }
         }
+    }
+    if (clearConfirmationOpen) {
+        AlertDialog(
+            onDismissRequest = { clearConfirmationOpen = false },
+            title = { Text(stringResource(R.string.stream_keyboard_clear_confirm_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(stringResource(R.string.stream_keyboard_clear_confirm_body))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { neverAskAgain = !neverAskAgain },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = neverAskAgain,
+                            onCheckedChange = null,
+                        )
+                        Text(stringResource(R.string.stream_keyboard_clear_never_ask_again))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        clearConfirmationOpen = false
+                        if (neverAskAgain) onDisableClearConfirmation()
+                        onClear()
+                    },
+                ) {
+                    Text(stringResource(R.string.stream_panel_clear))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { clearConfirmationOpen = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -196,19 +254,14 @@ internal fun StreamStatsPill(
     if (metrics.enabledCount() == 0 && !keyboardButtonEnabled) return
     val compact = style == StreamStatsStyle.Compact
     val deviceStatus = rememberCompactStreamDeviceStatus()
-    val absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current
     Surface(
         modifier = modifier
             .padding(OpenNowSpacing.sm)
             .widthIn(max = if (compact) 720.dp else 300.dp),
         shape = RoundedCornerShape(if (compact) OpenNowRadius.full else OpenNowRadius.lg),
-        // Stays genuinely see-through — this one sits over gameplay by design. The hairline is
-        // what keeps its edge readable against a bright frame.
+        // This sits over gameplay, so keep the capsule clean and borderless. Top-level Cinema
+        // chrome must not leak into the in-stream status overlay.
         color = Panel.copy(alpha = 0.52f),
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (absoluteCinemaEnabled) Color.White else OpenNowPalette.PanelHairline,
-        ),
         tonalElevation = 0.dp,
     ) {
         if (compact) {
@@ -437,13 +490,19 @@ internal fun ActiveStreamModePill(
                             color = Green.copy(alpha = 0.12f),
                             contentColor = Green,
                         ) {
-                            Text(
-                                text = bugReportSubmission.reference?.let { "Sent to developer • Reference $it" }
-                                    ?: "Sent to developer",
+                            Column(
                                 modifier = Modifier.padding(10.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Bold,
-                            )
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = "Sent to developer",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                bugReportSubmission.reference?.let { reportId ->
+                                    CopyableBugReportId(reportId)
+                                }
+                            }
                         }
                         bugReportSubmission.error != null -> Surface(
                             modifier = Modifier.fillMaxWidth(),

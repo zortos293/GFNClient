@@ -382,12 +382,12 @@ data class AndroidTouchSettings(
     val rightOffsetXDp: Float = 0f,
     val rightOffsetYDp: Float = 0f,
     val mouseDirectClick: Boolean = false,
-    val nativeTouchMode: NativeTouchMode = NativeTouchMode.Off,
+    val nativeTouchMode: NativeTouchMode = NativeTouchMode.Auto,
     /**
-     * Distinguishes an explicit Native Touch choice from the legacy Auto default. Existing saved
-     * settings do not contain this field and therefore remain off until the player opts in.
+     * Records an explicit Native Touch choice for compatibility with older saved settings. Auto is
+     * the default and only activates for catalog variants that advertise TOUCHSCREEN support.
      */
-    val nativeTouchOptedIn: Boolean = false,
+    val nativeTouchOptedIn: Boolean = true,
     /**
      * Scales the velocity of touch movement in native touch mode. Values below 1.0 slow down
      * scroll/swipe gestures; values above 1.0 speed them up. Default 1.0 = no scaling.
@@ -533,6 +533,7 @@ data class AppSettings(
     val launchPage: AppLaunchPage = AppLaunchPage.Store,
     val nerdMode: Boolean = false,
     val hideStreamButtons: Boolean = false,
+    val streamKeyboardClearConfirmationDisabled: Boolean = false,
     val streamKeyboardButtonPosition: StreamKeyboardButtonPosition = StreamKeyboardButtonPosition(),
     val showAntiAfkIndicator: Boolean = true,
     val showStatsOnLaunch: Boolean = true,
@@ -572,7 +573,9 @@ data class AppSettings(
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
     val sessionCounterEnabled: Boolean = true,
-    val showSessionReportAfterStream: Boolean = true,
+    val showSessionReportAfterStream: Boolean = false,
+    /** One-time migration that makes post-stream reports opt-in instead of upgrade-persistent. */
+    val sessionReportDefaultVersion: Int = 0,
     val sessionClockShowEveryMinutes: Int = 60,
     val sessionClockShowDurationSeconds: Int = 30,
     val clipboardPaste: Boolean = true,
@@ -603,6 +606,7 @@ data class AppSettings(
 internal const val MIN_GAME_CARD_SCALE = 0.75f
 internal const val MAX_GAME_CARD_SCALE = 1.4f
 internal const val STREAM_PRESENTATION_PROFILE_VERSION = 3
+internal const val SESSION_REPORT_DEFAULT_VERSION = 1
 
 /**
  * Re-asserts the stream presentation defaults once per profile version.
@@ -1508,11 +1512,9 @@ internal fun shouldLaunchWithAccountLinked(game: GameInfo, selectedVariant: Game
     return isGameInLibrary(game)
 }
 
-internal fun shouldMarkVariantOwnedBeforeLaunch(game: GameInfo, selectedVariant: GameVariant?): Boolean {
-    if (selectedVariant == null || selectedVariant.id.isBlank() || isOwnedGameVariant(selectedVariant)) return false
-    // Older library responses sometimes only carried the selected bit plus the game-level flag.
-    // Do not turn that incomplete metadata into a redundant ownership mutation.
-    return !(game.isInLibrary && selectedVariant.librarySelected == true && selectedVariant.libraryStatus == null)
+internal fun shouldMarkVariantOwnedBeforeLaunch(selectedVariant: GameVariant?): Boolean {
+    if (selectedVariant == null || selectedVariant.id.isBlank()) return false
+    return selectedVariant.libraryStatus == "NOT_OWNED"
 }
 
 internal fun GameInfo.withManuallyOwnedVariant(variantId: String): GameInfo {

@@ -545,16 +545,11 @@ internal enum class SignalingFailureDisposition {
     SessionEnded,
 }
 
-internal fun signalingFailureDisposition(
-    message: String,
-    normalClosureMeansSessionEnded: Boolean = false,
-): SignalingFailureDisposition = when {
+internal fun signalingFailureDisposition(message: String): SignalingFailureDisposition = when {
     message.contains("http=410", ignoreCase = true) -> SignalingFailureDisposition.SessionEnded
     message.contains("http=404", ignoreCase = true) ||
         message.contains("Not Found", ignoreCase = true) -> SignalingFailureDisposition.RecoverSession
     isTransientSignalingServiceFailure(message) -> SignalingFailureDisposition.RetrySignaling
-    normalClosureMeansSessionEnded && message.contains("code=1000", ignoreCase = true) ->
-        SignalingFailureDisposition.SessionEnded
     else -> SignalingFailureDisposition.RetryTransport
 }
 
@@ -568,9 +563,6 @@ internal fun transientSignalingRetryDelayMs(failureCount: Int): Long? = when (fa
     3 -> 4_000L
     else -> null
 }
-
-internal fun normalSignalingClosureMeansSessionEnded(transportHasStableMedia: Boolean): Boolean =
-    !transportHasStableMedia
 
 internal fun shouldPreserveMediaAfterSignalingFailure(
     disposition: SignalingFailureDisposition,

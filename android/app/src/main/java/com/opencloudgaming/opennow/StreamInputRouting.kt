@@ -1013,6 +1013,7 @@ internal fun androidGamepadConnectionBitmap(
     controllerId: Int,
     connected: Boolean,
     physicalControllerFamily: AndroidControllerFamily?,
+    playStationRumbleCompatibility: Boolean = false,
 ): Int {
     if (!connected) return 0
     val id = controllerId.coerceIn(0, 3)
@@ -1020,7 +1021,10 @@ internal fun androidGamepadConnectionBitmap(
     // The host protocol uses bit (slot + 8) to distinguish an Xbox/XInput-style pad from the
     // PlayStation-style identity used by its native controller mapping. Unknown controllers and
     // OpenNOW's virtual pad retain the established XInput fallback for compatibility.
-    val xinputStyleBit = if (physicalControllerFamily == AndroidControllerFamily.PlayStation) {
+    val xinputStyleBit = if (
+        physicalControllerFamily == AndroidControllerFamily.PlayStation &&
+        !playStationRumbleCompatibility
+    ) {
         0
     } else {
         1 shl (id + 8)

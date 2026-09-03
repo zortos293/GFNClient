@@ -15,6 +15,7 @@ class AppSettingsDefaultsTest {
 
         assertTrue(settings.showStatsOnLaunch)
         assertFalse(settings.hideStreamButtons)
+        assertFalse(settings.streamKeyboardClearConfirmationDisabled)
         assertTrue(settings.externalMousePointerLock)
         assertFalse(settings.showFavoriteIconOnGameCards)
         assertFalse(settings.liveSelectedOutlines)
@@ -62,6 +63,7 @@ class AppSettingsDefaultsTest {
         assertEquals(StreamStatsMetrics(), settings.streamStatsMetrics)
         assertTrue(settings.showStatsOnLaunch)
         assertFalse(settings.hideStreamButtons)
+        assertFalse(settings.streamKeyboardClearConfirmationDisabled)
         assertTrue(settings.externalMousePointerLock)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertEquals(CatalogBackgroundPreset.ColorfulAbstract, settings.catalogBackgroundPreset)
@@ -78,12 +80,23 @@ class AppSettingsDefaultsTest {
         assertTrue(settings.landscapeNewGamesHero)
         // Developer options are a hidden gesture, never a shipped or migrated-in default.
         assertFalse(settings.developerOptionsUnlocked)
-        assertTrue(settings.showSessionReportAfterStream)
+        assertFalse(settings.showSessionReportAfterStream)
         assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
         assertEquals(TouchAimMode.LockJoystick, settings.androidTouch.aimMode)
         assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
         assertEquals(TouchControlGroup.entries.toSet(), settings.androidTouch.visibleControlGroups)
         assertEquals(TouchExtraButtonAction.Guide, settings.androidTouch.extraButtonAction(0))
+    }
+
+    @Test
+    fun streamKeyboardClearConfirmationDefaultsOnAndPreservesOptOut() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedOut = OpenNowJson.decodeFromString<AppSettings>(
+            """{"streamKeyboardClearConfirmationDisabled":true}""",
+        )
+
+        assertFalse(defaulted.streamKeyboardClearConfirmationDisabled)
+        assertTrue(optedOut.streamKeyboardClearConfirmationDisabled)
     }
 
     @Test
@@ -210,7 +223,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.streamIntroMusic)
         assertEquals(IntroMusicStartMode.Muted, settings.streamIntroStartMode)
         assertFalse(settings.queueReadyMusic)
-        assertTrue(settings.showSessionReportAfterStream)
+        assertFalse(settings.showSessionReportAfterStream)
         assertFalse(settings.analyticsConsentAsked)
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)
@@ -295,6 +308,25 @@ class AppSettingsDefaultsTest {
         )
 
         assertFalse(settings.showSessionReportAfterStream)
+    }
+
+    @Test
+    fun legacySessionReportOptInIsMigratedOffOnce() {
+        val migrated = OpenNowJson.decodeFromString<AppSettings>(
+            """{"showSessionReportAfterStream":true}""",
+        ).normalizedForAndroid()
+
+        assertFalse(migrated.showSessionReportAfterStream)
+        assertEquals(SESSION_REPORT_DEFAULT_VERSION, migrated.sessionReportDefaultVersion)
+    }
+
+    @Test
+    fun currentSessionReportOptInRemainsAvailable() {
+        val optedIn = OpenNowJson.decodeFromString<AppSettings>(
+            """{"showSessionReportAfterStream":true,"sessionReportDefaultVersion":1}""",
+        ).normalizedForAndroid()
+
+        assertTrue(optedIn.showSessionReportAfterStream)
     }
 
     @Test

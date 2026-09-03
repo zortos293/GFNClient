@@ -138,8 +138,11 @@ internal fun StreamScreen(
         videoTransportFallbackReason = null
     }
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = streamReady)
-    val physicalMouseConnected = rememberPhysicalMouseConnected(enabled = streamReady)
+    val physicalKeyboardMouse = rememberPhysicalKeyboardMouseConnection(enabled = streamReady)
+    val physicalMouseConnected = physicalKeyboardMouse.mouseConnected
+    val physicalKeyboardMouseConnected = physicalKeyboardMouse.connected
     var showTouchControlsWithPhysicalController by remember(session?.sessionId) { mutableStateOf(false) }
+    var showTouchControlsWithPhysicalMouse by remember(session?.sessionId) { mutableStateOf(false) }
     var preferVirtualController by remember(session?.sessionId) { mutableStateOf(false) }
     var physicalControllerPromptOpen by remember(session?.sessionId) { mutableStateOf(false) }
     var physicalControllerPromptHandled by remember(session?.sessionId) { mutableStateOf(false) }
@@ -155,6 +158,22 @@ internal fun StreamScreen(
         game,
         state.activeStreamSettings ?: state.settings.stream,
     )
+    val launchInputMode = state.streamInputModeAtLaunch ?: streamInputModeAtStart(
+        nativeTouchAvailable = nativeTouchAvailable,
+        keyboardMouseConnected = physicalKeyboardMouseConnected,
+    )
+    var streamInputMode by remember(session?.sessionId) { mutableStateOf(launchInputMode) }
+    val nativeTouchProvisionedForSession = launchInputMode == StreamInputMode.NativeTouch
+    var keyboardMouseBaselineCaptured by remember(session?.sessionId) { mutableStateOf(false) }
+    var previousKeyboardMouseConnected by remember(session?.sessionId) {
+        mutableStateOf(physicalKeyboardMouseConnected)
+    }
+    var pendingInputModePrompt by remember(session?.sessionId) {
+        mutableStateOf<StreamInputModePrompt?>(null)
+    }
+    var inputModePromptOpen by remember(session?.sessionId) {
+        mutableStateOf<StreamInputModePrompt?>(null)
+    }
     // Native game touch and the virtual controller need exclusive ownership of the same fingers.
     // Catalog touch remains the default, while a player's in-session controller choice wins.
     val nativeTouchActive = !tvProfile && shouldUseNativeTouchForStream(
@@ -162,7 +181,7 @@ internal fun StreamScreen(
         game,
         state.activeStreamSettings ?: state.settings.stream,
         preferVirtualController = preferVirtualController,
-        physicalMouseConnected = physicalMouseConnected,
+        preferKeyboardMouse = streamInputMode == StreamInputMode.KeyboardMouse,
     )
     val touchControlsVisible = shouldShowAndroidTouchControls(
         tvProfile = tvProfile,
@@ -170,6 +189,7 @@ internal fun StreamScreen(
         touchControlsEnabled = state.settings.androidTouch.enabled,
         suppressedByPhysicalController = touchControlsSuppressedByPhysicalController,
         physicalMouseConnected = physicalMouseConnected,
+        allowWithPhysicalMouse = showTouchControlsWithPhysicalMouse,
     ) && !nativeTouchActive
     val touchMouseActive =
         streamReady && touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive
@@ -237,6 +257,7 @@ internal fun StreamScreen(
         controlsOpen = false
         exitConfirmOpen = false
         physicalControllerPromptOpen = false
+        inputModePromptOpen = null
         keyboardOpen = true
     }
     val dismissStreamGuide = {
@@ -253,6 +274,7 @@ internal fun StreamScreen(
         keyboardOpen = false
         exitConfirmOpen = false
         physicalControllerPromptOpen = false
+        inputModePromptOpen = null
         if (streamGuideOpen && streamGuideStep == StreamGuideStep.OpenControls) {
             streamGuideStep = StreamGuideStep.PressDone
         }
@@ -268,7 +290,8 @@ internal fun StreamScreen(
             statsVisible = !statsVisible
         }
     }
-    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen || physicalControllerPromptOpen || touchLayoutEditing
+    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen ||
+        physicalControllerPromptOpen || inputModePromptOpen != null || touchLayoutEditing
     val streamKeyboardImeVisible = keyboardOpen && WindowInsets.ime.getBottom(density) > 0
     val externalMousePointerCaptureActive = shouldEnableExternalMousePointerCapture(
         streamReady = streamReady,
@@ -285,6 +308,7 @@ internal fun StreamScreen(
             streamGuideOpen -> dismissStreamGuide()
             exitConfirmOpen -> exitConfirmOpen = false
             keyboardOpen -> keyboardOpen = false
+            inputModePromptOpen != null -> inputModePromptOpen = null
             physicalControllerPromptOpen -> physicalControllerPromptOpen = false
             controlsOpen -> controlsOpen = false
             else -> {
@@ -308,11 +332,6 @@ internal fun StreamScreen(
                 streamState = it
                 viewModel.markStreamError(it)
             },
-            onVideoTransportFallbackApplied = { reason, fallback ->
-                streamState = reason
-                videoTransportFallbackReason = reason
-                viewModel.recordLocalVideoTransportFallback(reason, fallback)
-            },
             onSessionRecoveryRequired = {
                 streamState = it
                 viewModel.recoverStreamSession(it)
@@ -326,9 +345,6 @@ internal fun StreamScreen(
             },
             onControllerMouseAssistChanged = {
                 controllerMouseAssistEnabled = it
-            },
-            onStreamStopped = {
-                viewModel.stopStream()
             },
         )
     }
@@ -411,6 +427,8 @@ internal fun StreamScreen(
         controlsOpen,
         exitConfirmOpen,
         keyboardOpen,
+        inputModePromptOpen,
+        pendingInputModePrompt,
     ) {
         if (!physicalControllerConnected) {
             showTouchControlsWithPhysicalController = false
@@ -425,9 +443,62 @@ internal fun StreamScreen(
             !streamGuideOpen &&
             !controlsOpen &&
             !exitConfirmOpen &&
-            !keyboardOpen
+            !keyboardOpen &&
+            inputModePromptOpen == null &&
+            pendingInputModePrompt == null
         ) {
             physicalControllerPromptOpen = true
+        }
+    }
+
+    LaunchedEffect(streamReady, physicalKeyboardMouseConnected, session?.sessionId) {
+        if (!streamReady) return@LaunchedEffect
+        if (!keyboardMouseBaselineCaptured) {
+            keyboardMouseBaselineCaptured = true
+            previousKeyboardMouseConnected = physicalKeyboardMouseConnected
+            if (physicalKeyboardMouseConnected) {
+                streamInputMode = StreamInputMode.KeyboardMouse
+            }
+            return@LaunchedEffect
+        }
+        if (physicalKeyboardMouseConnected == previousKeyboardMouseConnected) {
+            return@LaunchedEffect
+        }
+        previousKeyboardMouseConnected = physicalKeyboardMouseConnected
+        inputModePromptOpen = null
+        pendingInputModePrompt = streamInputModePromptForConnectionChange(
+            currentMode = streamInputMode,
+            keyboardMouseConnected = physicalKeyboardMouseConnected,
+            nativeTouchProvisionedForSession = nativeTouchProvisionedForSession,
+        )
+    }
+
+    LaunchedEffect(physicalMouseConnected) {
+        if (!physicalMouseConnected) {
+            showTouchControlsWithPhysicalMouse = false
+        }
+    }
+
+    LaunchedEffect(
+        pendingInputModePrompt,
+        streamGuideOpen,
+        controlsOpen,
+        exitConfirmOpen,
+        keyboardOpen,
+        physicalControllerPromptOpen,
+        touchLayoutEditing,
+    ) {
+        val prompt = pendingInputModePrompt ?: return@LaunchedEffect
+        if (
+            !streamGuideOpen &&
+            !controlsOpen &&
+            !exitConfirmOpen &&
+            !keyboardOpen &&
+            !physicalControllerPromptOpen &&
+            !touchLayoutEditing
+        ) {
+            inputModePromptOpen = prompt
+            pendingInputModePrompt = null
         }
     }
 
@@ -774,11 +845,27 @@ internal fun StreamScreen(
                         physicalControllerPromptHandled = true
                         physicalControllerPromptOpen = false
                         showTouchControlsWithPhysicalController = true
+                        if (physicalMouseConnected) {
+                            showTouchControlsWithPhysicalMouse = true
+                        }
                         if (physicalControllerPromptDoNotShowAgain) {
                             viewModel.updateSettings(
                                 state.settings.copy(androidPhysicalControllerPromptDismissed = true),
                             )
                         }
+                    },
+                )
+            }
+            inputModePromptOpen?.let { prompt ->
+                StreamInputModeSwitchDialog(
+                    prompt = prompt,
+                    onStay = { inputModePromptOpen = null },
+                    onSwitch = {
+                        streamInputMode = when (prompt) {
+                            StreamInputModePrompt.SwitchToKeyboardMouse -> StreamInputMode.KeyboardMouse
+                            StreamInputModePrompt.SwitchToNativeTouch -> StreamInputMode.NativeTouch
+                        }
+                        inputModePromptOpen = null
                     },
                 )
             }
@@ -900,6 +987,9 @@ internal fun StreamScreen(
                                 if (physicalControllerConnected) {
                                     showTouchControlsWithPhysicalController = true
                                 }
+                                if (physicalMouseConnected) {
+                                    showTouchControlsWithPhysicalMouse = true
+                                }
                                 if (!state.settings.androidTouch.enabled) {
                                     viewModel.updateSettings(
                                         state.settings.copy(
@@ -915,6 +1005,19 @@ internal fun StreamScreen(
                             }
                             physicalControllerConnected && !touchControlsVisible -> {
                                 showTouchControlsWithPhysicalController = true
+                                if (physicalMouseConnected) {
+                                    showTouchControlsWithPhysicalMouse = true
+                                }
+                                if (!state.settings.androidTouch.enabled) {
+                                    viewModel.updateSettings(
+                                        state.settings.copy(
+                                            androidTouch = state.settings.androidTouch.copy(enabled = true),
+                                        ),
+                                    )
+                                }
+                            }
+                            physicalMouseConnected && !touchControlsVisible -> {
+                                showTouchControlsWithPhysicalMouse = true
                                 if (!state.settings.androidTouch.enabled) {
                                     viewModel.updateSettings(
                                         state.settings.copy(
@@ -1109,12 +1212,23 @@ internal fun StreamScreen(
                 ) {
                     StreamKeyboardBar(
                         value = keyboardValue,
+                        clearConfirmationEnabled = !state.settings.streamKeyboardClearConfirmationDisabled,
                         onValueChange = { next ->
                             if (next.text.length <= MAX_STREAM_KEYBOARD_TEXT_LENGTH) {
                                 client.syncText(keyboardSyncedText, next.text)
                                 keyboardValue = next
                                 keyboardSyncedText = next.text
                             }
+                        },
+                        onClear = {
+                            client.clearText()
+                            keyboardValue = TextFieldValue()
+                            keyboardSyncedText = ""
+                        },
+                        onDisableClearConfirmation = {
+                            viewModel.updateSettings(
+                                state.settings.copy(streamKeyboardClearConfirmationDisabled = true),
+                            )
                         },
                         onEnter = {
                             client.sendTextControlKey(KeyEvent.KEYCODE_ENTER)
@@ -1150,12 +1264,13 @@ internal fun shouldShowAndroidTouchControls(
     touchControlsEnabled: Boolean,
     suppressedByPhysicalController: Boolean,
     physicalMouseConnected: Boolean = false,
+    allowWithPhysicalMouse: Boolean = false,
 ): Boolean =
     !tvProfile &&
         touchInputEnabled &&
         touchControlsEnabled &&
         !suppressedByPhysicalController &&
-        !physicalMouseConnected
+        (!physicalMouseConnected || allowWithPhysicalMouse)
 
 private data class SessionTimerDisplay(
     val label: String,

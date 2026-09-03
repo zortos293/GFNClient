@@ -40,17 +40,17 @@ class LaunchOwnershipTest {
     }
 
     @Test
-    fun anyUnownedVariantIsMarkedBeforeLaunch() {
+    fun explicitNotOwnedVariantIsMarkedBeforeLaunch() {
         val free = variant(libraryStatus = "NOT_OWNED", isFreeToPlay = true)
         val ownedFree = variant(libraryStatus = "MANUAL", isFreeToPlay = true)
         val paid = variant(libraryStatus = "NOT_OWNED")
-        val legacyOwned = variant(librarySelected = true)
+        val unknown = variant(librarySelected = false)
 
-        assertTrue(shouldMarkVariantOwnedBeforeLaunch(game(listOf(free)), free))
-        assertTrue(shouldMarkVariantOwnedBeforeLaunch(game(listOf(paid), playType = "INSTALL_TO_PLAY"), paid))
-        assertFalse(shouldMarkVariantOwnedBeforeLaunch(game(listOf(ownedFree)), ownedFree))
-        assertFalse(shouldMarkVariantOwnedBeforeLaunch(game(listOf(legacyOwned), isInLibrary = true), legacyOwned))
-        assertFalse(shouldMarkVariantOwnedBeforeLaunch(game(listOf(paid)), null))
+        assertTrue(shouldMarkVariantOwnedBeforeLaunch(free))
+        assertTrue(shouldMarkVariantOwnedBeforeLaunch(paid))
+        assertFalse(shouldMarkVariantOwnedBeforeLaunch(ownedFree))
+        assertFalse(shouldMarkVariantOwnedBeforeLaunch(unknown))
+        assertFalse(shouldMarkVariantOwnedBeforeLaunch(null))
     }
 
     @Test

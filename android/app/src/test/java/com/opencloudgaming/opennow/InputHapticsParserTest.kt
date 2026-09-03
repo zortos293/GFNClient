@@ -40,6 +40,31 @@ class InputHapticsParserTest {
     }
 
     @Test
+    fun onlyForcedControllerOutputEnablesPlayStationRumbleCompatibility() {
+        assertEquals(
+            false,
+            usesPlayStationRumbleCompatibility(
+                vibrationEnabled = true,
+                preference = HapticsOutputPreference.Auto,
+            ),
+        )
+        assertEquals(
+            true,
+            usesPlayStationRumbleCompatibility(
+                vibrationEnabled = true,
+                preference = HapticsOutputPreference.Controller,
+            ),
+        )
+        assertEquals(
+            false,
+            usesPlayStationRumbleCompatibility(
+                vibrationEnabled = false,
+                preference = HapticsOutputPreference.Controller,
+            ),
+        )
+    }
+
+    @Test
     fun parsesLegacyHapticPacket() {
         val packet = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN).apply {
             putShort(267.toShort())

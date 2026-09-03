@@ -501,6 +501,50 @@ internal fun PhysicalControllerTouchControlsDialog(
 }
 
 @Composable
+internal fun StreamInputModeSwitchDialog(
+    prompt: StreamInputModePrompt,
+    onStay: () -> Unit,
+    onSwitch: () -> Unit,
+) {
+    val title = when (prompt) {
+        StreamInputModePrompt.SwitchToKeyboardMouse -> R.string.stream_keyboard_mouse_detected
+        StreamInputModePrompt.SwitchToNativeTouch -> R.string.stream_keyboard_mouse_disconnected
+    }
+    val body = when (prompt) {
+        StreamInputModePrompt.SwitchToKeyboardMouse -> R.string.stream_keyboard_mouse_detected_body
+        StreamInputModePrompt.SwitchToNativeTouch -> R.string.stream_keyboard_mouse_disconnected_body
+    }
+    val switchLabel = when (prompt) {
+        StreamInputModePrompt.SwitchToKeyboardMouse -> R.string.stream_input_switch_keyboard_mouse
+        StreamInputModePrompt.SwitchToNativeTouch -> R.string.stream_input_switch_native_touch
+    }
+    val stayLabel = when (prompt) {
+        StreamInputModePrompt.SwitchToKeyboardMouse -> R.string.stream_input_stay_native_touch
+        StreamInputModePrompt.SwitchToNativeTouch -> R.string.stream_input_keep_keyboard_mouse
+    }
+    AlertDialog(
+        onDismissRequest = onStay,
+        title = { Text(stringResource(title)) },
+        text = {
+            Text(
+                stringResource(body),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onSwitch) {
+                Text(stringResource(switchLabel))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onStay) {
+                Text(stringResource(stayLabel))
+            }
+        },
+    )
+}
+
+@Composable
 private fun StreamGuideEdgeCue(modifier: Modifier = Modifier) {
     Box(
         modifier
@@ -2236,12 +2280,9 @@ private fun StreamBugReporter(
                         Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
                         Text(stringResource(R.string.bug_report_sent), fontWeight = FontWeight.Bold)
                     }
-                    Text(
-                        submission.reference?.let { "PrintedWaste reference: $it" }
-                            ?: "PrintedWaste received your report.",
-                        color = TextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    submission.reference?.let { reportId ->
+                        CopyableBugReportId(reportId)
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
                             onClick = {

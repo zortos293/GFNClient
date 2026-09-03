@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">Анимированные контуры выбора</string>
     <string name="settings_live_selected_outlines_desc">Анимирует выбранные игры, пункты меню, выбор серверов и параметры лаунчера. Отключите для более спокойного выделения.</string>
     <string name="settings_absolute_cinema_effects">Эффекты Absolute Cinema</string>
-    <string name="settings_absolute_cinema_effects_desc">Использует анимированные пурпурные и синие кольца фокуса, сохраняя выбранный вами цвет интерфейса.</string>
+    <string name="settings_absolute_cinema_effects_desc">Использует анимированные оранжевые и синие кольца фокуса, сохраняя выбранный вами цвет интерфейса.</string>
     <string name="settings_im_crazy">Я сумасшедший</string>
     <string name="settings_im_crazy_desc">Выпустите Absolute Cinema на весь интерфейс. Обложки, описания, элементы управления и не только получают эффект при наведении и фокусе.</string>
     <string name="settings_show_favorite_icon">Показывать значок избранного на карточках</string>

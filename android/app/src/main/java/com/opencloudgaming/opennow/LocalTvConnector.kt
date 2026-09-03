@@ -20,6 +20,7 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.IOException
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.DatagramPacket
@@ -85,7 +86,9 @@ internal data class LocalTvRemoteRequest(
  * The QR pins the TV's ECDH public key. Pairing and launch bodies are encrypted with AES-GCM;
  * no account tokens, GFN credentials, or remote/cloud relay are involved.
  */
-internal class LocalTvConnector {
+internal class LocalTvConnector(
+    private val discoveryPort: Int = DISCOVERY_PORT,
+) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val random = SecureRandom()
     private val _state = MutableStateFlow(LocalTvConnectorState())
@@ -142,11 +145,21 @@ internal class LocalTvConnector {
                     requestTrustedAccess = _state.value.requestTrustedAccess,
                 )
                 scope.launch {
-                    respondToDiscovery(
-                        address = address,
-                        port = server.localPort,
-                        publicKey = keyPair.public.encoded,
-                    )
+                    try {
+                        respondToDiscovery(
+                            address = address,
+                            port = server.localPort,
+                            publicKey = keyPair.public.encoded,
+                        )
+                    } catch (_: IOException) {
+                        // Discovery is optional: direct QR pairing still works. A port bind,
+                        // network transition, or concurrent shutdown must not crash the process.
+                        if (serverSocket === server && !server.isClosed) {
+                            _state.value = _state.value.copy(
+                                message = "Automatic TV discovery is unavailable; scan the pairing QR instead",
+                            )
+                        }
+                    }
                 }
                 acceptLoop(server, address)
             }.onFailure { error ->
@@ -213,7 +226,7 @@ internal class LocalTvConnector {
                     socket.soTimeout = DISCOVERY_POLL_TIMEOUT_MS
                     val request = DISCOVERY_REQUEST.toByteArray(Charsets.UTF_8)
                     discoveryBroadcastAddresses(localAddress).forEach { target ->
-                        socket.send(DatagramPacket(request, request.size, target, DISCOVERY_PORT))
+                        socket.send(DatagramPacket(request, request.size, target, discoveryPort))
                     }
                     val deadline = System.currentTimeMillis() + DISCOVERY_WINDOW_MS
                     val responseBuffer = ByteArray(MAX_DISCOVERY_PACKET_BYTES)
@@ -418,25 +431,24 @@ internal class LocalTvConnector {
     }
 
     private fun respondToDiscovery(address: Inet4Address, port: Int, publicKey: ByteArray) {
-        val socket = DatagramSocket(null).apply {
-            reuseAddress = true
-            bind(InetSocketAddress(DISCOVERY_PORT))
-            soTimeout = DISCOVERY_POLL_TIMEOUT_MS
-        }
-        discoveryResponderSocket = socket
-        val pairUri = Uri.Builder()
-            .scheme("opennow")
-            .authority("pair")
-            .appendQueryParameter("h", address.hostAddress)
-            .appendQueryParameter("p", port.toString())
-            .appendQueryParameter("k", base64Url(publicKey))
-            .build()
-            .toString()
-        val response = listOf(DISCOVERY_RESPONSE, safeDeviceName(), pairUri)
-            .joinToString("\n")
-            .toByteArray(Charsets.UTF_8)
-        val requestBuffer = ByteArray(128)
+        val socket = DatagramSocket(null)
         try {
+            socket.reuseAddress = true
+            socket.bind(InetSocketAddress(discoveryPort))
+            socket.soTimeout = DISCOVERY_POLL_TIMEOUT_MS
+            discoveryResponderSocket = socket
+            val pairUri = Uri.Builder()
+                .scheme("opennow")
+                .authority("pair")
+                .appendQueryParameter("h", address.hostAddress)
+                .appendQueryParameter("p", port.toString())
+                .appendQueryParameter("k", base64Url(publicKey))
+                .build()
+                .toString()
+            val response = listOf(DISCOVERY_RESPONSE, safeDeviceName(), pairUri)
+                .joinToString("\n")
+                .toByteArray(Charsets.UTF_8)
+            val requestBuffer = ByteArray(128)
             while (!socket.isClosed && serverSocket != null) {
                 val packet = DatagramPacket(requestBuffer, requestBuffer.size)
                 try {

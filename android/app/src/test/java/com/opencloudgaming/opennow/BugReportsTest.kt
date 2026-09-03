@@ -150,7 +150,22 @@ class BugReportsTest {
     @Test
     fun parsesServerReferenceWhenPresent() {
         assertEquals("report-123", parseAndroidBugReportReference("""{"id":"report-123"}"""))
+        assertEquals("report-456", parseAndroidBugReportReference("""{"reportId":" report-456 "}"""))
+        assertEquals("report-789", parseAndroidBugReportReference("""{"bugReportId":"report-789"}"""))
         assertEquals(null, parseAndroidBugReportReference("""{"ok":true}"""))
+    }
+
+    @Test
+    fun acceptedReceiptReturnsTheReportId() {
+        assertEquals(
+            "report-456",
+            parseAndroidBugReportReceipt("""{"ok":true,"reportId":"report-456"}""").reference,
+        )
+    }
+
+    @Test(expected = AndroidBugReportUploadException::class)
+    fun acceptedReceiptWithoutAReportIdIsRejected() {
+        parseAndroidBugReportReceipt("""{"ok":true}""")
     }
 
     @Test(expected = IllegalArgumentException::class)

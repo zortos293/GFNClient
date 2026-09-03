@@ -95,6 +95,7 @@ private const val USERINFO_ENDPOINT = "https://login.nvidia.com/userinfo"
 private const val AUTH_ENDPOINT = "https://login.nvidia.com/authorize"
 private const val DEVICE_AUTHORIZATION_ENDPOINT = "https://login.nvidia.com/device/authorize"
 private const val GAMES_GRAPHQL_URL = "https://games.geforce.com/graphql"
+internal const val GFN_APPS_GRAPHQL_URL = "https://apps.gxn.nvidia.com/graphql"
 private const val MES_URL = "https://mes.geforcenow.com/v4/subscriptions"
 private const val PRINTEDWASTE_QUEUE_URL = "https://api.printedwaste.com/gfn/queue/"
 private const val PRINTEDWASTE_SERVER_MAPPING_URL = "https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING"
@@ -104,7 +105,7 @@ private const val DEVICE_CODE_CLIENT_ID = "q61ddeJrVt7O90Nl-P-N7I36yctih4Ml6FyXL
 private const val DEFAULT_IDP_ID = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"
 private const val SCOPES = "openid consent email tk_client age"
 private const val PANELS_QUERY_HASH = "46ec15f267a056e7d5e46e629efa929529e5e7542a4850faece90b9f8fa5f810"
-private const val APP_METADATA_QUERY_HASH = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7"
+internal const val GFN_APP_METADATA_QUERY_HASH = "cf8b620dfd03617017ba7c858cee65197e1ace5180e41be194b39227227ced63"
 
 private data class CloudMatchClientIdentity(
     val platformName: String,
@@ -264,6 +265,30 @@ internal object GfnAppLaunchMode {
     const val GAMEPAD_FRIENDLY = 2
     const val TOUCH_FRIENDLY = 3
 }
+
+private const val DEFAULT_REMOTE_CONTROLLERS_BITMAP = 1
+private const val DEFAULT_SUPPORTED_CONTROLLER_TYPE = 2
+
+private data class GfnControllerCapabilities(
+    val remoteControllersBitmap: Int,
+    val supportedControllerTypes: List<Int>,
+)
+
+/**
+ * CloudMatch provisions input devices when the session is created. Keep controller advertising
+ * exclusive to non-touch launches so virtual/physical gamepad packets have a host device without
+ * changing touch-friendly sessions back into controller mode.
+ */
+private fun gfnControllerCapabilities(appLaunchMode: Int): GfnControllerCapabilities =
+    if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) {
+        GfnControllerCapabilities(remoteControllersBitmap = 0, supportedControllerTypes = emptyList())
+    } else {
+        GfnControllerCapabilities(
+            remoteControllersBitmap = DEFAULT_REMOTE_CONTROLLERS_BITMAP,
+            supportedControllerTypes = listOf(DEFAULT_SUPPORTED_CONTROLLER_TYPE),
+        )
+    }
+
 private const val LIBRARY_WITH_TIME_QUERY_HASH = "7f54d6bbbf3b1c09d0e5264dfa36f0f4aaf5e2678f2089f0cbf0d4dda18c3af9"
 private const val DEFAULT_LOCALE = "en_US"
 
@@ -571,15 +596,18 @@ internal fun buildMinimalClaimRequestBody(
         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
     )
     val profile = settings?.requestProfile()
+    val controllerCapabilities = gfnControllerCapabilities(appLaunchMode)
     return buildJsonObject {
         put("action", 2)
         put("data", "RESUME")
         putJsonObject("sessionRequestData") {
             put("audioMode", 2)
-            put("remoteControllersBitmap", 0)
+            put("remoteControllersBitmap", controllerCapabilities.remoteControllersBitmap)
             put("sdrHdrMode", if (profile?.hdrEnabled == true) 1 else 0)
             put("networkTestSessionId", JsonNull)
-            putJsonArray("availableSupportedControllers") {}
+            putJsonArray("availableSupportedControllers") {
+                controllerCapabilities.supportedControllerTypes.forEach { add(JsonPrimitive(it)) }
+            }
             put("clientVersion", "30.0")
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
@@ -1204,14 +1232,16 @@ class GfnAuthRepository(
 
         if (!tokens.clientToken.isNullOrBlank()) {
             for (clientId in refreshClientIds) {
-                runCatching {
+                try {
                     val refreshed = mergeTokenSnapshot(
                         base = tokens,
                         root = refreshWithClientToken(tokens.clientToken, session.user.userId, clientId),
                         authClientId = clientId,
                     )
                     return buildRefreshedSession(session, ensureClientTokenBestEffort(refreshed), source = "client token")
-                }.onFailure { error ->
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
                     refreshErrors += "client_token(${authClientLabel(clientId)}): ${error.message ?: "Unknown refresh error"}"
                 }
             }
@@ -1220,10 +1250,12 @@ class GfnAuthRepository(
         val refresh = tokens.refreshToken
         if (!refresh.isNullOrBlank()) {
             for (clientId in refreshClientIds) {
-                runCatching {
+                try {
                     val refreshed = refreshAuthTokens(refresh, tokens, clientId)
                     return buildRefreshedSession(session, ensureClientTokenBestEffort(refreshed), source = "refresh token")
-                }.onFailure { error ->
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
                     refreshErrors += "refresh_token(${authClientLabel(clientId)}): ${error.message ?: "Unknown refresh error"}"
                 }
             }
@@ -2178,29 +2210,18 @@ class GfnCatalogRepository(
         selectedVariant: GameVariant?,
     ): GameInfo {
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
-        val variantId = selectedVariant?.id?.toIntOrNull()
-        val variables = buildJsonObject {
-            put("vpcId", vpcId)
-            put("locale", requestLocale())
-            if (variantId != null) {
-                putJsonArray("variantIds") { add(JsonPrimitive(variantId)) }
-            } else {
-                putJsonArray("appIds") { add(JsonPrimitive(game.uuid ?: game.id)) }
-            }
-        }
-        val payload = postGraphQlWithAppStoreFallback(
-            query = { includeAppStore ->
-                if (variantId != null) launchMetadataByVariantQuery(includeAppStore) else launchMetadataByAppQuery(includeAppStore)
-            },
-            variables = variables,
-            token = token,
-            errorLabel = "Launch metadata",
-        )
-        val hydrated = payload.obj("data")?.obj("apps")?.arr("items")
-            ?.firstNotNullOfOrNull { it.asObject() }
+        val appId = game.uuid ?: game.id
+        val hydrated = fetchAppMetaData(token, listOf(appId), vpcId)
+            .firstOrNull { it.string("id") == appId }
             ?.let(::appToGame)
             ?: error("Launch metadata did not include ${game.title}")
-        return mergeGameInfo(game, hydrated)
+        val merged = mergeGameInfo(game, hydrated)
+        val requestedVariantId = selectedVariant?.id
+        val selectedVariantIndex = requestedVariantId
+            ?.let { id -> merged.variants.indexOfFirst { it.id == id } }
+            ?.takeIf { it >= 0 }
+            ?: merged.selectedVariantIndex
+        return merged.copy(selectedVariantIndex = selectedVariantIndex)
     }
 
     suspend fun addOwnedVariant(token: String, variantId: String): String {
@@ -2216,9 +2237,14 @@ class GfnCatalogRepository(
                 put("locale", requestLocale())
             },
             token = token,
+            endpoint = GFN_APPS_GRAPHQL_URL,
         ).checkGraphQlErrors("Mark game as owned")
-        return payload.obj("data")?.obj("addOwnedVariant")?.obj("app")?.string("id")
+        val confirmedVariantId = payload.obj("data")?.obj("addOwnedVariant")?.obj("app")?.string("id")
             ?: error("GFN did not confirm that the game was marked as owned")
+        check(confirmedVariantId == variantId) {
+            "GFN confirmed a different owned variant ($confirmedVariantId instead of $variantId)"
+        }
+        return confirmedVariantId
     }
 
     suspend fun resolveLaunchAppId(token: String, appIdOrUuid: String, providerStreamingBaseUrl: String): String? {
@@ -2301,9 +2327,9 @@ class GfnCatalogRepository(
             putJsonArray("appIds") { appIds.distinct().forEach { add(JsonPrimitive(it)) } }
         }.toString()
         val extensions = buildJsonObject {
-            putJsonObject("persistedQuery") { put("sha256Hash", APP_METADATA_QUERY_HASH) }
+            putJsonObject("persistedQuery") { put("sha256Hash", GFN_APP_METADATA_QUERY_HASH) }
         }.toString()
-        val url = "$GAMES_GRAPHQL_URL?requestType=appMetaData&extensions=${encoded(extensions)}&huId=${randomHuId()}&variables=${encoded(variables)}"
+        val url = "$GFN_APPS_GRAPHQL_URL?requestType=appMetaData&extensions=${encoded(extensions)}&huId=${randomHuId()}&variables=${encoded(variables)}"
         val request = Request.Builder()
             .url(url)
             .headers(desktopGraphQlHeaders(token).newBuilder().set("Content-Type", "application/graphql").build())
@@ -2476,13 +2502,18 @@ class GfnCatalogRepository(
         return CatalogDefinitions(groups, sorts, filterPayloadById)
     }
 
-    private suspend fun postGraphQl(query: String, variables: JsonObject, token: String): JsonObject {
+    private suspend fun postGraphQl(
+        query: String,
+        variables: JsonObject,
+        token: String,
+        endpoint: String = GAMES_GRAPHQL_URL,
+    ): JsonObject {
         val body = buildJsonObject {
             put("query", query)
             put("variables", variables)
         }.toString().toRequestBody(JSON_MEDIA_TYPE)
         val request = Request.Builder()
-            .url(GAMES_GRAPHQL_URL)
+            .url(endpoint)
             .headers(desktopGraphQlHeaders(token))
             .post(body)
             .build()
@@ -2506,36 +2537,6 @@ class GfnCatalogRepository(
         }
         return postGraphQl(query(false), variables, token).checkGraphQlErrors(errorLabel)
     }
-
-    private fun launchMetadataByAppQuery(includeAppStore: Boolean): String = """
-        query GetLaunchAppData(${'$'}vpcId: String!, ${'$'}locale: String!, ${'$'}appIds: [String]!) {
-          apps(vpcId: ${'$'}vpcId, language: ${'$'}locale, appIds: ${'$'}appIds) {
-            items { ${launchMetadataFields(includeAppStore)} }
-          }
-        }
-    """.trimIndent()
-
-    private fun launchMetadataByVariantQuery(includeAppStore: Boolean): String = """
-        query GetLaunchVariantData(${'$'}vpcId: String!, ${'$'}locale: String!, ${'$'}variantIds: [Int]!) {
-          apps(vpcId: ${'$'}vpcId, language: ${'$'}locale, variantIds: ${'$'}variantIds) {
-            items { ${launchMetadataFields(includeAppStore)} }
-          }
-        }
-    """.trimIndent()
-
-    private fun launchMetadataFields(includeAppStore: Boolean): String = """
-        id
-        title
-        shortDescription
-        longDescription
-        publisherName
-        images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
-        computedValues { paymentModels { __typename } }
-        variants {
-          ${gfnVariantMetadataFields(includeAppStore)}
-        }
-        gfn { playType playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
-    """.trimIndent()
 
     private fun catalogQuery(hasSearch: Boolean, includeAppStore: Boolean): String {
         val appFields = """
@@ -3350,11 +3351,14 @@ class GfnSessionRepository(
             useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
         )
         val profile = settings.requestProfile()
+        val controllerCapabilities = gfnControllerCapabilities(appLaunchMode)
         return buildJsonObject {
             putJsonObject("sessionRequestData") {
                 put("appId", appId)
                 if (internalTitle.isBlank()) put("internalTitle", JsonNull) else put("internalTitle", internalTitle)
-                putJsonArray("availableSupportedControllers") {}
+                putJsonArray("availableSupportedControllers") {
+                    controllerCapabilities.supportedControllerTypes.forEach { add(JsonPrimitive(it)) }
+                }
                 put("networkTestSessionId", JsonNull)
                 put("parentSessionId", JsonNull)
                 put("clientIdentification", "GFN-PC")
@@ -3372,7 +3376,7 @@ class GfnSessionRepository(
                 put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
                 put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
                 put("surroundAudioInfo", 0)
-                put("remoteControllersBitmap", 0)
+                put("remoteControllersBitmap", controllerCapabilities.remoteControllersBitmap)
                 put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
                 put("enhancedStreamMode", 1)
                 put("appLaunchMode", appLaunchMode)

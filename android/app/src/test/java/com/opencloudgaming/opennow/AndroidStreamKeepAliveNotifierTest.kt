@@ -4,8 +4,6 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -84,33 +82,6 @@ class AndroidStreamKeepAliveNotifierTest {
         assertFalse(
             shouldKeepAndroidStreamAlive(
                 OpenNowUiState(page = AppPage.Home, streamStatus = "streaming", streamSession = readySession()),
-            ),
-        )
-    }
-
-    @Test
-    fun capturesExactReadySessionForTaskRemovalCleanup() {
-        val session = readySession()
-        val settings = StreamSettings(resolution = "2560x1440", fps = 120)
-        val request = activeStreamShutdownRequest(
-            OpenNowUiState(
-                page = AppPage.Stream,
-                streamStatus = "streaming",
-                streamSession = session,
-                activeStreamSettings = settings,
-            ),
-        )
-
-        assertNotNull(request)
-        assertEquals(session, request?.session)
-        assertEquals(settings, request?.settings)
-        assertNull(
-            activeStreamShutdownRequest(
-                OpenNowUiState(
-                    page = AppPage.Home,
-                    streamStatus = "streaming",
-                    streamSession = session,
-                ),
             ),
         )
     }

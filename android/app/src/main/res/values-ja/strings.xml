@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">選択枠のアニメーション</string>
     <string name="settings_live_selected_outlines_desc">選択中のゲーム、メニュー項目、サーバー、ランチャーの選択肢をアニメーション表示します。落ち着いた表示にするにはオフにしてください。</string>
     <string name="settings_absolute_cinema_effects">Absolute Cinema エフェクト</string>
-    <string name="settings_absolute_cinema_effects_desc">選んだインターフェース色を保ったまま、マゼンタと青のアニメーションするフォーカスリングを使います。</string>
+    <string name="settings_absolute_cinema_effects_desc">選んだインターフェース色を保ったまま、オレンジと青のアニメーションするフォーカスリングを使います。</string>
     <string name="settings_im_crazy">とことんやる</string>
     <string name="settings_im_crazy_desc">Absolute Cinema をインターフェース全体に広げます。カーソルを合わせたアートワークやフォーカス中のアートワーク、説明文、操作要素などにも効果がかかります。</string>
     <string name="settings_show_favorite_icon">ゲームカードにお気に入りアイコンを表示</string>

@@ -426,6 +426,8 @@ internal val LocalGameCardBordersEnabled = staticCompositionLocalOf { false }
 internal val LocalActiveSelectionEnabled = staticCompositionLocalOf { true }
 internal val LocalAbsoluteCinemaEffects = staticCompositionLocalOf { false }
 internal val LocalAbsoluteCinemaEverywhere = staticCompositionLocalOf { false }
+/** Selects the classic blue/orange palette only inside animated Absolute Cinema frames. */
+internal val LocalAbsoluteCinemaPalette = staticCompositionLocalOf { false }
 internal val LocalVibrationEnabled = staticCompositionLocalOf { true }
 // Leave a full control-height runway below the last item so mobile focus/hover frames do not
 // collide with the viewport edge in Settings, Library, or Store.
@@ -502,6 +504,7 @@ fun OpenNowTheme(
         LocalActiveSelectionEnabled provides selectionEffectStyle.enabled,
         LocalAbsoluteCinemaEffects provides selectionEffectStyle.absoluteCinemaActive,
         LocalAbsoluteCinemaEverywhere provides selectionEffectStyle.absoluteCinemaEverywhere,
+        LocalAbsoluteCinemaPalette provides (settings.uiAccent == UiAccent.AbsoluteCinema),
         LocalVibrationEnabled provides settings.vibrationEnabled,
     ) {
         MaterialTheme(
@@ -1625,6 +1628,11 @@ private fun TopStatusBar(
             .padding(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 5.dp),
         shape = RoundedCornerShape(24.dp),
         color = barScrim,
+        border = if (LocalGameCardBordersEnabled.current) {
+            BorderStroke(0.5.dp, Color.White)
+        } else {
+            null
+        },
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
     ) {

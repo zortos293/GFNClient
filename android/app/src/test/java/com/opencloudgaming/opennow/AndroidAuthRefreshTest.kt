@@ -1,7 +1,10 @@
 package com.opencloudgaming.opennow
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -68,6 +71,53 @@ class AndroidAuthRefreshTest {
         assertTrue(missingClientToken.needsBackgroundRefresh(now))
         assertTrue(expiringClientToken.needsBackgroundRefresh(now))
     }
+
+    @Test
+    fun bestEffortRefreshFallsBackWhenRefreshFails() = runBlocking {
+        val fallback = session("fallback-token")
+        var reported: Throwable? = null
+
+        val result = refreshedSessionOrFallback(
+            fallback = fallback,
+            refresh = { error("Token refresh failed") },
+            onFailure = { reported = it },
+        )
+
+        assertSame(fallback, result)
+        assertEquals("Token refresh failed", reported?.message)
+    }
+
+    @Test
+    fun bestEffortRefreshStillPropagatesCancellation() = runBlocking {
+        val cancellation = CancellationException("cancelled")
+
+        val thrown = runCatching {
+            refreshedSessionOrFallback(
+                fallback = session("fallback-token"),
+                refresh = { throw cancellation },
+            )
+        }.exceptionOrNull()
+
+        assertSame(cancellation, thrown)
+    }
+
+    private fun session(accessToken: String): AuthSession = AuthSession(
+        provider = LoginProvider(
+            idpId = "test-idp",
+            code = "TEST",
+            displayName = "Test",
+            streamingServiceUrl = "https://example.invalid",
+        ),
+        tokens = AuthTokens(
+            accessToken = accessToken,
+            expiresAt = 0L,
+        ),
+        user = AuthUser(
+            userId = "test-user",
+            displayName = "Test user",
+            membershipTier = "FREE",
+        ),
+    )
 
     private fun tokens(
         expiresAt: Long,

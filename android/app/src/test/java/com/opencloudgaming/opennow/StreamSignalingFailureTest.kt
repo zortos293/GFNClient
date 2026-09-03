@@ -19,29 +19,19 @@ class StreamSignalingFailureTest {
     }
 
     @Test
-    fun goneSessionAndPreStreamNormalServerCloseRemainTerminal() {
+    fun onlyExplicitProviderGoneResponseIsTerminal() {
         assertEquals(
             SignalingFailureDisposition.SessionEnded,
             signalingFailureDisposition("http=410 Gone"),
         )
-        assertEquals(
-            SignalingFailureDisposition.SessionEnded,
-            signalingFailureDisposition("code=1000", normalClosureMeansSessionEnded = true),
-        )
+        assertEquals(SignalingFailureDisposition.RetryTransport, signalingFailureDisposition("code=1000"))
     }
 
     @Test
-    fun normalServerCloseAfterStableMediaRetriesInsteadOfEndingSession() {
-        assertTrue(normalSignalingClosureMeansSessionEnded(transportHasStableMedia = false))
-        assertFalse(normalSignalingClosureMeansSessionEnded(transportHasStableMedia = true))
+    fun normalServerCloseAlwaysRetriesInsteadOfEndingSession() {
         assertEquals(
             SignalingFailureDisposition.RetryTransport,
-            signalingFailureDisposition(
-                "code=1000",
-                normalClosureMeansSessionEnded = normalSignalingClosureMeansSessionEnded(
-                    transportHasStableMedia = true,
-                ),
-            ),
+            signalingFailureDisposition("code=1000"),
         )
     }
 

@@ -17,4 +17,17 @@ class PhysicalMouseDevicesTest {
         assertFalse(isMouseInputSource(InputDevice.SOURCE_TOUCHSCREEN))
         assertFalse(isMouseInputSource(InputDevice.SOURCE_GAMEPAD or InputDevice.SOURCE_JOYSTICK))
     }
+
+    @Test
+    fun recognizesOnlyAlphabeticKeyboardSourcesAsPhysicalTypingDevices() {
+        assertTrue(
+            isKeyboardInputSource(InputDevice.SOURCE_KEYBOARD, InputDevice.KEYBOARD_TYPE_ALPHABETIC),
+        )
+        assertFalse(
+            isKeyboardInputSource(InputDevice.SOURCE_KEYBOARD, InputDevice.KEYBOARD_TYPE_NON_ALPHABETIC),
+        )
+        assertFalse(
+            isKeyboardInputSource(InputDevice.SOURCE_GAMEPAD, InputDevice.KEYBOARD_TYPE_ALPHABETIC),
+        )
+    }
 }

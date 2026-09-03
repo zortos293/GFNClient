@@ -367,6 +367,10 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         legacyCropStreamToFill = false,
         stretchStreamToFit = stretchStreamToFit,
         streamPresentationProfileVersion = streamPresentationProfileVersion.coerceAtLeast(STREAM_PRESENTATION_PROFILE_VERSION),
+        showSessionReportAfterStream =
+            if (sessionReportDefaultVersion < SESSION_REPORT_DEFAULT_VERSION) false
+            else showSessionReportAfterStream,
+        sessionReportDefaultVersion = SESSION_REPORT_DEFAULT_VERSION,
         nerdCatalogBackgroundUri = nerdCatalogBackgroundUri?.trim()?.takeIf { it.isNotBlank() },
         localAppPackageNames = normalizeLocalAppPackageNames(localAppPackageNames),
         absoluteCinemaEverywhere = absoluteCinemaEffects && absoluteCinemaEverywhere,

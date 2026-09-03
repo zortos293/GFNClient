@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.toComposePathEffect
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import kotlin.math.PI
 import kotlin.math.floor
 import kotlin.math.sin
@@ -90,6 +91,17 @@ internal fun controllerFocusFlickerAlpha(progress: Float): Float {
         ).coerceIn(0.72f, 1f)
 }
 
+/** Keeps the classic Cinema palette scoped to animated energy instead of static theme borders. */
+internal fun controllerFocusEnergyColors(
+    absoluteCinemaPalette: Boolean,
+    tint: Color?,
+    secondaryTint: Color?,
+): Pair<Color, Color> = if (absoluteCinemaPalette) {
+    OpenNowPalette.AccentCinemaOrange to OpenNowPalette.AccentCinemaBlue
+} else {
+    (tint ?: Color.White) to (secondaryTint ?: tint?.focusShade() ?: Color.White)
+}
+
 /**
  * Draws on the exact bounds of an unclipped parent [BoxScope]. Keep this as a sibling of the
  * clipped card or artwork so the core follows its edge and the glow remains visible outside it.
@@ -105,6 +117,7 @@ internal fun BoxScope.ControllerFocusFrame(
     // This component used to fall back to a solid white outline. Borders now belong exclusively
     // to the opt-in Absolute Cinema mode.
     if (!visible || !LocalAbsoluteCinemaEffects.current) return
+    val absoluteCinemaPalette = LocalAbsoluteCinemaPalette.current
     val animateEnergy = shouldAnimateControllerFocusFrame(
         absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current,
         reduceMotion = LocalReduceMotion.current,
@@ -191,10 +204,21 @@ internal fun BoxScope.ControllerFocusFrame(
             )
         }
 
-        val firstColor = tint ?: Color.White
-        val firstHotColor = tint?.focusHighlight() ?: Color.White
-        val secondColor = secondaryTint ?: tint?.focusShade() ?: Color.White
-        val secondHotColor = secondaryTint?.focusHighlight() ?: tint ?: Color.White
+        val (firstColor, secondColor) = controllerFocusEnergyColors(
+            absoluteCinemaPalette = absoluteCinemaPalette,
+            tint = tint,
+            secondaryTint = secondaryTint,
+        )
+        val firstHotColor = if (absoluteCinemaPalette) {
+            Color(0xffffd166)
+        } else {
+            tint?.focusHighlight() ?: Color.White
+        }
+        val secondHotColor = if (absoluteCinemaPalette) {
+            Color(0xffd9f8ff)
+        } else {
+            secondaryTint?.focusHighlight() ?: tint ?: Color.White
+        }
         drawEnergyArc(firstColor, firstHotColor, fireArc, fireStatic)
         drawEnergyArc(secondColor, secondHotColor, blueArc, blueStatic)
 

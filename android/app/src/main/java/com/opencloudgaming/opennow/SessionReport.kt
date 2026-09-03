@@ -69,8 +69,14 @@ internal class StreamSessionReportAccumulator(
     private var jitterTotal = 0.0
     private var fpsCount = 0
     private var fpsTotal = 0L
+    private var receivedFpsCount = 0
+    private var receivedFpsTotal = 0L
+    private var decodedFpsCount = 0
+    private var decodedFpsTotal = 0L
     private var decodeCount = 0
     private var decodeTotal = 0.0
+    private var consecutiveDecoderOverloadSamples = 0
+    private var decoderOverloadDetected = false
     private var packetLossSampleCount = 0
     private var packetLossSampleTotal = 0.0
     private var packetsLost = 0L
@@ -109,9 +115,27 @@ internal class StreamSessionReportAccumulator(
             fpsCount += 1
             fpsTotal += value
         }
+        stats.receivedFps?.takeIf { it > 0 }?.let { value ->
+            receivedFpsCount += 1
+            receivedFpsTotal += value
+        }
+        stats.decodedFps?.takeIf { it > 0 }?.let { value ->
+            decodedFpsCount += 1
+            decodedFpsTotal += value
+        }
         stats.decodeMs?.takeIf { it >= 0.0 }?.let { value ->
             decodeCount += 1
             decodeTotal += value
+        }
+        consecutiveDecoderOverloadSamples = if (
+            isDecoderOverloadSample(stats, launchProfile.initialSettings.fps)
+        ) {
+            consecutiveDecoderOverloadSamples + 1
+        } else {
+            0
+        }
+        if (consecutiveDecoderOverloadSamples >= SESSION_REPORT_DECODER_OVERLOAD_SAMPLES) {
+            decoderOverloadDetected = true
         }
         val lostDelta = stats.packetsLostDelta
         val receivedDelta = stats.packetsReceivedDelta
@@ -148,6 +172,8 @@ internal class StreamSessionReportAccumulator(
         val averageBitrateKbps = averageLong(bitrateTotal, bitrateCount)?.roundToInt()
         val averageJitterMs = averageDouble(jitterTotal, jitterCount)
         val averageFps = averageLong(fpsTotal, fpsCount)
+        val averageReceivedFps = averageLong(receivedFpsTotal, receivedFpsCount)
+        val averageDecodedFps = averageLong(decodedFpsTotal, decodedFpsCount)
         val averageDecodeMs = averageDouble(decodeTotal, decodeCount)
         val packetLossPct = if (hasPacketDeltas && packetsLost + packetsReceived > 0L) {
             packetsLost.toDouble() / (packetsLost + packetsReceived).toDouble() * 100.0
@@ -189,6 +215,9 @@ internal class StreamSessionReportAccumulator(
             wifiBand = wifiBand,
             estimatedLinkDownstreamKbps = estimatedLinkDownstreamKbps,
             lowestNetworkBars = lowestNetworkBars,
+            averageReceivedFps = averageReceivedFps,
+            averageDecodedFps = averageDecodedFps,
+            decoderOverloadDetected = decoderOverloadDetected,
         )
         return SessionReport(
             gameTitle = launchProfile.gameTitle.ifBlank { "Cloud session" },
@@ -451,6 +480,9 @@ internal fun buildSessionRecommendations(
     wifiBand: AndroidWifiBand,
     estimatedLinkDownstreamKbps: Int?,
     lowestNetworkBars: Int?,
+    averageReceivedFps: Double? = null,
+    averageDecodedFps: Double? = null,
+    decoderOverloadDetected: Boolean = false,
 ): List<SessionReportFinding> = buildList {
     when {
         networkKind == AndroidNetworkKind.Wifi && wifiBand == AndroidWifiBand.TwoPointFourGhz -> add(
@@ -517,14 +549,31 @@ internal fun buildSessionRecommendations(
         )
     }
     val frameBudgetMs = 1000.0 / targetFps.coerceAtLeast(1)
+    val averageDecoderDeficit = averageReceivedFps != null &&
+        averageDecodedFps != null &&
+        averageReceivedFps >= targetFps * 0.85 &&
+        averageDecodedFps <= averageReceivedFps * 0.80
     if (
-        (averageFps != null && averageFps < targetFps * 0.85) &&
-        (averageDecodeMs ?: 0.0) > frameBudgetMs * 0.85
+        decoderOverloadDetected ||
+        averageDecoderDeficit ||
+        (
+            (averageFps != null && averageFps < targetFps * 0.85) &&
+                (averageDecodeMs ?: 0.0) > frameBudgetMs * 0.85
+        )
     ) {
         add(
             SessionReportFinding(
-                title = "Reduce device decode load",
-                detail = "The decoder used much of the ${"%.1f".format(java.util.Locale.US, frameBudgetMs)} ms frame budget. A lower resolution/FPS profile or the reliable H264 codec may render more consistently.",
+                title = "Decoder could not keep up",
+                detail = buildString {
+                    append("OpenNOW detected a sustained local decoder bottleneck")
+                    if (averageReceivedFps != null && averageDecodedFps != null) {
+                        append(
+                            ": the stream delivered ${"%.1f".format(java.util.Locale.US, averageReceivedFps)} FPS " +
+                                "while the decoder produced ${"%.1f".format(java.util.Locale.US, averageDecodedFps)} FPS",
+                        )
+                    }
+                    append(". Use H264 or the Recommended profile; this is device decode load, not the cloud game's frame rate.")
+                },
                 kind = SessionReportFindingKind.Warning,
             ),
         )
@@ -537,7 +586,11 @@ internal fun buildSessionRecommendations(
             ),
         )
     }
+}.sortedBy { finding ->
+    if (finding.title == "Decoder could not keep up") 0 else 1
 }.take(MAX_SESSION_REPORT_RECOMMENDATIONS)
+
+private const val SESSION_REPORT_DECODER_OVERLOAD_SAMPLES = 3
 
 private fun StreamRuntimeStats.hasSessionReportValues(): Boolean =
     pingMs != null ||

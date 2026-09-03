@@ -158,6 +158,64 @@ class SessionReportTest {
     }
 
     @Test
+    fun sustainedReceivedVersusDecodedDeficitIsReportedAsDecoderFailure() {
+        val settings = StreamSettings(resolution = "1920x1080", fps = 60, codec = VideoCodec.H265)
+        val accumulator = StreamSessionReportAccumulator(
+            launchProfile = StreamReportLaunchProfile(
+                gameTitle = "Decoder Test",
+                selectedSettings = settings,
+                eligibleSettings = settings,
+                initialSettings = settings,
+            ),
+            startedAtMs = 0L,
+        )
+
+        repeat(3) {
+            accumulator.record(
+                StreamRuntimeStats(
+                    fps = 34,
+                    receivedFps = 60,
+                    decodedFps = 34,
+                    decodeMs = 38.0,
+                ),
+            )
+        }
+
+        val finding = requireNotNull(
+            requireNotNull(accumulator.finish(3_000L))
+                .recommendations
+                .firstOrNull { it.title == "Decoder could not keep up" },
+        )
+        assertTrue(finding.detail.contains("60.0 FPS"))
+        assertTrue(finding.detail.contains("34.0 FPS"))
+        assertTrue(finding.detail.contains("device decode load"))
+    }
+
+    @Test
+    fun decoderFailureRemainsVisibleWhenNetworkAlsoHasWarnings() {
+        val recommendations = buildSessionRecommendations(
+            averagePingMs = 180,
+            packetLossPct = 4.0,
+            averageJitterMs = 35.0,
+            averageFps = 34.0,
+            averageDecodeMs = 38.0,
+            targetFps = 60,
+            targetBitrateMbps = 75,
+            averageBitrateKbps = 8_000,
+            networkKind = AndroidNetworkKind.Wifi,
+            wifiBand = AndroidWifiBand.TwoPointFourGhz,
+            estimatedLinkDownstreamKbps = 12_000,
+            lowestNetworkBars = 1,
+            averageReceivedFps = 60.0,
+            averageDecodedFps = 34.0,
+            decoderOverloadDetected = true,
+        )
+
+        assertEquals(4, recommendations.size)
+        assertEquals("Decoder could not keep up", recommendations.first().title)
+    }
+
+    @Test
     fun wifiFrequencyIsClassifiedWithoutGuessing() {
         assertEquals(AndroidWifiBand.TwoPointFourGhz, androidWifiBandForFrequency(2_412))
         assertEquals(AndroidWifiBand.FiveGhz, androidWifiBandForFrequency(5_220))

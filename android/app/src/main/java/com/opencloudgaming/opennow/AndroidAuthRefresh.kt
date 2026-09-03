@@ -10,6 +10,7 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequest
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.CancellationException
 import java.util.concurrent.TimeUnit
 
 private const val AUTH_REFRESH_WORK_NAME = "opennow-auth-token-refresh"
@@ -34,6 +35,25 @@ internal fun authenticationRefreshClientIds(
         browserClientId,
         deviceClientId,
     ).distinct()
+
+/**
+ * A best-effort refresh must never crash an unrelated authenticated action. The existing session
+ * can still produce the normal provider/API error, while coroutine cancellation must keep its
+ * structured-concurrency semantics.
+ */
+internal suspend fun refreshedSessionOrFallback(
+    fallback: AuthSession,
+    refresh: suspend () -> AuthSession?,
+    onFailure: (Throwable) -> Unit = {},
+): AuthSession =
+    try {
+        refresh() ?: fallback
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        onFailure(error)
+        fallback
+    }
 
 internal object AndroidAuthRefreshScheduler {
     fun schedule(context: Context) {

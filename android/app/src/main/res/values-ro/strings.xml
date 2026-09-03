@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">Contururi animate la selecție</string>
     <string name="settings_live_selected_outlines_desc">Animează jocurile selectate, elementele de meniu, alegerile de server și opțiunile de lansator. Dezactivează pentru o selecție mai discretă.</string>
     <string name="settings_absolute_cinema_effects">Efecte Absolute Cinema</string>
-    <string name="settings_absolute_cinema_effects_desc">Folosește inele de focalizare animate magenta și albastre, păstrând culoarea de interfață aleasă de tine.</string>
+    <string name="settings_absolute_cinema_effects_desc">Folosește inele de focalizare animate portocalii și albastre, păstrând culoarea de interfață aleasă de tine.</string>
     <string name="settings_im_crazy">Sunt nebun</string>
     <string name="settings_im_crazy_desc">Lasă Absolute Cinema liber pe toată interfața. Grafica, descrierile, comenzile și altele primesc efectul la trecerea cu cursorul și la focalizare.</string>
     <string name="settings_show_favorite_icon">Afișează pictograma de favorit pe carduri</string>

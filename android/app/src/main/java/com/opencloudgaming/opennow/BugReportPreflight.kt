@@ -71,6 +71,8 @@ internal fun buildBugReportPreflightDeck(
     val averageJitterMs = report?.averageJitterMs ?: evidence.runtimeStats.jitterMs
     val averageFps = report?.averageFps ?: evidence.runtimeStats.fps?.toDouble()
     val averageDecodeMs = report?.averageDecodeMs ?: evidence.runtimeStats.decodeMs
+    val averageReceivedFps = evidence.runtimeStats.receivedFps?.toDouble()
+    val averageDecodedFps = evidence.runtimeStats.decodedFps?.toDouble()
     val averageBitrateKbps = report?.averageBitrateKbps ?: evidence.runtimeStats.bitrateKbps
     val downstreamKbps = report?.estimatedLinkDownstreamKbps
         ?: evidence.runtimeDiagnostics.networkDownstreamKbps
@@ -87,8 +89,14 @@ internal fun buildBugReportPreflightDeck(
         wifiBand = wifiBand,
         estimatedLinkDownstreamKbps = downstreamKbps,
         lowestNetworkBars = evidence.runtimeDiagnostics.networkSignalBars,
+        averageReceivedFps = averageReceivedFps,
+        averageDecodedFps = averageDecodedFps,
+        decoderOverloadDetected = isDecoderOverloadSample(
+            evidence.runtimeStats,
+            evidence.requestedSettings.fps,
+        ),
     )
-    val deviceRecommendationTitles = setOf("Reduce device decode load")
+    val deviceRecommendationTitles = setOf("Reduce device decode load", "Decoder could not keep up")
     val networkRecommendations = recommendations.filterNot { it.title in deviceRecommendationTitles }
     val deviceRecommendations = recommendations.filter { it.title in deviceRecommendationTitles }
 
@@ -450,7 +458,7 @@ internal fun bugReportKnownIssueBlock(
             key = "experimental-native-streamer",
             title = "Turn off Native streamer first",
             action = "Restart the stream with Native streamer off, then reproduce the issue.",
-        )
+        ).withRepeatedLagReportWarning(reportText)
     }
 
     val connection = deck.cards.firstOrNull {
@@ -470,7 +478,7 @@ internal fun bugReportKnownIssueBlock(
             action =
                 "Switch Region to Auto, start a new cloud session, and reproduce the issue. " +
                     "Reports from manually selected servers may not be investigated.",
-        )
+        ).withRepeatedLagReportWarning(reportText)
     }
     if (connection != null && reportText.containsAnyWholeTerm(BUG_REPORT_NETWORK_SYMPTOM_PATTERNS)) {
         val twoPointFourGhz = connection.facts.any { it.contains("2.4 GHz", ignoreCase = true) }
@@ -483,7 +491,7 @@ internal fun bugReportKnownIssueBlock(
                 connection.recommendations.firstOrNull()?.compactPreflightAction()
                     ?: "Fix the measured connection warning, then reproduce the issue."
             },
-        )
+        ).withRepeatedLagReportWarning(reportText)
     }
 
     val video = deck.cards.firstOrNull {
@@ -503,7 +511,7 @@ internal fun bugReportKnownIssueBlock(
             action = recommendationOverride?.compactPreflightAction()
                 ?: video.recommendations.firstOrNull()?.compactPreflightAction()
                 ?: "Apply the video or device fix shown above, then reproduce the issue.",
-        )
+        ).withRepeatedLagReportWarning(reportText)
     }
 
     val input = deck.cards.firstOrNull {
@@ -515,9 +523,17 @@ internal fun bugReportKnownIssueBlock(
             title = "Input path issue detected",
             action = input.recommendations.firstOrNull()?.compactPreflightAction()
                 ?: "Reconnect the input path and reproduce the issue before reporting.",
-        )
+        ).withRepeatedLagReportWarning(reportText)
     }
     return null
+}
+
+private fun BugReportKnownIssueBlock.withRepeatedLagReportWarning(reportText: String): BugReportKnownIssueBlock {
+    if (!reportText.containsAnyWholeTerm(BUG_REPORT_EXACT_LAG_PATTERN)) return this
+    return copy(
+        action = action.trimEnd() +
+            " Repeating a lag report after this cause has already been identified, without first trying the requested step, may result in a bug-reporting ban.",
+    )
 }
 
 internal fun bugReportKnownIssueAllowsSubmission(
@@ -540,6 +556,8 @@ private val BUG_REPORT_NETWORK_SYMPTOM_PATTERNS = bugReportTermPatterns(
     "lag", "laggy", "latency", "ping", "delay", "delayed", "jitter", "packet loss",
     "buffering", "stutter", "stuttering", "choppy", "pixelated", "blurry", "slow",
 )
+
+private val BUG_REPORT_EXACT_LAG_PATTERN = bugReportTermPatterns("lag")
 
 private val BUG_REPORT_VIDEO_SYMPTOM_PATTERNS = bugReportTermPatterns(
     "fps", "frame", "frames", "video", "decoder", "decode", "freeze", "frozen", "blurry",

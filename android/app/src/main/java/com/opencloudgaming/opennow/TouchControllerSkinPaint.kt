@@ -29,6 +29,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -248,78 +249,84 @@ private fun DrawScope.drawTouchDpad(
     when (form.dpadShape) {
         TouchDpadShape.Cross -> {
             val corner = CornerRadius(8.dp.toPx(), 8.dp.toPx())
-            val cross = Path().apply {
-                addRoundRect(
-                    RoundRect(
-                        left = (width - armPx) / 2f,
-                        top = 0f,
-                        right = (width + armPx) / 2f,
-                        bottom = height,
-                        cornerRadius = corner,
-                    ),
-                )
-                addRoundRect(
-                    RoundRect(
-                        left = 0f,
-                        top = (height - armPx) / 2f,
-                        right = width,
-                        bottom = (height + armPx) / 2f,
-                        cornerRadius = corner,
-                    ),
-                )
+            fun crossPath(inset: Float): Path {
+                val vertical = Path().apply {
+                    addRoundRect(
+                        RoundRect(
+                            left = (width - armPx) / 2f + inset,
+                            top = inset,
+                            right = (width + armPx) / 2f - inset,
+                            bottom = height - inset,
+                            cornerRadius = corner,
+                        ),
+                    )
+                }
+                val horizontal = Path().apply {
+                    addRoundRect(
+                        RoundRect(
+                            left = inset,
+                            top = (height - armPx) / 2f + inset,
+                            right = width - inset,
+                            bottom = (height + armPx) / 2f - inset,
+                            cornerRadius = corner,
+                        ),
+                    )
+                }
+                // Stroking two overlapping rectangles leaves their complete outlines visible at
+                // the hub, which looks like a sharp square sitting on top of the d-pad. Union them
+                // first so the classic skin has one continuous silhouette and one outer border.
+                return Path.combine(PathOperation.Union, vertical, horizontal)
             }
+
+            // Keep the stroke inside the canvas and reuse this one union for fill, clipping and
+            // outline. D-pad presses only invalidate paint; they should not rebuild extra paths.
+            val cross = crossPath(borderWidth / 2f)
             if (colors.dpadFill.alpha > 0f) drawPath(cross, colors.dpadFill)
 
             val pressedPath = Path()
             if (up) {
-                pressedPath.addRoundRect(
-                    RoundRect(
+                pressedPath.addRect(
+                    Rect(
                         left = (width - armPx) / 2f,
                         top = 0f,
                         right = (width + armPx) / 2f,
-                        bottom = height / 2f,
-                        topLeftCornerRadius = corner,
-                        topRightCornerRadius = corner,
+                        bottom = center.y,
                     ),
                 )
             }
             if (down) {
-                pressedPath.addRoundRect(
-                    RoundRect(
+                pressedPath.addRect(
+                    Rect(
                         left = (width - armPx) / 2f,
-                        top = height / 2f,
+                        top = center.y,
                         right = (width + armPx) / 2f,
                         bottom = height,
-                        bottomLeftCornerRadius = corner,
-                        bottomRightCornerRadius = corner,
                     ),
                 )
             }
             if (left) {
-                pressedPath.addRoundRect(
-                    RoundRect(
+                pressedPath.addRect(
+                    Rect(
                         left = 0f,
                         top = (height - armPx) / 2f,
-                        right = width / 2f,
+                        right = center.x,
                         bottom = (height + armPx) / 2f,
-                        topLeftCornerRadius = corner,
-                        bottomLeftCornerRadius = corner,
                     ),
                 )
             }
             if (right) {
-                pressedPath.addRoundRect(
-                    RoundRect(
-                        left = width / 2f,
+                pressedPath.addRect(
+                    Rect(
+                        left = center.x,
                         top = (height - armPx) / 2f,
                         right = width,
                         bottom = (height + armPx) / 2f,
-                        topRightCornerRadius = corner,
-                        bottomRightCornerRadius = corner,
                     ),
                 )
             }
-            drawPath(pressedPath, colors.pressedFill)
+            clipPath(cross) {
+                drawPath(pressedPath, colors.pressedFill)
+            }
             drawPath(cross, border, style = Stroke(width = borderWidth))
         }
 
@@ -341,7 +348,9 @@ private fun DrawScope.drawTouchDpad(
                     drawTouchSurface(
                         colors = colors,
                         form = form,
-                        pressed = isPressed,
+                        // Keep the four-key silhouette steady. Expanding one pressed outline (and
+                        // its glow) into the center gap makes neighbouring directions collide.
+                        pressed = false,
                         fill = if (isPressed) colors.pressedFill else colors.dpadFill,
                         rim = false,
                         pathFor = key,
@@ -399,7 +408,9 @@ private fun DrawScope.drawTouchDpad(
                     drawTouchSurface(
                         colors = colors,
                         form = form,
-                        pressed = isPressed,
+                        // The fill and glyph carry directional feedback; a thicker pressed edge
+                        // would visually run into the adjacent blades at the hub.
+                        pressed = false,
                         fill = if (isPressed) colors.pressedFill else colors.dpadFill,
                         rim = false,
                         pathFor = blade,

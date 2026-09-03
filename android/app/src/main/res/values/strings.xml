@@ -261,6 +261,14 @@
     <string name="stream_guide_press_done">Press Done</string>
     <string name="stream_controller_detected">Controller detected</string>
     <string name="stream_controller_hidden">The on-screen controller was hidden because a physical controller is connected.</string>
+    <string name="stream_keyboard_mouse_detected">Keyboard or mouse detected</string>
+    <string name="stream_keyboard_mouse_detected_body">You’re using native touch. Switch to keyboard and mouse for this stream?</string>
+    <string name="stream_keyboard_mouse_disconnected">Keyboard and mouse disconnected</string>
+    <string name="stream_keyboard_mouse_disconnected_body">You’re using keyboard and mouse. Switch back to native touch for this stream?</string>
+    <string name="stream_input_switch_keyboard_mouse">Switch to keyboard &amp; mouse</string>
+    <string name="stream_input_stay_native_touch">Stay on native touch</string>
+    <string name="stream_input_switch_native_touch">Switch to native touch</string>
+    <string name="stream_input_keep_keyboard_mouse">Keep keyboard &amp; mouse</string>
     <string name="common_dont_show_again">Don\'t show again</string>
     <string name="store_landscape_new_games_hide">Hide New games added in landscape</string>
     <string name="store_landscape_new_games_hide_title">Hide this landscape hero?</string>
@@ -304,6 +312,10 @@
     <string name="stream_panel_key_esc">Esc</string>
     <string name="stream_panel_key_enter">Enter</string>
     <string name="stream_panel_key_backspace">⌫</string>
+    <item name="stream_panel_clear" type="string">@string/dev_action_clear</item>
+    <string name="stream_keyboard_clear_confirm_title">Clear stream text?</string>
+    <string name="stream_keyboard_clear_confirm_body">This clears the focused text field in the streamed game.</string>
+    <string name="stream_keyboard_clear_never_ask_again">Never, ever ask me again</string>
     <string name="stream_panel_controller_mouse">Controller mouse</string>
     <string name="stream_panel_controller_mouse_summary">Right stick · A click · B right-click</string>
     <string name="stream_panel_finger_mouse">Finger mouse</string>
@@ -321,7 +333,7 @@
     <string name="stream_panel_vibration">Vibration</string>
     <string name="stream_panel_vibration_summary">Controller rumble when available; device haptics otherwise</string>
     <string name="settings_haptics_output">Rumble output</string>
-    <string name="settings_haptics_output_desc">Some handhelds report a rumble motor on their built-in pad that is not wired to anything. Force the phone motor if in-game rumble stays silent.</string>
+    <string name="settings_haptics_output_desc">Some handhelds report a rumble motor that is not wired to anything. Force Phone if in-game rumble stays silent. Force Controller to use standard rumble on PlayStation controllers; games will show Xbox prompts while forced.</string>
     <string name="settings_haptics_output_auto">Auto</string>
     <string name="settings_haptics_output_controller">Controller</string>
     <string name="settings_haptics_output_device">Phone</string>
@@ -831,6 +843,9 @@
     <string name="bug_report_send_anyway">Send anyway</string>
     <string name="bug_report_sending">Sending…</string>
     <string name="bug_report_sent">Bug report sent</string>
+    <string name="bug_report_id_label">Report ID</string>
+    <string name="bug_report_copy_id">Copy report ID</string>
+    <string name="bug_report_id_copied">Report ID copied</string>
     <string name="bug_report_still_happening">Still happening after any matched suggestion? Continue and the measured evidence will be attached automatically.</string>
     <string name="bug_report_title_label">Issue title</string>
     <string name="bug_report_title_placeholder">Stream froze after reconnecting</string>

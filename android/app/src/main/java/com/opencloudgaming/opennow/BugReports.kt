@@ -86,7 +86,7 @@ internal data class AndroidBugReport(
 )
 
 internal data class AndroidBugReportReceipt(
-    val reference: String?,
+    val reference: String,
 )
 
 internal data class AndroidBugReportServerError(
@@ -243,14 +243,29 @@ internal suspend fun uploadAndroidBugReport(
                 message = serverError.message,
             )
         }
-        AndroidBugReportReceipt(reference = parseAndroidBugReportReference(body))
+        parseAndroidBugReportReceipt(body)
     }
 }
+
+internal fun parseAndroidBugReportReceipt(body: String): AndroidBugReportReceipt =
+    AndroidBugReportReceipt(
+        reference = parseAndroidBugReportReference(body)
+            ?: throw AndroidBugReportUploadException(
+                serverCode = "INVALID_RESPONSE",
+                retryable = false,
+                message = "The bug report service did not return a report ID.",
+            ),
+    )
 
 internal fun parseAndroidBugReportReference(body: String): String? = runCatching {
     val json = OpenNowJson.parseToJsonElement(body).jsonObject
     listOf("id", "reportId", "bugReportId")
-        .firstNotNullOfOrNull { key -> json[key]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) }
+        .firstNotNullOfOrNull { key ->
+            json[key]?.jsonPrimitive?.contentOrNull
+                ?.trim()
+                ?.take(MAX_BUG_REPORT_REFERENCE_CHARS)
+                ?.takeIf(String::isNotBlank)
+        }
 }.getOrNull()
 
 internal fun parseAndroidBugReportServerError(
@@ -297,5 +312,6 @@ private fun JsonObject.serverString(key: String): String? =
 private const val MAX_BUG_REPORT_RESPONSE_CHARS = 64 * 1024
 private const val MAX_BUG_REPORT_PUBLIC_MESSAGE_CHARS = 320
 private const val MAX_BUG_REPORT_SERVER_CODE_CHARS = 80
+private const val MAX_BUG_REPORT_REFERENCE_CHARS = 160
 private val ANDROID_BUG_REPORT_REPORTER_ID_REGEX = Regex("^br1_[0-9a-f]{64}$")
 private val BUG_REPORT_RESPONSE_WHITESPACE = Regex("\\s+")

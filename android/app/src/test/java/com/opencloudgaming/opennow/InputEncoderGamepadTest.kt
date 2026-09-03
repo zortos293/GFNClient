@@ -289,6 +289,19 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun forcedControllerRumbleUsesTheXinputCompatiblePlayStationIdentity() {
+        assertEquals(
+            0x0101,
+            androidGamepadConnectionBitmap(
+                controllerId = 0,
+                connected = true,
+                physicalControllerFamily = AndroidControllerFamily.PlayStation,
+                playStationRumbleCompatibility = true,
+            ),
+        )
+    }
+
+    @Test
     fun resolvesHatOnlyControllerMotionAsLeftStick() {
         val axes = AndroidGamepadAxisMapping.resolve(
             raw = AndroidGamepadRawAxes(hatX = -1f, hatY = 0.75f),

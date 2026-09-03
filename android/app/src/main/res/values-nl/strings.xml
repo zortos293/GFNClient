@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">Bewegende selectieranden</string>
     <string name="settings_live_selected_outlines_desc">Animeert geselecteerde spellen, menu-items, serverkeuzes en launcheropties. Schakel dit uit voor rustigere selectie.</string>
     <string name="settings_absolute_cinema_effects">Absolute Cinema-effecten</string>
-    <string name="settings_absolute_cinema_effects_desc">Gebruikt bewegende magenta en blauwe focusringen met behoud van je gekozen interfacekleur.</string>
+    <string name="settings_absolute_cinema_effects_desc">Gebruikt bewegende oranje en blauwe focusringen met behoud van je gekozen interfacekleur.</string>
     <string name="settings_im_crazy">Ik ben gek</string>
     <string name="settings_im_crazy_desc">Laat Absolute Cinema los op de hele interface. Artwork, beschrijvingen, bedieningselementen en meer krijgen het effect bij aanwijzen en focussen.</string>
     <string name="settings_show_favorite_icon">Favorietpictogram op spelkaarten tonen</string>

@@ -366,7 +366,7 @@ internal fun CompletedSessionBugReportDialog(
                         Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
                         Text(stringResource(R.string.bug_report_sent), color = Green, fontWeight = FontWeight.Bold)
                         submission.reference?.let { reference ->
-                            Text("Reference: $reference", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                            CopyableBugReportId(reference)
                         }
                     }
                     !appLocale.bugReportsAllowed -> BugReportLocaleGateCard()

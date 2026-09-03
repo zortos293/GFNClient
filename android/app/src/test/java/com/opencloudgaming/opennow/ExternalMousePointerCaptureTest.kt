@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -101,5 +102,56 @@ class ExternalMousePointerCaptureTest {
         assertTrue(shouldUseAndroidRelativeMouseAxes(relativeDx = 4f, relativeDy = 0f))
         assertTrue(shouldUseAndroidRelativeMouseAxes(relativeDx = 0f, relativeDy = -3f))
         assertFalse(shouldUseAndroidRelativeMouseAxes(relativeDx = 0f, relativeDy = 0f))
+    }
+
+    @Test
+    fun capturedMouseKeepsMatchingRelativeAxesAndRepairsOpposingOnes() {
+        assertEquals(4f, resolveAndroidCapturedMouseAxis(relativeAxis = 4f, capturedAxis = 3f), 0f)
+        assertEquals(-4f, resolveAndroidCapturedMouseAxis(relativeAxis = -4f, capturedAxis = -3f), 0f)
+        assertEquals(3f, resolveAndroidCapturedMouseAxis(relativeAxis = -4f, capturedAxis = 3f), 0f)
+        assertEquals(-3f, resolveAndroidCapturedMouseAxis(relativeAxis = 4f, capturedAxis = -3f), 0f)
+        assertEquals(3f, resolveAndroidCapturedMouseAxis(relativeAxis = 0f, capturedAxis = 3f), 0f)
+    }
+
+    @Test
+    fun detectsEitherCapturedMouseAxisDirectionConflict() {
+        assertTrue(
+            androidCapturedMouseAxesConflict(
+                relativeDx = -4f,
+                relativeDy = 2f,
+                capturedDx = 3f,
+                capturedDy = 2f,
+            ),
+        )
+        assertFalse(
+            androidCapturedMouseAxesConflict(
+                relativeDx = 4f,
+                relativeDy = -2f,
+                capturedDx = 3f,
+                capturedDy = -2f,
+            ),
+        )
+    }
+
+    @Test
+    fun keepsCapturedAndExplicitRelativeMouseMotionUnbounded() {
+        assertTrue(
+            shouldSendExternalMouseAsRelative(
+                capturedPointer = true,
+                hasRelativeAxisMotion = false,
+            ),
+        )
+        assertTrue(
+            shouldSendExternalMouseAsRelative(
+                capturedPointer = false,
+                hasRelativeAxisMotion = true,
+            ),
+        )
+        assertFalse(
+            shouldSendExternalMouseAsRelative(
+                capturedPointer = false,
+                hasRelativeAxisMotion = false,
+            ),
+        )
     }
 }

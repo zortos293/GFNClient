@@ -28,9 +28,11 @@ internal fun nativeTouchModeLabel(mode: NativeTouchMode): String = when (mode) {
     NativeTouchMode.Always -> "Every game"
 }
 
-/** Legacy installs saved Auto by default, so only a post-migration player choice may enable it. */
-internal fun AndroidTouchSettings.effectiveNativeTouchMode(): NativeTouchMode =
-    if (nativeTouchOptedIn) nativeTouchMode else NativeTouchMode.Off
+/**
+ * Preserve a mode already saved by an older release. New installs start in Auto, which remains
+ * limited to catalog variants that explicitly advertise TOUCHSCREEN support.
+ */
+internal fun AndroidTouchSettings.effectiveNativeTouchMode(): NativeTouchMode = nativeTouchMode
 
 internal fun AndroidTouchSettings.withNativeTouchMode(mode: NativeTouchMode): AndroidTouchSettings = copy(
     nativeTouchMode = mode,
@@ -64,16 +66,10 @@ internal fun shouldUseNativeTouchForStream(
     game: GameInfo?,
     streamSettings: StreamSettings,
     preferVirtualController: Boolean,
-    physicalMouseConnected: Boolean = false,
+    preferKeyboardMouse: Boolean = false,
 ): Boolean = !preferVirtualController &&
-    !shouldPhysicalMouseOverrideNativeTouch(mode, physicalMouseConnected) &&
+    !preferKeyboardMouse &&
     shouldUseNativeTouch(mode, game, streamSettings)
-
-/** Auto yields to an attached mouse; Always remains the player's explicit touch-first override. */
-internal fun shouldPhysicalMouseOverrideNativeTouch(
-    mode: NativeTouchMode,
-    physicalMouseConnected: Boolean,
-): Boolean = physicalMouseConnected && mode == NativeTouchMode.Auto
 
 /** One line per session showing the catalog signal and the resulting native-touch decision. */
 internal fun nativeTouchDiagnostics(

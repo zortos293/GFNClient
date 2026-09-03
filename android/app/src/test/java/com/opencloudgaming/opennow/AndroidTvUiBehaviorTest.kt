@@ -94,6 +94,21 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
+    fun absoluteCinemaAnimatedEnergyUsesClassicOrangeAndBlueWithoutTintingStaticBorders() {
+        val staticStyle = AppSettings(uiAccent = UiAccent.AbsoluteCinema).activeSelectionEffectStyle()
+        val (primaryEnergy, secondaryEnergy) = controllerFocusEnergyColors(
+            absoluteCinemaPalette = true,
+            tint = staticStyle.color,
+            secondaryTint = staticStyle.secondaryColor,
+        )
+
+        assertEquals(Color.White, staticStyle.color)
+        assertEquals(Color.White, staticStyle.secondaryColor)
+        assertEquals(OpenNowPalette.AccentCinemaOrange, primaryEnergy)
+        assertEquals(OpenNowPalette.AccentCinemaBlue, secondaryEnergy)
+    }
+
+    @Test
     fun accentPickerRestoresAbsoluteCinemaWithoutEnablingEffects() {
         val accents = selectableUiAccents()
 
@@ -472,6 +487,16 @@ class AndroidTvUiBehaviorTest {
                 touchControlsEnabled = true,
                 suppressedByPhysicalController = false,
                 physicalMouseConnected = true,
+            ),
+        )
+        assertTrue(
+            shouldShowAndroidTouchControls(
+                tvProfile = false,
+                touchInputEnabled = true,
+                touchControlsEnabled = true,
+                suppressedByPhysicalController = false,
+                physicalMouseConnected = true,
+                allowWithPhysicalMouse = true,
             ),
         )
     }

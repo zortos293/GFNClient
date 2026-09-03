@@ -144,6 +144,7 @@ class BugReportPreflightTest {
         assertEquals("network-2.4ghz", block.key)
         assertTrue(block.action.contains("5/6 GHz"))
         assertTrue(block.action.contains("cellular"))
+        assertTrue(block.action.contains("may result in a bug-reporting ban"))
         assertFalse(bugReportKnownIssueAllowsSubmission(block, null))
         assertTrue(bugReportKnownIssueAllowsSubmission(block, block.key))
         assertEquals(
@@ -154,6 +155,32 @@ class BugReportPreflightTest {
                 deck = deck,
             ),
         )
+    }
+
+    @Test
+    fun possibleBanWarningRequiresExactLagWordAndMeasuredCause() {
+        val degradedDeck = buildBugReportPreflightDeck(
+            BugReportPreflightEvidence(
+                requestedSettings = settings,
+                runtimeStats = StreamRuntimeStats(pingMs = 150, packetLossPct = 3.0),
+                runtimeDiagnostics = AndroidRuntimeDiagnosticsSnapshot(
+                    networkKind = AndroidNetworkKind.Wifi,
+                    wifiBand = AndroidWifiBand.TwoPointFourGhz,
+                ),
+            ),
+        )
+        val lagBlock = requireNotNull(
+            bugReportKnownIssueBlock("Lag", "The stream has lag.", degradedDeck),
+        )
+        assertTrue(lagBlock.action.contains("bug-reporting ban"))
+
+        val laggyBlock = requireNotNull(
+            bugReportKnownIssueBlock("Laggy stream", "The stream stutters.", degradedDeck),
+        )
+        assertFalse(laggyBlock.action.contains("bug-reporting ban"))
+
+        val healthyDeck = buildBugReportPreflightDeck(BugReportPreflightEvidence(requestedSettings = settings))
+        assertEquals(null, bugReportKnownIssueBlock("Lag", "The stream has lag.", healthyDeck))
     }
 
     @Test
@@ -233,7 +260,7 @@ class BugReportPreflightTest {
         assertEquals(BugReportPreflightTone.Warning, video.tone)
         assertTrue(video.facts.contains("Software decoder"))
         assertTrue(video.facts.contains("Thermal severe"))
-        assertTrue(titles.contains("Reduce device decode load"))
+        assertTrue(titles.contains("Decoder could not keep up"))
         assertTrue(titles.contains("Let the device cool down"))
         assertTrue(titles.contains("Use a hardware-decoded codec"))
         assertTrue(video.recommendations.any { it.detail.contains("Try H264") })

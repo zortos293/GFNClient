@@ -48,6 +48,20 @@ class InputEncoderKeyboardTest {
     }
 
     @Test
+    fun mapsOverlayBackspaceUsedByClearWhenAndroidReportsNoScanCode() {
+        val backspace = InputEncoder.mapKeyboardPayload(
+            keyCode = KeyEvent.KEYCODE_DEL,
+            unicode = 0,
+            scanCode = 0,
+            timestampUs = 0L,
+        )
+
+        assertNotNull(backspace)
+        assertEquals(0x08, backspace?.keycode)
+        assertEquals(0x000e, backspace?.scancode)
+    }
+
+    @Test
     fun mapsOverlayTextCharactersLikeDesktopTextInput() {
         val upperD = InputEncoder.mapTextCharToKeySpec('D')
         val lowerA = InputEncoder.mapTextCharToKeySpec('a')

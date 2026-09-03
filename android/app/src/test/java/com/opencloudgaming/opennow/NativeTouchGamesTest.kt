@@ -54,7 +54,7 @@ class NativeTouchGamesTest {
     }
 
     @Test
-    fun physicalMouseWinsOverAutomaticFortniteTouchButNotExplicitAlwaysMode() {
+    fun keyboardMousePreferenceWinsOverNativeTouchForTheSession() {
         val fortnite = game(title = "Fortnite", supportedControls = listOf("TOUCHSCREEN", "MOUSE"))
         val streamSettings = StreamSettings()
 
@@ -64,16 +64,16 @@ class NativeTouchGamesTest {
                 fortnite,
                 streamSettings,
                 preferVirtualController = false,
-                physicalMouseConnected = true,
+                preferKeyboardMouse = true,
             ),
         )
-        assertTrue(
+        assertFalse(
             shouldUseNativeTouchForStream(
                 NativeTouchMode.Always,
                 fortnite,
                 streamSettings,
                 preferVirtualController = false,
-                physicalMouseConnected = true,
+                preferKeyboardMouse = true,
             ),
         )
     }
@@ -141,17 +141,43 @@ class NativeTouchGamesTest {
     }
 
     @Test
-    fun nativeTouchDefaultsToExplicitlyOff() {
+    fun nativeTouchDefaultsToSupportedCatalogGames() {
         val settings = AndroidTouchSettings()
-        assertEquals(NativeTouchMode.Off, settings.nativeTouchMode)
-        assertFalse(settings.nativeTouchOptedIn)
-        assertEquals(NativeTouchMode.Off, settings.effectiveNativeTouchMode())
+        assertEquals(NativeTouchMode.Auto, settings.nativeTouchMode)
+        assertTrue(settings.nativeTouchOptedIn)
+        assertEquals(NativeTouchMode.Auto, settings.effectiveNativeTouchMode())
     }
 
     @Test
-    fun legacyAutoSettingDoesNotCountAsAnOptIn() {
-        val legacy = AndroidTouchSettings(nativeTouchMode = NativeTouchMode.Auto)
-        assertEquals(NativeTouchMode.Off, legacy.effectiveNativeTouchMode())
+    fun legacyAutoSettingKeepsItsPreviouslySavedBehavior() {
+        val legacy = AndroidTouchSettings(
+            nativeTouchMode = NativeTouchMode.Auto,
+            nativeTouchOptedIn = false,
+        )
+        assertFalse(legacy.nativeTouchOptedIn)
+        assertEquals(NativeTouchMode.Auto, legacy.effectiveNativeTouchMode())
+    }
+
+    @Test
+    fun release159LegacyAutoStillSelectsFortniteNativeTouch() {
+        val release159Settings = AndroidTouchSettings(
+            nativeTouchMode = NativeTouchMode.Auto,
+            nativeTouchOptedIn = false,
+        )
+        val fortnite = game(
+            title = "Fortnite®",
+            supportedControls = listOf("GAMEPAD", "KEYBOARD", "MOUSE", "TOUCHSCREEN"),
+        )
+
+        assertTrue(
+            shouldUseNativeTouchForStream(
+                mode = release159Settings.effectiveNativeTouchMode(),
+                game = fortnite,
+                streamSettings = StreamSettings(),
+                preferVirtualController = false,
+                preferKeyboardMouse = false,
+            ),
+        )
     }
 
     @Test

@@ -1068,7 +1068,7 @@ private fun SettingsContent(
                 }
                 if (!state.androidTvProfile) {
                     // Sends fingers to the PC as a real touchscreen, so games with a touch mode switch
-                    // to it themselves. It stays off until the player explicitly chooses a mode.
+                    // to it themselves. Auto is limited to catalog variants that advertise touch.
                     val effectiveNativeTouchMode = settings.androidTouch.effectiveNativeTouchMode()
                     ChoiceMenuRow(
                         label = "Native touch",

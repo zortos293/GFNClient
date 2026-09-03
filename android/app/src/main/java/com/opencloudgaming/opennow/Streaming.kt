@@ -100,6 +100,43 @@ import kotlin.math.sqrt
 internal fun shouldUseAndroidRelativeMouseAxes(relativeDx: Float, relativeDy: Float): Boolean =
     relativeDx != 0f || relativeDy != 0f
 
+/**
+ * Android pointer capture defines X/Y as relative movement. Some device builds also expose the
+ * explicit RELATIVE_X/Y axes. Keep the explicit axis when both representations agree, but trust the
+ * pointer-capture contract when an OEM reports the two with opposing signs.
+ */
+internal fun resolveAndroidCapturedMouseAxis(relativeAxis: Float, capturedAxis: Float): Float = when {
+    !relativeAxis.isFinite() -> capturedAxis.takeIf(Float::isFinite) ?: 0f
+    !capturedAxis.isFinite() -> relativeAxis
+    relativeAxis == 0f -> capturedAxis
+    capturedAxis == 0f -> relativeAxis
+    (relativeAxis > 0f) == (capturedAxis > 0f) -> relativeAxis
+    else -> capturedAxis
+}
+
+internal fun androidCapturedMouseAxesConflict(
+    relativeDx: Float,
+    relativeDy: Float,
+    capturedDx: Float,
+    capturedDy: Float,
+): Boolean =
+    (
+        relativeDx.isFinite() && capturedDx.isFinite() &&
+            relativeDx != 0f && capturedDx != 0f && (relativeDx > 0f) != (capturedDx > 0f)
+    ) || (
+        relativeDy.isFinite() && capturedDy.isFinite() &&
+            relativeDy != 0f && capturedDy != 0f && (relativeDy > 0f) != (capturedDy > 0f)
+    )
+
+/**
+ * Captured pointers and explicit relative axes must stay relative on the host. Converting those
+ * deltas to a bounded absolute cursor prevents games from rotating the camera past a stream edge.
+ */
+internal fun shouldSendExternalMouseAsRelative(
+    capturedPointer: Boolean,
+    hasRelativeAxisMotion: Boolean,
+): Boolean = capturedPointer || hasRelativeAxisMotion
+
 internal fun shouldUseFixedSizeStreamSurface(
     videoWidth: Int,
     videoHeight: Int,
@@ -171,16 +208,25 @@ internal fun selectHapticsOutputTarget(
     else -> HapticsOutputTarget.None
 }
 
+/**
+ * GFN does not return ordinary game rumble for its native PlayStation controller identity. An
+ * explicitly forced Controller output therefore opts the pad into the XInput-compatible identity
+ * that carries the host's two-motor rumble stream. Auto deliberately preserves PlayStation button
+ * prompts; this compatibility tradeoff must never happen silently merely because vibration is on.
+ */
+internal fun usesPlayStationRumbleCompatibility(
+    vibrationEnabled: Boolean,
+    preference: HapticsOutputPreference,
+): Boolean = vibrationEnabled && preference == HapticsOutputPreference.Controller
+
 class NativeStreamClient(
     context: Context,
     private val onState: (String) -> Unit,
     private val onError: (String) -> Unit,
-    private val onVideoTransportFallbackApplied: (String, StreamSettings) -> Unit = { _, _ -> },
     private val onSessionRecoveryRequired: (String) -> Unit = {},
     private val onFirstVideoFrameRendered: () -> Unit = {},
     private val onStats: (StreamRuntimeStats) -> Unit = {},
     private val onControllerMouseAssistChanged: (Boolean) -> Unit = {},
-    private val onStreamStopped: () -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val initialAndroidTvProfile = isAndroidTvProfile(appContext)
@@ -304,7 +350,7 @@ class NativeStreamClient(
      */
     @Volatile
     var liveBitrateLimitKbps: Int? = null
-    private var videoSafeFallbackApplied = false
+    private var selectedProfileRetryApplied = false
     private var stableMediaStallRestarts = 0
     private var transportHasStableMedia = false
     private var consecutiveTransportProgressSamples = 0
@@ -362,6 +408,9 @@ class NativeStreamClient(
     private val mouseMoveBurstLock = Any()
     private val mouseMoveBurstLimiter = MouseMoveBurstLimiter(MOUSE_MOVE_MIN_SEND_INTERVAL_MS)
     private var mouseMoveBurstFlushJob: Job? = null
+    private val externalMouseMoveBurstLock = Any()
+    private val externalMouseMoveBurstLimiter = MouseMoveBurstLimiter(MOUSE_MOVE_MIN_SEND_INTERVAL_MS)
+    private var externalMouseMoveBurstFlushJob: Job? = null
     private val gamepadStateBurstLock = Any()
     private val gamepadStateBurstLimiter = GamepadStateBurstLimiter(GAMEPAD_STATE_MIN_SEND_INTERVAL_MS)
     private var gamepadStateBurstFlushJob: Job? = null
@@ -375,6 +424,7 @@ class NativeStreamClient(
     private var externalMouseEventLogged = false
     private var externalMouseMoveSentLogged = false
     private var externalMouseCapturedMoveSentLogged = false
+    private var externalMouseAxisConflictLogged = false
     private var externalMouseAbsoluteJumpLogged = false
     private var hardwareKeyboardEventLogged = false
     private var physicalGamepadAxisLogged = false
@@ -382,6 +432,7 @@ class NativeStreamClient(
     private val processCpuSampler = ProcessCpuSampler()
     private val packetLossWindow = StreamPacketLossWindow()
     private val packetLossRecoveryGate = StreamPacketLossRecoveryGate()
+    private val decoderRecoveryGate = StreamDecoderRecoveryGate()
     private var androidTvProfile = initialAndroidTvProfile
     private var livenessWatchdog = newStreamLivenessWatchdog(androidTvProfile)
     private var firstVideoFrameWatchdog = FirstVideoFrameWatchdog(
@@ -713,6 +764,11 @@ class NativeStreamClient(
         if (!enabled || outputChanged) {
             stopAllGamepadRumble()
         }
+        if (outputChanged && hasAnyControllerState()) {
+            // The compatibility bit is carried in every gamepad state packet, not in the separate
+            // haptics advertisement. Publish the new identity immediately when the setting changes.
+            sendCurrentGamepadState()
+        }
         updateHapticsAdvertisement(force = true)
     }
 
@@ -820,7 +876,7 @@ class NativeStreamClient(
         transportGeneration += 1
         reconnectAttempts = 0
         transientSignalingFailures = 0
-        videoSafeFallbackApplied = false
+        selectedProfileRetryApplied = false
         stableMediaStallRestarts = 0
         sessionRecoveryRequested = false
         bitrateUpdateJob?.cancel()
@@ -831,6 +887,7 @@ class NativeStreamClient(
         ProcessCpuDiagnostics.beginStream()
         packetLossWindow.reset()
         packetLossRecoveryGate.reset()
+        decoderRecoveryGate.reset()
         livenessWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         onStats(StreamRuntimeStats())
@@ -858,6 +915,7 @@ class NativeStreamClient(
         bitrateUpdateJob = null
         liveBitrateLimitKbps = null
         packetLossRecoveryGate.reset()
+        decoderRecoveryGate.reset()
         livenessWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         closeTransport(clearInputState = true)
@@ -1149,6 +1207,12 @@ class NativeStreamClient(
             mouseMoveBurstFlushJob = null
             mouseMoveBurstLimiter.flush(SystemClock.elapsedRealtime())?.let(::sendMouseMoveBatch)
         }
+        synchronized(externalMouseMoveBurstLock) {
+            externalMouseMoveBurstFlushJob?.cancel()
+            externalMouseMoveBurstFlushJob = null
+            externalMouseMoveBurstLimiter.flush(SystemClock.elapsedRealtime())
+                ?.let(::sendExternalMouseAbsoluteBatch)
+        }
     }
 
     private fun resetMouseMoveBurstLimiter() {
@@ -1156,6 +1220,15 @@ class NativeStreamClient(
             mouseMoveBurstFlushJob?.cancel()
             mouseMoveBurstFlushJob = null
             mouseMoveBurstLimiter.reset()
+        }
+        resetExternalMouseMoveBurstLimiter()
+    }
+
+    private fun resetExternalMouseMoveBurstLimiter() {
+        synchronized(externalMouseMoveBurstLock) {
+            externalMouseMoveBurstFlushJob?.cancel()
+            externalMouseMoveBurstFlushJob = null
+            externalMouseMoveBurstLimiter.reset()
         }
     }
 
@@ -1186,13 +1259,15 @@ class NativeStreamClient(
             MotionEvent.ACTION_HOVER_MOVE,
             MotionEvent.ACTION_MOVE,
             -> {
-                if (event.isRelativeMousePointer()) {
+                val capturedPointer = event.isRelativeMousePointer()
+                val hasRelativeAxisMotion = event.hasRelativeAxisMotion()
+                if (shouldSendExternalMouseAsRelative(capturedPointer, hasRelativeAxisMotion)) {
                     // Captured-pointer implementations disagree about where relative motion lives.
                     // Pixel/Logitech exposes RELATIVE_X/Y, while other devices only populate X/Y.
                     // Resolve every coalesced sample independently so neither representation is
                     // discarded when Android changes it during capture or device hand-off.
                     val sent = sendExternalMouseMotionSamples(event)
-                    if (sent && !externalMouseCapturedMoveSentLogged) {
+                    if (capturedPointer && sent && !externalMouseCapturedMoveSentLogged) {
                         externalMouseCapturedMoveSentLogged = true
                         NativeInputDiagnostics.add(
                             "external mouse captured move sent source=${event.source} device=${event.deviceId} " +
@@ -1203,14 +1278,10 @@ class NativeStreamClient(
                     }
                     if (sent && !externalMouseMoveSentLogged) {
                         externalMouseMoveSentLogged = true
-                        NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=capturedRelative")
-                    }
-                    mousePositionValid = false
-                } else if (event.hasRelativeAxisMotion()) {
-                    val sent = sendExternalMouseMotionSamples(event)
-                    if (sent && !externalMouseMoveSentLogged) {
-                        externalMouseMoveSentLogged = true
-                        NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relative")
+                        val mode = if (capturedPointer) "capturedRelative" else "relative"
+                        NativeInputDiagnostics.add(
+                            "external mouse move sent source=${event.source} device=${event.deviceId} mode=$mode packet=relative",
+                        )
                     }
                     mousePositionValid = false
                 } else if (mousePositionValid && mouseLastDeviceId == event.deviceId && mouseLastSource == event.source) {
@@ -1347,9 +1418,20 @@ class NativeStreamClient(
         for (historyIndex in 0 until event.historySize) {
             val relativeDx = event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, historyIndex)
             val relativeDy = event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, historyIndex)
+            val capturedDx = event.getHistoricalX(historyIndex)
+            val capturedDy = event.getHistoricalY(historyIndex)
+            val capturedPointer = event.isRelativeMousePointer()
             val useRelativeAxes = shouldUseAndroidRelativeMouseAxes(relativeDx, relativeDy)
-            val dx = if (useRelativeAxes) relativeDx else event.getHistoricalX(historyIndex)
-            val dy = if (useRelativeAxes) relativeDy else event.getHistoricalY(historyIndex)
+            val dx = when {
+                capturedPointer -> resolveAndroidCapturedMouseAxis(relativeDx, capturedDx)
+                useRelativeAxes -> relativeDx
+                else -> capturedDx
+            }
+            val dy = when {
+                capturedPointer -> resolveAndroidCapturedMouseAxis(relativeDy, capturedDy)
+                useRelativeAxes -> relativeDy
+                else -> capturedDy
+            }
             externalMouseMotionAccumulator.add(
                 dx = dx,
                 dy = dy,
@@ -1363,9 +1445,29 @@ class NativeStreamClient(
         }
         val relativeDx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
         val relativeDy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+        val capturedPointer = event.isRelativeMousePointer()
         val useRelativeAxes = shouldUseAndroidRelativeMouseAxes(relativeDx, relativeDy)
-        val dx = if (useRelativeAxes) relativeDx else event.x
-        val dy = if (useRelativeAxes) relativeDy else event.y
+        val dx = when {
+            capturedPointer -> resolveAndroidCapturedMouseAxis(relativeDx, event.x)
+            useRelativeAxes -> relativeDx
+            else -> event.x
+        }
+        val dy = when {
+            capturedPointer -> resolveAndroidCapturedMouseAxis(relativeDy, event.y)
+            useRelativeAxes -> relativeDy
+            else -> event.y
+        }
+        if (
+            capturedPointer &&
+            !externalMouseAxisConflictLogged &&
+            androidCapturedMouseAxesConflict(relativeDx, relativeDy, event.x, event.y)
+        ) {
+            externalMouseAxisConflictLogged = true
+            NativeInputDiagnostics.add(
+                "external mouse axis conflict resolved sdk=${Build.VERSION.SDK_INT} source=${event.source} " +
+                    "relativeX=$relativeDx relativeY=$relativeDy capturedX=${event.x} capturedY=${event.y}",
+            )
+        }
         externalMouseMotionAccumulator.add(
             dx = dx,
             dy = dy,
@@ -1376,7 +1478,9 @@ class NativeStreamClient(
             sendDx += delta.dx
             sendDy += delta.dy
         }
-        return (sendDx != 0 || sendDy != 0) && sendExternalMouseAbsoluteMove(sendDx, sendDy)
+        // Relative motion is unbounded by design. Camera-look must not inherit the clamped
+        // absolute cursor used by the uncaptured desktop-pointer path below.
+        return (sendDx != 0 || sendDy != 0) && sendRawMouseMove(sendDx, sendDy)
     }
 
     private fun sendExternalMouseMotion(event: MotionEvent, dx: Float, dy: Float): Boolean {
@@ -1392,8 +1496,6 @@ class NativeStreamClient(
     }
 
     private fun sendExternalMouseAbsoluteMove(dx: Int, dy: Int): Boolean {
-        val (width, height) = streamResolutionPixels(settings)
-        val position = externalMouseAbsolutePosition.moveBy(dx, dy, width, height)
         val usePartiallyReliable =
             partiallyReliableInputState == DataChannel.State.OPEN &&
                 SdpTools.supportsPartiallyReliableHidInput(
@@ -1401,9 +1503,56 @@ class NativeStreamClient(
                     partiallyReliableHidMask = partiallyReliableHidMask,
                     inputType = InputEncoder.INPUT_MOUSE_ABS,
                 )
+        if (openInputChannel(usePartiallyReliable, fallbackToReliable = true) == null) return false
+        if (dx == 0 && dy == 0) return true
+        return synchronized(externalMouseMoveBurstLock) {
+            val batch = externalMouseMoveBurstLimiter.offer(
+                dx = dx,
+                dy = dy,
+                partiallyReliable = usePartiallyReliable,
+                nowMs = SystemClock.elapsedRealtime(),
+            )
+            if (batch == null && externalMouseMoveBurstFlushJob?.isActive != true) {
+                scheduleExternalMouseMoveBurstFlushLocked()
+            }
+            batch?.let(::sendExternalMouseAbsoluteBatch) ?: true
+        }
+    }
+
+    /** Must be called with [externalMouseMoveBurstLock] held. */
+    private fun scheduleExternalMouseMoveBurstFlushLocked() {
+        externalMouseMoveBurstFlushJob = inputScope.launch {
+            while (true) {
+                val waitMs = synchronized(externalMouseMoveBurstLock) {
+                    externalMouseMoveBurstLimiter.delayUntilFlushMs(SystemClock.elapsedRealtime())
+                }
+                if (waitMs == null) {
+                    synchronized(externalMouseMoveBurstLock) { externalMouseMoveBurstFlushJob = null }
+                    return@launch
+                }
+                if (waitMs > 0L) delay(waitMs)
+
+                val flushed = synchronized(externalMouseMoveBurstLock) {
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if ((externalMouseMoveBurstLimiter.delayUntilFlushMs(nowMs) ?: 0L) > 0L) {
+                        false
+                    } else {
+                        externalMouseMoveBurstLimiter.flush(nowMs)?.let(::sendExternalMouseAbsoluteBatch)
+                        externalMouseMoveBurstFlushJob = null
+                        true
+                    }
+                }
+                if (flushed) return@launch
+            }
+        }
+    }
+
+    private fun sendExternalMouseAbsoluteBatch(batch: MouseMoveBatch): Boolean {
+        val (width, height) = streamResolutionPixels(settings)
+        val position = externalMouseAbsolutePosition.moveBy(batch.dx, batch.dy, width, height)
         return sendInput(
             inputEncoder.encodeMouseAbsolute(position.x, position.y, position.width, position.height),
-            partiallyReliable = usePartiallyReliable,
+            partiallyReliable = batch.partiallyReliable,
             fallbackToReliable = true,
             resultDiagnosticKey = "mouse.absolute",
         )
@@ -1413,6 +1562,7 @@ class NativeStreamClient(
         if (externalMouseMotionDeviceId == event.deviceId && externalMouseMotionSource == event.source) return
         externalMouseMotionAccumulator.reset()
         externalMouseAbsolutePosition.reset()
+        resetExternalMouseMoveBurstLimiter()
         externalMouseMotionDeviceId = event.deviceId
         externalMouseMotionSource = event.source
     }
@@ -1480,6 +1630,15 @@ class NativeStreamClient(
                         sendTextLocked(edit.text.take(STREAM_TEXT_SEND_MAX_CHARS))
                     }
                 }
+            }
+        }
+    }
+
+    /** Clears the focused remote field without dismissing the Android stream keyboard. */
+    fun clearText() {
+        scope.launch {
+            textSendMutex.withLock {
+                selectAllAndDeleteRemoteText()
             }
         }
     }
@@ -1930,6 +2089,7 @@ class NativeStreamClient(
         lastStatsSample = null
         packetLossWindow.reset()
         packetLossRecoveryGate.reset()
+        decoderRecoveryGate.reset()
         lastIceState = null
         livenessWatchdog.reset()
         val closingSignaling = signaling
@@ -1998,15 +2158,11 @@ class NativeStreamClient(
             }
             is SignalingEvent.Disconnected -> {
                 recordStreamDiagnostic("signaling disconnected ${event.reason}")
-                // A clean WebSocket close is not proof that an already-playing cloud session
-                // ended. With packet loss or high RTT the signaling socket can close while the
-                // media path is still healthy (or independently reconnectable). Only treat a
-                // normal close as terminal before media has demonstrated sustained progress;
-                // explicit 410/session-ended responses remain terminal in every phase.
-                val disposition = signalingFailureDisposition(
-                    event.reason,
-                    normalClosureMeansSessionEnded = normalSignalingClosureMeansSessionEnded(transportHasStableMedia),
-                )
+                // A clean WebSocket close is never proof that the allocated cloud session ended.
+                // With packet loss or high RTT the signaling socket can close while media remains
+                // healthy or independently reconnectable. Even an explicit 410 is probed through
+                // session recovery before the local client leaves the stream.
+                val disposition = signalingFailureDisposition(event.reason)
                 if (shouldPreserveMediaAfterSignalingFailure(disposition, lastIceState)) {
                     recordStreamDiagnostic(
                         "signaling disconnected while ICE=${lastIceState?.name}; preserving active media transport",
@@ -2015,9 +2171,8 @@ class NativeStreamClient(
                 }
                 when (disposition) {
                     SignalingFailureDisposition.SessionEnded -> {
-                        recordStreamDiagnostic("Signaling disconnected normally. Stopping stream.")
-                        stop()
-                        scope.launch { onStreamStopped() }
+                        recordStreamDiagnostic("Signaling reported a terminal session response; verifying allocated session before local exit.")
+                        requestSessionRecovery("The provider reported that the signaling session ended.")
                     }
                     SignalingFailureDisposition.RecoverSession -> {
                         recordStreamDiagnostic("Signaling endpoint is stale. Recovering cloud session.")
@@ -2040,9 +2195,8 @@ class NativeStreamClient(
                 }
                 when (disposition) {
                     SignalingFailureDisposition.SessionEnded -> {
-                        recordStreamDiagnostic("Signaling error indicates session terminated. Stopping stream.")
-                        stop()
-                        scope.launch { onStreamStopped() }
+                        recordStreamDiagnostic("Signaling error reported a terminal session response; verifying allocated session before local exit.")
+                        requestSessionRecovery("The provider reported that the signaling session ended.")
                     }
                     SignalingFailureDisposition.RecoverSession -> {
                         recordStreamDiagnostic("Signaling endpoint is stale. Recovering cloud session.")
@@ -2098,7 +2252,7 @@ class NativeStreamClient(
             "offer input protocol=${SdpTools.parseInputProtocolVersion(preferred)} " +
                 "partialGamepadMask=$partiallyReliableGamepadMask " +
                 "hidMask=${hidDeviceMask.toUInt()} partialHidMask=${partiallyReliableHidMask.toUInt()} " +
-                "mouseMoveTransport=negotiated-absolute-external",
+                "mouseMoveTransport=relative-captured-absolute-uncaptured",
         )
         pc.setRemoteDescription(
             object : SimpleSdpObserver() {
@@ -2141,11 +2295,11 @@ class NativeStreamClient(
                                                     return@launch
                                                 }
                                                 NativeInputDiagnostics.add(
-                                                    "local answer did not negotiate requested codec=${settings.codec}; requesting safe fallback",
+                                                    "local answer did not negotiate requested codec=${settings.codec}; retrying selected profile",
                                                 )
                                                 if (
-                                                    requestSafeVideoFallback(
-                                                        message = "${settings.codec} was requested but WebRTC did not negotiate it; restarting with safe H264 profile",
+                                                    requestSelectedVideoProfileRetry(
+                                                        message = "${settings.codec} was requested but WebRTC did not negotiate it; retrying the selected profile",
                                                         diagnosticReason = "codec negotiation",
                                                     )
                                                 ) {
@@ -2417,8 +2571,8 @@ class NativeStreamClient(
             offerTimeoutJob = null
             NativeInputDiagnostics.add("video offer timeout codec=${settings.codec} resolution=${settings.resolution} bitrate=${settings.maxBitrateMbps}")
             if (
-                requestSafeVideoFallback(
-                    message = "Timed out waiting for video offer; restarting with safe H264 profile",
+                requestSelectedVideoProfileRetry(
+                    message = "Timed out waiting for video offer; retrying the selected profile",
                     diagnosticReason = "offer timeout",
                 )
             ) {
@@ -2620,15 +2774,14 @@ class NativeStreamClient(
         val currentSettings = settings
         val hadStableMedia = transportHasStableMedia
         if (
-            transportRestartShouldApplySafeVideoFallback(
+            transportRestartShouldRetrySelectedProfile(
                 videoFailure = videoFailure,
                 reconnectAttempts = reconnectAttempts,
                 transportHasStableMedia = transportHasStableMedia,
             ) &&
-            requestSafeVideoFallback(
-                message = "$reason. Restarting the local transport with safe H264 profile.",
+            requestSelectedVideoProfileRetry(
+                message = "$reason. Retrying the selected local transport profile.",
                 diagnosticReason = "transport reconnect",
-                restartWhenAlreadySafe = true,
             )
         ) {
             return
@@ -2695,10 +2848,6 @@ class NativeStreamClient(
 
     private fun emitError(message: String) {
         scope.launch { onError(message) }
-    }
-
-    private fun emitVideoTransportFallbackApplied(message: String, fallback: StreamSettings) {
-        scope.launch { onVideoTransportFallbackApplied(message, fallback) }
     }
 
     private fun emitSessionRecoveryRequired(message: String) {
@@ -3139,11 +3288,31 @@ class NativeStreamClient(
                     "rawReceived=${snapshot.stats.packetsReceivedDelta} displayedLoss=${snapshot.stats.packetLossPct}",
             )
         }
+        val decoderOverloaded = decoderRecoveryGate.observe(
+            stats = snapshot.stats,
+            requestedFps = settings.fps,
+            advancedCodecActive = settings.codec != VideoCodec.H264,
+            recoveryEligible = connected &&
+                transportHasStableMedia &&
+                rendererSinkLifecycle.isAttachRequested() &&
+                iceRecoveryJob?.isActive != true &&
+                !sessionRecoveryRequested,
+        )
+        if (
+            decoderOverloaded &&
+            requestSelectedVideoProfileRetry(
+                message = "The decoder could not sustain ${settings.fps} FPS; retrying the selected profile without changing it",
+                diagnosticReason = "sustained decoder overload receivedFps=${snapshot.stats.receivedFps} " +
+                    "decodedFps=${snapshot.stats.decodedFps} decodeMs=${snapshot.stats.decodeMs}",
+            )
+        ) {
+            return
+        }
         if (
             rendererSinkLifecycle.isAttachRequested() &&
             firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)
         ) {
-            when (firstFrameRecoveryStep(transportHasStableMedia, reconnectAttempts, videoSafeFallbackApplied)) {
+            when (firstFrameRecoveryStep(transportHasStableMedia, reconnectAttempts, selectedProfileRetryApplied)) {
                 FirstFrameRecoveryStep.RetryRequestedProfile -> {
                     NativeInputDiagnostics.add(
                         "first frame timeout requested profile retry codec=${settings.codec} resolution=${settings.resolution}",
@@ -3151,12 +3320,11 @@ class NativeStreamClient(
                     restartTransport("First video frame timed out", videoFailure = true)
                     return
                 }
-                FirstFrameRecoveryStep.ApplySafeVideoFallback -> {
+                FirstFrameRecoveryStep.RetrySelectedProfile -> {
                     if (
-                        requestSafeVideoFallback(
-                            message = "Video packets arrived but no frame rendered; restarting with safe H264 profile",
+                        requestSelectedVideoProfileRetry(
+                            message = "Video packets arrived but no frame rendered; retrying the selected profile",
                             diagnosticReason = "first frame timeout",
-                            restartWhenAlreadySafe = true,
                         )
                     ) {
                         return
@@ -3184,14 +3352,14 @@ class NativeStreamClient(
                     )
                 }
                 if (
-                    repeatedStableMediaStallShouldApplySafeVideoFallback(
+                    repeatedStableMediaStallShouldRetrySelectedProfile(
                         androidTvProfile = androidTvProfile,
                         transportCodec = settings.codec,
                         completedStableMediaStallRestarts = stableMediaStallRestarts,
-                        safeVideoFallbackApplied = videoSafeFallbackApplied,
+                        selectedProfileRetryApplied = selectedProfileRetryApplied,
                     ) &&
-                    requestSafeVideoFallback(
-                        message = "Decoder repeatedly stalled after stable playback; restarting with safe H264 profile",
+                    requestSelectedVideoProfileRetry(
+                        message = "Decoder repeatedly stalled after stable playback; retrying the selected profile",
                         diagnosticReason = "repeated stable media stall",
                     )
                 ) {
@@ -3199,8 +3367,8 @@ class NativeStreamClient(
                 }
                 if (
                     !transportHasStableMedia &&
-                    requestSafeVideoFallback(
-                        message = "Decoder stalled; restarting with safe H264 profile",
+                    requestSelectedVideoProfileRetry(
+                        message = "Decoder stalled; retrying the selected profile",
                         diagnosticReason = "media stall",
                     )
                 ) {
@@ -3230,44 +3398,42 @@ class NativeStreamClient(
         reconnectAttempts = 0
     }
 
-    private fun requestSafeVideoFallback(
+    private fun requestSelectedVideoProfileRetry(
         message: String,
         diagnosticReason: String,
-        restartWhenAlreadySafe: Boolean = false,
     ): Boolean {
         val currentSession = session ?: return false
-        val previousCodec = settings.codec
+        val selectedSettings = settings
         val hadStableMedia = transportHasStableMedia
-        val fallback = settings.androidSafeVideoFallback()
-        val alreadySafe = settings == fallback
-        if (videoSafeFallbackApplied || (alreadySafe && !restartWhenAlreadySafe)) return false
-        videoSafeFallbackApplied = true
-        settings = fallback
+        if (selectedProfileRetryApplied) return false
+        selectedProfileRetryApplied = true
         reconnectAttempts = (reconnectAttempts + 1).coerceAtMost(MAX_TRANSPORT_RECONNECT_ATTEMPTS)
         NativeInputDiagnostics.add(
-            "$diagnosticReason ${if (alreadySafe) "safe profile transport restart" else "safe video fallback"} codec=${fallback.codec} resolution=${fallback.resolution} fps=${fallback.fps} bitrate=${fallback.maxBitrateMbps}",
+            "$diagnosticReason selected profile retry codec=${selectedSettings.codec} " +
+                "resolution=${selectedSettings.resolution} fps=${selectedSettings.fps} bitrate=${selectedSettings.maxBitrateMbps}",
         )
         transportGeneration += 1
         val generation = transportGeneration
         closeTransport(clearInputState = false)
         firstVideoFrameWatchdog.reset()
         recordStreamDiagnostic(
-            "safe video transport restart generation=$generation session=${streamDiagnosticId(currentSession.sessionId)} codec=${fallback.codec} reason=$diagnosticReason",
+            "selected profile transport retry generation=$generation " +
+                "session=${streamDiagnosticId(currentSession.sessionId)} settings=${selectedSettings.resolution}/" +
+                "${selectedSettings.fps}/${selectedSettings.codec}/${selectedSettings.maxBitrateMbps} reason=$diagnosticReason",
         )
-        emitState("Reconnecting stream with safe H264 profile")
-        emitVideoTransportFallbackApplied(message, fallback)
-        val settleDelayMs = advancedCodecRestartSettleDelayMs(previousCodec, hadStableMedia)
+        emitState(message)
+        val settleDelayMs = advancedCodecRestartSettleDelayMs(selectedSettings.codec, hadStableMedia)
         if (settleDelayMs == 0L) {
-            startTransport(currentSession, fallback, generation)
+            startTransport(currentSession, selectedSettings, generation)
         } else {
             recordStreamDiagnostic(
-                "waiting ${settleDelayMs}ms for $previousCodec decoder release before safe fallback generation=$generation",
+                "waiting ${settleDelayMs}ms for ${selectedSettings.codec} decoder release before selected profile retry generation=$generation",
             )
             iceRecoveryJob = scope.launch {
                 delay(settleDelayMs)
                 if (generation != transportGeneration || session?.sessionId != currentSession.sessionId) return@launch
                 iceRecoveryJob = null
-                startTransport(currentSession, fallback, generation)
+                startTransport(currentSession, selectedSettings, generation)
             }
         }
         return true
@@ -4301,6 +4467,10 @@ class NativeStreamClient(
             controllerId = id,
             connected = true,
             physicalControllerFamily = physicalFamily,
+            playStationRumbleCompatibility = usesPlayStationRumbleCompatibility(
+                vibrationEnabled = vibrationEnabled,
+                preference = hapticsOutputPreference,
+            ),
         )
     }
 

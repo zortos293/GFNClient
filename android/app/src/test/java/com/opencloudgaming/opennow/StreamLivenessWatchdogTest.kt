@@ -44,7 +44,7 @@ class StreamLivenessWatchdogTest {
     }
 
     @Test
-    fun androidTvAllowsSlowHardwareDecoderStartupBeforeSafeFallback() {
+    fun androidTvAllowsSlowHardwareDecoderStartupBeforeRetry() {
         val tv = streamRecoveryTiming(androidTvProfile = true)
         val mobile = streamRecoveryTiming(androidTvProfile = false)
 
@@ -59,21 +59,21 @@ class StreamLivenessWatchdogTest {
     }
 
     @Test
-    fun firstFrameRecoveryRetriesRequestedProfileThenAppliesSafeFallbackOnlyOnce() {
+    fun firstFrameRecoveryRetriesTheSelectedProfileWithoutChangingIt() {
         assertEquals(
             FirstFrameRecoveryStep.RetryRequestedProfile,
             firstFrameRecoveryStep(
                 transportHasStableMedia = false,
                 reconnectAttempts = 0,
-                safeVideoFallbackApplied = false,
+                selectedProfileRetryApplied = false,
             ),
         )
         assertEquals(
-            FirstFrameRecoveryStep.ApplySafeVideoFallback,
+            FirstFrameRecoveryStep.RetrySelectedProfile,
             firstFrameRecoveryStep(
                 transportHasStableMedia = false,
                 reconnectAttempts = 1,
-                safeVideoFallbackApplied = false,
+                selectedProfileRetryApplied = false,
             ),
         )
         assertEquals(
@@ -81,7 +81,7 @@ class StreamLivenessWatchdogTest {
             firstFrameRecoveryStep(
                 transportHasStableMedia = false,
                 reconnectAttempts = 2,
-                safeVideoFallbackApplied = true,
+                selectedProfileRetryApplied = true,
             ),
         )
     }
@@ -89,14 +89,14 @@ class StreamLivenessWatchdogTest {
     @Test
     fun networkTransportRetriesPreserveTheRequestedCodec() {
         assertFalse(
-            transportRestartShouldApplySafeVideoFallback(
+            transportRestartShouldRetrySelectedProfile(
                 videoFailure = false,
                 reconnectAttempts = 1,
                 transportHasStableMedia = false,
             ),
         )
         assertTrue(
-            transportRestartShouldApplySafeVideoFallback(
+            transportRestartShouldRetrySelectedProfile(
                 videoFailure = true,
                 reconnectAttempts = 1,
                 transportHasStableMedia = false,
@@ -105,37 +105,37 @@ class StreamLivenessWatchdogTest {
     }
 
     @Test
-    fun repeatedStableAdvancedCodecStallsFallBackOnlyOnTv() {
+    fun repeatedStableAdvancedCodecStallsRetrySelectedProfileOnlyOnTv() {
         assertFalse(
-            repeatedStableMediaStallShouldApplySafeVideoFallback(
+            repeatedStableMediaStallShouldRetrySelectedProfile(
                 androidTvProfile = true,
                 transportCodec = VideoCodec.AV1,
                 completedStableMediaStallRestarts = 1,
-                safeVideoFallbackApplied = false,
+                selectedProfileRetryApplied = false,
             ),
         )
         assertTrue(
-            repeatedStableMediaStallShouldApplySafeVideoFallback(
+            repeatedStableMediaStallShouldRetrySelectedProfile(
                 androidTvProfile = true,
                 transportCodec = VideoCodec.AV1,
                 completedStableMediaStallRestarts = 2,
-                safeVideoFallbackApplied = false,
+                selectedProfileRetryApplied = false,
             ),
         )
         assertFalse(
-            repeatedStableMediaStallShouldApplySafeVideoFallback(
+            repeatedStableMediaStallShouldRetrySelectedProfile(
                 androidTvProfile = false,
                 transportCodec = VideoCodec.AV1,
                 completedStableMediaStallRestarts = 2,
-                safeVideoFallbackApplied = false,
+                selectedProfileRetryApplied = false,
             ),
         )
         assertFalse(
-            repeatedStableMediaStallShouldApplySafeVideoFallback(
+            repeatedStableMediaStallShouldRetrySelectedProfile(
                 androidTvProfile = true,
                 transportCodec = VideoCodec.H264,
                 completedStableMediaStallRestarts = 2,
-                safeVideoFallbackApplied = false,
+                selectedProfileRetryApplied = false,
             ),
         )
     }

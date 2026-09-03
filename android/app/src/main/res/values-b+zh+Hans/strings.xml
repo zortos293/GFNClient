@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">选中描边动效</string>
     <string name="settings_live_selected_outlines_desc">为选中的游戏、菜单项、服务器选项和启动器选项添加动画。想要更安静的选中样式可以关闭。</string>
     <string name="settings_absolute_cinema_effects">Absolute Cinema 特效</string>
-    <string name="settings_absolute_cinema_effects_desc">在保留你所选界面颜色的同时，使用品红色与蓝色的动态聚焦光环。</string>
+    <string name="settings_absolute_cinema_effects_desc">在保留你所选界面颜色的同时，使用橙色与蓝色的动态聚焦光环。</string>
     <string name="settings_im_crazy">我疯了</string>
     <string name="settings_im_crazy_desc">把 Absolute Cinema 放到整个界面上。悬停和聚焦的封面、描述、控件等都会获得该特效。</string>
     <string name="settings_show_favorite_icon">在游戏卡片上显示收藏图标</string>

@@ -20,6 +20,15 @@ import org.junit.Test
 
 class GfnApiTest {
     @Test
+    fun launchOwnershipUsesCurrentAppsGraphQlContract() {
+        assertEquals("https://apps.gxn.nvidia.com/graphql", GFN_APPS_GRAPHQL_URL)
+        assertEquals(
+            "cf8b620dfd03617017ba7c858cee65197e1ace5180e41be194b39227227ced63",
+            GFN_APP_METADATA_QUERY_HASH,
+        )
+    }
+
+    @Test
     fun mostPopularIsTheDefaultWithoutReplacingRelevance() {
         val options = listOf(
             CatalogSortOption("relevance", "Relevance", "relevance-order"),

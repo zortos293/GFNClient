@@ -18,21 +18,43 @@ internal fun isMouseInputSource(sources: Int): Boolean =
 internal fun isPhysicalMouseDevice(device: InputDevice?): Boolean =
     device != null && !device.isVirtual && isMouseInputSource(device.sources)
 
-internal fun hasConnectedPhysicalMouse(): Boolean = runCatching {
-    InputDevice.getDeviceIds().any { deviceId ->
-        isPhysicalMouseDevice(InputDevice.getDevice(deviceId))
-    }
-}.getOrDefault(false)
+internal fun isKeyboardInputSource(sources: Int, keyboardType: Int): Boolean =
+    (sources and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD &&
+        keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC
+
+internal fun isPhysicalKeyboardDevice(device: InputDevice?): Boolean =
+    device != null &&
+        !device.isVirtual &&
+        isKeyboardInputSource(device.sources, device.keyboardType)
+
+internal data class PhysicalKeyboardMouseConnection(
+    val mouseConnected: Boolean,
+    val keyboardConnected: Boolean,
+) {
+    val connected: Boolean
+        get() = mouseConnected || keyboardConnected
+}
+
+internal fun connectedPhysicalKeyboardMouse(): PhysicalKeyboardMouseConnection = runCatching {
+    val devices = InputDevice.getDeviceIds().map(InputDevice::getDevice).filterNotNull()
+    PhysicalKeyboardMouseConnection(
+        mouseConnected = devices.any(::isPhysicalMouseDevice),
+        keyboardConnected = devices.any(::isPhysicalKeyboardDevice),
+    )
+}.getOrDefault(PhysicalKeyboardMouseConnection(mouseConnected = false, keyboardConnected = false))
+
+internal fun hasConnectedPhysicalKeyboardOrMouse(): Boolean = connectedPhysicalKeyboardMouse().connected
 
 @Composable
-internal fun rememberPhysicalMouseConnected(enabled: Boolean): Boolean {
+internal fun rememberPhysicalKeyboardMouseConnection(enabled: Boolean): PhysicalKeyboardMouseConnection {
     val context = LocalContext.current.applicationContext
-    var connected by remember(enabled) {
-        mutableStateOf(enabled && hasConnectedPhysicalMouse())
+    val disconnected = PhysicalKeyboardMouseConnection(mouseConnected = false, keyboardConnected = false)
+    var connection by remember(enabled) {
+        mutableStateOf(if (enabled) connectedPhysicalKeyboardMouse() else disconnected)
     }
     DisposableEffect(context, enabled) {
         fun refresh() {
-            connected = enabled && hasConnectedPhysicalMouse()
+            connection = if (enabled) connectedPhysicalKeyboardMouse() else disconnected
         }
         refresh()
         if (!enabled) {
@@ -50,5 +72,5 @@ internal fun rememberPhysicalMouseConnected(enabled: Boolean): Boolean {
             }
         }
     }
-    return connected
+    return connection
 }

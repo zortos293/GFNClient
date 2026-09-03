@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">Hareketli seçim çerçeveleri</string>
     <string name="settings_live_selected_outlines_desc">Seçili oyunları, menü öğelerini, sunucu seçimlerini ve başlatıcı seçeneklerini canlandırır. Daha sakin bir seçim için kapatın.</string>
     <string name="settings_absolute_cinema_effects">Absolute Cinema efektleri</string>
-    <string name="settings_absolute_cinema_effects_desc">Seçtiğiniz arayüz rengini korurken hareketli macenta ve mavi odak halkaları kullanır.</string>
+    <string name="settings_absolute_cinema_effects_desc">Seçtiğiniz arayüz rengini korurken hareketli turuncu ve mavi odak halkaları kullanır.</string>
     <string name="settings_im_crazy">Delirdim</string>
     <string name="settings_im_crazy_desc">Absolute Cinema’yı tüm arayüze salın. Üzerine gelinen ve odaklanılan görseller, açıklamalar, kontroller ve daha fazlası efekti alır.</string>
     <string name="settings_show_favorite_icon">Oyun kartlarında favori simgesini göster</string>

@@ -272,6 +272,7 @@ data class OpenNowUiState(
     val streamSession: SessionInfo? = null,
     val manuallySelectedServerForReport: Boolean = false,
     val activeStreamSettings: StreamSettings? = null,
+    val streamInputModeAtLaunch: StreamInputMode? = null,
     val streamGame: GameInfo? = null,
     val streamLaunchMinimized: Boolean = false,
     val streamReturnPage: AppPage? = null,
@@ -2181,9 +2182,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun accountConnectorAuthToken(session: AuthSession): String =
-        authRepository.restore(forceRefresh = false)?.tokens?.let { it.idToken ?: it.accessToken }
-            ?: (session.tokens.idToken ?: session.tokens.accessToken)
+    private suspend fun accountConnectorAuthToken(session: AuthSession): String {
+        val latestSession = refreshedSessionOrFallback(
+            fallback = session,
+            refresh = { authRepository.restore(forceRefresh = false) },
+            onFailure = { error ->
+                recordDebugEvent("auth", "Account token refresh failed error=${error.debugMessage()}")
+            },
+        )
+        return latestSession.tokens.idToken ?: latestSession.tokens.accessToken
+    }
 
     private fun refreshAccountConnectorsAfterLinking() {
         viewModelScope.launch {
@@ -2457,6 +2465,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     streamGame = game,
                     manuallySelectedServerForReport = manuallySelectedServer,
                     activeStreamSettings = settings,
+                    streamInputModeAtLaunch = null,
                     selectedGame = null,
                     page = AppPage.Stream,
                     streamReturnPage = returnPage,
@@ -2490,7 +2499,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }.onFailure { error ->
                     recordDebugEvent("launch", "Game access refresh failed; using cached metadata error=${error.debugMessage()}")
                 }
-                if (shouldMarkVariantOwnedBeforeLaunch(launchGame, selectedVariant)) {
+                if (shouldMarkVariantOwnedBeforeLaunch(selectedVariant)) {
                     val unownedVariant = checkNotNull(selectedVariant)
                     _state.update { it.copy(launchPhase = "Marking game as owned") }
                     catalogRepository.addOwnedVariant(token, unownedVariant.id)
@@ -2712,6 +2721,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 it.copy(
                     streamSession = null,
                     activeStreamSettings = null,
+                    streamInputModeAtLaunch = null,
                     streamGame = null,
                     streamStatus = "idle",
                     streamLaunchMinimized = false,
@@ -2769,6 +2779,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 streamStatus = "idle",
                 activeStreamSettings = null,
+                streamInputModeAtLaunch = null,
                 streamGame = null,
                 streamSession = null,
                 activeSessionDecision = null,
@@ -4352,22 +4363,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
      * well-formed touch packets.
      */
     private fun appLaunchModeFor(game: GameInfo?, settings: StreamSettings): Int =
-        if (
-            !androidTvProfile &&
-            !shouldPhysicalMouseOverrideNativeTouch(
-                mode = _state.value.settings.androidTouch.effectiveNativeTouchMode(),
-                physicalMouseConnected = hasConnectedPhysicalMouse(),
-            ) &&
-            shouldUseNativeTouch(
-                _state.value.settings.androidTouch.effectiveNativeTouchMode(),
-                game,
-                settings,
-            )
-        ) {
+        if (resolveStreamInputModeAtLaunch(game, settings) == StreamInputMode.NativeTouch) {
             GfnAppLaunchMode.TOUCH_FRIENDLY
         } else {
             GfnAppLaunchMode.GAMEPAD_FRIENDLY
         }
+
+    private fun resolveStreamInputModeAtLaunch(game: GameInfo?, settings: StreamSettings): StreamInputMode {
+        _state.value.streamInputModeAtLaunch?.let { return it }
+        val nativeTouchAvailable = !androidTvProfile && shouldUseNativeTouch(
+            _state.value.settings.androidTouch.effectiveNativeTouchMode(),
+            game,
+            settings,
+        )
+        val mode = streamInputModeAtStart(
+            nativeTouchAvailable = nativeTouchAvailable,
+            keyboardMouseConnected = hasConnectedPhysicalKeyboardOrMouse(),
+        )
+        _state.update { current -> current.copy(streamInputModeAtLaunch = mode) }
+        return mode
+    }
 
     private suspend fun claimActiveSessionOrContinuePolling(
         token: String,

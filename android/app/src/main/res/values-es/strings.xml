@@ -595,7 +595,7 @@
     <string name="settings_live_selected_outlines">Contornos de selección animados</string>
     <string name="settings_live_selected_outlines_desc">Anima los juegos seleccionados, las opciones de menú, las elecciones de servidor y las opciones de lanzador. Desactívalo para una selección más sobria.</string>
     <string name="settings_absolute_cinema_effects">Efectos Absolute Cinema</string>
-    <string name="settings_absolute_cinema_effects_desc">Usa anillos de enfoque animados en magenta y azul manteniendo el color de interfaz que has elegido.</string>
+    <string name="settings_absolute_cinema_effects_desc">Usa anillos de enfoque animados en naranja y azul manteniendo el color de interfaz que has elegido.</string>
     <string name="settings_im_crazy">Estoy loco</string>
     <string name="settings_im_crazy_desc">Suelta Absolute Cinema por toda la interfaz. Las ilustraciones, descripciones, controles y más reciben el efecto al pasar por encima y al enfocarlos.</string>
     <string name="settings_show_favorite_icon">Mostrar el icono de favorito en las tarjetas</string>

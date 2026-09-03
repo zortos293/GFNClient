@@ -11,6 +11,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.net.DatagramSocket
 
 @RunWith(AndroidJUnit4::class)
 class LocalTvConnectorInstrumentedTest {
@@ -90,6 +91,27 @@ class LocalTvConnectorInstrumentedTest {
         } finally {
             phone.close()
             tv.close()
+        }
+    }
+
+    @Test
+    fun unavailableDiscoveryPortDoesNotStopDirectPairing() = runBlocking {
+        DatagramSocket(0).use { occupiedDiscoverySocket ->
+            val tv = LocalTvConnector(discoveryPort = occupiedDiscoverySocket.localPort)
+            val phone = LocalTvConnector()
+            try {
+                tv.startHosting()
+                val pairingState = awaitState(tv) { it.hosting && it.pairUri != null }
+                val degradedState = awaitState(tv) { it.message?.contains("discovery is unavailable") == true }
+                assertTrue(degradedState.hosting)
+
+                phone.pairPhone(Uri.parse(pairingState.pairUri!!))
+                val phoneState = awaitState(phone) { it.phoneConnected || it.error != null }
+                assertTrue(phoneState.error.orEmpty(), phoneState.phoneConnected)
+            } finally {
+                phone.close()
+                tv.close()
+            }
         }
     }
 

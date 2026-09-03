@@ -417,7 +417,7 @@ internal fun firstVideoFrameRecoveryTimeoutMs(androidTvProfile: Boolean): Long =
 
 internal enum class FirstFrameRecoveryStep {
     RetryRequestedProfile,
-    ApplySafeVideoFallback,
+    RetrySelectedProfile,
     ContinueBoundedTransportRecovery,
 }
 
@@ -455,30 +455,30 @@ internal class DecodedResolutionTracker {
 internal fun firstFrameRecoveryStep(
     transportHasStableMedia: Boolean,
     reconnectAttempts: Int,
-    safeVideoFallbackApplied: Boolean,
+    selectedProfileRetryApplied: Boolean,
 ): FirstFrameRecoveryStep = when {
     transportHasStableMedia -> FirstFrameRecoveryStep.ContinueBoundedTransportRecovery
     reconnectAttempts == 0 -> FirstFrameRecoveryStep.RetryRequestedProfile
-    !safeVideoFallbackApplied -> FirstFrameRecoveryStep.ApplySafeVideoFallback
+    !selectedProfileRetryApplied -> FirstFrameRecoveryStep.RetrySelectedProfile
     else -> FirstFrameRecoveryStep.ContinueBoundedTransportRecovery
 }
 
-internal fun transportRestartShouldApplySafeVideoFallback(
+internal fun transportRestartShouldRetrySelectedProfile(
     videoFailure: Boolean,
     reconnectAttempts: Int,
     transportHasStableMedia: Boolean,
 ): Boolean = videoFailure && reconnectAttempts >= 1 && !transportHasStableMedia
 
-internal fun repeatedStableMediaStallShouldApplySafeVideoFallback(
+internal fun repeatedStableMediaStallShouldRetrySelectedProfile(
     androidTvProfile: Boolean,
     transportCodec: VideoCodec,
     completedStableMediaStallRestarts: Int,
-    safeVideoFallbackApplied: Boolean,
+    selectedProfileRetryApplied: Boolean,
 ): Boolean =
     androidTvProfile &&
         transportCodec != VideoCodec.H264 &&
         completedStableMediaStallRestarts >= 2 &&
-        !safeVideoFallbackApplied
+        !selectedProfileRetryApplied
 
 internal fun newStreamLivenessWatchdog(androidTvProfile: Boolean): StreamLivenessWatchdog {
     val timing = streamRecoveryTiming(androidTvProfile)

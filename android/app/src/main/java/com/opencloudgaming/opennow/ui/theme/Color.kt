@@ -31,6 +31,9 @@ object OpenNowPalette {
     val AccentLime = Color(0xffc7ef6b)
     val AccentCoral = Color(0xffff8d7a)
     val AccentViolet = Color(0xffc7a4ff)
+    /** Reserved for the animated Absolute Cinema focus/hover energy, not ordinary theme chrome. */
+    val AccentCinemaOrange = Color(0xffff6a2b)
+    val AccentCinemaBlue = Color(0xff42c9ff)
     val AccentSwitchRed = Color(0xffff4554)
     val AccentSwitchBlue = Color(0xff66d9ff)
 

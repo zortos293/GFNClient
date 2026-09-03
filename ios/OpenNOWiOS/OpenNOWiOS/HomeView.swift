@@ -419,23 +419,29 @@ private enum OpenNOWRemoteImageFetcher {
         let configuration = URLSessionConfiguration.default
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.networkServiceType = .responsiveData
+        configuration.httpMaximumConnectionsPerHost = 6
         return URLSession(configuration: configuration)
     }()
 
     static func load(url: URL, targetPixelSize: Int) async throws -> OpenNOWLoadedImage {
-        try await OpenNOWImageLoadGate.shared.acquire()
-        defer {
-            Task {
-                await OpenNOWImageLoadGate.shared.release()
-            }
-        }
-
         try Task.checkCancellation()
+        try await OpenNOWImageLoadGate.shared.acquire()
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
 
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            await OpenNOWImageLoadGate.shared.release()
+            throw error
+        }
+        // The gate protects scarce network work, not CPU decoding. Returning the slot here lets the
+        // next visible card start downloading while ImageIO down-samples this response off-main.
+        await OpenNOWImageLoadGate.shared.release()
         try Task.checkCancellation()
 
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -498,7 +504,11 @@ private actor OpenNOWRemoteImagePipeline {
                 targetPixelSize: request.targetPixelSize,
                 cost: loaded.cost
             )
-            await OpenNOWImageDiskCache.store(loaded.data, for: request.url)
+            // First paint must not wait for an atomic disk write. The decoded image is already in
+            // memory, so persist the reusable encoded bytes independently at utility priority.
+            Task.detached(priority: .utility) {
+                await OpenNOWImageDiskCache.store(loaded.data, for: request.url)
+            }
             return loaded.image
         }
         inFlight[request] = task
@@ -555,7 +565,9 @@ private final class CachedRemoteImageLoader: ObservableObject {
 struct CachedRemoteImage<Content: View, Placeholder: View, Failure: View>: View {
     let url: URL
     let targetPixelSize: Int
-    var priority: TaskPriority = .utility
+    // SwiftUI only creates these tasks for mounted views. Treat visible artwork as user-initiated so
+    // it wins the load gate over speculative/off-screen work and appears with the surrounding card.
+    var priority: TaskPriority = .userInitiated
     let content: (Image) -> Content
     let placeholder: () -> Placeholder
     let failure: () -> Failure

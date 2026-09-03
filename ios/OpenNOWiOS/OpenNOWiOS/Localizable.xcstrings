@@ -267,6 +267,9 @@
     "Clear" : {
 
     },
+    "Clear and Don’t Ask Again" : {
+
+    },
     "Clear Default" : {
 
     },
@@ -283,6 +286,12 @@
 
     },
     "Clear Search" : {
+
+    },
+    "Clear Text" : {
+
+    },
+    "Clear the active text field?" : {
 
     },
     "Closest" : {
@@ -342,13 +351,16 @@
     "Controls" : {
 
     },
+    "Copied" : {
+
+    },
     "Copy" : {
 
     },
     "Copy Probe Summary" : {
 
     },
-    "Copy Reference" : {
+    "Copy Report ID" : {
 
     },
     "Current" : {
@@ -714,6 +726,9 @@
     "OpenNOW will attach a redacted debugging file with recent app, API, queue, and stream logs. Account credentials, email addresses, device IDs, session IDs, and network addresses are removed." : {
 
     },
+    "OpenNOW will select all text in the focused game field and delete it." : {
+
+    },
     "Opens NVIDIA Support after confirmation" : {
 
     },
@@ -838,6 +853,12 @@
 
     },
     "Report Ad" : {
+
+    },
+    "Report ID" : {
+
+    },
+    "Report ID %@" : {
 
     },
     "Report sent" : {
@@ -1120,13 +1141,10 @@
     "Thanks" : {
 
     },
-    "Thanks — the maintainers have what they need to look into it." : {
+    "Thanks — the maintainers have what they need to investigate." : {
 
     },
     "Thanks to the people helping improve OpenNOW for everyone." : {
-
-    },
-    "Thanks. Your reference is %@." : {
 
     },
     "The Apple performance HUD is the system's own GPU readout drawn over the video. It is off unless you turn it on here — OpenNOW's stats overlay covers what most people need, and the system one sits on top of the game." : {

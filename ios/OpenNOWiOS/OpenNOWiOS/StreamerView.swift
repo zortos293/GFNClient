@@ -26,7 +26,10 @@ enum NativeStreamAudioSessionPolicy {
     }
 
     static func options(enableMic: Bool) -> AVAudioSession.CategoryOptions {
-        [.allowAirPlay, .allowBluetoothA2DP]
+        // `.playback` already routes to AirPlay and Bluetooth A2DP. Apple only permits explicitly
+        // setting `.allowAirPlay` with `.playAndRecord`; passing it here can make `setCategory`
+        // reject the entire media session before the output engine starts.
+        []
     }
 }
 
@@ -5142,6 +5145,19 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
             if let track = receiver.track as? RTCVideoTrack {
                 self.setVideoTrack(track)
             } else if let track = receiver.track as? RTCAudioTrack {
+                self.setAudioTrack(track)
+            }
+        }
+    }
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection,
+        didStartReceivingOn transceiver: RTCRtpTransceiver
+    ) {
+        Task { @MainActor in
+            guard self.peerConnection === peerConnection else { return }
+            if let track = transceiver.receiver.track as? RTCVideoTrack {
+                self.setVideoTrack(track)
+            } else if let track = transceiver.receiver.track as? RTCAudioTrack {
                 self.setAudioTrack(track)
             }
         }

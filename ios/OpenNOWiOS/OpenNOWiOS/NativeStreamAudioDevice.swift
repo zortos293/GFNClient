@@ -82,7 +82,9 @@ final class NativeStreamMutedAudioDevice: NSObject, RTCAudioDevice {
 /// the same decoded PCM from WebRTC into an `AVAudioEngine` source node while owning a normal
 /// playback-category audio session. It never opens an input node or asks for microphone access.
 final class NativeStreamPlaybackAudioDevice: NSObject, RTCAudioDevice {
-    private weak var delegate: RTCAudioDeviceDelegate?
+    // Retain the callback bridge for the full custom-device lifecycle, matching WebRTC's reference
+    // implementation. The output render block cannot pull decoded PCM after this bridge is gone.
+    private var delegate: RTCAudioDeviceDelegate?
     private var engine: AVAudioEngine?
     private var sourceNode: AVAudioSourceNode?
     private var initialized = false
@@ -122,8 +124,10 @@ final class NativeStreamPlaybackAudioDevice: NSObject, RTCAudioDevice {
     var isRecording: Bool { recordingRequested }
 
     func initialize(with delegate: RTCAudioDeviceDelegate) -> Bool {
+        guard self.delegate == nil else { return false }
         self.delegate = delegate
         initialized = true
+        onEvent("Media audio device initialized")
         return true
     }
 
@@ -139,15 +143,19 @@ final class NativeStreamPlaybackAudioDevice: NSObject, RTCAudioDevice {
     }
 
     func initializePlayout() -> Bool {
+        guard initialized else { return false }
         playoutInitialized = true
         return true
     }
 
     func startPlayout() -> Bool {
+        guard initialized else { return false }
         playoutInitialized = true
         playoutRequested = true
         guard playbackEnabled else { return true }
-        return startEngine()
+        let started = startEngine()
+        onEvent("Media audio playout requested started=\(started)")
+        return started
     }
 
     func stopPlayout() -> Bool {

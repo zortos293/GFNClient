@@ -2319,7 +2319,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(NativeStreamAudioSessionPolicy.mode(enableMic: false), .moviePlayback)
         XCTAssertEqual(
             NativeStreamAudioSessionPolicy.options(enableMic: false),
-            [.allowAirPlay, .allowBluetoothA2DP]
+            []
         )
     }
 

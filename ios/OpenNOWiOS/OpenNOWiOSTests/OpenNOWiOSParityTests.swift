@@ -369,6 +369,9 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertNil(settings.catalogWallpaperFilename)
         XCTAssertFalse(settings.streamTutorialCompleted)
         XCTAssertFalse(settings.controllerTouchPromptDismissed)
+        XCTAssertFalse(settings.showSessionReportAfterStream)
+        XCTAssertEqual(settings.sessionReportDefaultVersion, 1)
+        XCTAssertFalse(settings.streamKeyboardClearConfirmationDisabled)
         XCTAssertEqual(settings.streamerPreferences, .default)
         XCTAssertEqual(settings.defaultGameVariantIds, [:])
         XCTAssertEqual(settings.favoriteGameIds, ["game-1"])
@@ -403,35 +406,38 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertFalse(fallback.enableCloudGsync)
     }
 
-    func testInternalSessionProfileRejectionRetriesOnlyWithAChangedSafeProfile() {
-        let rejection = NSError(
-            domain: "OpenNOW.Session",
-            code: 400,
-            userInfo: [NSLocalizedDescriptionKey: #"{"requestStatus":{"statusCode":4,"statusDescription":"INTERNAL_ERROR_STATUS 8A8C0000"}}"#]
-        )
-        var unsafeSettings = AppSettings.default
-        unsafeSettings.preferredCodec = "AV1"
-        unsafeSettings.preferredColorQuality = StreamColorQuality.tenBit444.rawValue
-        unsafeSettings.enableCloudGsync = true
+    func testExplicitUnsupportedCodecDoesNotRewriteSelectedProfile() {
+        var settings = AppSettings.default
+        settings.preferredResolution = "3840x2160"
+        settings.preferredFPS = 120
+        settings.maxBitrateMbps = 100
+        settings.preferredCodec = "AV1"
+        settings.preferredColorQuality = StreamColorQuality.tenBit444.rawValue
+        settings.hdrEnabled = true
 
-        XCTAssertTrue(
-            SessionLaunchRecoveryPolicy.shouldRetryWithSafeVideoProfile(
-                error: rejection,
-                settings: unsafeSettings
+        let report = NativeStreamCodecReport(capabilities: [
+            NativeStreamCodecCapability(
+                codec: .av1,
+                videoToolboxHardwareDecode: false,
+                webRTCSupported: true,
+                webRTCProfileSummary: []
+            ),
+            NativeStreamCodecCapability(
+                codec: .h264,
+                videoToolboxHardwareDecode: true,
+                webRTCSupported: true,
+                webRTCProfileSummary: []
             )
-        )
-        XCTAssertFalse(
-            SessionLaunchRecoveryPolicy.shouldRetryWithSafeVideoProfile(
-                error: rejection,
-                settings: unsafeSettings.safeVideoFallback()
-            )
-        )
-        XCTAssertFalse(
-            SessionLaunchRecoveryPolicy.shouldRetryWithSafeVideoProfile(
-                error: NSError(domain: "OpenNOW.Session", code: 500),
-                settings: unsafeSettings
-            )
-        )
+        ])
+        let resolved = NativeStreamLaunchSettingsResolver.resolve(settings, codecReport: report)
+
+        XCTAssertEqual(resolved.selectedCodec, .av1)
+        XCTAssertEqual(resolved.settings.preferredCodec, "AV1")
+        XCTAssertEqual(resolved.settings.preferredResolution, "3840x2160")
+        XCTAssertEqual(resolved.settings.preferredFPS, 120)
+        XCTAssertEqual(resolved.settings.maxBitrateMbps, 100)
+        XCTAssertEqual(resolved.settings.preferredColorQuality, StreamColorQuality.tenBit444.rawValue)
+        XCTAssertTrue(resolved.settings.hdrEnabled)
     }
 
     func testCloudGameDecodesLegacyCachedPayloadWithoutNewCatalogFields() throws {
@@ -978,6 +984,22 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertTrue(migratedExplicit.fortnitePrefersNativeTouch)
     }
 
+    func testSessionReportsBecomeOptInOnceAndPreserveLaterChoice() throws {
+        let migrated = try JSONDecoder().decode(
+            AppSettings.self,
+            from: Data(#"{"showSessionReportAfterStream":true}"#.utf8)
+        )
+        XCTAssertFalse(migrated.showSessionReportAfterStream)
+        XCTAssertEqual(migrated.sessionReportDefaultVersion, 1)
+
+        let optedIn = try JSONDecoder().decode(
+            AppSettings.self,
+            from: Data(#"{"showSessionReportAfterStream":true,"sessionReportDefaultVersion":1}"#.utf8)
+        )
+        XCTAssertTrue(optedIn.showSessionReportAfterStream)
+        XCTAssertEqual(optedIn.sessionReportDefaultVersion, 1)
+    }
+
     func testNativeTouchFollowsCatalogCapabilityRatherThanTitle() {
         let touchGame = OpenNOWiOSParityTests.makeGame(
             title: "Genshin Impact",
@@ -1255,6 +1277,90 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(downward.y, 7)
     }
 
+    func testDecoderRecoveryRequiresSustainedLocalOverloadEvidence() {
+        var gate = NativeStreamDecoderRecoveryGate(badSamplesBeforeRecovery: 3)
+        for _ in 0..<2 {
+            XCTAssertFalse(gate.observe(
+                receivedFPS: 60,
+                decodedFPS: 34,
+                decodeMs: 38,
+                requestedFPS: 60,
+                advancedCodecActive: true,
+                recoveryEligible: true
+            ))
+        }
+        XCTAssertTrue(gate.observe(
+            receivedFPS: 60,
+            decodedFPS: 34,
+            decodeMs: 38,
+            requestedFPS: 60,
+            advancedCodecActive: true,
+            recoveryEligible: true
+        ))
+        XCTAssertFalse(gate.observe(
+            receivedFPS: 60,
+            decodedFPS: 34,
+            decodeMs: 38,
+            requestedFPS: 60,
+            advancedCodecActive: true,
+            recoveryEligible: true
+        ))
+    }
+
+    func testDecoderRecoveryDoesNotBlameNetworkOrH264() {
+        var gate = NativeStreamDecoderRecoveryGate(badSamplesBeforeRecovery: 2)
+        for _ in 0..<4 {
+            XCTAssertFalse(gate.observe(
+                receivedFPS: 18,
+                decodedFPS: 18,
+                decodeMs: 40,
+                requestedFPS: 60,
+                advancedCodecActive: true,
+                recoveryEligible: true
+            ))
+            XCTAssertFalse(gate.observe(
+                receivedFPS: 60,
+                decodedFPS: 30,
+                decodeMs: 40,
+                requestedFPS: 60,
+                advancedCodecActive: false,
+                recoveryEligible: true
+            ))
+        }
+    }
+
+    func testPacketLossRecoveryRequestsOneKeyframeAfterCongestionClears() {
+        var gate = NativeStreamPacketLossRecoveryGate(
+            badSamplesBeforeArmed: 2,
+            minimumPacketSample: 100,
+            cooldownSamples: 2
+        )
+        XCTAssertFalse(gate.observe(lostDelta: 10, receivedDelta: 90, recoveryEligible: true))
+        XCTAssertFalse(gate.observe(lostDelta: 8, receivedDelta: 92, recoveryEligible: true))
+        XCTAssertTrue(gate.observe(lostDelta: 0, receivedDelta: 120, recoveryEligible: true))
+        XCTAssertFalse(gate.observe(lostDelta: 0, receivedDelta: 120, recoveryEligible: true))
+
+        // Counter resets and inactive transports cannot arm or fire recovery.
+        XCTAssertFalse(gate.observe(lostDelta: nil, receivedDelta: nil, recoveryEligible: true))
+        XCTAssertFalse(gate.observe(lostDelta: 10, receivedDelta: 90, recoveryEligible: false))
+    }
+
+    func testSignalingFailureDispositionAndStableMediaPreservation() {
+        XCTAssertEqual(
+            nativeStreamSignalingFailureDisposition("Expected HTTP 101 but received 404 Not Found http=404"),
+            .recoverSession
+        )
+        XCTAssertEqual(nativeStreamSignalingFailureDisposition("http=410 Gone"), .sessionEnded)
+        XCTAssertEqual(nativeStreamSignalingFailureDisposition("http=503 Service Unavailable"), .retrySignaling)
+        XCTAssertEqual(nativeStreamSignalingFailureDisposition("code=1000"), .retryTransport)
+
+        XCTAssertTrue(nativeStreamShouldPreserveMediaAfterSignalingFailure(.retryTransport, mediaConnected: true))
+        XCTAssertTrue(nativeStreamShouldPreserveMediaAfterSignalingFailure(.retrySignaling, mediaConnected: true))
+        XCTAssertFalse(nativeStreamShouldPreserveMediaAfterSignalingFailure(.recoverSession, mediaConnected: true))
+        XCTAssertFalse(nativeStreamShouldPreserveMediaAfterSignalingFailure(.sessionEnded, mediaConnected: true))
+        XCTAssertFalse(nativeStreamShouldPreserveMediaAfterSignalingFailure(.retryTransport, mediaConnected: false))
+    }
+
     func testQueueReadyChimeAnnouncesOncePerSession() {
         QueueReadyAlert.reset()
         QueueReadyAlert.announceIfNeeded(sessionId: "a", isReady: true, enabled: true)
@@ -1403,6 +1509,23 @@ final class OpenNOWiOSParityTests: XCTestCase {
             }
         )
         XCTAssertThrowsError(try BugReportClient.buildRequest(tooManyFiles))
+
+        let oversizedFile = BugReportSubmission(
+            title: valid.title,
+            description: valid.description,
+            versionName: valid.versionName,
+            versionCode: valid.versionCode,
+            reporterId: valid.reporterId,
+            metadata: valid.metadata,
+            attachments: [
+                BugReportAttachment(
+                    fileName: "large.log",
+                    contentType: "text/plain",
+                    data: Data(count: BugReportEndpoint.maxFileBytes + 1)
+                )
+            ]
+        )
+        XCTAssertThrowsError(try BugReportClient.buildRequest(oversizedFile))
     }
 
     func testBugReportRequestCarriesTheRedactedDebugFile() throws {
@@ -1418,14 +1541,37 @@ final class OpenNOWiOSParityTests: XCTestCase {
                     fileName: "opennow-ios-logs-20260827-120000.txt",
                     contentType: "text/plain; charset=utf-8",
                     data: Data("strictRedaction=true\nlastError=none\n".utf8)
+                ),
+                BugReportAttachment(
+                    fileName: "stream-state.json",
+                    contentType: "application/json",
+                    data: Data("{}".utf8)
                 )
             ]
         )
 
         let request = try BugReportClient.buildRequest(submission)
+        XCTAssertEqual(request.url, BugReportEndpoint.url)
+        XCTAssertEqual(request.url?.absoluteString, "https://api.printedwaste.com/releases/opennow-ios/bug-reports")
         let body = String(decoding: try XCTUnwrap(request.httpBody), as: UTF8.self)
+        XCTAssertTrue(body.contains("name=\"platform\"\r\n\r\nios"))
+        XCTAssertEqual(body.components(separatedBy: "name=\"files\"").count - 1, 2)
         XCTAssertTrue(body.contains("filename=\"opennow-ios-logs-20260827-120000.txt\""))
+        XCTAssertTrue(body.contains("filename=\"stream-state.json\""))
         XCTAssertTrue(body.contains("strictRedaction=true"))
+    }
+
+    func testBugReportReceiptIsRequiredAndBounded() {
+        XCTAssertNil(BugReportClient.reference(from: #"{"ok":true}"#))
+        XCTAssertEqual(
+            BugReportClient.reference(from: #"{"ok":true,"reportId":"  BR-123  "}"#),
+            "BR-123"
+        )
+        let longID = String(repeating: "x", count: 200)
+        XCTAssertEqual(
+            BugReportClient.reference(from: #"{"id":"\#(longID)"}"#)?.count,
+            160
+        )
     }
 
     func testBugReportMetadataCarriesTheKnownIssueDecision() throws {

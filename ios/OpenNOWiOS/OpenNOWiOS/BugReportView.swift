@@ -8,7 +8,7 @@ import SwiftUI
 /// something already on the board.
 struct BugReportView: View {
     let deck: BugReportPreflightDeck
-    let onSubmit: (BugReportDraft) async -> Result<String?, Error>
+    let onSubmit: (BugReportDraft) async -> Result<String, Error>
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openNowAccent) private var accent
@@ -19,6 +19,7 @@ struct BugReportView: View {
     @State private var isConfirmingSubmission = false
     @State private var failure: String?
     @State private var acceptedReference: String?
+    @State private var reportIDCopied = false
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
@@ -204,7 +205,7 @@ struct BugReportView: View {
             switch result {
             case .success(let reference):
                 Haptics.success()
-                acceptedReference = reference ?? ""
+                acceptedReference = reference
             case .failure(let error):
                 Haptics.error()
                 failure = error.localizedDescription
@@ -223,21 +224,37 @@ struct BugReportView: View {
                 .accessibilityHidden(true)
             Text("Report sent")
                 .font(.title2.bold())
-            Text(reference.isEmpty
-                 ? "Thanks — the maintainers have what they need to look into it."
-                 : "Thanks. Your reference is \(reference).")
+            Text("Thanks — the maintainers have what they need to investigate.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            if !reference.isEmpty {
+
+            VStack(alignment: .leading, spacing: OpenNOWSpacing.sm) {
+                Text("Report ID")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(reference)
+                    .font(.footnote.monospaced())
+                    .textSelection(.enabled)
+                    .accessibilityLabel("Report ID \(reference)")
                 Button {
                     #if canImport(UIKit)
                     UIPasteboard.general.string = reference
                     #endif
+                    reportIDCopied = true
+                    Haptics.success()
                 } label: {
-                    Label("Copy Reference", systemImage: "doc.on.doc")
+                    Label(reportIDCopied ? "Copied" : "Copy Report ID",
+                          systemImage: reportIDCopied ? "checkmark" : "doc.on.doc")
                 }
                 .buttonStyle(.bordered)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(OpenNOWSpacing.md)
+            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(OpenNOWPalette.hairline, lineWidth: 0.5)
             }
             Spacer()
             Button("Done") { dismiss() }

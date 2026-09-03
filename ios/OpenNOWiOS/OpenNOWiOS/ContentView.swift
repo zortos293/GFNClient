@@ -378,9 +378,8 @@ struct MainTabView: View {
             onTransportStable: {
                 streamerAutoRetryCount = 0
             },
-            onSafeVideoFallbackRequired: { reason in
+            onSelectedVideoProfileRetry: { reason in
                 store.recordStreamRecovery(reason: reason)
-                store.restartStreamWithSafeVideoProfile(reason: reason)
             },
             onNativeFallbackRequiresFreshEndpoint: { _ in },
             onRuntimeSample: { sample in

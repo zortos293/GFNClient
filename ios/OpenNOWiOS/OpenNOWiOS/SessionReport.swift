@@ -183,6 +183,8 @@ struct StreamRuntimeSample: Equatable {
     var bitrateKbps: Int?
     var jitterMs: Double?
     var fps: Int?
+    var receivedFps: Int?
+    var decodedFps: Int?
     var decodeMs: Double?
     var packetsLostDelta: Int?
     var packetsReceivedDelta: Int?
@@ -195,6 +197,8 @@ struct StreamRuntimeSample: Equatable {
         pingMs != nil
             || bitrateKbps != nil
             || fps != nil
+            || receivedFps != nil
+            || decodedFps != nil
             || decodeMs != nil
             || jitterMs != nil
             || packetLossPercent != nil
@@ -229,6 +233,8 @@ struct SessionReport: Identifiable, Equatable {
     let peakPacketLossPercent: Double?
     let averageJitterMs: Double?
     let averageFps: Double?
+    var averageReceivedFps: Double? = nil
+    var averageDecodedFps: Double? = nil
     let lowestFps: Int?
     let targetFps: Int
     let averageDecodeMs: Double?
@@ -291,6 +297,12 @@ final class StreamSessionReportAccumulator {
     private var fpsCount = 0
     private var fpsTotal = 0
     private var lowestFps: Int?
+    private var receivedFpsCount = 0
+    private var receivedFpsTotal = 0
+    private var decodedFpsCount = 0
+    private var decodedFpsTotal = 0
+    private var consecutiveDecoderOverloadSamples = 0
+    private var decoderOverloadDetected = false
     private var decodeCount = 0
     private var decodeTotal = 0.0
     private var peakDecodeMs: Double?
@@ -338,10 +350,25 @@ final class StreamSessionReportAccumulator {
             fpsTotal += fps
             lowestFps = min(lowestFps ?? fps, fps)
         }
+        if let receivedFps = sample.receivedFps, receivedFps > 0 {
+            receivedFpsCount += 1
+            receivedFpsTotal += receivedFps
+        }
+        if let decodedFps = sample.decodedFps, decodedFps > 0 {
+            decodedFpsCount += 1
+            decodedFpsTotal += decodedFps
+        }
         if let decode = sample.decodeMs, decode >= 0 {
             decodeCount += 1
             decodeTotal += decode
             peakDecodeMs = max(peakDecodeMs ?? decode, decode)
+        }
+        consecutiveDecoderOverloadSamples = Self.isDecoderOverloadSample(
+            sample,
+            requestedFps: launchProfile.initialProfile.fps
+        ) ? consecutiveDecoderOverloadSamples + 1 : 0
+        if consecutiveDecoderOverloadSamples >= 3 {
+            decoderOverloadDetected = true
         }
 
         // Deltas are authoritative when present: a cumulative loss ratio averaged over a session
@@ -401,6 +428,8 @@ final class StreamSessionReportAccumulator {
         let averageBitrateKbps = average(bitrateTotal, bitrateCount).map { Int($0.rounded()) }
         let averageJitterMs = average(jitterTotal, jitterCount)
         let averageFps = average(fpsTotal, fpsCount)
+        let averageReceivedFps = average(receivedFpsTotal, receivedFpsCount)
+        let averageDecodedFps = average(decodedFpsTotal, decodedFpsCount)
         let averageDecodeMs = average(decodeTotal, decodeCount)
 
         let packetLossPercent: Double? = {
@@ -440,6 +469,8 @@ final class StreamSessionReportAccumulator {
             peakPacketLossPercent: peakPacketLossPercent,
             averageJitterMs: averageJitterMs,
             averageFps: averageFps,
+            averageReceivedFps: averageReceivedFps,
+            averageDecodedFps: averageDecodedFps,
             lowestFps: lowestFps,
             targetFps: targetFps,
             averageDecodeMs: averageDecodeMs,
@@ -463,7 +494,10 @@ final class StreamSessionReportAccumulator {
                 packetLossPercent: packetLossPercent,
                 averageJitterMs: averageJitterMs,
                 averageFps: averageFps,
+                averageReceivedFps: averageReceivedFps,
+                averageDecodedFps: averageDecodedFps,
                 averageDecodeMs: averageDecodeMs,
+                decoderOverloadDetected: decoderOverloadDetected,
                 targetFps: targetFps,
                 targetBitrateKbps: launchProfile.initialProfile.maxBitrateKbps,
                 averageBitrateKbps: averageBitrateKbps,
@@ -554,14 +588,26 @@ final class StreamSessionReportAccumulator {
 
         var reportedRecovery = false
         if recoveryReason != nil || finalProfile != launchProfile.initialProfile {
-            var detail = "OpenNOW changed the live stream from \(summary(launchProfile.initialProfile)) "
-                + "to \(summary(finalProfile)) to keep the session connected"
-            if let reason = recoveryReason {
-                detail += ". Reason: \(reason.trimmingCharacters(in: CharacterSet(charactersIn: ".")))."
+            if finalProfile == launchProfile.initialProfile,
+               finalCodec.caseInsensitiveCompare(launchProfile.requestedCodec) == .orderedSame {
+                var detail = "OpenNOW rebuilt the local media transport while preserving your selected "
+                    + "\(summary(finalProfile)) profile and cloud session"
+                if let reason = recoveryReason {
+                    detail += ". Reason: \(reason.trimmingCharacters(in: CharacterSet(charactersIn: ".")))."
+                } else {
+                    detail += "."
+                }
+                findings.append(SessionReportFinding(title: "Recovered locally", detail: detail, kind: .warning))
             } else {
-                detail += "."
+                var detail = "OpenNOW changed the live stream from \(summary(launchProfile.initialProfile)) "
+                    + "to \(summary(finalProfile)) to keep the session connected"
+                if let reason = recoveryReason {
+                    detail += ". Reason: \(reason.trimmingCharacters(in: CharacterSet(charactersIn: ".")))."
+                } else {
+                    detail += "."
+                }
+                findings.append(SessionReportFinding(title: "Recovered mid-session", detail: detail, kind: .warning))
             }
-            findings.append(SessionReportFinding(title: "Recovered mid-session", detail: detail, kind: .warning))
             reportedRecovery = finalProfile.resolutionString != launchProfile.initialProfile.resolutionString
         }
 
@@ -599,13 +645,39 @@ final class StreamSessionReportAccumulator {
         packetLossPercent: Double?,
         averageJitterMs: Double?,
         averageFps: Double?,
+        averageReceivedFps: Double? = nil,
+        averageDecodedFps: Double? = nil,
         averageDecodeMs: Double?,
+        decoderOverloadDetected: Bool = false,
         targetFps: Int,
         targetBitrateKbps: Int,
         averageBitrateKbps: Int?,
         networkKind: SessionNetworkKind
     ) -> [SessionReportFinding] {
         var findings: [SessionReportFinding] = []
+
+        let averageDecoderDeficit = averageReceivedFps.map { received in
+            received >= Double(targetFps) * 0.85
+                && averageDecodedFps.map { $0 <= received * 0.80 } == true
+        } == true
+        let frameBudgetMs = 1_000.0 / Double(max(targetFps, 1))
+        if decoderOverloadDetected
+            || averageDecoderDeficit
+            || (averageFps.map { $0 < Double(targetFps) * 0.85 } == true
+                && (averageDecodeMs ?? 0) > frameBudgetMs * 0.85) {
+            var detail = "OpenNOW detected a sustained local decoder bottleneck"
+            if let averageReceivedFps, let averageDecodedFps {
+                detail += String(
+                    format: ": the stream delivered %.1f FPS while the decoder produced %.1f FPS",
+                    averageReceivedFps,
+                    averageDecodedFps
+                )
+            }
+            detail += ". Try a lower resolution or frame rate, or select H.264."
+            findings.append(
+                SessionReportFinding(title: "Decoder could not keep up", detail: detail, kind: .warning)
+            )
+        }
 
         if networkKind == .cellular {
             findings.append(
@@ -640,19 +712,6 @@ final class StreamSessionReportAccumulator {
             )
         }
 
-        let frameBudgetMs = 1_000.0 / Double(max(targetFps, 1))
-        if let fps = averageFps, fps < Double(targetFps) * 0.85,
-           (averageDecodeMs ?? 0) > frameBudgetMs * 0.85 {
-            findings.append(
-                SessionReportFinding(
-                    title: "Ease the decoder",
-                    detail: String(format: "Decoding used most of the %.1f ms available per frame. A lower "
-                                   + "resolution or frame rate, or the H.264 codec, will render more evenly.", frameBudgetMs),
-                    kind: .warning
-                )
-            )
-        }
-
         if let averageBitrateKbps, targetBitrateKbps > 0,
            averageBitrateKbps < targetBitrateKbps * 6 / 10 {
             findings.append(
@@ -678,6 +737,19 @@ final class StreamSessionReportAccumulator {
         }
 
         return Array(findings.prefix(maxRecommendations))
+    }
+
+    private static func isDecoderOverloadSample(
+        _ sample: StreamRuntimeSample,
+        requestedFps: Int
+    ) -> Bool {
+        guard let receivedFps = sample.receivedFps,
+              let decodedFps = sample.decodedFps,
+              let decodeMs = sample.decodeMs else { return false }
+        let frameBudgetMs = 1_000.0 / Double(max(requestedFps, 1))
+        return Double(receivedFps) >= Double(requestedFps) * 0.85
+            && Double(decodedFps) <= Double(receivedFps) * 0.80
+            && decodeMs >= frameBudgetMs * 1.10
     }
 
     // MARK: Helpers

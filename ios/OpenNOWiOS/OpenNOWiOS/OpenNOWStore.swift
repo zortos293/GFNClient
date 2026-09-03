@@ -482,17 +482,6 @@ enum StreamColorQuality: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum SessionLaunchRecoveryPolicy {
-    static func shouldRetryWithSafeVideoProfile(error: Error, settings: AppSettings) -> Bool {
-        let error = error as NSError
-        guard error.domain == "OpenNOW.Session", error.code == 400 else { return false }
-        guard error.localizedDescription.localizedCaseInsensitiveContains("INTERNAL_ERROR_STATUS") else {
-            return false
-        }
-        return settings.safeVideoFallback() != settings
-    }
-}
-
 enum StreamPreset: String, Codable, CaseIterable, Identifiable {
     case recommended
     case lowDataSaver = "low_data_saver"
@@ -753,6 +742,8 @@ struct LaunchConflict: Identifiable, Equatable {
     }
 }
 
+private let appSettingsSessionReportDefaultVersion = 1
+
 struct AppSettings: Codable, Equatable {
     var preferredRegion: String
     var preferredAspectRatio: String = "16:9"
@@ -828,10 +819,12 @@ struct AppSettings: Codable, Equatable {
     var streamStatsMetrics: StreamStatsMetrics = .default
     var hideStreamButtons: Bool = false
     var streamKeyboardButtonPosition: NormalizedPoint = .trailingCenter
+    var streamKeyboardClearConfirmationDisabled: Bool = false
     var showAntiAfkIndicator: Bool = false
 
     // Sessions
-    var showSessionReportAfterStream: Bool = true
+    var showSessionReportAfterStream: Bool = false
+    var sessionReportDefaultVersion: Int = 0
     var sessionClockShowEveryMinutes: Int = 60
     var sessionClockShowDurationSeconds: Int = 30
 
@@ -914,8 +907,10 @@ struct AppSettings: Codable, Equatable {
         case streamStatsMetrics
         case hideStreamButtons
         case streamKeyboardButtonPosition
+        case streamKeyboardClearConfirmationDisabled
         case showAntiAfkIndicator
         case showSessionReportAfterStream
+        case sessionReportDefaultVersion
         case sessionClockShowEveryMinutes
         case sessionClockShowDurationSeconds
         case microphoneMode
@@ -1036,8 +1031,10 @@ struct AppSettings: Codable, Equatable {
         streamStatsMetrics = try container.decodeIfPresent(StreamStatsMetrics.self, forKey: .streamStatsMetrics) ?? .default
         hideStreamButtons = try container.decodeIfPresent(Bool.self, forKey: .hideStreamButtons) ?? false
         streamKeyboardButtonPosition = try container.decodeIfPresent(NormalizedPoint.self, forKey: .streamKeyboardButtonPosition) ?? .trailingCenter
+        streamKeyboardClearConfirmationDisabled = try container.decodeIfPresent(Bool.self, forKey: .streamKeyboardClearConfirmationDisabled) ?? false
         showAntiAfkIndicator = try container.decodeIfPresent(Bool.self, forKey: .showAntiAfkIndicator) ?? false
-        showSessionReportAfterStream = try container.decodeIfPresent(Bool.self, forKey: .showSessionReportAfterStream) ?? true
+        showSessionReportAfterStream = try container.decodeIfPresent(Bool.self, forKey: .showSessionReportAfterStream) ?? false
+        sessionReportDefaultVersion = try container.decodeIfPresent(Int.self, forKey: .sessionReportDefaultVersion) ?? 0
         sessionClockShowEveryMinutes = try container.decodeIfPresent(Int.self, forKey: .sessionClockShowEveryMinutes) ?? 60
         sessionClockShowDurationSeconds = try container.decodeIfPresent(Int.self, forKey: .sessionClockShowDurationSeconds) ?? 30
         // `keepMicEnabled` predates the three-state mode. Carry a true value forward as
@@ -1104,6 +1101,10 @@ struct AppSettings: Codable, Equatable {
     }
 
     mutating func normalizeStreamDefaults() {
+        if sessionReportDefaultVersion < appSettingsSessionReportDefaultVersion {
+            showSessionReportAfterStream = false
+        }
+        sessionReportDefaultVersion = appSettingsSessionReportDefaultVersion
         if !StreamSettingsResolver.aspectRatioOptions.contains(preferredAspectRatio) {
             preferredAspectRatio = "16:9"
         }
@@ -2718,9 +2719,7 @@ private final class OAuthLoopbackServer: @unchecked Sendable {
 /// touch pipeline on it — `enableTouchInput: appLaunchMode === AppLaunchMode.TouchFriendly` — so a
 /// session created under any other mode silently ignores well-formed touch packets.
 ///
-/// Ported from `GfnAppLaunchMode` in the Android build. `gamepadFriendly` is listed for
-/// completeness; iOS keeps sending `default` for non-touch sessions, which is what it has always
-/// sent and what the desktop allocation path is known to work with.
+/// Ported from `GfnAppLaunchMode` in the Android build.
 enum GFNAppLaunchMode: Int {
     case `default` = 1
     case gamepadFriendly = 2
@@ -2737,15 +2736,23 @@ enum GFNAppLaunchMode: Int {
 /// keep the full desktop resolution matrix, so touch is no longer paid for with a downgraded
 /// allocation. An earlier iOS-flavoured guess at this — `IOS` / `MOBILE` / `GFN-MOBILE` plus two
 /// invented metadata keys — provisioned no digitizer at all.
-private enum StreamDeviceProfile {
+private enum StreamDeviceProfile: Equatable {
     case desktop
     case touch
 
     var appLaunchMode: GFNAppLaunchMode {
         switch self {
-        case .desktop: return .default
+        case .desktop: return .gamepadFriendly
         case .touch: return .touchFriendly
         }
+    }
+
+    var remoteControllersBitmap: Int {
+        self == .touch ? 0 : 1
+    }
+
+    var availableSupportedControllers: [Int] {
+        self == .touch ? [] : [2]
     }
 
     var nvDeviceOS: String {
@@ -4096,13 +4103,18 @@ private actor GFNAPIClient {
         streamingBaseUrl: String,
         vpcId: String,
         settings: AppSettings,
-        deviceId: String
+        deviceId: String,
+        touchProvisionedOverride: Bool? = nil
     ) async throws -> ActiveSession {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let clientId = UUID().uuidString
         let claimDeviceId = deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? UUID().uuidString : deviceId
         let streamProfile = StreamSettingsResolver.profile(for: settings, membershipTier: session.user.membershipTier)
-        let deviceProfile = Self.streamDeviceProfile(for: game, settings: settings)
+        // Claiming repeats the session request body. During recovery, retain the input device
+        // profile chosen when this allocation was created instead of letting a transient hot-plug
+        // silently change a touch session into a controller session (or vice versa).
+        let deviceProfile = touchProvisionedOverride.map { $0 ? StreamDeviceProfile.touch : .desktop }
+            ?? Self.streamDeviceProfile(for: game, settings: settings)
         let zoneBase = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
         var effectiveServerIp = Self.remoteSessionTargetHost(
             serverIp: candidate.serverIp,
@@ -5508,7 +5520,7 @@ private actor GFNAPIClient {
             "sessionRequestData": [
                 "appId": appId,
                 "internalTitle": title,
-                "availableSupportedControllers": [],
+                "availableSupportedControllers": deviceProfile.availableSupportedControllers,
                 "networkTestSessionId": NSNull(),
                 "parentSessionId": NSNull(),
                 "clientIdentification": deviceProfile.clientIdentification,
@@ -5535,7 +5547,7 @@ private actor GFNAPIClient {
                 "sdrHdrMode": hdrEnabled ? 1 : 0,
                 "clientDisplayHdrCapabilities": hdrCapabilitiesValue,
                 "surroundAudioInfo": 0,
-                "remoteControllersBitmap": 0,
+                "remoteControllersBitmap": deviceProfile.remoteControllersBitmap,
                 "clientTimezoneOffset": TimeZone.current.secondsFromGMT() * 1000,
                 "enhancedStreamMode": 1,
                 "appLaunchMode": deviceProfile.appLaunchMode.rawValue,
@@ -5585,10 +5597,10 @@ private actor GFNAPIClient {
             "data": "RESUME",
             "sessionRequestData": [
                 "audioMode": 2,
-                "remoteControllersBitmap": 0,
+                "remoteControllersBitmap": deviceProfile.remoteControllersBitmap,
                 "sdrHdrMode": hdrEnabled ? 1 : 0,
                 "networkTestSessionId": NSNull(),
-                "availableSupportedControllers": [],
+                "availableSupportedControllers": deviceProfile.availableSupportedControllers,
                 "clientVersion": "30.0",
                 "deviceHashId": deviceHashId,
                 "internalTitle": NSNull(),
@@ -5695,7 +5707,7 @@ private actor GFNAPIClient {
         NativeTouchSupport.shouldUseNativeTouch(
             mode: settings.touch.nativeTouchMode,
             game: game
-        ) ? .touch : .desktop
+        ) && !NativeStreamPhysicalInput.keyboardOrMouseConnected ? .touch : .desktop
     }
 
     private static func generatePKCE() -> (verifier: String, challenge: String) {
@@ -6798,22 +6810,7 @@ final class OpenNOWStore: ObservableObject {
                         accountLinked: shouldSendAccountLinked(game: game, launchOption: effectiveLaunchOption)
                     )
                 }
-                do {
-                    started = try await startNewSession(using: launchSettings)
-                } catch {
-                    guard SessionLaunchRecoveryPolicy.shouldRetryWithSafeVideoProfile(
-                        error: error,
-                        settings: launchSettings
-                    ) else {
-                        throw error
-                    }
-                    let rejectedSettings = launchSettings
-                    launchSettings = launchSettings.safeVideoFallback()
-                    logger.notice(
-                        "GFN rejected the requested video profile; retrying safely requestedCodec=\(rejectedSettings.preferredCodec, privacy: .public) requestedColor=\(rejectedSettings.preferredColorQuality, privacy: .public) safeResolution=\(launchSettings.preferredResolution, privacy: .public)"
-                    )
-                    started = try await startNewSession(using: launchSettings)
-                }
+                started = try await startNewSession(using: launchSettings)
             }
             activeSession = started
             activeStreamSettings = launchSettings
@@ -7332,119 +7329,6 @@ final class OpenNOWStore: ObservableObject {
         syncTrackedSessionSurface()
     }
 
-    func restartStreamWithSafeVideoProfile(reason: String) {
-        guard supportsEmbeddedStreamer else {
-            lastError = OpenNOWPlatform.streamingUnavailableReason
-            return
-        }
-        guard let current = streamSession ?? activeSession else {
-            lastError = "\(reason). No active stream session was available to restart."
-            return
-        }
-        let currentSettings = currentStreamerSettings
-        let safeSettings = currentSettings.safeVideoFallback()
-        guard safeSettings != currentSettings else {
-            logger.notice("Safe video restart requested but current profile is already safe: \(reason, privacy: .public)")
-            scheduleStreamerReopen()
-            return
-        }
-        logger.notice(
-            "Safe video restart requested reason=\(reason, privacy: .public) currentCodec=\(currentSettings.preferredCodec, privacy: .public) safeResolution=\(safeSettings.preferredResolution, privacy: .public)"
-        )
-        launchTask?.cancel()
-        launchTask = Task {
-            await self.restartCurrentStreamWithSafeVideoProfile(
-                previous: current,
-                safeSettings: safeSettings,
-                reason: reason
-            )
-        }
-    }
-
-    private func restartCurrentStreamWithSafeVideoProfile(
-        previous: ActiveSession,
-        safeSettings: AppSettings,
-        reason: String
-    ) async {
-        guard let currentAuth = authSession else {
-            lastError = "Sign in first."
-            return
-        }
-
-        let game = previous.game
-        let effectiveLaunchOption = effectiveLaunchOption(for: game, requested: nil)
-        let launchAppId = effectiveLaunchOption?.appId ?? game.launchAppId
-        guard let launchAppId, !launchAppId.isEmpty else {
-            lastError = "Safe H264 restart failed: selected game has no launch app ID."
-            return
-        }
-
-        isLaunchingSession = true
-        showStreamLoading = true
-        queueOverlayVisible = true
-        setStreamSession(nil, reason: "safeVideoRestart.reset")
-        activeSession = nil
-        activeStreamSettings = safeSettings
-        syncTrackedSessionSurface()
-        defer { isLaunchingSession = false }
-
-        do {
-            let refreshed = try await api.refreshSession(currentAuth)
-            authSession = refreshed
-            user = refreshed.user
-            persistAuthSession(refreshed)
-
-            do {
-                try await api.stopSession(session: refreshed, activeSession: previous)
-            } catch {
-                logger.warning(
-                    "Safe video restart could not stop previous session id=\(previous.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-                )
-            }
-
-            let deviceId = persistentDeviceId()
-            let baseUrl = previous.streamingBaseUrl.isEmpty
-                ? refreshed.provider.streamingServiceUrl
-                : previous.streamingBaseUrl
-            let started = try await api.startSession(
-                session: refreshed,
-                game: game,
-                vpcId: cachedVpcId,
-                settings: safeSettings,
-                streamProfile: StreamSettingsResolver.profile(
-                    for: safeSettings,
-                    membershipTier: subscription?.membershipTier ?? refreshed.user.membershipTier
-                ),
-                streamingBaseUrl: baseUrl,
-                launchAppIdOverride: launchAppId,
-                launcherName: effectiveLaunchOption?.storefront ?? "Auto",
-                deviceId: deviceId,
-                accountLinked: shouldSendAccountLinked(game: game, launchOption: effectiveLaunchOption)
-            )
-            let handoff = await prepareSessionForStreamer(started)
-            activeSession = handoff
-            activeStreamSettings = safeSettings
-            adReportStateById = [:]
-            adStartedAtById = [:]
-                startSessionTasks()
-            setStreamSession(handoff, reason: "safeVideoRestart.handoff")
-            syncTrackedSessionSurface()
-            logger.notice(
-                "Safe video session started id=\(handoff.id, privacy: .public) reason=\(reason, privacy: .public) resolution=\(safeSettings.preferredResolution, privacy: .public)"
-            )
-            lastError = nil
-        } catch where OpenNOWErrorPresenter.isCancellation(error) {
-            return
-        } catch {
-            logger.error("Safe video restart failed error=\(error.localizedDescription, privacy: .public)")
-            showStreamLoading = false
-            queueOverlayVisible = false
-            activeStreamSettings = nil
-            syncTrackedSessionSurface()
-            lastError = "Safe H264 restart failed: \(error.localizedDescription)"
-        }
-    }
-
     func minimizeQueueOverlay() {
         withAnimation(.easeInOut(duration: 0.32)) {
             queueOverlayVisible = false
@@ -7622,6 +7506,7 @@ final class OpenNOWStore: ObservableObject {
         next.mouseSensitivity = updated.mouseSensitivity
         next.mouseScrollSensitivity = updated.mouseScrollSensitivity
         next.controllerMouseEmulation = updated.controllerMouseEmulation
+        next.streamKeyboardClearConfirmationDisabled = updated.streamKeyboardClearConfirmationDisabled
         guard next != settings else { return }
         settings = next
         persistSettings()
@@ -7725,7 +7610,7 @@ final class OpenNOWStore: ObservableObject {
         return nil
     }
 
-    func submitBugReport(_ draft: BugReportDraft, deck: BugReportPreflightDeck) async -> Result<String?, Error> {
+    func submitBugReport(_ draft: BugReportDraft, deck: BugReportPreflightDeck) async -> Result<String, Error> {
         guard let reporterId = BugReportReporter.reporterId(stableDeviceId: persistentDeviceId()) else {
             return .failure(BugReportError.invalid("This installation has no reporting ID yet. Restart OpenNOW and try again."))
         }
@@ -7746,7 +7631,7 @@ final class OpenNOWStore: ObservableObject {
         )
         do {
             let reference = try await BugReportClient.upload(submission)
-            logger.notice("bug report accepted reference=\(reference ?? "none", privacy: .public)")
+            logger.notice("bug report accepted reference=\(reference, privacy: .public)")
             return .success(reference)
         } catch {
             logger.error("bug report failed error=\(error.localizedDescription, privacy: .public)")
@@ -8547,7 +8432,8 @@ final class OpenNOWStore: ObservableObject {
                 streamingBaseUrl: baseUrl,
                 vpcId: cachedVpcId,
                 settings: streamSettings,
-                deviceId: deviceId
+                deviceId: deviceId,
+                touchProvisionedOverride: session.touchProvisioned
             )
             activeSession = claimed
             activeStreamSettings = streamSettings

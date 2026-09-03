@@ -227,19 +227,25 @@ final class NativeStreamPlaybackAudioDevice: NSObject, RTCAudioDevice {
             return false
         }
 
-        outputSampleRate = session.sampleRate > 0 ? session.sampleRate : 48_000
-        outputChannelCount = max(1, min(2, session.outputNumberOfChannels))
-        guard let format = AVAudioFormat(
+        let engine = AVAudioEngine()
+        let hardwareFormat = engine.outputNode.outputFormat(forBus: 0)
+        guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
+            onEvent("Media audio output has no active hardware format")
+            return false
+        }
+        outputSampleRate = hardwareFormat.sampleRate
+        outputChannelCount = Int(hardwareFormat.channelCount)
+        guard let renderFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: outputSampleRate,
             channels: AVAudioChannelCount(outputChannelCount),
             interleaved: true
         ) else {
+            onEvent("Media audio output could not create WebRTC PCM format")
             return false
         }
 
-        let engine = AVAudioEngine()
-        let sourceNode = AVAudioSourceNode(format: format) {
+        let sourceNode = AVAudioSourceNode(format: renderFormat) {
             [weak delegate] isSilence, timestamp, frameCount, outputData in
             guard let delegate else {
                 let buffers = UnsafeMutableAudioBufferListPointer(outputData)
@@ -264,7 +270,13 @@ final class NativeStreamPlaybackAudioDevice: NSObject, RTCAudioDevice {
             return status
         }
         engine.attach(sourceNode)
-        engine.connect(sourceNode, to: engine.mainMixerNode, format: format)
+        // AVAudioEngine's output graph must use the route's native format. The source node still
+        // asks WebRTC for interleaved Int16 PCM, while the engine performs the conversion into the
+        // hardware format. Connecting Int16 directly to the mixer can fail to start, or start with
+        // silence, on routes whose mixer is float/non-interleaved (including common speakers and
+        // Bluetooth outputs).
+        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: hardwareFormat)
+        engine.connect(sourceNode, to: engine.mainMixerNode, format: hardwareFormat)
         engine.prepare()
         // The device properties now reflect the active route. WebRTC must see those values before
         // the source node begins requesting PCM, especially when A2DP changes 48 kHz stereo to a

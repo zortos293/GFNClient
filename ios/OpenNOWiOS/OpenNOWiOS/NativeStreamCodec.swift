@@ -66,11 +66,14 @@ enum NativeStreamLaunchSettingsResolver {
                 return NativeStreamLaunchSettings(settings: normalized, selectedCodec: requested, reason: nil)
             }
 
-            let fallback = normalized.safeVideoFallback()
+            // An explicit codec choice is session authority. Report that this runtime cannot use
+            // it, but do not silently rewrite codec, resolution, FPS, bitrate, HDR, or colour.
+            // The stream surface will stop with a precise compatibility error before attempting
+            // to decode it; only Auto may choose another available codec.
             return NativeStreamLaunchSettings(
-                settings: fallback,
-                selectedCodec: .h264,
-                reason: "\(requested.rawValue) is not available through iOS WebRTC"
+                settings: normalized,
+                selectedCodec: requested,
+                reason: "\(requested.rawValue) is not available through iOS WebRTC; preserving the selected profile"
             )
         }
 

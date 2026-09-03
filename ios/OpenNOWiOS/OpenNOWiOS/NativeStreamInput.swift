@@ -417,6 +417,12 @@ final class NativeStreamInputEncoder {
 }
 
 #if canImport(GameController)
+enum NativeStreamPhysicalInput {
+    static var keyboardOrMouseConnected: Bool {
+        GCKeyboard.coalesced != nil || !GCMouse.mice().isEmpty
+    }
+}
+
 enum NativeStreamKeyboardMapper {
     static func mapping(for keyCode: GCKeyCode) -> NativeStreamKeyboardMapping? {
         mappingByKey[keyCode]
@@ -619,6 +625,7 @@ private final class NativeStreamHapticPlayback {
 final class NativeStreamInputBridge {
     weak var sink: NativeStreamInputSink?
     var onPhysicalControllerAvailabilityChanged: ((Bool) -> Void)?
+    var onPhysicalKeyboardMouseAvailabilityChanged: ((Bool) -> Void)?
 
     private let encoder = NativeStreamInputEncoder()
     private var keyboard: GCKeyboard?
@@ -805,6 +812,17 @@ final class NativeStreamInputBridge {
         sink?.sendReliableInput(data)
     }
 
+    /// Select all, then delete. This mirrors the Android stream keyboard's Clear action and uses
+    /// ordinary key packets so it also works in fields that do not accept Unicode injection.
+    func clearRemoteText() {
+        let selectAll = NativeStreamKeyboardMapping(virtualKey: 0x41, scanCode: 0x001e)
+        let backspace = NativeStreamKeyboardMapping(virtualKey: 0x08, scanCode: 0x000e)
+        sendKey(mapping: selectAll, pressed: true, modifiers: 0x02)
+        sendKey(mapping: selectAll, pressed: false, modifiers: 0x02)
+        sendKey(mapping: backspace, pressed: true, modifiers: 0)
+        sendKey(mapping: backspace, pressed: false, modifiers: 0)
+    }
+
     func sendMouseWheel(delta: Int) {
         sink?.sendReliableInput(encoder.encodeMouseWheel(delta: delta))
     }
@@ -970,8 +988,13 @@ final class NativeStreamInputBridge {
     }
 
     @objc private func refreshDevices() {
+        let hadKeyboardOrMouse = keyboard != nil || !mice.isEmpty
         attachKeyboard()
         attachMice()
+        let hasKeyboardOrMouse = keyboard != nil || !mice.isEmpty
+        if hadKeyboardOrMouse != hasKeyboardOrMouse {
+            onPhysicalKeyboardMouseAvailabilityChanged?(hasKeyboardOrMouse)
+        }
         attachControllers()
         advertiseHaptics(force: true)
     }
@@ -1568,6 +1591,7 @@ final class NativeStreamInputBridge {
 final class NativeStreamInputBridge {
     weak var sink: NativeStreamInputSink?
     var onPhysicalControllerAvailabilityChanged: ((Bool) -> Void)?
+    var onPhysicalKeyboardMouseAvailabilityChanged: ((Bool) -> Void)?
     func configure(protocolVersion: Int, partiallyReliableGamepadMask: Int) {}
     func configureUserPreferences(mouseSensitivity: Double, mouseAcceleration: Int, phoneRumbleFallback: Bool, physicalControllerPassthrough: Bool, controllerMouseEmulation: Bool = false, mouseScrollSensitivity: Int = 30) {}
     func setControllerMouseEmulation(_ enabled: Bool) {}
@@ -1581,6 +1605,7 @@ final class NativeStreamInputBridge {
     func sendNativeTouch(_ records: [NativeTouchRecord]) -> Bool { false }
     func sendMouseButton(_ button: Int, pressed: Bool) {}
     func sendKey(mapping: NativeStreamKeyboardMapping, pressed: Bool, modifiers: UInt16) {}
+    func clearRemoteText() {}
     func sendMouseWheel(delta: Int) {}
     func sendUnicodeText(_ text: String) -> Int { 0 }
     func advertiseHaptics(force: Bool = false, now: TimeInterval = 0) {}
@@ -1589,5 +1614,9 @@ final class NativeStreamInputBridge {
     func setVirtualButton(_ button: NativeStreamVirtualGamepadButton, pressed: Bool) {}
     func setVirtualStick(_ stick: NativeStreamVirtualGamepadStick, x: CGFloat, y: CGFloat) {}
     func setVirtualTrigger(_ trigger: NativeStreamVirtualGamepadTrigger, value: CGFloat) {}
+}
+
+enum NativeStreamPhysicalInput {
+    static var keyboardOrMouseConnected: Bool { false }
 }
 #endif

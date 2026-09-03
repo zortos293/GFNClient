@@ -21,7 +21,7 @@ import UIKit
 // MARK: - Endpoint
 
 enum BugReportEndpoint {
-    static let url = URL(string: "https://api.printedwaste.com/releases/opennow/bug-reports")!
+    static let url = URL(string: "https://api.printedwaste.com/releases/opennow-ios/bug-reports")!
     static let maxFiles = 5
     static let maxFileBytes = 10 * 1024 * 1024
     static let reporterIdPrefix = "br1_"
@@ -279,11 +279,11 @@ enum BugReportClient {
         return request
     }
 
-    /// Returns the server's report reference when it supplies one.
+    /// A successful upload is only complete once the service returns its report ID.
     static func upload(
         _ submission: BugReportSubmission,
         session: URLSession = .shared
-    ) async throws -> String? {
+    ) async throws -> String {
         let request = try buildRequest(submission)
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -296,13 +296,26 @@ enum BugReportClient {
         if let json = jsonObject(body), (json["ok"] as? Bool) == false {
             throw parseServerError(body: body, status: status)
         }
-        return reference(from: body)
+        guard let reference = reference(from: body) else {
+            throw BugReportError.server(
+                code: "INVALID_RESPONSE",
+                message: "The bug report service did not return a report ID.",
+                retryable: false
+            )
+        }
+        return reference
     }
 
     static func reference(from body: String) -> String? {
         guard let json = jsonObject(body) else { return nil }
-        for key in ["reportId", "id", "bugReportId"] {
-            if let value = json[key] as? String, !value.isEmpty { return value }
+        for key in ["id", "reportId", "bugReportId"] {
+            if let value = json[key] as? String {
+                let normalized = value
+                    .components(separatedBy: .whitespacesAndNewlines)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                if !normalized.isEmpty { return String(normalized.prefix(160)) }
+            }
         }
         return nil
     }

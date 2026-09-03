@@ -156,6 +156,154 @@ struct NativeStreamRecoveryProgressTracker {
         return true
     }
 }
+
+/// Requires sustained proof that packets are arriving near the requested rate while decoded
+/// output falls behind and decoding exceeds one frame budget. This keeps network loss and a slow
+/// cloud game from being misdiagnosed as a local decoder failure.
+struct NativeStreamDecoderRecoveryGate {
+    private let badSamplesBeforeRecovery: Int
+    private let minimumReceivedRatio: Double
+    private let maximumDecodedRatio: Double
+    private let minimumDecodeBudgetRatio: Double
+    private var badSamples = 0
+    private var recoveryIssued = false
+
+    init(
+        badSamplesBeforeRecovery: Int = 5,
+        minimumReceivedRatio: Double = 0.85,
+        maximumDecodedRatio: Double = 0.80,
+        minimumDecodeBudgetRatio: Double = 1.10
+    ) {
+        precondition(badSamplesBeforeRecovery > 0)
+        self.badSamplesBeforeRecovery = badSamplesBeforeRecovery
+        self.minimumReceivedRatio = minimumReceivedRatio
+        self.maximumDecodedRatio = maximumDecodedRatio
+        self.minimumDecodeBudgetRatio = minimumDecodeBudgetRatio
+    }
+
+    mutating func reset() {
+        badSamples = 0
+        recoveryIssued = false
+    }
+
+    mutating func observe(
+        receivedFPS: Int?,
+        decodedFPS: Int?,
+        decodeMs: Double?,
+        requestedFPS: Int,
+        advancedCodecActive: Bool,
+        recoveryEligible: Bool
+    ) -> Bool {
+        guard advancedCodecActive, recoveryEligible, !recoveryIssued else {
+            badSamples = 0
+            return false
+        }
+        let frameBudgetMs = 1_000.0 / Double(max(requestedFPS, 1))
+        let overloaded: Bool
+        if let receivedFPS, let decodedFPS, let decodeMs {
+            overloaded = Double(receivedFPS) >= Double(requestedFPS) * minimumReceivedRatio
+                && Double(decodedFPS) <= Double(receivedFPS) * maximumDecodedRatio
+                && decodeMs >= frameBudgetMs * minimumDecodeBudgetRatio
+        } else {
+            overloaded = false
+        }
+        badSamples = overloaded ? badSamples + 1 : 0
+        guard badSamples >= badSamplesBeforeRecovery else { return false }
+        badSamples = 0
+        recoveryIssued = true
+        return true
+    }
+}
+
+/// Arms during sustained raw packet loss, then asks for one clean keyframe after the path becomes
+/// healthy. Recovery waits for congestion to clear and never changes settings or restarts media.
+struct NativeStreamPacketLossRecoveryGate {
+    private let badSamplesBeforeArmed: Int
+    private let lossThresholdPercent: Double
+    private let minimumPacketSample: Int
+    private let cooldownSamples: Int
+    private var consecutiveBadSamples = 0
+    private var recoveryArmed = false
+    private var remainingCooldownSamples = 0
+
+    init(
+        badSamplesBeforeArmed: Int = 2,
+        lossThresholdPercent: Double = 5,
+        minimumPacketSample: Int = 100,
+        cooldownSamples: Int = 15
+    ) {
+        precondition(badSamplesBeforeArmed > 0)
+        precondition((0...100).contains(lossThresholdPercent))
+        precondition(minimumPacketSample > 0)
+        precondition(cooldownSamples >= 0)
+        self.badSamplesBeforeArmed = badSamplesBeforeArmed
+        self.lossThresholdPercent = lossThresholdPercent
+        self.minimumPacketSample = minimumPacketSample
+        self.cooldownSamples = cooldownSamples
+    }
+
+    mutating func reset() {
+        consecutiveBadSamples = 0
+        recoveryArmed = false
+        remainingCooldownSamples = 0
+    }
+
+    mutating func observe(
+        lostDelta: Int?,
+        receivedDelta: Int?,
+        recoveryEligible: Bool
+    ) -> Bool {
+        guard recoveryEligible else {
+            consecutiveBadSamples = 0
+            recoveryArmed = false
+            return false
+        }
+        guard let lostDelta, let receivedDelta,
+              lostDelta >= 0, receivedDelta >= 0 else { return false }
+        let total = lostDelta + receivedDelta
+        guard total >= minimumPacketSample else { return false }
+        if remainingCooldownSamples > 0 { remainingCooldownSamples -= 1 }
+
+        let lossPercent = Double(lostDelta) / Double(total) * 100
+        if lossPercent >= lossThresholdPercent {
+            consecutiveBadSamples += 1
+            if consecutiveBadSamples >= badSamplesBeforeArmed { recoveryArmed = true }
+            return false
+        }
+
+        consecutiveBadSamples = 0
+        guard recoveryArmed, remainingCooldownSamples == 0 else { return false }
+        recoveryArmed = false
+        remainingCooldownSamples = cooldownSamples
+        return true
+    }
+}
+
+enum NativeStreamSignalingFailureDisposition: Equatable {
+    case retryTransport
+    case retrySignaling
+    case recoverSession
+    case sessionEnded
+}
+
+func nativeStreamSignalingFailureDisposition(_ message: String) -> NativeStreamSignalingFailureDisposition {
+    let value = message.lowercased()
+    if value.contains("http=410") || value.contains("410 gone") { return .sessionEnded }
+    if value.contains("http=404") || value.contains("404 not found") { return .recoverSession }
+    let transientStatuses = ["http=429", "http=500", "http=502", "http=503", "http=504"]
+    if transientStatuses.contains(where: value.contains) || value.contains("service unavailable") {
+        return .retrySignaling
+    }
+    return .retryTransport
+}
+
+func nativeStreamShouldPreserveMediaAfterSignalingFailure(
+    _ disposition: NativeStreamSignalingFailureDisposition,
+    mediaConnected: Bool
+) -> Bool {
+    guard mediaConnected else { return false }
+    return disposition == .retryTransport || disposition == .retrySignaling
+}
 #endif
 
 enum StreamSessionTimerMode: Equatable {
@@ -365,6 +513,42 @@ fileprivate enum NativeStreamGuidanceSheet: String, Identifiable {
     var id: String { rawValue }
 }
 
+fileprivate enum NativeStreamInputMode: Equatable {
+    case nativeTouch
+    case keyboardMouse
+}
+
+fileprivate enum NativeStreamInputModePrompt: String, Identifiable, Equatable {
+    case switchToKeyboardMouse
+    case switchToNativeTouch
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .switchToKeyboardMouse: return "Keyboard or mouse detected"
+        case .switchToNativeTouch: return "Keyboard and mouse disconnected"
+        }
+    }
+    var message: String {
+        switch self {
+        case .switchToKeyboardMouse: return "You’re using native touch. Switch to keyboard and mouse for this stream?"
+        case .switchToNativeTouch: return "You’re using keyboard and mouse. Switch back to native touch for this stream?"
+        }
+    }
+    var switchLabel: String {
+        switch self {
+        case .switchToKeyboardMouse: return "Switch to Keyboard & Mouse"
+        case .switchToNativeTouch: return "Switch to Native Touch"
+        }
+    }
+    var stayLabel: String {
+        switch self {
+        case .switchToKeyboardMouse: return "Stay on Native Touch"
+        case .switchToNativeTouch: return "Keep Keyboard & Mouse"
+        }
+    }
+}
+
 struct StreamerView: View {
     #if os(iOS) && canImport(WebRTC)
     @Environment(\.scenePhase) private var scenePhase
@@ -384,12 +568,14 @@ struct StreamerView: View {
         onControllerTouchPromptDismissed: @escaping () -> Void = {},
         onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
         onTransportStable: @escaping () -> Void = {},
-        onSafeVideoFallbackRequired: @escaping (String) -> Void,
+        onSelectedVideoProfileRetry: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
         onRuntimeSample: @escaping (StreamRuntimeSample) -> Void = { _ in },
         onSettingsChange: @escaping (AppSettings) -> Void = { _ in },
         onBuildBugReportDeck: @escaping () -> BugReportPreflightDeck = { BugReportPreflightDeck() },
-        onSubmitBugReport: @escaping (BugReportDraft, BugReportPreflightDeck) async -> Result<String?, Error> = { _, _ in .success(nil) },
+        onSubmitBugReport: @escaping (BugReportDraft, BugReportPreflightDeck) async -> Result<String, Error> = { _, _ in
+            .failure(BugReportError.invalid("Bug reporting isn't available in this build."))
+        },
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)? = nil
     ) {
@@ -407,7 +593,7 @@ struct StreamerView: View {
                 onControllerTouchPromptDismissed: onControllerTouchPromptDismissed,
                 onStatsOverlayChange: onStatsOverlayChange,
                 onTransportStable: onTransportStable,
-                onSafeVideoFallbackRequired: onSafeVideoFallbackRequired,
+                onSelectedVideoProfileRetry: onSelectedVideoProfileRetry,
                 onRuntimeSample: onRuntimeSample,
                 onSettingsChange: onSettingsChange,
                 onBuildBugReportDeck: onBuildBugReportDeck,
@@ -575,6 +761,24 @@ struct StreamerView: View {
                 NativeControllerTouchPromptSheet(coordinator: coordinator)
             }
         }
+        .alert(item: $coordinator.inputModePrompt) { prompt in
+            Alert(
+                title: Text(prompt.title),
+                message: Text(prompt.message),
+                primaryButton: .default(Text(prompt.switchLabel)) {
+                    coordinator.acceptInputModePrompt(prompt)
+                },
+                secondaryButton: .cancel(Text(prompt.stayLabel)) {
+                    coordinator.dismissInputModePrompt()
+                }
+            )
+        }
+        .onChangeCompat(of: coordinator.controlsPanelVisible) { _ in
+            coordinator.presentPendingInputModePromptIfPossible()
+        }
+        .onChangeCompat(of: coordinator.presentedGuidanceSheet) { _ in
+            coordinator.presentPendingInputModePromptIfPossible()
+        }
     }
 
     @ViewBuilder
@@ -626,12 +830,14 @@ struct StreamerView: View {
         onControllerTouchPromptDismissed: @escaping () -> Void = {},
         onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
         onTransportStable: @escaping () -> Void = {},
-        onSafeVideoFallbackRequired: @escaping (String) -> Void,
+        onSelectedVideoProfileRetry: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
         onRuntimeSample: @escaping (StreamRuntimeSample) -> Void = { _ in },
         onSettingsChange: @escaping (AppSettings) -> Void = { _ in },
         onBuildBugReportDeck: @escaping () -> BugReportPreflightDeck = { BugReportPreflightDeck() },
-        onSubmitBugReport: @escaping (BugReportDraft, BugReportPreflightDeck) async -> Result<String?, Error> = { _, _ in .success(nil) },
+        onSubmitBugReport: @escaping (BugReportDraft, BugReportPreflightDeck) async -> Result<String, Error> = { _, _ in
+            .failure(BugReportError.invalid("Bug reporting isn't available in this build."))
+        },
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)? = nil
     ) {
@@ -649,7 +855,7 @@ struct StreamerView: View {
         _ = onControllerTouchPromptDismissed
         _ = onStatsOverlayChange
         _ = onTransportStable
-        _ = onSafeVideoFallbackRequired
+        _ = onSelectedVideoProfileRetry
         _ = onNativeFallbackRequiresFreshEndpoint
         _ = onRuntimeSample
         _ = onSettingsChange
@@ -1822,6 +2028,7 @@ private struct NativeStreamKeyboardSheet: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var textFieldFocused: Bool
     @State private var sendError: String?
+    @State private var showClearConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -1855,7 +2062,7 @@ private struct NativeStreamKeyboardSheet: View {
                 }
 
                 Section("Keys") {
-                    HStack(spacing: 8) {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                         NativeStreamKeyButton(title: "Backspace") {
                             coordinator.sendVirtualKey(.backspace)
                         }
@@ -1864,6 +2071,9 @@ private struct NativeStreamKeyboardSheet: View {
                         }
                         NativeStreamKeyButton(title: "Escape") {
                             coordinator.sendVirtualKey(.escape)
+                        }
+                        NativeStreamKeyButton(title: "Clear") {
+                            requestClear()
                         }
                     }
                 }
@@ -1880,6 +2090,21 @@ private struct NativeStreamKeyboardSheet: View {
             try? await Task.sleep(nanoseconds: 120_000_000)
             textFieldFocused = true
         }
+        .confirmationDialog(
+            "Clear the active text field?",
+            isPresented: $showClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Text", role: .destructive) {
+                clearRemoteText(disableFutureConfirmation: false)
+            }
+            Button("Clear and Don’t Ask Again", role: .destructive) {
+                clearRemoteText(disableFutureConfirmation: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("OpenNOW will select all text in the focused game field and delete it.")
+        }
     }
 
     private func sendText() {
@@ -1890,6 +2115,24 @@ private struct NativeStreamKeyboardSheet: View {
             sendError = nil
         } else {
             sendError = "Keyboard input is reconnecting. Your text has not been cleared; try again in a moment."
+        }
+        textFieldFocused = true
+    }
+
+    private func requestClear() {
+        if coordinator.liveSettings.streamKeyboardClearConfirmationDisabled {
+            clearRemoteText(disableFutureConfirmation: false)
+        } else {
+            showClearConfirmation = true
+        }
+    }
+
+    private func clearRemoteText(disableFutureConfirmation: Bool) {
+        if coordinator.clearStreamText(disableFutureConfirmation: disableFutureConfirmation) {
+            text = ""
+            sendError = nil
+        } else {
+            sendError = "Keyboard input is reconnecting. Nothing was cleared; try again in a moment."
         }
         textFieldFocused = true
     }
@@ -2212,6 +2455,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     @Published fileprivate var pictureInPictureAvailable = false
     @Published fileprivate var isPictureInPictureActive = false
     @Published fileprivate var physicalControllerConnected = false
+    @Published fileprivate var inputModePrompt: NativeStreamInputModePrompt?
     @Published fileprivate var showTouchControlsWithPhysicalController = false
     @Published fileprivate var presentedGuidanceSheet: NativeStreamGuidanceSheet?
     @Published fileprivate var tutorialDoneCalloutVisible = false
@@ -2238,14 +2482,14 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private let onControllerTouchPromptDismissed: () -> Void
     private let onStatsOverlayChange: (Bool) -> Void
     private let onTransportStable: () -> Void
-    private let onSafeVideoFallbackRequired: (String) -> Void
+    private let onSelectedVideoProfileRetry: (String) -> Void
     /// Fired roughly once a second with the numbers behind the HUD, so the store can accumulate
     /// them into a session report. Deliberately a plain closure rather than a Combine publisher —
     /// nothing in the view hierarchy should observe it.
     private let onRuntimeSample: (StreamRuntimeSample) -> Void
     private let onSettingsChange: (AppSettings) -> Void
     private let onBuildBugReportDeck: () -> BugReportPreflightDeck
-    private let onSubmitBugReport: (BugReportDraft, BugReportPreflightDeck) async -> Result<String?, Error>
+    private let onSubmitBugReport: (BugReportDraft, BugReportPreflightDeck) async -> Result<String, Error>
     private let onClose: () -> Void
     private let onRetry: (() -> Void)?
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "NativeStreamer")
@@ -2305,6 +2549,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var answerSent = false
     private var queuedLocalIceCandidates: [[String: Any]] = []
     private var lastStatsSampleAt: TimeInterval?
+    private var lastStatsFramesReceived: Int?
     private var lastStatsFramesDecoded: Int?
     private var lastStatsFramesRendered: Int?
     private var lastStatsBytesReceived: Int?
@@ -2314,6 +2559,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var mediaTransportConnected = false
     private var mediaLivenessWatchdog = NativeStreamLivenessWatchdog()
     private var recoveryProgressTracker = NativeStreamRecoveryProgressTracker()
+    private var packetLossRecoveryGate = NativeStreamPacketLossRecoveryGate()
+    private var decoderRecoveryGate = NativeStreamDecoderRecoveryGate()
+    private var selectedProfileRetryApplied = false
+    private var transportWasStable = false
     private var lastRenderedStatsProgressAt: TimeInterval?
     private var lastPostStartKeyframeRequestAt: TimeInterval?
     private var postStartKeyframeAttempts = 0
@@ -2335,6 +2584,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var sessionWarningTracker = StreamSessionWarningTracker()
     private var sessionWarningDismissTask: Task<Void, Never>?
     private var networkMonitorStarted = false
+    private var streamInputMode: NativeStreamInputMode
+    private var physicalKeyboardMouseConnected: Bool
+    private var pendingInputModePrompt: NativeStreamInputModePrompt?
 
     init(
         session: ActiveSession,
@@ -2349,11 +2601,11 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         onControllerTouchPromptDismissed: @escaping () -> Void,
         onStatsOverlayChange: @escaping (Bool) -> Void,
         onTransportStable: @escaping () -> Void,
-        onSafeVideoFallbackRequired: @escaping (String) -> Void,
+        onSelectedVideoProfileRetry: @escaping (String) -> Void,
         onRuntimeSample: @escaping (StreamRuntimeSample) -> Void,
         onSettingsChange: @escaping (AppSettings) -> Void,
         onBuildBugReportDeck: @escaping () -> BugReportPreflightDeck,
-        onSubmitBugReport: @escaping (BugReportDraft, BugReportPreflightDeck) async -> Result<String?, Error>,
+        onSubmitBugReport: @escaping (BugReportDraft, BugReportPreflightDeck) async -> Result<String, Error>,
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)?
     ) {
@@ -2376,6 +2628,18 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.streamSharpeningAmount = min(max(settings.streamSharpeningAmount, 0), 1)
         self.fingerMouseEnabled = settings.fingerMouseEnabled
         self.phoneRumbleFallbackEnabled = settings.phoneRumbleFallback
+        let keyboardMouseConnected = NativeStreamPhysicalInput.keyboardOrMouseConnected
+        let nativeTouchAvailable = session.touchProvisioned != false
+            && NativeTouchSupport.shouldUseNativeTouchForStream(
+                mode: settings.touch.nativeTouchMode,
+                game: session.game,
+                preferVirtualController: settings.streamerPreferences.touchControllerVisible
+            )
+        self.physicalKeyboardMouseConnected = keyboardMouseConnected
+        self.streamInputMode = nativeTouchAvailable && !keyboardMouseConnected
+            ? .nativeTouch
+            : .keyboardMouse
+        self.pendingInputModePrompt = nil
         self.touchLayout = settings.touchLayout(for: resolvedTouchLayoutProfile)
         self.onTouchLayoutChange = onTouchLayoutChange
         self.onStreamerPreferencesChange = onStreamerPreferencesChange
@@ -2386,7 +2650,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.onControllerTouchPromptDismissed = onControllerTouchPromptDismissed
         self.onStatsOverlayChange = onStatsOverlayChange
         self.onTransportStable = onTransportStable
-        self.onSafeVideoFallbackRequired = onSafeVideoFallbackRequired
+        self.onSelectedVideoProfileRetry = onSelectedVideoProfileRetry
         self.onRuntimeSample = onRuntimeSample
         self.onSettingsChange = onSettingsChange
         self.onBuildBugReportDeck = onBuildBugReportDeck
@@ -2420,6 +2684,11 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.handlePhysicalControllerAvailabilityChanged(connected)
+            }
+        }
+        inputBridge.onPhysicalKeyboardMouseAvailabilityChanged = { [weak self] connected in
+            Task { @MainActor in
+                self?.handlePhysicalKeyboardMouseAvailabilityChanged(connected)
             }
         }
         videoSink.onFrame = { [weak self] count, size, luma in
@@ -2464,8 +2733,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                 selectedCodec = requested
                 updateStatus("Checking codecs", detail: "Diagnostic unsafe codec override: \(requested.rawValue)")
             } else {
-                updateStatus("Switching to safe video", detail: "\(requested.rawValue) is not available through iOS hardware WebRTC on this runtime.")
-                onSafeVideoFallbackRequired("\(requested.rawValue) is not hardware-safe on this iOS runtime")
+                fail("\(requested.rawValue) is not available through iOS hardware WebRTC on this runtime")
                 return
             }
         } else {
@@ -2546,7 +2814,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         // A session created without `appLaunchMode: touchFriendly` has no digitizer and never will,
         // so sending contacts into it would be silence with no explanation. Sessions from before
         // this was recorded report `nil` and keep trusting the setting.
-        guard session.touchProvisioned != false else { return false }
+        guard session.touchProvisioned != false, streamInputMode == .nativeTouch else { return false }
         return NativeTouchSupport.shouldUseNativeTouchForStream(
             mode: liveSettings.touch.nativeTouchMode,
             game: session.game,
@@ -2671,7 +2939,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     func submitBugReport(
         _ draft: BugReportDraft,
         deck: BugReportPreflightDeck
-    ) async -> Result<String?, Error> {
+    ) async -> Result<String, Error> {
         await onSubmitBugReport(draft, deck)
     }
 
@@ -2940,6 +3208,18 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         return sentCharacters
     }
 
+    @discardableResult
+    fileprivate func clearStreamText(disableFutureConfirmation: Bool) -> Bool {
+        guard reliableInputChannel?.readyState == .open else { return false }
+        inputBridge.clearRemoteText()
+        if disableFutureConfirmation, !liveSettings.streamKeyboardClearConfirmationDisabled {
+            liveSettings.streamKeyboardClearConfirmationDisabled = true
+            onSettingsChange(liveSettings)
+        }
+        log("Cleared focused stream text field")
+        return true
+    }
+
     private func setStreamerPreferences(_ preferences: StreamerPreferences) {
         streamerPreferences = preferences
         onStreamerPreferencesChange(preferences)
@@ -2986,6 +3266,40 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         if connected {
             scheduleGuidancePresentation()
         }
+    }
+
+    private func handlePhysicalKeyboardMouseAvailabilityChanged(_ connected: Bool) {
+        guard connected != physicalKeyboardMouseConnected else { return }
+        physicalKeyboardMouseConnected = connected
+        inputModePrompt = nil
+        switch (streamInputMode, connected, session.touchProvisioned == true) {
+        case (.nativeTouch, true, _):
+            pendingInputModePrompt = .switchToKeyboardMouse
+        case (.keyboardMouse, false, true):
+            pendingInputModePrompt = .switchToNativeTouch
+        default:
+            pendingInputModePrompt = nil
+        }
+        presentPendingInputModePromptIfPossible()
+    }
+
+    fileprivate func presentPendingInputModePromptIfPossible() {
+        guard inputModePrompt == nil,
+              !controlsPanelVisible,
+              presentedGuidanceSheet == nil,
+              let pendingInputModePrompt else { return }
+        self.pendingInputModePrompt = nil
+        inputModePrompt = pendingInputModePrompt
+    }
+
+    fileprivate func acceptInputModePrompt(_ prompt: NativeStreamInputModePrompt) {
+        streamInputMode = prompt == .switchToKeyboardMouse ? .keyboardMouse : .nativeTouch
+        inputModePrompt = nil
+        log("Stream input mode switched to \(streamInputMode == .nativeTouch ? "native touch" : "keyboard and mouse")")
+    }
+
+    fileprivate func dismissInputModePrompt() {
+        inputModePrompt = nil
     }
 
     private func completeStreamTutorial() {
@@ -3093,6 +3407,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         iceDisconnectWorkItem = nil
         mediaTransportConnected = false
         mediaLivenessWatchdog.reset()
+        packetLossRecoveryGate.reset()
         signalingHeartbeat?.cancel()
         signalingHeartbeat = nil
         statsTimer?.cancel()
@@ -3128,6 +3443,108 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         playbackAudioDevice = nil
         answerSent = false
         queuedLocalIceCandidates.removeAll(keepingCapacity: true)
+    }
+
+    /// Rebuilds only the local signaling/decoder transport. The CloudMatch allocation, selected
+    /// codec, resolution, frame rate, bitrate, input attachment, and visible stream surface all
+    /// remain owned by this coordinator. In particular this never ends or requeues the session.
+    @discardableResult
+    private func requestSelectedVideoProfileRetry(_ reason: String) -> Bool {
+        guard !stopped, !selectedProfileRetryApplied else { return false }
+        selectedProfileRetryApplied = true
+        let hadStableMedia = transportWasStable
+        onSelectedVideoProfileRetry(reason)
+        log(
+            "Selected profile transport retry codec=\(selectedCodec.rawValue) "
+                + "resolution=\(streamProfile.resolutionString) fps=\(streamProfile.fps) "
+                + "bitrate=\(streamProfile.maxBitrateKbps) reason=\(reason)"
+        )
+        updateStatus("Reconnecting", detail: "Retrying your selected stream settings")
+        closeLocalTransportForRetry()
+
+        let settleDelay: TimeInterval = hadStableMedia && selectedCodec != .h264 ? 0.18 : 0
+        workQueue.asyncAfter(deadline: .now() + settleDelay) { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.stopped else { return }
+                self.connectSignaling()
+            }
+        }
+        return true
+    }
+
+    private func closeLocalTransportForRetry() {
+        offerTimeoutWorkItem?.cancel()
+        offerTimeoutWorkItem = nil
+        iceDisconnectWorkItem?.cancel()
+        iceDisconnectWorkItem = nil
+        signalingHeartbeat?.cancel()
+        signalingHeartbeat = nil
+        statsTimer?.cancel()
+        statsTimer = nil
+
+        let closingWebSocket = webSocket
+        webSocket = nil
+        closingWebSocket?.cancel(with: .goingAway, reason: nil)
+        let closingSignalingSession = signalingSession
+        signalingSession = nil
+        closingSignalingSession?.invalidateAndCancel()
+
+        reliableInputChannel?.delegate = nil
+        partiallyReliableInputChannel?.delegate = nil
+        controlChannel?.delegate = nil
+        reliableInputChannel?.close()
+        partiallyReliableInputChannel?.close()
+        controlChannel?.close()
+        reliableInputChannel = nil
+        partiallyReliableInputChannel = nil
+        controlChannel = nil
+
+        audioTrack?.isEnabled = false
+        audioTrack = nil
+        if let videoTrack, videoSinkAttached {
+            videoTrack.remove(videoSink)
+        }
+        videoTrack = nil
+        videoSinkAttached = false
+        if let renderer {
+            videoSink.attach(renderView: renderer)
+        }
+
+        let closingPeerConnection = peerConnection
+        peerConnection = nil
+        closingPeerConnection?.delegate = nil
+        closingPeerConnection?.close()
+        teardownStreamAudioPlayback()
+        factory = nil
+        mutedAudioDevice = nil
+        playbackAudioDevice = nil
+
+        peerId = 0
+        remotePeerId = 1
+        answerSent = false
+        queuedLocalIceCandidates.removeAll(keepingCapacity: true)
+        mediaTransportConnected = false
+        transportWasStable = false
+        mediaLivenessWatchdog.reset()
+        recoveryProgressTracker = NativeStreamRecoveryProgressTracker()
+        packetLossRecoveryGate.reset()
+        decoderRecoveryGate.reset()
+        videoActive = false
+        renderedFrameCount = 0
+        decodedWithoutRenderStartedAt = nil
+        lastRenderKeyframeRequestAt = nil
+        renderKeyframeAttempts = 0
+        lastRenderedStatsProgressAt = nil
+        lastPostStartKeyframeRequestAt = nil
+        postStartKeyframeAttempts = 0
+        lastStatsSampleAt = nil
+        lastStatsFramesReceived = nil
+        lastStatsFramesDecoded = nil
+        lastStatsFramesRendered = nil
+        lastStatsBytesReceived = nil
+        lastStatsTotalDecodeTime = nil
+        lastStatsPacketsLost = nil
+        lastStatsPacketsReceived = nil
     }
 
     private func setVideoTrack(_ track: RTCVideoTrack) {
@@ -3184,7 +3601,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         webSocket = task
         scheduleOfferTimeout()
         task.resume()
-        receiveSignaling()
+        receiveSignaling(from: task)
     }
 
     private func signalingURL() -> URL? {
@@ -3210,26 +3627,53 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         return URL(string: "wss://\(withoutScheme)/sign_in?peer_id=\(peerName)&version=2&peer_role=1&pairing_id=\(session.id)")
     }
 
-    private func receiveSignaling() {
-        webSocket?.receive { [weak self] result in
+    private func receiveSignaling(from task: URLSessionWebSocketTask) {
+        task.receive { [weak self, weak task] result in
             guard let self else { return }
             Task { @MainActor in
-                guard !self.stopped else { return }
+                guard let task, !self.stopped, self.webSocket === task else { return }
                 switch result {
                 case .success(.string(let text)):
                     self.handleSignalingText(text)
-                    self.receiveSignaling()
+                    self.receiveSignaling(from: task)
                 case .success(.data(let data)):
                     if let text = String(data: data, encoding: .utf8) {
                         self.handleSignalingText(text)
                     }
-                    self.receiveSignaling()
+                    self.receiveSignaling(from: task)
                 case .failure(let error):
-                    self.fail("Signaling failed: \(error.localizedDescription)")
+                    self.handleSignalingFailure("Signaling failed: \(error.localizedDescription)", task: task)
                 @unknown default:
-                    self.receiveSignaling()
+                    self.receiveSignaling(from: task)
                 }
             }
+        }
+    }
+
+    private func handleSignalingFailure(_ message: String, task: URLSessionWebSocketTask) {
+        guard !stopped, webSocket === task else { return }
+        let disposition = nativeStreamSignalingFailureDisposition(message)
+        if nativeStreamShouldPreserveMediaAfterSignalingFailure(
+            disposition,
+            mediaConnected: mediaTransportConnected || peerConnection?.iceConnectionState == .checking
+        ) {
+            signalingHeartbeat?.cancel()
+            signalingHeartbeat = nil
+            webSocket = nil
+            task.cancel(with: .goingAway, reason: nil)
+            signalingSession?.invalidateAndCancel()
+            signalingSession = nil
+            log("Signaling ended while media remained connected; preserving the active stream")
+            return
+        }
+
+        switch disposition {
+        case .recoverSession, .sessionEnded:
+            // The outer retry refreshes the provider's active-session record and claims its
+            // current endpoint. It does not stop or replace the cloud allocation.
+            fail(message)
+        case .retryTransport, .retrySignaling:
+            if !requestSelectedVideoProfileRetry(message) { fail(message) }
         }
     }
 
@@ -3394,7 +3838,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         let remoteDescription = RTCSessionDescription(type: .offer, sdp: processedOffer)
         peerConnection.setRemoteDescription(remoteDescription) { [weak self] error in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.peerConnection === peerConnection else { return }
                 if let error {
                     self.fail("Remote SDP failed: \(error.localizedDescription)")
                     return
@@ -3518,7 +3962,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         peerConnection.answer(for: constraints) { [weak self] answer, error in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.peerConnection === peerConnection else { return }
                 if let error {
                     self.fail("Answer creation failed: \(error.localizedDescription)")
                     return
@@ -3532,8 +3976,11 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                 self.log("Local video SDP \(self.localCodecDebugText)")
                 if self.selectedCodec != .h264,
                    !NativeStreamSDP.negotiatesCodec(mungedSDP, codec: self.selectedCodec) {
-                    self.log("Local answer did not negotiate requested codec \(self.selectedCodec.rawValue); requesting safe fallback")
-                    self.onSafeVideoFallbackRequired("\(self.selectedCodec.rawValue) was requested but WebRTC did not negotiate it; restarting with safe H264 profile")
+                    let reason = "\(self.selectedCodec.rawValue) was requested but WebRTC did not negotiate it"
+                    self.log("Local answer did not negotiate requested codec \(self.selectedCodec.rawValue); retrying selected profile")
+                    if !self.requestSelectedVideoProfileRetry(reason) {
+                        self.fail(reason)
+                    }
                     return
                 }
                 let localDescription = RTCSessionDescription(type: .answer, sdp: mungedSDP)
@@ -3661,11 +4108,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         let item = DispatchWorkItem { [weak self] in
             Task { @MainActor in
                 guard let self, !self.stopped, self.peerConnection == nil else { return }
-                if self.selectedCodec != .h264 {
-                    self.onSafeVideoFallbackRequired("Waiting for offer timed out while using \(self.selectedCodec.rawValue)")
-                } else {
-                    self.fail("Timed out waiting for WebRTC offer")
-                }
+                let reason = "Timed out waiting for WebRTC offer"
+                if !self.requestSelectedVideoProfileRetry(reason) { self.fail(reason) }
             }
         }
         offerTimeoutWorkItem = item
@@ -3701,9 +4145,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private func collectStats() {
         updateSessionTimer()
         guard let peerConnection else { return }
-        peerConnection.statistics { [weak self] report in
+        peerConnection.statistics { [weak self, weak activePeerConnection = peerConnection] report in
             Task { @MainActor in
-                self?.updateStats(from: report)
+                guard let self,
+                      let activePeerConnection,
+                      self.peerConnection === activePeerConnection else { return }
+                self.updateStats(from: report)
             }
         }
     }
@@ -3776,6 +4223,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private func updateStats(from report: RTCStatisticsReport) {
         refreshDeviceStatus()
         var framesDecoded: Int?
+        var framesReceived: Int?
         var framesRendered: Int?
         var framesPerSecond: Int?
         var framesDropped: Int?
@@ -3798,6 +4246,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             if stat.type == "inbound-rtp" {
                 if let kind = stat.values["kind"] as? String, kind != "video" { continue }
                 framesDecoded = (stat.values["framesDecoded"] as? NSNumber)?.intValue ?? framesDecoded
+                framesReceived = (stat.values["framesReceived"] as? NSNumber)?.intValue ?? framesReceived
                 framesRendered = (stat.values["framesRendered"] as? NSNumber)?.intValue ?? framesRendered
                 framesPerSecond = (stat.values["framesPerSecond"] as? NSNumber)?.intValue ?? framesPerSecond
                 framesDropped = (stat.values["framesDropped"] as? NSNumber)?.intValue ?? framesDropped
@@ -3836,6 +4285,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             guard total > 0 else { return 0 }
             return (Double(lost) / Double(total)) * 100
         }()
+        let packetsLostDelta = monotonicDelta(current: packetsLost, previous: lastStatsPacketsLost)
+        let packetsReceivedDelta = monotonicDelta(current: packetsReceived, previous: lastStatsPacketsReceived)
         let icePath = selectedIcePath(pair: selectedPairValues, candidates: candidateStats)
         let resolution = width.flatMap { w in height.map { "\(w)x\($0)" } } ?? "\(streamProfile.width)x\(streamProfile.height)"
         if (framesDecoded ?? 0) > 0 {
@@ -3849,17 +4300,31 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         ) {
             return
         }
+        if packetLossRecoveryGate.observe(
+            lostDelta: packetsLostDelta,
+            receivedDelta: packetsReceivedDelta,
+            recoveryEligible: mediaTransportConnected
+                && transportWasStable
+                && iceDisconnectWorkItem == nil
+        ) {
+            requestKeyframe(reason: "packet_loss_recovered", attempt: 1)
+            log("Packet-loss burst cleared; requested one recovery keyframe")
+        }
         handlePostStartRenderProgress(
             framesDecoded: framesDecoded,
             framesRendered: framesRendered,
             now: now
         )
-        let derivedFPS = framesPerSecond ?? estimatedFramesPerSecond(framesDecoded: framesDecoded, now: now)
+        let decodedFPS = estimatedRate(current: framesDecoded, previous: lastStatsFramesDecoded, now: now)
+        let receivedFPS = estimatedRate(current: framesReceived, previous: lastStatsFramesReceived, now: now)
+        let derivedFPS = framesPerSecond ?? decodedFPS
         let derivedBitrate = estimatedBitrateKbps(bytesReceived: bytesReceived, now: now)
         statsText = [
             selectedCodec.rawValue,
             resolution,
             "decoded \(framesDecoded ?? 0)",
+            receivedFPS.map { "receivedFps \($0)" },
+            decodedFPS.map { "decodedFps \($0)" },
             "rendered \(framesRendered ?? renderedFrameCount)",
             sampledLuma.map { "luma \($0)" },
             localCodecDebugText.isEmpty ? nil : localCodecDebugText,
@@ -3882,6 +4347,22 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             guard frameDelta > 0, timeDelta >= 0 else { return nil }
             return timeDelta / Double(frameDelta) * 1_000
         }()
+
+        if decoderRecoveryGate.observe(
+            receivedFPS: receivedFPS,
+            decodedFPS: decodedFPS,
+            decodeMs: decodeMs,
+            requestedFPS: streamProfile.fps,
+            advancedCodecActive: selectedCodec != .h264,
+            recoveryEligible: mediaTransportConnected
+                && transportWasStable
+                && videoSinkAttached
+                && iceDisconnectWorkItem == nil
+        ) {
+            let reason = "The decoder could not sustain \(streamProfile.fps) FPS; retrying the selected profile without changing it"
+            log("Sustained decoder overload receivedFps=\(receivedFPS ?? 0) decodedFps=\(decodedFPS ?? 0) decodeMs=\(decodeMs ?? 0)")
+            if requestSelectedVideoProfileRetry(reason) { return }
+        }
 
         statsSnapshot = NativeStreamStatsSnapshot(
             codec: selectedCodec.rawValue.uppercased(),
@@ -3915,13 +4396,11 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                 bitrateKbps: derivedBitrate,
                 jitterMs: jitterMs,
                 fps: derivedFPS,
+                receivedFps: receivedFPS,
+                decodedFps: decodedFPS,
                 decodeMs: decodeMs,
-                packetsLostDelta: (packetsLost).flatMap { current in
-                    lastStatsPacketsLost.map { max(0, current - $0) }
-                },
-                packetsReceivedDelta: (packetsReceived).flatMap { current in
-                    lastStatsPacketsReceived.map { max(0, current - $0) }
-                },
+                packetsLostDelta: packetsLostDelta,
+                packetsReceivedDelta: packetsReceivedDelta,
                 packetLossPercent: packetLossPercent,
                 resolution: resolution,
                 codec: selectedCodec.rawValue.uppercased(),
@@ -3930,6 +4409,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         )
 
         lastStatsSampleAt = now
+        lastStatsFramesReceived = framesReceived
         lastStatsFramesDecoded = framesDecoded
         lastStatsFramesRendered = framesRendered
         lastStatsBytesReceived = bytesReceived
@@ -4052,6 +4532,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             connected: mediaTransportConnected
         )
         if recoveryProgressTracker.observe(progressed: mediaLivenessWatchdog.latestObservationProgressed) {
+            transportWasStable = true
             log("Media transport stable after three consecutive progress samples")
             onTransportStable()
         }
@@ -4067,11 +4548,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             return false
         case let .restartTransport(stalledFor):
             let reason = String(format: "Media stalled for %.1fs", stalledFor)
-            if selectedCodec != .h264 {
-                onSafeVideoFallbackRequired("\(reason) while using \(selectedCodec.rawValue)")
-            } else {
-                fail(reason)
-            }
+            if !requestSelectedVideoProfileRetry(reason) { fail(reason) }
             return true
         }
     }
@@ -4116,24 +4593,26 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         }
 
         if stalledFor >= 14 {
-            if selectedCodec != .h264 {
-                onSafeVideoFallbackRequired("Video renderer stalled after playback started with \(selectedCodec.rawValue)")
-            } else {
-                fail("Video renderer stalled after playback started")
-            }
+            let reason = "Video renderer stalled after playback started"
+            if !requestSelectedVideoProfileRetry(reason) { fail(reason) }
         }
     }
 
-    private func estimatedFramesPerSecond(framesDecoded: Int?, now: TimeInterval) -> Int? {
-        guard let framesDecoded,
-              let lastFramesDecoded = lastStatsFramesDecoded,
+    private func estimatedRate(current: Int?, previous: Int?, now: TimeInterval) -> Int? {
+        guard let current,
+              let previous,
               let lastStatsSampleAt,
               now > lastStatsSampleAt else {
             return nil
         }
-        let delta = framesDecoded - lastFramesDecoded
+        let delta = current - previous
         guard delta >= 0 else { return nil }
         return Int((Double(delta) / (now - lastStatsSampleAt)).rounded())
+    }
+
+    private func monotonicDelta(current: Int?, previous: Int?) -> Int? {
+        guard let current, let previous, current >= previous else { return nil }
+        return current - previous
     }
 
     private func estimatedBitrateKbps(bytesReceived: Int?, now: TimeInterval) -> Int? {
@@ -4225,11 +4704,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
         let stalledFor = now - (decodedWithoutRenderStartedAt ?? now)
         if stalledFor >= 14 {
-            if selectedCodec != .h264 {
-                onSafeVideoFallbackRequired("Decoded video did not render with \(selectedCodec.rawValue); restarting with safe H264 profile")
-            } else {
-                fail("Video decoded but iOS renderer did not paint frames")
-            }
+            let reason = "Video decoded but iOS renderer did not paint frames"
+            if !requestSelectedVideoProfileRetry(reason) { fail(reason) }
             return
         }
 
@@ -4302,6 +4778,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             || value.contains("waiting for offer timed out")
             || value.contains("signaling failed")
             || value.contains("signaling closed")
+            || value.contains("http=404")
+            || value.contains("404 not found")
+            || value.contains("http=410")
+            || value.contains("410 gone")
             || value.contains("media stalled")
             || value.contains("video renderer stalled")
             || value.contains("ice connection failed")
@@ -4331,11 +4811,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self, !self.stopped, !self.mediaTransportConnected else { return }
                 self.iceDisconnectWorkItem = nil
-                if self.selectedCodec != .h264 {
-                    self.onSafeVideoFallbackRequired("ICE remained disconnected while using \(self.selectedCodec.rawValue)")
-                } else {
-                    self.fail("ICE connection failed after disconnect")
-                }
+                let reason = "ICE connection failed after disconnect"
+                if !self.requestSelectedVideoProfileRetry(reason) { self.fail(reason) }
             }
         }
         iceDisconnectWorkItem = item
@@ -4562,6 +5039,7 @@ extension NativeStreamCoordinator: URLSessionWebSocketDelegate {
         didOpenWithProtocol protocol: String?
     ) {
         Task { @MainActor in
+            guard self.webSocket === webSocketTask else { return }
             self.updateStatus("Signaling connected", detail: "Waiting for offer")
             self.sendPeerInfo()
             self.startSignalingHeartbeat()
@@ -4575,8 +5053,9 @@ extension NativeStreamCoordinator: URLSessionWebSocketDelegate {
         reason: Data?
     ) {
         Task { @MainActor in
-            guard !self.stopped else { return }
-            self.fail("Signaling closed: \(closeCode.rawValue)")
+            guard !self.stopped, self.webSocket === webSocketTask else { return }
+            let reason = "Signaling closed: \(closeCode.rawValue)"
+            self.handleSignalingFailure(reason, task: webSocketTask)
         }
     }
 }
@@ -4585,6 +5064,7 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
         Task { @MainActor in
+            guard self.peerConnection === peerConnection else { return }
             if let track = stream.videoTracks.first {
                 self.setVideoTrack(track)
             }
@@ -4597,6 +5077,7 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
     nonisolated func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
         Task { @MainActor in
+            guard self.peerConnection === peerConnection else { return }
             switch newState {
             case .connected, .completed:
                 self.markMediaTransportConnected()
@@ -4605,9 +5086,7 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
                 self.markMediaTransportDisconnected()
                 self.iceDisconnectWorkItem?.cancel()
                 self.iceDisconnectWorkItem = nil
-                if self.selectedCodec != .h264 {
-                    self.onSafeVideoFallbackRequired("ICE failed while using \(self.selectedCodec.rawValue)")
-                } else {
+                if !self.requestSelectedVideoProfileRetry("ICE connection failed") {
                     self.fail("ICE connection failed")
                 }
             case .disconnected:
@@ -4624,12 +5103,14 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {}
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
         Task { @MainActor in
+            guard self.peerConnection === peerConnection else { return }
             self.sendLocalIceCandidate(candidate)
         }
     }
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
         Task { @MainActor in
+            guard self.peerConnection === peerConnection else { return }
             dataChannel.delegate = self
             if dataChannel.label == "control_channel" {
                 self.controlChannel = dataChannel
@@ -4638,13 +5119,12 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
     }
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCPeerConnectionState) {
         Task { @MainActor in
+            guard self.peerConnection === peerConnection else { return }
             switch stateChanged {
             case .connected:
                 self.updateStatus("Peer connected", detail: "Waiting for video")
             case .failed:
-                if self.selectedCodec != .h264 {
-                    self.onSafeVideoFallbackRequired("Peer connection failed while using \(self.selectedCodec.rawValue)")
-                } else {
+                if !self.requestSelectedVideoProfileRetry("Peer connection failed") {
                     self.fail("Peer connection failed")
                 }
             case .disconnected:
@@ -4658,6 +5138,7 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
     }
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didAdd receiver: RTCRtpReceiver, streams mediaStreams: [RTCMediaStream]) {
         Task { @MainActor in
+            guard self.peerConnection === peerConnection else { return }
             if let track = receiver.track as? RTCVideoTrack {
                 self.setVideoTrack(track)
             } else if let track = receiver.track as? RTCAudioTrack {

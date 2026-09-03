@@ -27,15 +27,19 @@ QtObject {
     readonly property string bodyFont: Theme.bodyFont
     readonly property string monoFont: Theme.monoFont
     property real uiScale: 1
-    readonly property int railWidth: px(232)
-    readonly property int railCollapsedWidth: px(72)
-    readonly property int topBarHeight: px(64)
-    readonly property int statusBarHeight: px(52)
+    // Type ramp. Every desktop font size must come from here so text stays
+    // proportionate on any display size; raw pixelSize literals drift.
     readonly property int titleSize: px(26)
     readonly property int headingSize: px(17)
     readonly property int bodySize: px(15)
     readonly property int captionSize: px(13)
     readonly property int monoSize: px(12)
+    readonly property int microSize: px(10)
+    readonly property int tinySize: px(9)
+    readonly property int railWidth: px(232)
+    readonly property int railCollapsedWidth: px(72)
+    readonly property int topBarHeight: px(64)
+    readonly property int statusBarHeight: px(52)
     readonly property int rowHeight: px(76)
     readonly property int controlHeight: px(38)
     readonly property int posterWidth: px(112)
@@ -52,7 +56,7 @@ QtObject {
     readonly property color cardOutlineIdle: Qt.rgba(1, 1, 1, 0.16)
 
     function px(value) {
-        return Math.max(1, Math.round(Number(value)))
+        return Math.max(1, Math.round(Number(value) * uiScale))
     }
 
     function scaleForWindow(width, height) {

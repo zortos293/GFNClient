@@ -9,14 +9,14 @@ ItemDelegate {
     property string description: String(rowData.d || "")
     property string value: String(rowData.v || "")
     property bool currentItem: false
-    readonly property string controlType: rowData.control || (rowData.toggle ? "toggle" : rowData.values ? "dropdown" : "button")
+    readonly property string controlType: rowData.control || (rowData.info ? "info" : (rowData.toggle ? "toggle" : rowData.values ? "dropdown" : "button"))
     readonly property int selectedChoice: rowData.selectedIndex !== undefined
                                           ? Number(rowData.selectedIndex)
                                           : rowData.values ? rowData.values.indexOf(ShellStore.settings[rowData.key]) : -1
     highlighted: activeFocus || currentItem
 
     implicitHeight: Number(rowData.height || 70)
-    focusPolicy: Qt.StrongFocus
+    focusPolicy: root.controlType === "info" ? Qt.NoFocus : Qt.StrongFocus
     Accessible.name: I18n.source(title, I18n.revision)
     Accessible.description: I18n.source(description, I18n.revision)
         + (value.length > 0 ? qsTr(". Current value: ") + I18n.source(value, I18n.revision) : "")
@@ -75,8 +75,24 @@ ItemDelegate {
                  : colors.visible ? colors.implicitWidth
                  : sliderVisual.visible ? 338
                  : toggleVisual.visible ? 60
+                 : infoValue.visible ? infoValue.implicitWidth
                  : valuePill.width
             height: 42
+
+            Text {
+                id: infoValue
+                visible: root.controlType === "info"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(420, implicitWidth)
+                text: I18n.source(root.value, I18n.revision)
+                color: Theme.textMuted
+                font.family: Theme.bodyFont
+                font.pixelSize: 15
+                font.weight: Font.Bold
+                horizontalAlignment: Text.AlignRight
+                elide: Text.ElideRight
+            }
 
             Row {
                 id: segments

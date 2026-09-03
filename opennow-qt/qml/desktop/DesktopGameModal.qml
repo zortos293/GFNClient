@@ -370,7 +370,8 @@ FocusScope {
                 height: DesktopTokens.px(40)
                 glyph: "desktop-folder.svg"
                 glyphSize: DesktopTokens.px(15)
-                text: qsTr("Add to collection")
+                text: root.game && ShellStore.isFavorite(root.game) ? qsTr("In favourites") : qsTr("Add to collection")
+                onClicked: if (root.game) ShellStore.toggleFavorite(root.game)
             }
         }
         Rectangle {

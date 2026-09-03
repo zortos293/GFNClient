@@ -26,6 +26,11 @@ FocusScope {
     function isReady(game) {
         return Boolean(game.isInLibrary || game.isAvailable)
     }
+    function favoriteLabel() {
+        if (root.contextGame && ShellStore.isFavorite(root.contextGame))
+            return qsTr("Remove from favourites")
+        return qsTr("Add to favourites")
+    }
     function countStore(name) {
         return root.countWhere(function(game) { return root.storeBlob(game).indexOf(name) >= 0 })
     }
@@ -188,7 +193,7 @@ FocusScope {
             onContextRequested: (sceneX, sceneY) => {
                 root.contextGame = modelData
                 const local = root.mapFromItem(null, sceneX, sceneY)
-                root.contextPoint = Qt.point(Math.min(root.width - 230, Math.max(16, local.x)), Math.min(root.height - 250, Math.max(16, local.y)))
+                root.contextPoint = Qt.point(Math.min(root.width - 230, Math.max(16, local.x)), Math.min(root.height - 190, Math.max(16, local.y)))
             }
         }
     }
@@ -201,7 +206,7 @@ FocusScope {
     }
     Rectangle {
         x: root.contextPoint.x; y: root.contextPoint.y
-        width: 212; height: 237; radius: 12
+        width: 212; height: 177; radius: 12
         visible: root.contextGame !== null
         z: 41
         color: "#F710131D"
@@ -213,10 +218,8 @@ FocusScope {
                 model: [
                     {label:qsTr("Play"), key:"Enter", action:"play"},
                     {label:qsTr("Details"), key:"Space", action:"details"},
-                    {label:qsTr("Add to favourites"), key:"F", action:"favorite"},
-                    {label:qsTr("Add to collection"), key:"›", action:"collection"},
-                    {label:qsTr("Stream settings…"), key:"Ctrl ,", action:"settings"},
-                    {label:qsTr("Hide from library"), key:"", action:"hide"}
+                    {label:root.favoriteLabel(), key:"F", action:"favorite"},
+                    {label:qsTr("Stream settings…"), key:"Ctrl ,", action:"settings"}
                 ]
                 delegate: ItemDelegate {
                     required property var modelData

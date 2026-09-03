@@ -23,8 +23,8 @@ Row {
 
     Slider {
         id: slider
-        width: 200
-        height: 28
+        width: DesktopTokens.px(200)
+        height: DesktopTokens.px(28)
         live: true
         onMoved: {
             root.moved(value)
@@ -41,8 +41,8 @@ Row {
             x: slider.leftPadding
             y: slider.topPadding + slider.availableHeight / 2 - height / 2
             width: slider.availableWidth
-            height: 6
-            radius: 3
+            height: DesktopTokens.px(6)
+            radius: DesktopTokens.px(3)
             color: Qt.rgba(1, 1, 1, 0.10)
             Rectangle {
                 width: slider.visualPosition * parent.width
@@ -54,21 +54,21 @@ Row {
         handle: Rectangle {
             x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width)
             y: slider.topPadding + slider.availableHeight / 2 - height / 2
-            width: 14
-            height: 14
-            radius: 7
+            width: DesktopTokens.px(14)
+            height: DesktopTokens.px(14)
+            radius: DesktopTokens.px(7)
             color: "#FFFFFF"
             border.width: slider.activeFocus ? 2 : 0
             border.color: DesktopTokens.focus
         }
     }
     Text {
-        width: 58
-        height: 28
+        width: DesktopTokens.px(58)
+        height: DesktopTokens.px(28)
         text: Number(slider.value).toFixed(root.decimals) + root.suffix
         color: Theme.label
         font.family: Theme.monoFont
-        font.pixelSize: 10
+        font.pixelSize: DesktopTokens.microSize
         font.weight: Font.Bold
         horizontalAlignment: Text.AlignRight
         verticalAlignment: Text.AlignVCenter

@@ -62,6 +62,17 @@ FocusScope {
     function toggleConsoleMode() {
         ShellStore.requestConsoleSurface(!DesktopTokens.consoleModeTargetOn(Window.window))
     }
+    // Keep desktop chrome proportionate on any display size. The 1600x900
+    // default window renders at exactly 1.0; smaller windows (e.g. scaled
+    // 1080p screens) shrink instead of overflowing, larger ones grow modestly.
+    function updateUiScale() {
+        if (root.width <= 0 || root.height <= 0)
+            return
+        const fitted = Math.min(root.width / 1600, root.height / 900)
+        DesktopTokens.uiScale = Math.min(1.25, Math.max(0.7, fitted))
+    }
+    onWidthChanged: root.updateUiScale()
+    onHeightChanged: root.updateUiScale()
     function resynchronizeStreamInput() {
         if (root.streamVisible)
             desktopStream.resynchronizeStreamInput()
@@ -233,10 +244,16 @@ FocusScope {
     })
     onCommandOpenChanged: if (!commandOpen && shell.visible && pageLoader.item)
         Qt.callLater(() => pageLoader.item.forceActiveFocus())
-    Component.onCompleted: Qt.callLater(() => {
-        if (root.signInVisible)
-            desktopSignIn.forceActiveFocus()
-    })
+    Component.onCompleted: {
+        // Synchronous: onCompleted always runs on a live instance, while a
+        // deferred call may fire after a surface switch destroyed it (method
+        // calls on dead wrappers throw; property reads just yield undefined).
+        root.updateUiScale()
+        Qt.callLater(() => {
+            if (root.signInVisible)
+                desktopSignIn.forceActiveFocus()
+        })
+    }
     Keys.onPressed: event => {
         if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_K) {
             root.commandOpen = !root.commandOpen

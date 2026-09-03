@@ -17,7 +17,7 @@ set(CMAKE_AUTOMOC ON)
 # propagated by the targets below, so avoid the redundant compiler subprocess.
 set(CMAKE_AUTOMOC_COMPILER_PREDEFINES OFF)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui Network Multimedia Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui GuiPrivate Network Multimedia Test)
 find_package(SDL3 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

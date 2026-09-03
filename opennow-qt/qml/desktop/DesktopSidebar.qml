@@ -86,6 +86,17 @@ FocusScope {
         return count
     }
 
+    function liveMembershipTier() {
+        // The login claim goes stale (e.g. upgrade after sign-in); the live
+        // subscription is authoritative, the cached claim is the fallback.
+        if (ShellStore.subscription && ShellStore.subscription.membershipTier)
+            return String(ShellStore.subscription.membershipTier).toUpperCase()
+        if (ShellStore.signedIn && ShellStore.authSession && ShellStore.authSession.user
+                && ShellStore.authSession.user.membershipTier)
+            return String(ShellStore.authSession.user.membershipTier).toUpperCase()
+        return ShellStore.signedIn ? qsTr("Member").toUpperCase() : qsTr("NOT SIGNED IN")
+    }
+
     function routeSelected(route) {
         if (route === "settings")
             return root.currentRoute.indexOf("settings") === 0
@@ -568,7 +579,7 @@ FocusScope {
                                 : "Z"
                             color: DesktopTokens.textHigh
                             font.family: DesktopTokens.bodyFont
-                            font.pixelSize: 12
+                            font.pixelSize: DesktopTokens.monoSize
                             font.weight: Font.Black
                         }
                     }
@@ -583,16 +594,14 @@ FocusScope {
                                 : qsTr("Guest")
                             color: DesktopTokens.textHigh
                             font.family: DesktopTokens.bodyFont
-                            font.pixelSize: 13
+                            font.pixelSize: DesktopTokens.captionSize
                             font.weight: Font.Bold
                         }
                         Text {
-                            text: ShellStore.signedIn
-                                ? String(ShellStore.authSession.user.membershipTier || qsTr("Member")).toUpperCase()
-                                : qsTr("NOT SIGNED IN")
+                            text: root.liveMembershipTier()
                             color: DesktopTokens.textFaint
                             font.family: DesktopTokens.monoFont
-                            font.pixelSize: 9
+                            font.pixelSize: DesktopTokens.tinySize
                             font.weight: Font.DemiBold
                             font.letterSpacing: 0.36
                         }

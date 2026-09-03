@@ -425,11 +425,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
         "network.regions.ping" => network::ping_regions(params)
             .map(|value| (value, None))
             .map_err(|message| ("region_ping_failed".to_owned(), message)),
-        "account.subscription.get" => core
-            .gfn
-            .subscription()
-            .map(|value| (value, None))
-            .map_err(gfn_error),
+        "account.subscription.get" => {
+            let settings = core.settings.lock().expect("settings poisoned").all();
+            core.gfn
+                .subscription(&settings)
+                .map(|value| (value, None))
+                .map_err(gfn_error)
+        }
         "account.connections.list" => core
             .gfn
             .account_connections()

@@ -183,6 +183,7 @@ FocusScope {
         if (candidate === "")
             candidate = item.values[0]
         ShellStore.setSetting("resolution", candidate)
+        ShellStore.clampFpsToEntitlement()
         closeDropdown()
     }
 
@@ -198,22 +199,29 @@ FocusScope {
     }
 
     function fpsChoices() {
-        const selected = String(ShellStore.settings.resolution || "")
-        const entitled = ShellStore.subscription && ShellStore.subscription.entitledResolutions
-            ? ShellStore.subscription.entitledResolutions : []
-        const values = []
-        for (let index = 0; index < entitled.length; ++index) {
-            const item = entitled[index]
-            if (Number(item.width) + "x" + Number(item.height) !== selected)
-                continue
-            const fps = Number(item.fps || 0)
-            if (fps >= 30 && values.indexOf(fps) < 0)
-                values.push(fps)
-        }
-        if (values.length === 0)
-            return [30,60,120,144,240]
-        values.sort((left, right) => left - right)
-        return values
+        // Full canonical list; unentitled rates are locked via
+        // fpsLockedValues() instead of hidden, so members can see what a
+        // higher tier unlocks. Falls back to everything enabled offline.
+        return ShellStore.canonicalFpsValues()
+    }
+
+    function fpsLockedValues() {
+        return ShellStore.unentitledFpsValues(String(ShellStore.settings.resolution || ""))
+    }
+
+    function fpsNote() {
+        if (!ShellStore.subscription)
+            return ShellStore.signedIn
+                ? qsTr("Loading your membership entitlements…")
+                : qsTr("Sign in — only entitled rates stay selectable")
+        const entitled = ShellStore.entitledFpsForResolution(String(ShellStore.settings.resolution || ""))
+        const tier = ShellStore.subscription.membershipTier
+            ? String(ShellStore.subscription.membershipTier).toUpperCase()
+            : qsTr("Membership")
+        if (entitled.length === 0)
+            return qsTr("Only rates your membership entitles are selectable")
+        return qsTr("Only rates your membership entitles are selectable · %1 up to %2 FPS")
+            .arg(tier).arg(entitled[entitled.length - 1])
     }
 
     function shortcutKeyName(key) {
@@ -352,12 +360,11 @@ FocusScope {
             ]
             const shaderIndex = shader.enabled ? (Number(shader.filmGrain || 0) > 0 ? 3 : Number(shader.vibrance || 0) > 0 ? 2 : 1) : 0
             return [
-                {t:"Display", d:"The Qt stream surface uses the current display", v:"Monitor 1 · current display"},
+                {t:"Display", d:"The Qt stream surface uses the current display", v:"Monitor 1 · current display", info:true},
                 choice("Resolution", "Exact stream size · up / down to browse, A to pick", "resolution", resolutions, resolutionLabels(resolutions)),
-                choice("Frame rate", "Only rates your membership entitles are selectable", "fps", frameRates, frameRates.map(value => String(value)), "segments"),
+                choice("Frame rate", root.fpsNote(), "fps", frameRates, frameRates.map(value => String(value)), "segments", root.fpsLockedValues()),
                 toggle("Fullscreen on launch", "F11 toggles in-game", "autoFullScreen"),
                 {t:"Video shader", d:"Post-process on this device after decode", v:["Off","Sharpen","FidelityFX","CRT"][shaderIndex], key:"videoShader", values:shaderValues, labels:["Off","Sharpen","FidelityFX","CRT"], control:"segments", selectedIndex:shaderIndex},
-                {t:"Stretch to fill", d:"Ignore aspect and fill the window; off keeps black bars", v:"Off", control:"toggle", toggleState:false},
                 choice("Cursor", "Lock the pointer to the game window · F8", "nativeCursorOverlay", [true,false], ["Lock to window","Free"], "segments"),
             ]
         }
@@ -371,7 +378,7 @@ FocusScope {
             while (controllerCards.length < 2)
                 controllerCards.push({slot:controllerCards.length + 1, name:qsTr("Controller %1").arg(controllerCards.length + 1), connected:false, battery:""})
             rows.push({t:"Controllers", control:"controllers", height:105, controllers:controllerCards, route:"joining"})
-            rows.push({t:"Button glyphs", d:"Detected automatically from the active controller", v:"Auto", control:"segments", segmentLabels:["Auto","Xbox","PlayStation","Nintendo"], selectedIndex:0})
+            rows.push({t:"Button glyphs", d:"Detected automatically from the active controller", v:"Auto", info:true})
             rows.push(toggle("Steam controller compatibility", "Expose the pad as an Xbox controller for picky games", "steamControllerCompatibilityMode"))
             rows.push(toggle("Gyroscope", "Forward motion data to the rig", "enableGyroscopeControls"))
             rows.push({t:"Mouse sensitivity", d:"Acceleration off · raw input", v:Number(settings.mouseSensitivity || 1).toFixed(1) + "×", key:"mouseSensitivity", values:[0.5,0.75,1,1.25,1.5], labels:["0.5×","0.75×","1.0×","1.25×","1.5×"], control:"slider", sliderPercent:Number(settings.mouseSensitivity || 1) / 1.5})
@@ -380,7 +387,7 @@ FocusScope {
                 ["English (US)","English (UK)","Turkish Q","German","French","Spanish","Spanish (Latin America)","Italian","Portuguese (Portugal)","Portuguese (Brazil)","Polish","Danish","Norwegian","Swedish","Finnish","Russian","Japanese","Korean","Chinese (Simplified)","Chinese (Traditional)"]))
             rows.push(choice("Game language", "Requested from the game when it supports it", "gameLanguage", ["en_US","en_GB","de_DE","fr_FR","es_ES","it_IT","pt_BR","ja_JP","ko_KR"], ["English (US)","English (UK)","Deutsch","Français","Español","Italiano","Português (BR)","日本語","한국어"]))
             rows.push({t:"Shortcuts", d:"Stats Ctrl+N · Pointer lock F8 · Fullscreen F11 · Screenshot Ctrl+F11", v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
-            rows.push({t:"Microphone", d:"Microphone upstream is unavailable for NVST sessions", v:"Unavailable"})
+            rows.push({t:"Microphone", d:"Microphone upstream is unavailable for NVST sessions", v:"Unavailable", info:true})
             rows.push(shortcut("Toggle stats", "Cycle the Qt stream statistics overlay", "shortcutToggleStats"))
             rows.push(shortcut("Toggle pointer lock", "Capture or release the mouse on the Qt stream surface", "shortcutTogglePointerLock"))
             rows.push(shortcut("Toggle fullscreen", "Switch the Qt application surface between fullscreen and windowed", "shortcutToggleFullscreen"))
@@ -401,11 +408,11 @@ FocusScope {
             }
             return [
                 choice("Region", ShellStore.regions.length ? qsTr("%1 streaming regions discovered").arg(ShellStore.regions.length) : "Sign in to discover available regions", "region", regionValues, regionLabels),
-                {t:"Transport", d:"The separate native streamer owns negotiation and media transport", v:"Native NVST"},
+                {t:"Transport", d:"The separate native streamer owns negotiation and media transport", v:"Native NVST", info:true},
                 {t:"Proxy address", d:"HTTP(S), SOCKS4 or SOCKS5; credentials stay in the protected local settings file", v:root.proxyDisplay(settings.sessionProxyUrl), action:"proxy-url"},
                 toggle("Session proxy", "Use the configured community session proxy", "sessionProxyEnabled"),
                 toggle("L4S", "Request low-latency scalable throughput when available", "enableL4S"),
-                toggle("Steam Deck identity", "Advertise the official Steam Deck platform profile", "identifyAsSteamDeck"),
+                toggle("Steam Deck identity", "Unlock Deck resolutions and 90 FPS · refreshes entitlements", "identifyAsSteamDeck"),
                 {t:"Packet diagnostics", d:"Redacted transport, loss and reconnect history", v:"Open", route:"diagnostics"},
                 {t:"Refresh regions", d:ShellStore.regionsVpcId ? qsTr("Service region %1").arg(ShellStore.regionsVpcId) : "Query the authenticated NVIDIA region service", v:ShellStore.regionsRequestId === "" ? "Run" : "Running…", action:"refresh-regions"}
             ]
@@ -436,7 +443,7 @@ FocusScope {
         return [
             choice("Recording", "F12 clips · saved to ~/Videos/OpenNOW", "recordingResolution", ["720p","1080p","1440p"], ["720p · 30 FPS","1080p · 60 FPS","1440p · 60 FPS"], "segments"),
             {t:"Anti-AFK", d:"Nudge the session so GeForce NOW doesn't end it while idle", v:ShellStore.antiAfkEnabled ? "On" : "Off", control:"toggle", toggleState:ShellStore.antiAfkEnabled, action:"anti-afk"},
-            {t:"Microphone", d:"Microphone upstream is unavailable for NVST sessions", v:"Unavailable"},
+            {t:"Microphone", d:"Microphone upstream is unavailable for NVST sessions", v:"Unavailable", info:true},
             choice("Updates", qsTr("OpenNOW %1 · signed update feed").arg(ShellStore.updaterState.currentVersion || ""), "updateChannel", ["stable","nightly"], ["Stable","Nightly"], "segments"),
             {t:"Diagnostics", d:"Logs, last session report and stream stats bundle", v:"Open diagnostics", route:"diagnostics"},
             {t:"Reset all settings", d:"Keeps your account and My games", v:"Reset to defaults", action:"reset", danger:true}
@@ -494,6 +501,8 @@ FocusScope {
     }
 
     function activate(row) {
+        if (!row || row.info)
+            return
         if (row.route) {
             AppController.navigate(row.route)
         } else if (row.toggle) {
@@ -578,6 +587,11 @@ FocusScope {
     Component.onCompleted: {
         if (AppController.route === "settings")
             root.selectedSection = Math.max(0, Math.min(root.sections.length - 1, ShellStore.focusIndex("settings-section")))
+    }
+
+    Connections {
+        target: ShellStore
+        function onSubscriptionChanged() { ShellStore.clampFpsToEntitlement() }
     }
 
     Timer {

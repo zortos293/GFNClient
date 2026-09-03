@@ -1049,7 +1049,7 @@ impl GfnService {
         let response = self
             .client
             .get(url)
-            .headers(lcars_headers(token, "BROWSER", "WEBRTC")?)
+            .headers(lcars_headers(token, "BROWSER", "WEBRTC", false)?)
             .send()
             .map_err(|error| ServiceError::network("Region discovery failed", error))?;
         if !response.status().is_success() {
@@ -1073,7 +1073,7 @@ impl GfnService {
         Ok(json!({"regions":regions,"vpcId":payload["requestStatus"]["serverId"]}))
     }
 
-    pub fn subscription(&self) -> Result<Value, ServiceError> {
+    pub fn subscription(&self, settings: &Value) -> Result<Value, ServiceError> {
         let session = self.authenticated_session("Sign in to load subscription details")?;
         let token = session
             .tokens
@@ -1081,6 +1081,7 @@ impl GfnService {
             .as_deref()
             .unwrap_or(&session.tokens.access_token);
         let vpc_id = self.vpc_id(&session, token);
+        let steam_deck = settings["identifyAsSteamDeck"].as_bool().unwrap_or(false);
         let mut url = url::Url::parse(MES_URL).expect("MES URL is valid");
         url.query_pairs_mut()
             .append_pair("serviceName", "gfn_pc")
@@ -1090,7 +1091,7 @@ impl GfnService {
         let response = self
             .client
             .get(url)
-            .headers(lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC")?)
+            .headers(lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC", steam_deck)?)
             .send()
             .map_err(|error| ServiceError::network("Subscription request failed", error))?;
         if !response.status().is_success() {
@@ -1235,7 +1236,7 @@ impl GfnService {
         let Ok(url) = base.join("v2/serverInfo") else {
             return "GFN-PC".to_owned();
         };
-        let Ok(headers) = lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC") else {
+        let Ok(headers) = lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC", false) else {
             return "GFN-PC".to_owned();
         };
         let Ok(response) = self.client.get(url).headers(headers).send() else {
@@ -1809,7 +1810,7 @@ fn number_value(value: &Value) -> Option<f64> {
 }
 
 fn graphql_headers(token: &str) -> Result<HeaderMap, ServiceError> {
-    let mut headers = lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC")?;
+    let mut headers = lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC", false)?;
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(
         ORIGIN,
@@ -1827,6 +1828,7 @@ fn lcars_headers(
     token: &str,
     client_type: &str,
     streamer: &str,
+    steam_deck: bool,
 ) -> Result<HeaderMap, ServiceError> {
     let mut headers = HeaderMap::new();
     let authorization = HeaderValue::from_str(&format!("GFNJWT {token}"))
@@ -1853,7 +1855,9 @@ fn lcars_headers(
     );
     headers.insert(
         "nv-device-os",
-        HeaderValue::from_static(if cfg!(target_os = "windows") {
+        HeaderValue::from_static(if steam_deck {
+            "STEAMOS"
+        } else if cfg!(target_os = "windows") {
             "WINDOWS"
         } else if cfg!(target_os = "macos") {
             "MACOS"
@@ -1861,9 +1865,20 @@ fn lcars_headers(
             "LINUX"
         }),
     );
-    headers.insert("nv-device-type", HeaderValue::from_static("DESKTOP"));
-    headers.insert("nv-device-make", HeaderValue::from_static("GENERIC"));
-    headers.insert("nv-device-model", HeaderValue::from_static("PC"));
+    // Mirrors Electron's Steam Deck device profile: MES returns the Deck
+    // resolution catalog (including 90 FPS tuples) under these headers.
+    headers.insert(
+        "nv-device-type",
+        HeaderValue::from_static(if steam_deck { "CONSOLE" } else { "DESKTOP" }),
+    );
+    headers.insert(
+        "nv-device-make",
+        HeaderValue::from_static(if steam_deck { "VALVE" } else { "GENERIC" }),
+    );
+    headers.insert(
+        "nv-device-model",
+        HeaderValue::from_static(if steam_deck { "STEAMDECK" } else { "PC" }),
+    );
     headers.insert("x-nv-client-identity", HeaderValue::from_static("GFN-PC"));
     headers.insert(USER_AGENT, HeaderValue::from_static(GFN_USER_AGENT));
     Ok(headers)
@@ -1977,9 +1992,26 @@ mod tests {
 
     #[test]
     fn browser_service_identity_keeps_nvidia_required_webrtc_label() {
-        let headers = lcars_headers("token", "BROWSER", "WEBRTC").unwrap();
+        let headers = lcars_headers("token", "BROWSER", "WEBRTC", false).unwrap();
         assert_eq!(headers["nv-client-type"], "BROWSER");
         assert_eq!(headers["nv-client-streamer"], "WEBRTC");
+    }
+
+    #[test]
+    fn steam_deck_identity_advertises_valve_console_profile() {
+        let headers = lcars_headers("token", "NATIVE", "NVIDIA-CLASSIC", true).unwrap();
+        assert_eq!(headers["nv-device-os"], "STEAMOS");
+        assert_eq!(headers["nv-device-type"], "CONSOLE");
+        assert_eq!(headers["nv-device-make"], "VALVE");
+        assert_eq!(headers["nv-device-model"], "STEAMDECK");
+    }
+
+    #[test]
+    fn desktop_identity_keeps_generic_pc_profile() {
+        let headers = lcars_headers("token", "NATIVE", "NVIDIA-CLASSIC", false).unwrap();
+        assert_eq!(headers["nv-device-type"], "DESKTOP");
+        assert_eq!(headers["nv-device-make"], "GENERIC");
+        assert_eq!(headers["nv-device-model"], "PC");
     }
 
     #[test]

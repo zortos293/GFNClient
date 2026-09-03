@@ -2652,6 +2652,25 @@
     "s_qt_runtime_262": "All settings",
     "s_qt_runtime_263": "Applies to your next launch",
     "s_qt_runtime_264": "Game controller",
-    "s_qt_runtime_265": "Confirm ending the cloud session"
+    "s_qt_runtime_265": "Confirm ending the cloud session",
+    "s_qt_runtime_266": "%1 MATCHES",
+    "s_qt_runtime_267": "%1 · no exact entitlement for this resolution",
+    "s_qt_runtime_268": "%1 · up to %2 FPS at %3",
+    "s_qt_runtime_269": "Copy diagnostics",
+    "s_qt_runtime_270": "In favourites",
+    "s_qt_runtime_271": "Loading your membership entitlements…",
+    "s_qt_runtime_272": "Membership",
+    "s_qt_runtime_273": "No bindings match “%1”.",
+    "s_qt_runtime_274": "Not entitled on %1 — upgrade on NVIDIA to unlock",
+    "s_qt_runtime_275": "Not entitled on your current membership",
+    "s_qt_runtime_276": "Only rates your membership entitles are selectable",
+    "s_qt_runtime_277": "Only rates your membership entitles are selectable · %1 up to %2 FPS",
+    "s_qt_runtime_278": "Remove from favourites",
+    "s_qt_runtime_279": "Report an issue",
+    "s_qt_runtime_280": "Reveal captures folder",
+    "s_qt_runtime_281": "Sign in to unlock rates beyond 60 FPS",
+    "s_qt_runtime_282": "Sign in — only entitled rates stay selectable",
+    "s_qt_runtime_283": "Source on GitHub",
+    "s_qt_runtime_284": "Unlock Deck resolutions and 90 FPS · refreshes entitlements"
   }
 }

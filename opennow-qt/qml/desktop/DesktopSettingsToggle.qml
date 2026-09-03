@@ -6,8 +6,8 @@ AbstractButton {
     id: control
     signal valueChangedByUser(bool value)
 
-    implicitWidth: 40
-    implicitHeight: 22
+    implicitWidth: DesktopTokens.px(40)
+    implicitHeight: DesktopTokens.px(22)
     hoverEnabled: true
     onClicked: valueChangedByUser(!checked)
 
@@ -21,11 +21,11 @@ AbstractButton {
     }
 
     Rectangle {
-        width: 16
-        height: 16
-        radius: 8
-        y: 3
-        x: control.checked ? 21 : 3
+        width: DesktopTokens.px(16)
+        height: DesktopTokens.px(16)
+        radius: DesktopTokens.px(8)
+        y: DesktopTokens.px(3)
+        x: control.checked ? DesktopTokens.px(21) : DesktopTokens.px(3)
         color: control.checked ? "#FFFFFF" : Qt.rgba(1, 1, 1, 0.58)
         Behavior on x {
             NumberAnimation {

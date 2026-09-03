@@ -473,6 +473,103 @@ QtObject {
         return result
     }
 
+    // Canonical frame rates offered by GeForce NOW clients. The Rust core
+    // clamps fps to 30–240, so 360 (an Electron-legacy preset) is excluded.
+    function canonicalFpsValues() {
+        return [30, 60, 90, 120, 144, 165, 240]
+    }
+
+    // Official catalog rates per resolution. 1080p rigs offer 240 FPS;
+    // other modes top out at 120 FPS. Exact MES tuples (e.g. 90 FPS) are
+    // preserved separately and never synthesized from a higher envelope.
+    function presetFpsForResolution(width, height) {
+        if (width === 1920 && (height === 1080 || height === 1200))
+            return [30, 60, 120, 240]
+        return [30, 60, 120]
+    }
+
+    function isFpsCoveredByEntitlement(width, height, fps) {
+        const raw = (subscription && subscription.entitledResolutions) || []
+        for (let index = 0; index < raw.length; ++index) {
+            if (Number(raw[index].width || 0) >= width
+                    && Number(raw[index].height || 0) >= height
+                    && Number(raw[index].fps || 0) >= fps)
+                return true
+        }
+        return false
+    }
+
+    // Frame rates the membership entitles at the given resolution, mirroring
+    // Electron's getFpsForResolution. Returns [] when no exact entitlement
+    // tuple exists or no subscription is loaded (callers fall back to the
+    // offline static list with nothing locked).
+    function entitledFpsForResolution(resolution) {
+        const parts = String(resolution || "").split("x")
+        const width = Number(parts[0])
+        const height = Number(parts[1])
+        if (!(width > 0 && height > 0) || !subscription)
+            return []
+        const exact = []
+        const raw = subscription.entitledResolutions || []
+        for (let index = 0; index < raw.length; ++index) {
+            if (Number(raw[index].width) === width && Number(raw[index].height) === height) {
+                const fps = Math.trunc(Number(raw[index].fps || 0))
+                if (fps >= 30 && exact.indexOf(fps) < 0)
+                    exact.push(fps)
+            }
+        }
+        if (exact.length === 0)
+            return []
+        const presets = presetFpsForResolution(width, height)
+        for (let index = 0; index < presets.length; ++index) {
+            if (exact.indexOf(presets[index]) < 0
+                    && isFpsCoveredByEntitlement(width, height, presets[index]))
+                exact.push(presets[index])
+        }
+        exact.sort((left, right) => left - right)
+        return exact
+    }
+
+    // Canonical rates NOT entitled at the given resolution. Empty when the
+    // subscription is unknown so offline users keep the full static list.
+    function unentitledFpsValues(resolution) {
+        const entitled = entitledFpsForResolution(resolution)
+        if (entitled.length === 0)
+            return []
+        const locked = []
+        const canonical = canonicalFpsValues()
+        for (let index = 0; index < canonical.length; ++index) {
+            if (entitled.indexOf(canonical[index]) < 0)
+                locked.push(canonical[index])
+        }
+        return locked
+    }
+
+    // Clamp a requested fps to the nearest entitled rate at or below it,
+    // mirroring resolveEntitledStreamProfile. Returns the input when the
+    // subscription is unknown.
+    function resolveEntitledFps(resolution, requested) {
+        const entitled = entitledFpsForResolution(resolution)
+        if (entitled.length === 0)
+            return requested
+        const wanted = Math.trunc(Number(requested || 0))
+        if (wanted === 0 || entitled.indexOf(wanted) >= 0)
+            return wanted
+        for (let index = entitled.length - 1; index >= 0; --index) {
+            if (entitled[index] <= wanted)
+                return entitled[index]
+        }
+        return entitled[0]
+    }
+
+    // Persistently correct settings.fps when the resolution or subscription
+    // changed underneath it (e.g. tier downgrade). No-op while offline.
+    function clampFpsToEntitlement() {
+        const clamped = resolveEntitledFps(settings.resolution, settings.fps)
+        if (Number(clamped) !== Number(settings.fps))
+            setSetting("fps", clamped)
+    }
+
     function refreshCatalog(searchQuery) {
         if (!ready || catalogRequestId !== "")
             return
@@ -1675,7 +1772,13 @@ QtObject {
             lastError = qsTr("The OpenNOW core is not ready")
             return ""
         }
-        return CoreClient.request("settings.set", { key: key, value: value })
+        const requestId = CoreClient.request("settings.set", { key: key, value: value })
+        if (key === "identifyAsSteamDeck") {
+            // MES serves a different resolution catalog per device identity
+            // (Steam Deck unlocks 90 FPS tuples), so re-read entitlements.
+            Qt.callLater(root.refreshAccountServices)
+        }
+        return requestId
     }
 
     function resetSettings() {

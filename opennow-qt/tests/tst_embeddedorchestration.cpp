@@ -1,4 +1,5 @@
 #include <QFile>
+#include <QJSEngine>
 #include <QRegularExpression>
 #include <QTest>
 
@@ -16,6 +17,132 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void pendingRecoveryDoesNotHideAStartedVideoSurface()
+    {
+        for (const auto &path : {"qml/screens/StreamScreen.qml", "qml/desktop/DesktopStreamScreen.qml"}) {
+            const QRegularExpression status(QStringLiteral(
+                "readonly property string status: \\{(.*?)\\n    \\}"),
+                QRegularExpression::DotMatchesEverythingOption);
+            const auto match = status.match(source(QString::fromLatin1(path)));
+            QVERIFY(match.hasMatch());
+            QJSEngine engine;
+            engine.evaluate(QStringLiteral(
+                "var streamer = {status:'streaming'}; var root = {streamer:streamer};"
+                "var ShellStore = {streamState:'streaming', streamerRestartAttempts:2};"));
+            const auto result = engine.evaluate(
+                QStringLiteral("(function() {%1})()").arg(match.captured(1)));
+            QVERIFY2(!result.isError(), qPrintable(result.toString()));
+            QCOMPARE(result.toString(), QStringLiteral("streaming"));
+        }
+    }
+
+    void mediaRecoveryIsBoundedUntilVideoActuallyStarts()
+    {
+        // Execute the actual ShellStore functions with side effects stubbed,
+        // rather than just checking source text for a retry-limit constant.
+        QJSEngine engine;
+        auto evaluate = [&](const QString &script) {
+            const auto result = engine.evaluate(script);
+            if (result.isError())
+                qWarning().noquote() << result.toString() << result.property("stack").toString();
+            return result;
+        };
+        QVERIFY(!evaluate(QStringLiteral(R"JS(
+            var ready = true, activeSession = {sessionId: 'seat', phase: 'ready'};
+            var streamer = {status: 'starting', sessionId: 'seat'};
+            var runtimeStreamProfile = {}, streamMessage = '', streamState = '', lastError = '';
+            var streamerRestartAttempts = 0, sessionReconnectAttempts = 0;
+            var streamerRecoveryExhausted = false, streamerRestartRecoveryCount = 0, sessionRecoveryCount = 0;
+            var streamerStopExpected = false, streamInputStateKnown = false, streamRecordingActive = false;
+            var streamStartedAtMs = 1, desiredStreamInputPaused = false, sessionClaimRequestId = '';
+            var sessionClaimIsRecovery = false, streamerStartRequestId = '', streamerPrepareRequestId = '';
+            var nativeRuntimeReady = true, prepares = 0, claims = 0;
+            var streamerRestartTimer = {running: false, restarts: 0,
+                restart: function() { this.running = true; this.restarts++; },
+                stop: function() { this.running = false; }};
+            var streamPollTimer = {stop: function() {}, restart: function() {}};
+            var CoreClient = {request: function(type) {
+                if (type === 'streamer.prepare') { prepares++; return 'prepare'; }
+                if (type === 'session.claim') { claims++; return 'claim'; }
+                throw new Error('Unexpected request: ' + type);
+            }};
+            var AppController = {route: 'stream', overlay: ''};
+            function qsTr(text) { return text; }
+            function inspectStreamerOverlayRequest() {}
+            function inspectStreamerScreenshotRequest() {}
+            function inspectStreamerRecordingRequest() {}
+            function inspectStreamerShortcutAction() {}
+            function setStreamInputPaused() {}
+            function syncDiscordPresence() {}
+            function sendNativeCommand() {}
+            function updateStreamerFields(fields) { acceptStreamerSnapshot(Object.assign({}, streamer, fields)); }
+        )JS")).isError());
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        for (const auto &name : {"acceptStreamerSnapshot", "recoverStreamingSession",
+                                "normalizedStreamingSession", "acceptStreamingSession",
+                                "startNativeStreamer", "retryNativeStreamer", "acceptNativeEvent"}) {
+            const QRegularExpression function(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption);
+            const auto match = function.match(shell);
+            QVERIFY2(match.hasMatch(), name);
+            QVERIFY(!evaluate(match.captured()).isError());
+        }
+        auto check = [&](const QString &expression) {
+            const auto result = evaluate(expression);
+            return !result.isError() && result.toBool();
+        };
+        QVERIFY(check(QStringLiteral(R"JS(
+            acceptStreamerSnapshot({status: 'error', message: 'No video UDP packets'});
+            acceptStreamerSnapshot({status: 'stopped', message: 'Stopped'});
+            acceptStreamerSnapshot({status: 'error', message: 'Late response'});
+            streamerRestartAttempts === 1 && streamerRestartTimer.restarts === 1
+                && streamer.message === 'No video UDP packets';
+        )JS")));
+        QVERIFY(check(QStringLiteral(R"JS(
+            acceptStreamingSession(activeSession);
+            prepares === 0 && streamerRestartAttempts === 1;
+        )JS")));
+        QVERIFY(check(QStringLiteral(R"JS(
+            streamerRestartTimer.running = false;
+            streamer = {status: 'starting', sessionId: 'seat'};
+            acceptStreamerSnapshot({status: 'streaming', sessionId: 'seat'});
+            acceptStreamerSnapshot({status: 'error', message: 'Still no video'});
+            streamerRestartAttempts === 2;
+        )JS")));
+        QVERIFY(check(QStringLiteral(R"JS(
+            streamerRestartTimer.running = false;
+            streamer = {status: 'starting', sessionId: 'seat'};
+            acceptStreamerSnapshot({status: 'error', message: 'OPTIONS failed: 400'});
+            sessionClaimRequestId = '';
+            acceptStreamingSession(activeSession);
+            streamerPrepareRequestId = '';
+            acceptStreamerSnapshot({status: 'error', message: 'OPTIONS failed: 400'});
+            sessionClaimRequestId = '';
+            acceptStreamingSession(activeSession);
+            streamerPrepareRequestId = '';
+            acceptStreamerSnapshot({status: 'error', message: 'HTTP 503'});
+            var previousPrepares = prepares;
+            acceptStreamingSession(activeSession);
+            startNativeStreamer();
+            streamerRecoveryExhausted && claims === 2 && prepares === previousPrepares
+                && streamState === 'error' && streamMessage === 'HTTP 503';
+        )JS")));
+        QVERIFY(check(QStringLiteral(R"JS(
+            retryNativeStreamer();
+            !streamerRecoveryExhausted && streamerRestartAttempts === 0
+                && sessionReconnectAttempts === 0 && prepares === previousPrepares + 1;
+        )JS")));
+        QVERIFY(check(QStringLiteral(R"JS(
+            streamerRestartAttempts = 2; sessionReconnectAttempts = 1;
+            acceptStreamerSnapshot({status: 'streaming', sessionId: 'seat'});
+            var unchanged = streamerRestartAttempts === 2 && sessionReconnectAttempts === 1;
+            acceptNativeEvent({type: 'status', event: 'first-frame', status: 'streaming', backend: 'D3D11'});
+            unchanged && streamerRestartAttempts === 0 && sessionReconnectAttempts === 0
+                && streamerRestartRecoveryCount === 2 && sessionRecoveryCount === 1;
+        )JS")));
+    }
+
     void shellUsesCoreOnlyToPrepareEmbeddedContext()
     {
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));

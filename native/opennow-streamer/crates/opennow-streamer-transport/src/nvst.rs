@@ -4056,6 +4056,22 @@ impl ReservedNvstBundle {
         }
     }
 
+    /// Use the route to the negotiated media peer, not a public DNS service.
+    /// Split-tunnel VPNs can send those destinations through different NICs.
+    pub fn advertised_local_address_for(&self, peer: SocketAddr) -> std::io::Result<String> {
+        let local = self.socket.local_addr()?;
+        let probe = UdpSocket::bind(SocketAddr::new(local.ip(), 0))?;
+        probe.connect(peer)?;
+        let address = probe.local_addr()?.ip();
+        if address.is_unspecified() || !address.is_ipv4() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "no local IPv4 route to the NVST media peer",
+            ));
+        }
+        Ok(address.to_string())
+    }
+
     pub fn identity(&mut self) -> NvstBundleIdentity {
         nvst_local_bundle_identity(&mut self.rtc)
     }
@@ -4194,14 +4210,37 @@ fn bind_nvst_udp_socket(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket
         Domain::IPV6
     };
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
+    // These unicast sockets have exactly one owner. REUSEADDR/REUSEPORT can
+    // silently share the preferred ports with another client instead of taking
+    // the dynamic-port fallback, leaving audio alive but video at inbound=0.
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Networking::WinSock::{
+            SO_REUSEADDR, SOCKET_ERROR, SOL_SOCKET, WSAGetLastError, setsockopt,
+        };
+        let enabled = 1_i32;
+        // Winsock defines SO_EXCLUSIVEADDRUSE as (~SO_REUSEADDR).
+        let result = unsafe {
+            setsockopt(
+                socket.as_raw_socket() as usize,
+                SOL_SOCKET,
+                !SO_REUSEADDR,
+                (&enabled as *const i32).cast(),
+                std::mem::size_of_val(&enabled) as i32,
+            )
+        };
+        if result == SOCKET_ERROR {
+            return Err(std::io::Error::from_raw_os_error(unsafe {
+                WSAGetLastError()
+            }));
+        }
+    }
     if let Err(error) = socket.set_recv_buffer_size(NVST_UDP_RECEIVE_BUFFER_BYTES) {
         eprintln!(
             "NVST could not enlarge UDP receive buffer to {NVST_UDP_RECEIVE_BUFFER_BYTES} bytes: {error}"
         );
     }
-    #[cfg(unix)]
-    socket.set_reuse_port(true)?;
     socket.bind(&SocketAddr::new(bind_ip, port).into())?;
     Ok(socket.into())
 }
@@ -4213,6 +4252,12 @@ pub fn reserve_nvst_mjolnir_udp_socket() -> std::io::Result<UdpSocket> {
 }
 
 fn reserve_nvst_socket_pair() -> std::io::Result<(UdpSocket, UdpSocket)> {
+    reserve_nvst_socket_pair_from(49_005)
+}
+
+fn reserve_nvst_socket_pair_from(
+    preferred_video_port: u16,
+) -> std::io::Result<(UdpSocket, UdpSocket)> {
     // Bifrost's Windows client reserves this exact pair first
     // (`general.clientPorts.useReserved=1`) and only falls back to dynamic
     // ports when it is unavailable. Some cloud seats do not route the
@@ -4220,17 +4265,26 @@ fn reserve_nvst_socket_pair() -> std::io::Result<(UdpSocket, UdpSocket)> {
     // though the version-6 NATT request is otherwise valid. Match the
     // official preference while preserving a non-fatal fallback for users
     // that already have either port occupied.
-    const OFFICIAL_MJOLNIR_PORT: u16 = 49_005;
-    const OFFICIAL_BUNDLE_PORT: u16 = 49_006;
     const MAX_PAIR_ATTEMPTS: usize = 32;
     let bind_ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-    let mut last_error = match bind_nvst_udp_socket(bind_ip, OFFICIAL_MJOLNIR_PORT) {
-        Ok(mjolnir) => match bind_nvst_udp_socket(bind_ip, OFFICIAL_BUNDLE_PORT) {
+    let preferred_bundle_port = preferred_video_port.checked_add(1).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "NVST port pair overflows")
+    })?;
+    let mut last_error = match bind_nvst_udp_socket(bind_ip, preferred_video_port) {
+        Ok(mjolnir) => match bind_nvst_udp_socket(bind_ip, preferred_bundle_port) {
             Ok(bundle) => return Ok((bundle, mjolnir)),
             Err(error) => error,
         },
         Err(error) => error,
     };
+
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "transport",
+        &format!(
+            "NVST preferred UDP pair unavailable; reserving an exclusive dynamic pair: {last_error}"
+        ),
+    );
 
     for _ in 0..MAX_PAIR_ATTEMPTS {
         let mjolnir = reserve_nvst_mjolnir_udp_socket()?;
@@ -4314,12 +4368,17 @@ pub fn spawn_nvst_mjolnir_receiver(
     media_consumer: MediaConsumer,
     event_sender: Sender<NvstReceiveEvent>,
 ) -> Result<NvstUdpReceiverSession, NvstUdpReceiverError> {
-    eprintln!(
-        "NVST Mjolnir raw-SRTP video receiver arming on {}",
-        socket
-            .local_addr()
-            .map(|addr| addr.to_string())
-            .unwrap_or_else(|_| "unknown".to_owned())
+    opennow_streamer_protocol::log::diagnostic(
+        "INFO",
+        "transport",
+        &format!(
+            "NVST Mjolnir raw-SRTP video receiver arming on {} peer={}",
+            socket
+                .local_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|_| "unknown".to_owned()),
+            config.video_peer,
+        ),
     );
     spawn_receiver_thread(
         "opennow-nvst-mjolnir",
@@ -5548,9 +5607,13 @@ fn run_nvst_udp_receiver(
             Ok((length, source)) => {
                 inbound_datagrams += 1;
                 if inbound_datagrams == 1 {
-                    eprintln!(
-                        "NVST raw-SRTP inbound first datagram: source={source} bytes={length} peer={}",
-                        receiver.config.video_peer
+                    opennow_streamer_protocol::log::diagnostic(
+                        "INFO",
+                        "transport",
+                        &format!(
+                            "NVST raw-SRTP inbound first datagram: source={source} bytes={length} peer={}",
+                            receiver.config.video_peer
+                        ),
                     );
                 }
                 if source != receiver.config.video_peer {
@@ -5610,16 +5673,31 @@ fn run_nvst_udp_receiver(
         }
         if now.duration_since(last_stats_log) >= Duration::from_secs(2) {
             last_stats_log = now;
-            eprintln!(
-                "NVST rx-stats {} inbound={inbound_datagrams} pings={pings_sent} rr={receiver_reports_sent}",
-                receiver.stats_line(stats_origin),
+            opennow_streamer_protocol::log::diagnostic(
+                "INFO",
+                "transport",
+                &format!(
+                    "NVST rx-stats {} inbound={inbound_datagrams} pings={pings_sent} rr={receiver_reports_sent}",
+                    receiver.stats_line(stats_origin),
+                ),
             );
         }
         let timeout = receiver.poll_timeout(now);
         if timeout.is_some() {
-            eprintln!(
-                "NVST transport timeout counters: pings={pings_sent}, inbound={inbound_datagrams}, stunHandled={handled_stun}, stunInvalid={invalid_stun}, nonStun={non_stun}, wrongSource={wrong_source}"
+            opennow_streamer_protocol::log::diagnostic(
+                "WARN",
+                "transport",
+                &format!(
+                    "NVST transport timeout counters: pings={pings_sent}, inbound={inbound_datagrams}, stunHandled={handled_stun}, stunInvalid={invalid_stun}, nonStun={non_stun}, wrongSource={wrong_source}"
+                ),
             );
+            if inbound_datagrams == 0 {
+                opennow_streamer_protocol::log::diagnostic(
+                    "WARN",
+                    "transport",
+                    "NVST video UDP path received no datagrams; audio/control may still work. Check firewall/VPN routing and UDP port ownership. No video has reached SRTP authentication or decoding.",
+                );
+            }
         }
         forward_optional(&event_sender, timeout);
     }
@@ -6022,6 +6100,50 @@ mod tests {
         assert!(bundle_addr.ip().is_unspecified());
         assert!(video_addr.ip().is_unspecified());
         assert_eq!(bundle_addr.port(), video_addr.port() + 1);
+    }
+
+    #[test]
+    fn nvst_unicast_socket_cannot_share_an_existing_port() {
+        let owner = reserve_nvst_mjolnir_udp_socket().unwrap();
+        let address = owner.local_addr().unwrap();
+        assert!(bind_nvst_udp_socket(address.ip(), address.port()).is_err());
+        let competitor = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+        competitor.set_reuse_address(true).unwrap();
+        assert!(competitor.bind(&address.into()).is_err());
+    }
+
+    #[test]
+    fn nvst_pair_falls_back_when_either_preferred_port_is_occupied() {
+        let (bundle, video) = reserve_nvst_socket_pair().unwrap();
+        let preferred = video.local_addr().unwrap().port();
+        let (other_bundle, other_video) = reserve_nvst_socket_pair_from(preferred).unwrap();
+        assert_ne!(other_video.local_addr().unwrap().port(), preferred);
+        assert_eq!(
+            other_bundle.local_addr().unwrap().port(),
+            other_video.local_addr().unwrap().port() + 1
+        );
+        drop(video);
+        let (third_bundle, third_video) = reserve_nvst_socket_pair_from(preferred).unwrap();
+        assert_ne!(third_video.local_addr().unwrap().port(), preferred);
+        assert_eq!(
+            third_bundle.local_addr().unwrap().port(),
+            third_video.local_addr().unwrap().port() + 1
+        );
+        // The failed pair attempt must release its first socket.
+        assert!(bind_nvst_udp_socket(IpAddr::V4(Ipv4Addr::UNSPECIFIED), preferred).is_ok());
+        drop(bundle);
+    }
+
+    #[test]
+    fn advertised_media_address_uses_the_requested_peer_route() {
+        // No packets or Internet access: UDP connect only asks the OS for a route.
+        let bundle = ReservedNvstBundle::reserve().unwrap();
+        assert_eq!(
+            bundle
+                .advertised_local_address_for("127.0.0.1:5004".parse().unwrap())
+                .unwrap(),
+            "127.0.0.1"
+        );
     }
 
     #[test]

@@ -87,10 +87,9 @@ impl RtspClient {
             .headers_mut()
             .insert("content-length", HeaderValue::from_static("0"));
         let (mut socket, _) = connect(request).map_err(|error| {
-            NvstRtspError::new(
-                "nvst-connect-failed",
-                format!("Could not open RTSPS control channel: {error}"),
-            )
+            let failure = rtsp_connect_error(&error);
+            opennow_streamer_protocol::log::log_line("WARN", "rtsp", &failure.message);
+            failure
         })?;
         set_read_timeout(&mut socket, REQUEST_TIMEOUT);
         Ok((
@@ -191,6 +190,28 @@ impl RtspClient {
             }
         }
     }
+}
+
+fn rtsp_connect_error(error: &tungstenite::Error) -> NvstRtspError {
+    if let tungstenite::Error::Http(response) = error {
+        let status = response.status().as_u16();
+        return NvstRtspError::new(
+            if status == 503 {
+                "nvst-service-unavailable"
+            } else {
+                "nvst-connect-failed"
+            },
+            if status == 503 {
+                "The GeForce NOW RTSPS service is temporarily unavailable (HTTP 503). The media connection was not established; this is not a video decoder error.".to_owned()
+            } else {
+                format!("Could not open RTSPS control channel: HTTP {status}")
+            },
+        );
+    }
+    NvstRtspError::new(
+        "nvst-connect-failed",
+        format!("Could not open RTSPS control channel: {error}"),
+    )
 }
 
 pub struct PreparedNvstRtspSession {
@@ -403,12 +424,6 @@ pub fn prepare_owned_nvst(
         .mjolnir_local_addr()
         .map_err(|error| NvstRtspError::new("nvst-bind-failed", error.to_string()))?
         .port();
-    let local_address = bundle.advertised_local_address().ok_or_else(|| {
-        NvstRtspError::new(
-            "nvst-bind-failed",
-            "Could not determine a routable local IPv4 address for NVST",
-        )
-    })?;
     let identity = bundle.identity();
 
     let (mut client, target) = RtspClient::connect(endpoint, session_id)?;
@@ -478,6 +493,39 @@ pub fn prepare_owned_nvst(
             "SETUP did not return the NVST video peer",
         )
     })?;
+    let (bundle_peer_ip, bundle_peer_port) = context
+        .session
+        .media_connection_info
+        .as_ref()
+        .map(|media| (media.ip.as_str(), media.port))
+        .unwrap_or((&video_peer_ip, u32::from(video_peer_port)));
+    let bundle_peer_port = u16::try_from(bundle_peer_port)
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| {
+            NvstRtspError::new("invalid-media-peer", "NVST media peer port is invalid")
+        })?;
+    let bundle_peer = bundle_peer_ip
+        .parse::<IpAddr>()
+        .map(|ip| std::net::SocketAddr::new(ip, bundle_peer_port))
+        .map_err(|_| {
+            NvstRtspError::new("invalid-media-peer", "NVST media peer is not an IP address")
+        })?;
+    let local_address = bundle
+        .advertised_local_address_for(bundle_peer)
+        .map_err(|error| {
+            NvstRtspError::new(
+                "nvst-bind-failed",
+                format!("Could not select the local route to the NVST media peer: {error}"),
+            )
+        })?;
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "transport",
+        &format!(
+            "NVST media route local={local_address} bundlePort={client_port} videoPort={mjolnir_port} bundlePeer={bundle_peer} videoPeer={video_peer_ip}:{video_peer_port}"
+        ),
+    );
     let setup_ping_payload = header_value(&setup, "x-nv-ping-payload").map(ToOwned::to_owned);
     let ping_version = header_value(&setup, "x-nv-ping")
         .and_then(|value| value.parse::<u8>().ok())
@@ -851,13 +899,15 @@ fn ensure_rtsp_ok(step: &str, response: &RtspResponse) -> Result<(), NvstRtspErr
     if response.status == 200 {
         Ok(())
     } else {
-        Err(NvstRtspError::new(
+        let failure = NvstRtspError::new(
             "nvst-rtsp-failed",
             format!(
                 "{step} failed: {} {}",
                 response.status, response.status_text
             ),
-        ))
+        );
+        opennow_streamer_protocol::log::log_line("WARN", "rtsp", &failure.message);
+        Err(failure)
     }
 }
 
@@ -1129,6 +1179,18 @@ fn set_read_timeout(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, timeout: 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn http_503_is_a_control_service_failure_not_a_decoder_failure() {
+        let response = tungstenite::http::Response::builder()
+            .status(503)
+            .body(Some(b"private response body".to_vec()))
+            .unwrap();
+        let error = rtsp_connect_error(&tungstenite::Error::Http(Box::new(response)));
+        assert_eq!(error.code, "nvst-service-unavailable");
+        assert!(error.message.contains("HTTP 503"));
+        assert!(!error.message.contains("private response body"));
+    }
 
     fn context() -> SessionContext {
         serde_json::from_value(json!({

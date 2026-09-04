@@ -86,6 +86,7 @@ QtObject {
     property string streamState: "idle"
     property string streamMessage: ""
     property int streamerRestartAttempts: 0
+    property bool streamerRecoveryExhausted: false
     property int sessionReconnectAttempts: 0
     property int streamerRestartRecoveryCount: 0
     property int sessionRecoveryCount: 0
@@ -1088,6 +1089,7 @@ QtObject {
         if (!ready || streamBusy)
             return
         streamerRestartAttempts = 0
+        streamerRecoveryExhausted = false
         sessionReconnectAttempts = 0
         streamerRestartRecoveryCount = 0
         sessionRecoveryCount = 0
@@ -1212,6 +1214,12 @@ QtObject {
     function acceptStreamingSession(session) {
         const previousSession = activeSession
         activeSession = normalizedStreamingSession(session)
+        if (!activeSession || !previousSession || previousSession.sessionId !== activeSession.sessionId) {
+            streamerRestartTimer.stop()
+            streamerRestartAttempts = 0
+            sessionReconnectAttempts = 0
+            streamerRecoveryExhausted = false
+        }
         if (!activeSession) {
             runtimeStreamProfile = ({})
             if (previousSession && streamer && streamer.status !== "stopped")
@@ -1227,6 +1235,10 @@ QtObject {
             syncDiscordPresence()
             return
         }
+        // A seat still being ready does not mean its media path recovered.
+        // Polls and claim replies must not restart an exhausted media episode.
+        if (streamerRecoveryExhausted)
+            return
         streamState = activeSession.phase || (Number(activeSession.status) >= 2 ? "ready" : "preparing")
         const adState = activeSession.adState || ({})
         const ads = adState.sessionAds || adState.ads || []
@@ -1236,9 +1248,6 @@ QtObject {
         if (streamState === "ready" || streamState === "streaming") {
             if (streamStartedAtMs === 0)
                 streamStartedAtMs = Date.now()
-            if (sessionReconnectAttempts > 0)
-                sessionRecoveryCount += 1
-            sessionReconnectAttempts = 0
             streamMessage = qsTr("Your GeForce NOW seat is ready.")
             streamPollTimer.stop()
             if (AppController.route !== "stream")
@@ -1292,7 +1301,8 @@ QtObject {
 
     function startNativeStreamer() {
         if (!ready || !activeSession || streamerStartRequestId !== ""
-                || streamerPrepareRequestId !== "")
+                || streamerPrepareRequestId !== "" || sessionClaimRequestId !== ""
+                || streamerRestartTimer.running || streamerRecoveryExhausted)
             return
         if (streamer && streamer.sessionId === activeSession.sessionId
                 && streamer.status !== "stopped" && streamer.status !== "error"
@@ -1328,12 +1338,21 @@ QtObject {
     }
 
     function retryNativeStreamer() {
+        streamerRestartTimer.stop()
         streamerRestartAttempts = 0
+        sessionReconnectAttempts = 0
+        streamerRecoveryExhausted = false
         streamer = null
         startNativeStreamer()
     }
 
     function acceptStreamerSnapshot(snapshot) {
+        // One failure produces both error and stopped, plus late input replies.
+        // Count it once and preserve the original, actionable error message.
+        const wasTerminal = streamer && (streamer.status === "error" || streamer.status === "stopped")
+        const isTerminal = snapshot && (snapshot.status === "error" || snapshot.status === "stopped")
+        if (wasTerminal && isTerminal)
+            return
         streamer = snapshot ? Object.assign({}, snapshot, {
             codec: snapshot.codec || runtimeStreamProfile.codec || "",
             outputWidth: snapshot.outputWidth || runtimeStreamProfile.width || 0,
@@ -1359,10 +1378,6 @@ QtObject {
             setStreamInputPaused(desiredStreamInputPaused)
         }
         if (status === "streaming") {
-            if (streamerRestartAttempts > 0) {
-                streamerRestartRecoveryCount += streamerRestartAttempts
-                streamerRestartAttempts = 0
-            }
             return
         }
         if (status !== "error" && status !== "stopped")
@@ -1397,6 +1412,8 @@ QtObject {
         if (!ready || !activeSession || sessionClaimRequestId !== "")
             return
         if (sessionReconnectAttempts >= 2) {
+            streamerRecoveryExhausted = true
+            streamerRestartTimer.stop()
             streamState = "error"
             streamMessage = reason || qsTr("The streaming session could not be recovered")
             lastError = streamMessage
@@ -1492,6 +1509,7 @@ QtObject {
     }
 
     function stopNativeStreamer(reason) {
+        streamerRestartTimer.stop()
         if (streamerStopRequestId !== "")
             return
         // A runtime that never started, or that already reported "stopped", has
@@ -2000,6 +2018,17 @@ QtObject {
         if (event.peakBitrateMbps !== undefined)
             fields.peakBitrateMbps = Number(event.peakBitrateMbps)
         if (event.event === "first-frame") {
+            if (!activeSession || !streamer || streamer.status === "error" || streamer.status === "stopped")
+                return
+            // Only real video progress closes the recovery episode. A ready
+            // seat, successful PLAY, or audio/control traffic is insufficient.
+            streamerRestartRecoveryCount += streamerRestartAttempts
+            if (sessionReconnectAttempts > 0)
+                sessionRecoveryCount += 1
+            streamerRestartAttempts = 0
+            sessionReconnectAttempts = 0
+            streamerRecoveryExhausted = false
+            streamerRestartTimer.stop()
             if (streamer && (streamer.firstFrameLatencyMs === undefined
                     || streamer.firstFrameLatencyMs === null)) {
                 fields.firstFrameLatencyMs = Math.max(0,
@@ -2654,6 +2683,10 @@ QtObject {
                     root.streamMessage = qsTr("Session recovery was interrupted. Retrying…")
                     Qt.callLater(() => root.recoverStreamingSession(message))
                 } else {
+                    if (recovering) {
+                        root.streamerRecoveryExhausted = true
+                        root.streamerRestartTimer.stop()
+                    }
                     root.streamState = "error"
                     root.streamMessage = message
                 }

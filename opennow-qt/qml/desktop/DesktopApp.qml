@@ -148,6 +148,7 @@ FocusScope {
         z: 120
         onCloseRequested: root.commandOpen = false
         onRouteRequested: route => AppController.navigate(route)
+        onGameRequested: game => { ShellStore.selectedGame = game; ShellStore.launchSelectedGame(false) }
     }
 
     Rectangle {
@@ -202,6 +203,7 @@ FocusScope {
         DesktopStoreContent {
             searchText: root.searchText
             onGameSelected: game => ShellStore.openGame(game)
+            onPlayRequested: game => { ShellStore.selectedGame = game; ShellStore.launchSelectedGame(false) }
             onRouteRequested: route => AppController.navigate(route)
             onClaimRequested: games => ShellStore.accessibilityMessage = qsTr("Claim request prepared for %1 games").arg(games.length)
             onSearchRequested: shell.forceActiveFocus()

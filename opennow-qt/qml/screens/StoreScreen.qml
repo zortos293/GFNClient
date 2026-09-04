@@ -6,7 +6,7 @@ FocusScope {
     id: root
     focus: true
     property int currentIndex: Math.max(0, Math.min(32, ShellStore.focusIndex("store")))
-    readonly property var games: ShellStore.catalogGames
+    readonly property var games: ShellStore.storeGames
     readonly property var selectedGame: gameAt(currentIndex)
     readonly property int columnCount: 11
 
@@ -71,8 +71,8 @@ FocusScope {
 
             Text {
                 anchors.right: parent.right
-                text: ShellStore.catalogTotalCount > 0
-                    ? qsTr("%1 games").arg(ShellStore.catalogTotalCount)
+                text: ShellStore.storeTotalCount > 0
+                    ? qsTr("%1 games").arg(ShellStore.storeTotalCount)
                     : qsTr("%1 loaded").arg(root.games.length)
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
@@ -135,7 +135,7 @@ FocusScope {
                 visible: root.games.length === 0
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: ShellStore.catalogState === "error" ? qsTr("Catalog unavailable") : qsTr("Loading the live catalog…")
+                    text: ShellStore.storeState === "error" ? qsTr("Catalog unavailable") : qsTr("Loading the live catalog…")
                     color: Theme.label
                     font.family: Theme.displayFont
                     font.pixelSize: 25
@@ -143,11 +143,11 @@ FocusScope {
                 }
                 GlassButton {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    visible: ShellStore.catalogState === "error"
+                    visible: ShellStore.storeState === "error"
                     text: qsTr("Try again")
                     glyph: "A"
                     primary: true
-                    onClicked: ShellStore.refreshCatalog("")
+                    onClicked: ShellStore.refreshStore("")
                 }
             }
         }
@@ -159,4 +159,6 @@ FocusScope {
         currentRoute: "store"
         onRouteRequested: route => AppController.navigate(route)
     }
+
+    Component.onCompleted: ShellStore.refreshStore("")
 }

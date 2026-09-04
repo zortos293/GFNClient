@@ -1715,6 +1715,7 @@ dependencies = [
 name = "opennow-streamer-platform-windows"
 version = "0.2.0"
 dependencies = [
+ "opennow-streamer-protocol",
  "windows",
 ]
 

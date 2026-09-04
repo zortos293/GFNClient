@@ -32,6 +32,154 @@ const LCARS_CLIENT_ID: &str = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
 const GFN_CLIENT_VERSION: &str = "2.0.87.131";
 const GRAPHQL_URL: &str = "https://games.geforce.com/graphql";
 const MES_URL: &str = "https://mes.geforcenow.com/v4/subscriptions";
+const STORE_PANELS_QUERY: &str = r#"query GetStorePanels($vpcId: String!, $locale: String!, $panelNames: [String]!) {
+  panels(vpcId: $vpcId, language: $locale, names: $panelNames) {
+    id
+    name
+    sections {
+      id
+      title
+      items {
+        __typename
+        ... on GameItem {
+          app {
+            id
+            title
+            publisherName
+            images { GAME_BOX_ART KEY_IMAGE KEY_ART HERO_IMAGE TV_BANNER MARQUEE_HERO_IMAGE }
+            itemMetadata { campaignIds }
+            variants {
+              id
+              appStore
+              storeUrl
+              supportedControls
+              gfn {
+                status
+                library { status selected }
+              }
+            }
+            gfn { playType playabilityState minimumMembershipTierLabel }
+          }
+        }
+      }
+    }
+  }
+}"#;
+
+const STORE_MARQUEE_QUERY: &str = r#"query GetStoreMarquee($vpcId: String!, $locale: String!, $panelNames: [String]!) {
+  panels(vpcId: $vpcId, language: $locale, names: $panelNames) {
+    id
+    name
+    sections {
+      id
+      title
+      items {
+        __typename
+        ... on MarketingItem {
+          id
+          title
+          body
+          images { MARQUEE_HERO_IMAGE HERO_IMAGE }
+          action { uri label }
+        }
+        ... on GameItem {
+          app {
+            id
+            title
+            publisherName
+            images { GAME_BOX_ART KEY_IMAGE KEY_ART HERO_IMAGE TV_BANNER MARQUEE_HERO_IMAGE }
+            itemMetadata { campaignIds }
+            variants {
+              id
+              appStore
+              storeUrl
+              supportedControls
+              gfn {
+                status
+                library { status selected }
+              }
+            }
+            gfn { playType playabilityState minimumMembershipTierLabel }
+          }
+        }
+      }
+    }
+  }
+}"#;
+
+const STORE_DEFINITIONS_QUERY: &str = r#"query GetStoreFilterDefinitions($locale: String!) {
+  filterGroupDefinitions(language: $locale) {
+    id
+    label
+    filters {
+      id
+      label
+    }
+  }
+  sortOrderDefinitions(language: $locale) {
+    id
+    label
+    orderBy
+  }
+}"#;
+
+const STORE_MARQUEE_SHA: &str = "dd4bddfdef4707dfe340cc2040d6bb9c4c45f706976fca15b2ef33221c385d7f";
+const STORE_PANELS_SHA: &str = "46ec15f267a056e7d5e46e629efa929529e5e7542a4850faece90b9f8fa5f810";
+
+const STORE_BROWSE_QUERY: &str = r#"query GetStoreBrowseApps(
+  $vpcId: String!, $locale: String!, $sortString: String!,
+  $fetchCount: Int!, $cursor: String!, $filters: AppFilterFields!
+) {
+  apps(vpcId: $vpcId, language: $locale, orderBy: $sortString, first: $fetchCount, after: $cursor, filters: $filters) {
+    numberReturned numberSupported pageInfo { hasNextPage endCursor totalCount }
+    items {
+      id title developerName publisherName genres supportedControls
+      images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }
+      variants {
+        id appStore storeUrl supportedControls
+        gfn {
+          status
+          features {
+            __typename
+            ... on GfnSubscriptionFeatureValue { key value }
+            ... on GfnSubscriptionFeatureValueList { key values }
+          }
+          library { status selected lastPlayedDate }
+        }
+      }
+      gfn { playType playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG SKU_BASED_PLAYABILITY_TEXT } }
+      itemMetadata { campaignIds }
+    }
+  }
+}"#;
+
+const STORE_SEARCH_QUERY: &str = r#"query GetStoreSearchApps(
+  $vpcId: String!, $locale: String!, $sortString: String!,
+  $fetchCount: Int!, $cursor: String!, $searchString: String!, $filters: AppFilterFields!
+) {
+  apps(vpcId: $vpcId, language: $locale, orderBy: $sortString, first: $fetchCount, after: $cursor, searchQuery: $searchString, filters: $filters) {
+    numberReturned numberSupported pageInfo { hasNextPage endCursor totalCount }
+    items {
+      id title developerName publisherName genres supportedControls
+      images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }
+      variants {
+        id appStore storeUrl supportedControls
+        gfn {
+          status
+          features {
+            __typename
+            ... on GfnSubscriptionFeatureValue { key value }
+            ... on GfnSubscriptionFeatureValueList { key values }
+          }
+          library { status selected lastPlayedDate }
+        }
+      }
+      gfn { playType playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG SKU_BASED_PLAYABILITY_TEXT } }
+      itemMetadata { campaignIds }
+    }
+  }
+}"#;
+
 const LIBRARY_QUERY: &str = r#"query GetLibraryApps(
   $vpcId: String!, $locale: String!, $sortString: String!,
   $fetchCount: Int!, $cursor: String!, $filters: AppFilterFields!
@@ -1035,6 +1183,146 @@ impl GfnService {
         }))
     }
 
+    pub fn store_catalog(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
+        let client = client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
+        let session_payload = self.session()?;
+        let session = serde_json::from_value::<AuthSession>(session_payload["session"].clone())
+            .map_err(|_| ServiceError {
+                code: "authentication_required",
+                message: "Sign in to browse the GeForce NOW store catalog".to_owned(),
+            })?;
+        let token = session
+            .tokens
+            .id_token
+            .as_deref()
+            .unwrap_or(&session.tokens.access_token);
+        let vpc_id = self.vpc_id(&session, token);
+        let limit = params["limit"].as_u64().unwrap_or(1500).clamp(1, 3000) as usize;
+        let search = params["searchQuery"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        let mut cursor = String::new();
+        let mut games = Vec::new();
+        let mut total_count = 0_u64;
+
+        for _ in 0..15 {
+            let searching = !search.is_empty();
+            let query = if searching {
+                STORE_SEARCH_QUERY
+            } else {
+                STORE_BROWSE_QUERY
+            };
+            let mut variables = json!({
+                "vpcId":vpc_id,
+                "locale":"en_US",
+                "sortString":"itemMetadata.relevance:DESC,sortName:ASC",
+                "fetchCount":200,
+                "cursor":cursor,
+                "filters":{},
+            });
+            if searching {
+                variables["searchString"] = Value::String(search.clone());
+            }
+            let response = client
+                .post(GRAPHQL_URL)
+                .headers(graphql_headers(token)?)
+                .json(&json!({"query":query,"variables":variables}))
+                .send()
+                .map_err(|error| ServiceError::network("GFN store query failed", error))?;
+            if !response.status().is_success() {
+                return Err(ServiceError::response(
+                    "GFN store query failed",
+                    response,
+                ));
+            }
+            let payload = response
+                .json::<Value>()
+                .map_err(|error| ServiceError::network("Invalid GFN store response", error))?;
+            if let Some(message) = graphql_error_message(&payload) {
+                return Err(ServiceError {
+                    code: "graphql_error",
+                    message,
+                });
+            }
+            let apps = &payload["data"]["apps"];
+            total_count = apps["pageInfo"]["totalCount"]
+                .as_u64()
+                .unwrap_or(total_count);
+            for app in apps["items"].as_array().into_iter().flatten() {
+                if let Some(game) = app_to_game(app) {
+                    games.push(game);
+                }
+                if games.len() >= limit {
+                    break;
+                }
+            }
+            if games.len() >= limit || !apps["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false) {
+                break;
+            }
+            let Some(next_cursor) = apps["pageInfo"]["endCursor"].as_str() else {
+                break;
+            };
+            if next_cursor.is_empty() || next_cursor == cursor {
+                break;
+            }
+            cursor = next_cursor.to_owned();
+        }
+        let browse_by_id: HashMap<String, Value> = games
+            .iter()
+            .filter_map(|game| game_identity(game).map(|id| (id, game.clone())))
+            .collect();
+        // Storefront chrome is best-effort: panels, hero and categories must
+        // never fail the game list itself.
+        let panel_variables = json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MAIN"]});
+        let marquee_variables = json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MARQUEE"]});
+        let panels = fetch_panels_document(
+            &client,
+            token,
+            panel_variables,
+            "panels/MainV2",
+            STORE_PANELS_SHA,
+            STORE_PANELS_QUERY,
+            "GFN store panels query",
+        )
+        .map(|payload| parse_store_panels(&payload, &browse_by_id))
+        .unwrap_or_default();
+        let marquee = fetch_panels_document(
+            &client,
+            token,
+            marquee_variables,
+            "panels/Marquee",
+            STORE_MARQUEE_SHA,
+            STORE_MARQUEE_QUERY,
+            "GFN store marquee query",
+        )
+        .map(|payload| parse_store_marquee(&payload, &browse_by_id))
+        .unwrap_or_default();
+        let definition_variables = json!({"locale":"en_US"});
+        let filter_groups = fetch_panels_document(
+            &client,
+            token,
+            definition_variables,
+            "filterGroupAndSortOrderDefinitions",
+            "ef725de5e93b093de1ac7418fed0ffb4f6ae2b9c14f743ab274a791521488eb9",
+            STORE_DEFINITIONS_QUERY,
+            "GFN store filter definitions query",
+        )
+        .map(|payload| parse_store_definitions(&payload))
+        .unwrap_or_default();
+        Ok(json!({
+            "games":games,
+            "count":games.len(),
+            "totalCount":total_count.max(games.len() as u64),
+            "source":"store-browse",
+            "marquee":marquee,
+            "panels":panels,
+            "filterGroups":filter_groups,
+            "fetchedAt":now_ms()
+        }))
+    }
+
     pub fn regions(&self) -> Result<Value, ServiceError> {
         let session = self.authenticated_session("Sign in to discover streaming regions")?;
         let token = session
@@ -1790,6 +2078,234 @@ fn graphql_error_message(payload: &Value) -> Option<String> {
     (!messages.is_empty()).then(|| messages.join(", "))
 }
 
+fn game_identity(value: &Value) -> Option<String> {
+    for key in ["uuid", "id", "launchAppId"] {
+        if let Some(id) = value[key].as_str().filter(|id| !id.is_empty()) {
+            return Some(id.to_owned());
+        }
+    }
+    None
+}
+
+/// GETs a CMS panels document (persisted query with full-text fallback,
+/// mirroring Electron's fetchLcarsGraphQl). Used for the storefront
+/// marquee hero and the official Main shelves.
+fn fetch_panels_document(
+    client: &Client,
+    token: &str,
+    variables: Value,
+    request_type: &str,
+    sha: &str,
+    fallback_query: &str,
+    context: &str,
+) -> Result<Value, ServiceError> {
+    let extensions = json!({"persistedQuery":{"sha256Hash":sha}}).to_string();
+    let variables_text = variables.to_string();
+    let hu_id = random_attempt_id();
+    let mut url = url::Url::parse(GRAPHQL_URL).expect("GraphQL URL is valid");
+    url.query_pairs_mut()
+        .append_pair("extensions", &extensions)
+        .append_pair("huId", &hu_id)
+        .append_pair("variables", &variables_text)
+        .append_pair("requestType", request_type);
+    let mut headers = graphql_headers(token)?;
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/graphql"),
+    );
+    let response = client
+        .get(url.clone())
+        .headers(headers)
+        .send()
+        .map_err(|error| ServiceError::network(&format!("{context} failed"), error))?;
+    let payload = if response.status().as_u16() == 400 {
+        url.query_pairs_mut().append_pair("query", fallback_query);
+        let mut retry_headers = graphql_headers(token)?;
+        retry_headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/graphql"),
+        );
+        client
+            .get(url)
+            .headers(retry_headers)
+            .send()
+            .map_err(|error| ServiceError::network(&format!("{context} failed"), error))?
+            .json::<Value>()
+            .map_err(|error| ServiceError::network(&format!("Invalid {context} response"), error))?
+    } else {
+        if !response.status().is_success() {
+            return Err(ServiceError::response(&format!("{context} failed"), response));
+        }
+        response
+            .json::<Value>()
+            .map_err(|error| ServiceError::network(&format!("Invalid {context} response"), error))?
+    };
+    if let Some(message) = graphql_error_message(&payload) {
+        return Err(ServiceError {
+            code: "graphql_error",
+            message,
+        });
+    }
+    Ok(payload)
+}
+
+fn marquee_hero_image(item: &Value) -> Option<String> {
+    first_image(
+        &item["images"],
+        &["MARQUEE_HERO_IMAGE", "HERO_IMAGE"],
+        1600,
+    )
+}
+
+fn parse_store_marquee(payload: &Value, browse_by_id: &HashMap<String, Value>) -> Vec<Value> {
+    let mut slides = Vec::new();
+    let panels = payload["data"]["panels"].as_array().into_iter().flatten();
+    for panel in panels {
+        let sections = panel["sections"].as_array().into_iter().flatten();
+        for section in sections {
+            let items = section["items"].as_array().into_iter().flatten();
+            for item in items {
+                if slides.len() >= 8 {
+                    return slides;
+                }
+                match item["__typename"].as_str().unwrap_or("") {
+                    "MarketingItem" => {
+                        let title = item["title"].as_str().unwrap_or("").trim();
+                        if title.is_empty() {
+                            continue;
+                        }
+                        slides.push(json!({
+                            "kind":"marketing",
+                            "title":title,
+                            "body":item["body"].as_str().unwrap_or(""),
+                            "image":marquee_hero_image(item),
+                            "actionLabel":item["action"]["label"].as_str().unwrap_or(""),
+                            "actionUri":item["action"]["uri"].as_str().unwrap_or(""),
+                        }));
+                    }
+                    "GameItem" => {
+                        let Some(game) = app_to_game(&item["app"]).map(|mut game| {
+                            if game["heroImageUrl"].is_null() {
+                                if let Some(art) = marquee_hero_image(&item["app"]) {
+                                    game["heroImageUrl"] = Value::String(art);
+                                }
+                            }
+                            game
+                        }) else {
+                            continue;
+                        };
+                        let identity = game_identity(&game);
+                        let resolved = identity
+                            .as_ref()
+                            .and_then(|id| browse_by_id.get(id))
+                            .cloned()
+                            .unwrap_or(game);
+                        let title = resolved["title"].as_str().unwrap_or("").to_owned();
+                        if title.is_empty() {
+                            continue;
+                        }
+                        slides.push(json!({
+                            "kind":"game",
+                            "title":title,
+                            "body":resolved["publisherName"].as_str().unwrap_or(""),
+                            "image":marquee_hero_image(&item["app"]),
+                            "game":resolved,
+                        }));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    slides
+}
+
+fn parse_store_panels(payload: &Value, browse_by_id: &HashMap<String, Value>) -> Vec<Value> {
+    let mut panels = Vec::new();
+    let incoming = payload["data"]["panels"].as_array().into_iter().flatten();
+    for panel in incoming {
+        let mut sections = Vec::new();
+        let panel_sections = panel["sections"].as_array().into_iter().flatten();
+        for section in panel_sections {
+            let title = section["title"].as_str().unwrap_or("").trim().to_owned();
+            let mut games = Vec::new();
+            let items = section["items"].as_array().into_iter().flatten();
+            for item in items {
+                if item["__typename"].as_str() != Some("GameItem") {
+                    continue;
+                }
+                let Some(game) = app_to_game(&item["app"]) else {
+                    continue;
+                };
+                if game["id"].as_str().unwrap_or("").is_empty()
+                    || game["title"].as_str().unwrap_or("").is_empty()
+                    || game["variants"].as_array().is_none_or(|variants| variants.is_empty())
+                {
+                    continue;
+                }
+                let resolved = game_identity(&game)
+                    .as_ref()
+                    .and_then(|id| browse_by_id.get(id))
+                    .cloned()
+                    .unwrap_or(game);
+                if games.len() < 24
+                    && !games.iter().any(|existing: &Value| {
+                        game_identity(existing) == game_identity(&resolved)
+                    })
+                {
+                    games.push(resolved);
+                }
+            }
+            if title.is_empty() || games.is_empty() {
+                continue;
+            }
+            sections.push(json!({
+                "id":section["id"].as_str().unwrap_or(&title),
+                "title":title,
+                "games":games,
+            }));
+        }
+        if sections.is_empty() {
+            continue;
+        }
+        panels.push(json!({
+            "id":panel["id"].as_str().or_else(|| panel["name"].as_str()).unwrap_or(""),
+            "title":panel["name"].as_str().unwrap_or(""),
+            "sections":sections,
+        }));
+    }
+    panels
+}
+
+fn parse_store_definitions(payload: &Value) -> Vec<Value> {
+    payload["data"]["filterGroupDefinitions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|group| {
+            let options = group["filters"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| {
+                    Some(json!({
+                        "id":entry["id"].as_str()?,
+                        "label":entry["label"].as_str().unwrap_or(entry["id"].as_str()?),
+                    }))
+                })
+                .collect::<Vec<_>>();
+            if options.is_empty() {
+                return None;
+            }
+            Some(json!({
+                "id":group["id"].as_str()?,
+                "label":group["label"].as_str().unwrap_or(group["id"].as_str()?),
+                "options":options,
+            }))
+        })
+        .collect()
+}
+
 fn trusted_streaming_base(value: &str) -> Result<url::Url, ServiceError> {
     let base = url::Url::parse(value)
         .map_err(|_| ServiceError::invalid("Invalid streaming service URL"))?;
@@ -2012,6 +2528,74 @@ mod tests {
         assert_eq!(headers["nv-device-type"], "DESKTOP");
         assert_eq!(headers["nv-device-make"], "GENERIC");
         assert_eq!(headers["nv-device-model"], "PC");
+    }
+
+    #[test]
+    fn store_marquee_parses_marketing_and_game_slides() {
+        let payload: Value = serde_json::from_str(
+            r#"{"data":{"panels":[{
+                "id":"marquee","name":"Marquee","sections":[{
+                    "id":"s1","title":"Hero","items":[
+                        {"__typename":"MarketingItem","title":"GFN Thursday","body":"New drops",
+                         "images":{"MARQUEE_HERO_IMAGE":"https://img.example/hero.jpg"},
+                         "action":{"label":"View details","uri":"gfn://x"}},
+                        {"__typename":"GameItem","app":{
+                            "id":"123","title":"Doom","publisherName":"Bethesda",
+                            "images":{"MARQUEE_HERO_IMAGE":"https://img.example/doom.jpg"},
+                            "variants":[{"id":"123","appStore":"Steam",
+                                         "gfn":{"library":{"status":"NOT_OWNED"}}}],
+                            "gfn":{"playabilityState":"PLAYABLE"}}},
+                        {"__typename":"FilterItem","id":"f","title":"Shop"}
+                    ]}]}]}}"#,
+        )
+        .unwrap();
+        let slides = parse_store_marquee(&payload, &HashMap::new());
+        assert_eq!(slides.len(), 2);
+        assert_eq!(slides[0]["kind"], "marketing");
+        assert_eq!(slides[0]["title"], "GFN Thursday");
+        assert_eq!(slides[0]["image"], "https://img.example/hero.jpg");
+        assert_eq!(slides[0]["actionLabel"], "View details");
+        assert_eq!(slides[1]["kind"], "game");
+        assert_eq!(slides[1]["game"]["title"], "Doom");
+    }
+
+    #[test]
+    fn store_panels_keep_titled_sections_with_valid_games() {
+        let payload: Value = serde_json::from_str(
+            r#"{"data":{"panels":[{
+                "id":"main","name":"Main","sections":[
+                    {"id":"gfn-thu","title":"GFN Thursday","items":[
+                        {"__typename":"GameItem","app":{
+                            "id":"7","title":"Hades",
+                            "variants":[{"id":"7","appStore":"Steam",
+                                         "gfn":{"library":{"status":"NOT_OWNED"}}}],
+                            "gfn":{"playabilityState":"PLAYABLE"}}},
+                        {"__typename":"GameItem","app":{"id":"8","title":"","variants":[]}}
+                    ]},
+                    {"id":"empty","title":"","items":[]}
+                ]}]}}"#,
+        )
+        .unwrap();
+        let panels = parse_store_panels(&payload, &HashMap::new());
+        assert_eq!(panels.len(), 1);
+        assert_eq!(panels[0]["sections"].as_array().unwrap().len(), 1);
+        let games = panels[0]["sections"][0]["games"].as_array().unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0]["title"], "Hades");
+    }
+
+    #[test]
+    fn store_definitions_keep_groups_with_options() {
+        let payload = json!({"data":{"filterGroupDefinitions":[
+            {"id":"digital_store","label":"Stores","filters":[
+                {"id":"steam","label":"Steam"},
+                {"id":"epic","label":"Epic Games"}]},
+            {"id":"empty","label":"Empty","filters":[]},
+        ]}});
+        let groups = parse_store_definitions(&payload);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["id"], "digital_store");
+        assert_eq!(groups[0]["options"].as_array().unwrap().len(), 2);
     }
 
     #[test]

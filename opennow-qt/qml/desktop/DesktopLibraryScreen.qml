@@ -31,6 +31,17 @@ FocusScope {
             return qsTr("Remove from favourites")
         return qsTr("Add to favourites")
     }
+    function hideLabel() {
+        if (root.contextGame && ShellStore.isHidden(root.contextGame))
+            return qsTr("Unhide from library")
+        return qsTr("Hide from library")
+    }
+    function countHidden() {
+        return root.countWhere(root.isHiddenGame)
+    }
+    function isHiddenGame(game) {
+        return ShellStore.isHidden(game)
+    }
     function countStore(name) {
         return root.countWhere(function(game) { return root.storeBlob(game).indexOf(name) >= 0 })
     }
@@ -51,6 +62,13 @@ FocusScope {
             const game = source[index]
             if (query !== "" && String(game.title || "").toLocaleLowerCase().indexOf(query) < 0)
                 continue
+            const hidden = root.isHiddenGame(game)
+            if (activeFilter === "hidden") {
+                if (!hidden)
+                    continue
+            } else if (hidden) {
+                continue
+            }
             const stores = root.storeBlob(game)
             if (activeFilter === "ready" && !root.isReady(game))
                 continue
@@ -87,11 +105,13 @@ FocusScope {
                 {key:"controller", label:qsTr("Controller"), count:root.countWhere(root.hasController)},
                 {key:"steam", label:"Steam", count:root.countStore("steam")},
                 {key:"epic", label:"Epic", count:root.countStore("epic")},
-                {key:"gog", label:"GOG", count:root.countStore("gog")}
+                {key:"gog", label:"GOG", count:root.countStore("gog")},
+                {key:"hidden", label:qsTr("Hidden"), count:root.countHidden()}
             ]
             delegate: Button {
                 id: filterButton
                 required property var modelData
+                visible: modelData.key !== "hidden" || root.countHidden() > 0
                 height: 40
                 implicitHeight: 40
                 implicitWidth: Math.max(84, chipRow.implicitWidth + 28)
@@ -193,7 +213,8 @@ FocusScope {
             onContextRequested: (sceneX, sceneY) => {
                 root.contextGame = modelData
                 const local = root.mapFromItem(null, sceneX, sceneY)
-                root.contextPoint = Qt.point(Math.min(root.width - 230, Math.max(16, local.x)), Math.min(root.height - 190, Math.max(16, local.y)))
+                root.contextPoint = Qt.point(Math.min(root.width - 470, Math.max(16, local.x)), Math.min(root.height - 300, Math.max(16, local.y)))
+                root.collectionOpen = false
             }
         }
     }
@@ -202,40 +223,71 @@ FocusScope {
         anchors.fill: parent; z: 40
         visible: root.contextGame !== null
         acceptedButtons: Qt.LeftButton | Qt.RightButton
-        onClicked: root.contextGame = null
+        onClicked: { root.contextGame = null; root.collectionOpen = false }
+    }
+    property bool collectionOpen: false
+    function closeContext() {
+        root.contextGame = null
+        root.collectionOpen = false
+    }
+    function activateContext(action) {
+        const game = root.contextGame
+        if (action === "favorite") {
+            ShellStore.toggleFavorite(game)
+            return
+        }
+        if (action === "hide") {
+            ShellStore.toggleHidden(game)
+            root.closeContext()
+            return
+        }
+        root.closeContext()
+        if (action === "play") { ShellStore.selectedGame = game; root.playRequested(game) }
+        else if (action === "details") { ShellStore.selectedGame = game; root.detailsRequested(game) }
+        else if (action === "settings") AppController.navigate("settings-streaming")
     }
     Rectangle {
         x: root.contextPoint.x; y: root.contextPoint.y
-        width: 212; height: 177; radius: 12
+        width: 230; height: 286; radius: 12
         visible: root.contextGame !== null
         z: 41
         color: "#F710131D"
         border.width: 1; border.color: "#29FFFFFF"
         Column {
-            x: 7; y: 7; width: 198; spacing: 0
-            Text { width: parent.width; height: 28; leftPadding: 8; text: root.contextGame ? String(root.contextGame.title || "").toUpperCase() : ""; color: DesktopTokens.textFaint; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold; font.letterSpacing: 0.6 }
+            x: 8; y: 8; width: 214; spacing: 0
+            Text { width: parent.width; height: 26; leftPadding: 8; text: root.contextGame ? String(root.contextGame.title || "").toUpperCase() : ""; color: DesktopTokens.textFaint; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.DemiBold; font.letterSpacing: 0.6 }
+            Rectangle {
+                id: playRow
+                width: parent.width; height: 36; radius: 9
+                color: playHover.hovered ? "#FFFFFF" : "#F2FFFFFF"
+                Text { x: 12; anchors.verticalCenter: parent.verticalCenter; text: "▶  " + qsTr("Play"); color: "#0B0F1A"; font.family: DesktopTokens.bodyFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.Black }
+                Text { anchors.right: parent.right; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Enter"); color: "#5A0B0F1A"; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.Bold }
+                HoverHandler { id: playHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: root.activateContext("play") }
+            }
+            Item { width: parent.width; height: 6 }
             Repeater {
                 model: [
-                    {label:qsTr("Play"), key:"Enter", action:"play"},
                     {label:qsTr("Details"), key:"Space", action:"details"},
                     {label:root.favoriteLabel(), key:"F", action:"favorite"},
-                    {label:qsTr("Stream settings…"), key:"Ctrl ,", action:"settings"}
+                    {label:qsTr("Add to collection"), key:"›", action:"collection"},
+                    {label:qsTr("Stream settings…"), key:"Ctrl ,", action:"settings"},
+                    {label:root.hideLabel(), key:"", action:"hide"}
                 ]
                 delegate: ItemDelegate {
                     required property var modelData
-                    width: 198; height: 30; padding: 8
-                    background: Rectangle { radius: 7; color: parent.hovered || parent.activeFocus ? "#14FFFFFF" : "transparent" }
+                    width: 214; height: 32; padding: 8
+                    highlighted: modelData.action === "collection" && root.collectionOpen
+                    background: Rectangle { radius: 7; color: parent.hovered || parent.activeFocus || (modelData.action === "collection" && root.collectionOpen) ? "#14FFFFFF" : "transparent" }
                     contentItem: Item {
-                        Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: modelData.label; color: DesktopTokens.textBody; font.family: DesktopTokens.bodyFont; font.pixelSize: 12 }
-                        Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: modelData.key; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 9 }
+                        Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: modelData.label; color: DesktopTokens.textBody; font.family: DesktopTokens.bodyFont; font.pixelSize: DesktopTokens.captionSize }
+                        Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: modelData.key; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize }
                     }
                     onClicked: {
-                        const game = root.contextGame
-                        root.contextGame = null
-                        if (modelData.action === "play") { ShellStore.selectedGame = game; root.playRequested(game) }
-                        else if (modelData.action === "details") { ShellStore.selectedGame = game; root.detailsRequested(game) }
-                        else if (modelData.action === "favorite") ShellStore.toggleFavorite(game)
-                        else if (modelData.action === "settings") AppController.navigate("settings-streaming")
+                        if (modelData.action === "collection")
+                            root.collectionOpen = !root.collectionOpen
+                        else
+                            root.activateContext(modelData.action)
                     }
                 }
             }
@@ -244,5 +296,28 @@ FocusScope {
         scale: visible ? 1 : 0.96
         Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
         Behavior on scale { NumberAnimation { duration: DesktopTokens.quickDuration; easing.type: Easing.OutCubic } }
+    }
+    Rectangle {
+        x: root.contextPoint.x + 238; y: root.contextPoint.y + 104
+        width: 212; height: 76; radius: 12
+        visible: root.contextGame !== null && root.collectionOpen
+        z: 42
+        color: "#F710131D"
+        border.width: 1; border.color: "#29FFFFFF"
+        Column {
+            x: 8; y: 8; width: 196; spacing: 0
+            Text { width: parent.width; height: 24; leftPadding: 8; text: qsTr("COLLECTIONS"); color: DesktopTokens.textFaint; verticalAlignment: Text.AlignVCenter; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.DemiBold; font.letterSpacing: 0.6 }
+            ItemDelegate {
+                width: 196; height: 32; padding: 8
+                background: Rectangle { radius: 7; color: parent.hovered || parent.activeFocus ? "#14FFFFFF" : "transparent" }
+                contentItem: Item {
+                    Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: qsTr("★  Favourites"); color: DesktopTokens.textBody; font.family: DesktopTokens.bodyFont; font.pixelSize: DesktopTokens.captionSize }
+                    Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: root.contextGame && ShellStore.isFavorite(root.contextGame) ? "✓" : "+"; color: DesktopTokens.focus; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.Bold }
+                }
+                onClicked: root.activateContext("favorite")
+            }
+        }
+        opacity: visible ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
     }
 }

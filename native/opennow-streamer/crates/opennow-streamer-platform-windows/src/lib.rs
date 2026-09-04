@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
+use opennow_streamer_protocol::log;
+
 use crate::queue::BoundedQueue;
 
 pub use format::{
@@ -273,16 +275,34 @@ impl WindowsBackend {
         config: BackendConfig,
     ) -> Result<Self, BackendError> {
         config.validate()?;
+        let video = config.video;
+        let describe = || {
+            let fps = video.frame_rate_numerator.get() as f64
+                / video.frame_rate_denominator.get() as f64;
+            format!(
+                "windows backend starting (api={api:?} decoder={decoder_mode:?} codec={} {}x{} {:.0}fps {}kbps pixel={:?} chroma={:?} full_range={})",
+                video.codec.label(),
+                video.width,
+                video.height,
+                fps,
+                video.average_bitrate,
+                video.pixel_format,
+                video.chroma_format,
+                video.full_range,
+            )
+        };
 
         #[cfg(not(windows))]
         {
             let _ = api;
             let _ = (decoder_mode, config);
+            log::log_line("WARN", "decode", "windows backend requested on non-windows build");
             Err(BackendError::UnsupportedPlatform)
         }
 
         #[cfg(windows)]
         {
+            log::log_line("INFO", "decode", &describe());
             let shared = Arc::new(Shared {
                 video: BoundedQueue::new(config.video_queue_capacity),
                 audio: BoundedQueue::new(config.audio_queue_capacity),
@@ -295,13 +315,20 @@ impl WindowsBackend {
                 presented_frames: AtomicU64::new(0),
             });
             let (control_sender, control_receiver) = mpsc::channel();
-            let worker = windows::spawn(
+            let worker = match windows::spawn(
                 api,
                 decoder_mode,
                 config,
                 Arc::clone(&shared),
                 control_receiver,
-            )?;
+            ) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    log::log_line("WARN", "decode", &format!("windows backend spawn failed: {error:?}"));
+                    return Err(error);
+                }
+            };
+            log::log_line("INFO", "decode", "windows backend worker spawned");
             Ok(Self {
                 shared,
                 control: control_sender,
@@ -319,8 +346,15 @@ impl WindowsBackend {
     }
 
     pub fn submit_video(&self, frame: EncodedVideoFrame) -> Result<PushOutcome, BackendError> {
-        frame.validate()?;
-        self.ensure_media_accepting()?;
+        if let Err(error) = frame.validate().and(self.ensure_media_accepting()) {
+            log::log_throttled(
+                "submit-video-reject",
+                "WARN",
+                "decode",
+                &format!("video frame rejected: {error:?}"),
+            );
+            return Err(error);
+        }
         if self.shared.paused.load(Ordering::Acquire) {
             return Ok(PushOutcome::Paused);
         }
@@ -335,6 +369,12 @@ impl WindowsBackend {
                 .shared
                 .events
                 .push(BackendEvent::QueueOverflow(Subsystem::VideoDecode));
+            log::log_throttled(
+                "submit-video-overflow",
+                "WARN",
+                "decode",
+                "video queue overflow, oldest frame dropped",
+            );
         }
         Ok(outcome)
     }

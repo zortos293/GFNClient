@@ -21,6 +21,7 @@ public:
     struct Api {
         using Create = OpenNowStreamerStatus (*)(const OpenNowStreamerConfig *,
                                                   OpenNowStreamer **);
+        using SetLogFile = OpenNowStreamerStatus (*)(const char *);
         using Send = OpenNowStreamerStatus (*)(const OpenNowStreamer *,
                                                 const std::uint8_t *, std::size_t);
         using Destroy = OpenNowStreamerStatus (*)(OpenNowStreamer *);
@@ -69,6 +70,7 @@ public:
         SubmitGamepad submitGamepad = nullptr;
         SubmitLocalAction submitLocalAction = nullptr;
         SetCaptureActive setCaptureActive = nullptr;
+        SetLogFile setLogFile = nullptr;
     };
 
     static constexpr int DefaultShutdownTimeoutMs = 1'500;

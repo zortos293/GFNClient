@@ -23,7 +23,11 @@ FocusScope {
 
     Rectangle {
         anchors.fill: parent
-        color: root.overlay.startsWith("guide-") ? "transparent" : Qt.rgba(0, 0, 0, 0.36)
+        // Modal dim follows the theme: dark shells need only a faint veil
+        // (a heavy dim crushes them to unreadable black), light shells need
+        // a stronger one to separate the popup.
+        color: root.overlay.startsWith("guide-") ? "transparent"
+            : Qt.rgba(0, 0, 0, Theme.lightMode ? 0.28 : 0.12)
     }
 
     Loader {

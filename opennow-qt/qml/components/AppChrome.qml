@@ -197,6 +197,8 @@ Item {
         onRouteRequested: route => {
             if (route === "friends")
                 AppController.showOverlay("friends")
+            else if (route === "computer")
+                ShellStore.requestConsoleSurface(false)
             else
                 root.routeRequested(route)
         }

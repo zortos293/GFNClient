@@ -1,7 +1,8 @@
-use std::ffi::c_void;
+use std::ffi::{CStr, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::{self, JoinHandle};
 
@@ -12,8 +13,11 @@ use opennow_streamer_platform::{
     GraphicsRecordedFrame, GraphicsRuntimeError, GraphicsTextureFormat, RenderThreadGraphics,
     create_embedded_runtime_with_input,
 };
+use opennow_streamer_protocol::log;
 use opennow_streamer_protocol::{Command, error};
 use serde_json::Value;
+
+static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
 pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 3;
 const DEFAULT_MAX_COMMAND_BYTES: usize = 1024 * 1024;
@@ -482,8 +486,66 @@ fn graphics_status(error: GraphicsRuntimeError) -> OpenNowStreamerStatus {
     }
 }
 
+fn graphics_api_name(api: u32) -> &'static str {
+    match api {
+        OPENNOW_STREAMER_GRAPHICS_API_D3D11 => "d3d11",
+        OPENNOW_STREAMER_GRAPHICS_API_VULKAN => "vulkan",
+        OPENNOW_STREAMER_GRAPHICS_API_METAL => "metal",
+        _ => "unknown",
+    }
+}
+
+/// Best-effort command-type label for the log. Payloads may carry session
+/// secrets, so only the `type` discriminator is ever extracted.
+fn command_kind_label(bytes: &[u8]) -> String {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
+        .map(|kind| kind.chars().take(64).collect())
+        .unwrap_or_else(|| "<unparsed>".to_owned())
+}
+
 fn ffi_status(body: impl FnOnce() -> OpenNowStreamerStatus) -> OpenNowStreamerStatus {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(OpenNowStreamerStatus::Panic)
+}
+
+#[unsafe(no_mangle)]
+/// Points the embedded file log at `path` (UTF-8, NUL-terminated), creating
+/// parent directories and rotating a previous log over 2 MiB to
+/// `<path>.previous`. The Qt shell passes its diagnostics
+/// `native-streamer.log` here at startup so packaged builds — which never
+/// spawn the legacy child streamer — still produce video-pipeline logs.
+/// Safe to call more than once; logging never affects streaming results.
+///
+/// # Safety
+///
+/// `path` must point to readable NUL-terminated bytes for this call.
+pub unsafe extern "C" fn opennow_streamer_set_log_file(
+    path: *const c_char,
+) -> OpenNowStreamerStatus {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if path.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        let path = unsafe { CStr::from_ptr(path) };
+        let path = match path.to_str() {
+            Ok(path) => path,
+            Err(_) => return OpenNowStreamerStatus::InvalidConfig,
+        };
+        match log::set_log_file(path) {
+            Ok(()) => {
+                log::log_line("INFO", "engine", "file log configured");
+                OpenNowStreamerStatus::Ok
+            }
+            Err(reason) => {
+                log::log_line("WARN", "engine", &format!("file log unavailable: {reason}"));
+                OpenNowStreamerStatus::InvalidConfig
+            }
+        }
+    })) {
+        Ok(status) => status,
+        Err(_) => OpenNowStreamerStatus::Panic,
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -533,9 +595,23 @@ pub unsafe extern "C" fn opennow_streamer_create(
                 unsafe {
                     output.write(Box::into_raw(Box::new(handle)));
                 }
+                log::log_line(
+                    "INFO",
+                    "engine",
+                    &format!(
+                        "engine created (abi={abi_version} cmdq={} rspq={} evtq={} max_bytes={})",
+                        config.command_queue_capacity,
+                        config.response_queue_capacity,
+                        config.event_queue_capacity,
+                        config.max_command_bytes,
+                    ),
+                );
                 OpenNowStreamerStatus::Ok
             }
-            Err(status) => status,
+            Err(status) => {
+                log::log_line("WARN", "engine", &format!("engine create failed: {status:?}"));
+                status
+            }
         }
     })) {
         Ok(status) => status,
@@ -786,14 +862,32 @@ pub unsafe extern "C" fn opennow_streamer_set_graphics_context(
         {
             return OpenNowStreamerStatus::InvalidConfig;
         }
+        let api_name = graphics_api_name(unsafe { ptr::addr_of!((*context).graphics_api).read() });
         let context = match graphics_context(unsafe { context.read() }) {
             Ok(context) => context,
-            Err(status) => return status,
+            Err(status) => {
+                log::log_line(
+                    "WARN",
+                    "graphics",
+                    &format!("graphics context rejected (api={api_name}): {status:?}"),
+                );
+                return status;
+            }
         };
-        unsafe { &*handle }
+        let status = unsafe { &*handle }
             .graphics
             .initialize(context)
-            .map_or_else(graphics_status, |()| OpenNowStreamerStatus::Ok)
+            .map_or_else(graphics_status, |()| OpenNowStreamerStatus::Ok);
+        log::log_line(
+            if status == OpenNowStreamerStatus::Ok {
+                "INFO"
+            } else {
+                "WARN"
+            },
+            "graphics",
+            &format!("graphics context initialized (api={api_name}): {status:?}"),
+        );
+        status
     })) {
         Ok(status) => status,
         Err(_) => OpenNowStreamerStatus::Panic,
@@ -822,9 +916,30 @@ pub unsafe extern "C" fn opennow_streamer_acquire_latest_frame(
         }
         let token = match unsafe { &*handle }.graphics.acquire_latest() {
             Ok(token) => token,
-            Err(error) => return graphics_status(error),
+            Err(error) => {
+                let status = graphics_status(error);
+                if status != OpenNowStreamerStatus::NoFrame {
+                    log::log_throttled(
+                        "acquire-latest-frame",
+                        "WARN",
+                        "present",
+                        &format!("acquire latest frame failed: {status:?}"),
+                    );
+                }
+                return status;
+            }
         };
         let frame_info = token.info();
+        if !FIRST_FRAME_LOGGED.swap(true, Ordering::Relaxed) {
+            log::log_line(
+                "INFO",
+                "present",
+                &format!(
+                    "first frame acquired ({}x{} seq={})",
+                    frame_info.width, frame_info.height, frame_info.sequence,
+                ),
+            );
+        }
         unsafe {
             info.write(OpenNowStreamerFrameInfo {
                 width: frame_info.width,
@@ -878,7 +993,16 @@ pub unsafe extern "C" fn opennow_streamer_record_frame(
         let handle = unsafe { &*handle };
         let recorded = match handle.graphics.record(&unsafe { &*frame }.token, command) {
             Ok(recorded) => recorded,
-            Err(error) => return graphics_status(error),
+            Err(error) => {
+                let status = graphics_status(error);
+                log::log_throttled(
+                    "record-frame",
+                    "WARN",
+                    "present",
+                    &format!("record frame failed: {status:?}"),
+                );
+                return status;
+            }
         };
         let api = match handle.frame_publisher.context() {
             Some(lease) => lease.context().api,
@@ -937,10 +1061,13 @@ pub unsafe extern "C" fn opennow_streamer_scene_graph_shutdown(
         if handle.is_null() {
             return OpenNowStreamerStatus::NullPointer;
         }
-        unsafe { &*handle }
+        let status = unsafe { &*handle }
             .graphics
             .shutdown()
-            .map_or_else(graphics_status, |()| OpenNowStreamerStatus::Ok)
+            .map_or_else(graphics_status, |()| OpenNowStreamerStatus::Ok);
+        FIRST_FRAME_LOGGED.store(false, Ordering::Relaxed);
+        log::log_line("INFO", "graphics", &format!("scene graph shutdown: {status:?}"));
+        status
     })) {
         Ok(status) => status,
         Err(_) => OpenNowStreamerStatus::Panic,
@@ -969,6 +1096,7 @@ pub unsafe extern "C" fn opennow_streamer_send(
         } else {
             unsafe { std::slice::from_raw_parts(bytes, length) }
         };
+        log::log_line("INFO", "command", &format!("send {}", command_kind_label(bytes)));
         handle.send(bytes)
     })) {
         Ok(status) => status,
@@ -995,6 +1123,8 @@ pub unsafe extern "C" fn opennow_streamer_destroy(
         }
         let mut handle = unsafe { Box::from_raw(handle) };
         handle.shutdown();
+        FIRST_FRAME_LOGGED.store(false, Ordering::Relaxed);
+        log::log_line("INFO", "engine", "engine destroyed");
         OpenNowStreamerStatus::Ok
     })) {
         Ok(status) => status,

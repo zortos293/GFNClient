@@ -1,11 +1,13 @@
 #include "NativeStreamRuntime.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QMetaObject>
 #include <QPointer>
 #include <QQueue>
+#include <QStandardPaths>
 
 #include <algorithm>
 #include <chrono>
@@ -112,7 +114,8 @@ NativeStreamRuntime::NativeStreamRuntime(QObject *parent)
                               &opennow_streamer_submit_mouse_wheel,
                               &opennow_streamer_submit_gamepad,
                               &opennow_streamer_submit_local_action,
-                              &opennow_streamer_set_capture_active}, parent)
+                              &opennow_streamer_set_capture_active,
+                              &opennow_streamer_set_log_file}, parent)
 {
 }
 
@@ -163,6 +166,22 @@ bool NativeStreamRuntime::start()
     {
         const std::lock_guard lock(d->handleMutex);
         if (d->handle) return true;
+    }
+
+    // Point the embedded file log at the diagnostics folder before creating
+    // the engine. Packaged builds never spawn the legacy child streamer, so
+    // without this the video pipeline logs nowhere.
+    if (d->api.setLogFile) {
+        const auto dataRoot =
+            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if (!dataRoot.isEmpty()) {
+            QDir directory(dataRoot);
+            if (directory.mkpath(u"diagnostics"_s) && directory.cd(u"diagnostics"_s)) {
+                const auto logPath =
+                    directory.filePath(u"native-streamer.log"_s).toUtf8();
+                d->api.setLogFile(logPath.constData());
+            }
+        }
     }
 
     auto callbacks = std::make_shared<CallbackState>();

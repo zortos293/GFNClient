@@ -19,6 +19,18 @@ QtObject {
     property int catalogTotalCount: 0
     property string catalogState: "idle"
     property string catalogSource: "public"
+    // Store channel: the full CMS browse catalog (all games) for signed-in
+    // users, static public list otherwise. Separate from the library channel
+    // so store browsing never disturbs library counts or filters.
+    property var storeGames: []
+    property int storeTotalCount: 0
+    property string storeState: "idle"
+    property string storeSource: "public"
+    // Storefront chrome from the CMS panels documents: marquee hero slides,
+    // official shelves (GFN Thursday, per-store rows…), and filter groups.
+    property var storeMarquee: []
+    property var storePanels: []
+    property var storeFilterGroups: []
     property string sessionPersistence: "none"
     property bool authRestorePending: true
     property bool pendingStaySignedIn: true
@@ -98,6 +110,7 @@ QtObject {
     property var artworkRequestSources: ({})
     property var artworkRetrySources: ({})
     property string catalogRequestId: ""
+    property string storeRequestId: ""
     property string deviceStartRequestId: ""
     property string devicePollRequestId: ""
     property string deviceCompleteRequestId: ""
@@ -589,6 +602,31 @@ QtObject {
         catalogGames = []
         catalogState = "idle"
         refreshCatalog("")
+        reloadStoreForSession()
+    }
+
+    function refreshStore(searchQuery) {
+        if (!ready || storeRequestId !== "")
+            return
+        storeState = storeGames.length > 0 ? "refreshing" : "loading"
+        storeSource = signedIn ? "store-browse" : "public"
+        storeRequestId = CoreClient.request(signedIn ? "catalog.store.list" : "catalog.public.list", {
+            limit: signedIn ? 2500 : 360,
+            searchQuery: searchQuery || ""
+        }, 60000)
+    }
+
+    function reloadStoreForSession() {
+        if (storeRequestId !== "") {
+            CoreClient.cancel(storeRequestId)
+            storeRequestId = ""
+        }
+        storeGames = []
+        storeMarquee = []
+        storePanels = []
+        storeFilterGroups = []
+        storeState = "idle"
+        refreshStore("")
     }
 
     function refreshAccountServices() {
@@ -874,6 +912,31 @@ QtObject {
             return
         }
         addToHome(game)
+    }
+
+    function isHidden(game) {
+        const id = gameIdentity(game)
+        return id !== "" && (settings.hiddenGameIds || []).indexOf(id) >= 0
+    }
+
+    function hiddenGameCount() {
+        return (settings.hiddenGameIds || []).length
+    }
+
+    function toggleHidden(game) {
+        const id = gameIdentity(game)
+        if (!id)
+            return
+        const hidden = (settings.hiddenGameIds || []).slice(0)
+        const index = hidden.indexOf(id)
+        if (index >= 0) {
+            hidden.splice(index, 1)
+            accessibilityMessage = qsTr("Restored to library")
+        } else {
+            hidden.push(id)
+            accessibilityMessage = qsTr("Hidden from library")
+        }
+        setSetting("hiddenGameIds", hidden)
     }
 
     function addToHome(game) {
@@ -2094,6 +2157,14 @@ QtObject {
                 root.catalogState = "ready"
                 root.catalogRequestId = ""
                 root.resolveDirectLaunch()
+            } else if (requestId === root.storeRequestId) {
+                root.storeGames = result.games || []
+                root.storeTotalCount = Number(result.totalCount || root.storeGames.length)
+                root.storeMarquee = result.marquee || []
+                root.storePanels = result.panels || []
+                root.storeFilterGroups = result.filterGroups || []
+                root.storeState = "ready"
+                root.storeRequestId = ""
             } else if (requestId === root.deviceStartRequestId) {
                 root.authChallenge = result
                 root.authState = "waiting"
@@ -2443,6 +2514,9 @@ QtObject {
             } else if (requestId === root.catalogRequestId) {
                 root.catalogState = "error"
                 root.catalogRequestId = ""
+            } else if (requestId === root.storeRequestId) {
+                root.storeState = "error"
+                root.storeRequestId = ""
             } else if (requestId === root.providersRequestId) {
                 root.providersRequestId = ""
             } else if (requestId === root.authSessionRequestId) {

@@ -412,7 +412,6 @@ FocusScope {
                 toggle("Session proxy", "Use the configured community session proxy", "sessionProxyEnabled"),
                 toggle("L4S", "Request low-latency scalable throughput when available", "enableL4S"),
                 toggle("Steam Deck identity", "Unlock Deck resolutions and 90 FPS · refreshes entitlements", "identifyAsSteamDeck"),
-                {t:"Packet diagnostics", d:"Redacted transport, loss and reconnect history", v:"Open", route:"diagnostics"},
                 {t:"Refresh regions", d:ShellStore.regionsVpcId ? qsTr("Service region %1").arg(ShellStore.regionsVpcId) : "Query the authenticated NVIDIA region service", v:ShellStore.regionsRequestId === "" ? "Run" : "Running…", action:"refresh-regions"}
             ]
         }
@@ -444,7 +443,6 @@ FocusScope {
             {t:"Anti-AFK", d:"Nudge the session so GeForce NOW doesn't end it while idle", v:ShellStore.antiAfkEnabled ? "On" : "Off", control:"toggle", toggleState:ShellStore.antiAfkEnabled, action:"anti-afk"},
             {t:"Microphone", d:"Microphone upstream is unavailable for NVST sessions", v:"Unavailable", info:true},
             choice("Updates", qsTr("OpenNOW %1 · signed update feed").arg(ShellStore.updaterState.currentVersion || ""), "updateChannel", ["stable","nightly"], ["Stable","Nightly"], "segments"),
-            {t:"Diagnostics", d:"Logs, last session report and stream stats bundle", v:"Open diagnostics", route:"diagnostics"},
             {t:"Reset all settings", d:"Keeps your account and My games", v:"Reset to defaults", action:"reset", danger:true}
         ]
     }

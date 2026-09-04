@@ -7,6 +7,7 @@ Item {
     property string title: ""
     property string eyebrow: ""
     property string seeAllText: qsTr("See all")
+    property bool showSeeAll: true
     property var games: []
     property int selectedIndex: -1
     property bool active: false
@@ -51,6 +52,7 @@ Item {
     }
 
     Row {
+        visible: root.showSeeAll
         anchors.right: parent.right
         y: 1
         height: 18

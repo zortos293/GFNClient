@@ -124,6 +124,12 @@ OpenNowStreamerStatus opennow_streamer_create(
     const OpenNowStreamerConfig *config,
     OpenNowStreamer **output);
 
+/* Points the embedded file log at a UTF-8 path (rotating past 2 MiB).
+ * The Qt shell passes its diagnostics native-streamer.log here so packaged
+ * builds log the video pipeline without spawning the legacy child streamer.
+ * Additive since ABI v3; safe to call more than once. Never fails streaming. */
+OpenNowStreamerStatus opennow_streamer_set_log_file(const char *path);
+
 OpenNowStreamerStatus opennow_streamer_send(
     const OpenNowStreamer *handle,
     const uint8_t *bytes,

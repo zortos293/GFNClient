@@ -8,8 +8,9 @@ Rectangle {
     // Theme-aware scrim: the shell color carries the active theme pack, so
     // one system themes desktop and console together. The per-screen tint
     // survives only as a faint wash for identity — never as a dark crush.
-    readonly property color scrimMid: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.78)
-    readonly property color scrimFar: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.94)
+    // Kept translucent enough that artwork breathes instead of drowning.
+    readonly property color scrimMid: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.60)
+    readonly property color scrimFar: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.88)
     anchors.fill: parent
     color: Theme.shell
 
@@ -40,6 +41,17 @@ Rectangle {
     Rectangle {
         anchors.fill: parent
         color: root.tint
-        opacity: 0.18
+        opacity: 0.12
+    }
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: Math.round(parent.height * 0.4)
+        gradient: Gradient {
+            orientation: Gradient.Vertical
+            GradientStop { position: 0; color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.07) }
+            GradientStop { position: 1; color: "transparent" }
+        }
     }
 }

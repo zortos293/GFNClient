@@ -6,7 +6,7 @@ GlassPanel {
     id: root
     property string currentRoute: "home"
     signal routeRequested(string route)
-    implicitWidth: 545
+    implicitWidth: 640
     implicitHeight: 72
     panelRadius: 36
     strong: true
@@ -16,7 +16,8 @@ GlassPanel {
         { route: "library", icon: "nav-library.svg", label: "Library" },
         { route: "store", icon: "nav-controller.svg", label: "Store" },
         { route: "friends", icon: "nav-friends.svg", label: "Friends" },
-        { route: "settings", icon: "nav-settings.svg", label: "Settings" }
+        { route: "settings", icon: "nav-settings.svg", label: "Settings" },
+        { route: "computer", icon: "nav-computer.svg", label: qsTr("Computer mode") }
     ]
 
     function selected(route) {

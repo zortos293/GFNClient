@@ -410,6 +410,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 .map(|value| (value, None))
                 .map_err(gfn_error)
         }
+        "catalog.store.list" => {
+            let settings = core.settings.lock().expect("settings poisoned").all();
+            core.gfn
+                .store_catalog(params, &settings)
+                .map(|value| (value, None))
+                .map_err(gfn_error)
+        }
         "artwork.resolve" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
             core.artwork

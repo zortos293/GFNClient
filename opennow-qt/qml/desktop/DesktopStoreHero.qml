@@ -6,18 +6,36 @@ import OpenNOW
 Item {
     id: root
 
-    property var games: []
+    // Marquee slides from the CMS panels document:
+    // {kind:"game"|"marketing", title, body, image, game?, actionLabel?}
+    property var slides: []
+    property int currentSlide: 0
     property int selectedAction: -1
 
-    signal claimRequested()
-    signal includedRequested()
+    signal playRequested(var game)
+    signal detailsRequested(var game)
     signal actionPointed(int index)
 
     width: 1160
-    height: 224
+    height: 260
 
-    readonly property int artCardCount: Math.max(0, Math.min(root.games.length, 4, Math.floor((root.width - 420) / 130)))
-    readonly property int artRowWidth: root.artCardCount * 130 - 12
+    readonly property var slide: slides.length ? slides[Math.max(0, Math.min(currentSlide, slides.length - 1))] : null
+    readonly property var slideGame: slide && slide.game ? slide.game : null
+
+    function nextSlide() {
+        if (slides.length > 1)
+            currentSlide = (currentSlide + 1) % slides.length
+    }
+
+    onSlidesChanged: currentSlide = 0
+
+    Timer {
+        id: advanceTimer
+        interval: 6000
+        repeat: true
+        running: root.visible && slides.length > 1 && !AppController.reducedMotion && !heroHover.hovered
+        onTriggered: root.nextSlide()
+    }
 
     Rectangle {
         id: heroMask
@@ -44,15 +62,36 @@ Item {
             color: Qt.rgba(0.043, 0.059, 0.102, 0.72)
         }
 
+        Repeater {
+            model: root.slides
+            Item {
+                required property var modelData
+                required property int index
+                anchors.fill: parent
+                visible: opacity > 0
+                opacity: index === root.currentSlide ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: AppController.reducedMotion ? 0 : 450; easing.type: Easing.OutCubic } }
+
+                Image {
+                    x: Math.round(parent.width * 0.28)
+                    width: parent.width - x
+                    height: parent.height
+                    source: DesktopTokens.decodeArtworkUrl(String(modelData.image || ""))
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    cache: true
+                    sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
+                }
+            }
+        }
+
         Rectangle {
-            anchors.centerIn: parent
-            width: parent.height
-            height: parent.width
-            rotation: -90
-            opacity: 0.42
+            anchors.fill: parent
             gradient: Gradient {
-                GradientStop { position: 0; color: "#60368D" }
-                GradientStop { position: 0.48; color: "#173B5B" }
+                orientation: Gradient.Horizontal
+                GradientStop { position: 0; color: Qt.rgba(0.043, 0.059, 0.102, 0.96) }
+                GradientStop { position: 0.45; color: Qt.rgba(0.043, 0.059, 0.102, 0.72) }
+                GradientStop { position: 0.75; color: Qt.rgba(0.043, 0.059, 0.102, 0.12) }
                 GradientStop { position: 1; color: "transparent" }
             }
         }
@@ -66,97 +105,81 @@ Item {
         border.color: Qt.rgba(1, 1, 1, 0.12)
     }
 
+    HoverHandler { id: heroHover }
+
     Column {
-        x: 22
-        y: 22
-        width: Math.min(530, Math.max(300, root.width - root.artRowWidth - 60))
-        spacing: 12
+        x: 24
+        y: 24
+        width: Math.min(520, Math.max(300, root.width * 0.42))
+        spacing: 10
 
-        Row {
-            height: 22
-            spacing: 8
-
-            Rectangle {
-                width: badgeText.implicitWidth + 18
-                height: 22
-                radius: 6
-                color: Qt.rgba(0.431, 0.906, 0.718, 0.16)
-                border.width: 1
-                border.color: Qt.rgba(0.431, 0.906, 0.718, 0.36)
-                Text {
-                    id: badgeText
-                    anchors.centerIn: parent
-                    text: qsTr("GEFORCE NOW CATALOG")
-                    color: DesktopTokens.green
-                    font.family: Theme.monoFont
-                    font.pixelSize: 9
-                    font.weight: Font.Bold
-                    font.letterSpacing: 0.72
-                }
-            }
-
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.games.length ? qsTr("%1 FEATURED GAMES").arg(root.games.length) : qsTr("LIVE CATALOG")
-                color: Qt.rgba(1, 1, 1, 0.60)
-                font.family: Theme.monoFont
-                font.pixelSize: 10
-                font.weight: Font.DemiBold
-                font.letterSpacing: 0.6
-            }
+        Text {
+            text: root.slide && root.slide.kind === "marketing" ? qsTr("GEFORCE NOW") : qsTr("FEATURED")
+            color: DesktopTokens.mint
+            font.family: Theme.monoFont
+            font.pixelSize: DesktopTokens.microSize
+            font.weight: Font.Bold
+            font.letterSpacing: 1.1
         }
 
         Text {
             width: parent.width
-            text: qsTr("Featured on GeForce NOW")
+            text: root.slide ? String(root.slide.title || "") : ""
             color: "#FFFFFF"
             font.family: Theme.displayFont
-            font.pixelSize: 30
+            font.pixelSize: DesktopTokens.px(30)
             font.weight: Font.Black
             font.letterSpacing: -0.9
+            elide: Text.ElideRight
+            maximumLineCount: 2
+            wrapMode: Text.WordWrap
         }
 
         Text {
             width: parent.width
-            text: qsTr("Browse games returned by NVIDIA for your region. Link supported stores to see which titles are ready in your account library.")
+            visible: text !== ""
+            text: root.slide ? String(root.slide.body || "") : ""
             color: Qt.rgba(1, 1, 1, 0.72)
             font.family: Theme.bodyFont
-            font.pixelSize: 13
+            font.pixelSize: DesktopTokens.captionSize
             font.weight: Font.Medium
             lineHeightMode: Text.FixedHeight
             lineHeight: 19
+            maximumLineCount: 2
+            elide: Text.ElideRight
             wrapMode: Text.WordWrap
         }
     }
 
     Row {
-        x: 22
-        y: 158
+        x: 24
+        y: parent.height - 58
         height: 36
         spacing: 9
+        visible: root.slideGame !== null
 
         Button {
-            id: claimButton
+            id: playButton
             width: 121
             height: 36
             padding: 0
             focusPolicy: Qt.NoFocus
             hoverEnabled: true
             Accessible.name: text
-            text: qsTr("View featured")
+            text: qsTr("Play")
             onHoveredChanged: if (hovered) root.actionPointed(0)
-            onClicked: root.claimRequested()
+            onClicked: if (root.slideGame) root.playRequested(root.slideGame)
             background: Rectangle {
                 radius: 10
-                color: claimButton.down ? Qt.rgba(1, 1, 1, 0.82) : Qt.rgba(1, 1, 1, 0.95)
+                color: playButton.down ? Qt.rgba(1, 1, 1, 0.82) : Qt.rgba(1, 1, 1, 0.95)
                 border.width: root.selectedAction === 0 ? 2 : 0
                 border.color: DesktopTokens.focus
             }
             contentItem: Text {
-                text: claimButton.text
+                text: playButton.text
                 color: "#0B0F1A"
                 font.family: Theme.bodyFont
-                font.pixelSize: 13
+                font.pixelSize: DesktopTokens.captionSize
                 font.weight: Font.ExtraBold
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
@@ -164,27 +187,27 @@ Item {
         }
 
         Button {
-            id: includedButton
+            id: detailsButton
             width: 153
             height: 36
             padding: 0
             focusPolicy: Qt.NoFocus
             hoverEnabled: true
             Accessible.name: text
-            text: qsTr("Browse catalog")
+            text: qsTr("View details")
             onHoveredChanged: if (hovered) root.actionPointed(1)
-            onClicked: root.includedRequested()
+            onClicked: if (root.slideGame) root.detailsRequested(root.slideGame)
             background: Rectangle {
                 radius: 10
-                color: includedButton.down ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.10)
+                color: detailsButton.down ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.10)
                 border.width: root.selectedAction === 1 ? 2 : 1
                 border.color: root.selectedAction === 1 ? DesktopTokens.focus : Qt.rgba(1, 1, 1, 0.18)
             }
             contentItem: Text {
-                text: includedButton.text
+                text: detailsButton.text
                 color: Qt.rgba(1, 1, 1, 0.88)
                 font.family: Theme.bodyFont
-                font.pixelSize: 13
+                font.pixelSize: DesktopTokens.captionSize
                 font.weight: Font.Bold
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
@@ -193,34 +216,21 @@ Item {
     }
 
     Row {
-        anchors.right: parent.right
-        anchors.rightMargin: 22
-        y: 23
-        spacing: 12
-
+        x: 24
+        y: parent.height - 20
+        spacing: 6
+        visible: root.slides.length > 1
         Repeater {
-            model: root.artCardCount
-
-            Item {
+            model: root.slides.length
+            Rectangle {
                 required property int index
-                readonly property var itemGame: root.games[index]
-                width: 118
-                height: 177
-
-                RoundedArtwork {
-                    anchors.fill: parent
-                    artwork: DesktopTokens.artworkUrl(parent.itemGame, false)
-                    fallbackColor: index % 2 ? Theme.cartSteam : Theme.glassStrong
-                    cornerRadius: 11
-                    scrimStart: 1
-                }
-                Rectangle {
-                    anchors.fill: parent
-                    radius: 11
-                    color: "transparent"
-                    border.width: 1
-                    border.color: Qt.rgba(1, 1, 1, 0.24)
-                }
+                width: index === root.currentSlide ? 18 : 6
+                height: 6
+                radius: 3
+                color: index === root.currentSlide ? DesktopTokens.mint : Qt.rgba(1, 1, 1, 0.28)
+                Behavior on width { NumberAnimation { duration: 180 } }
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: root.currentSlide = index }
             }
         }
     }

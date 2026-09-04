@@ -457,6 +457,18 @@ fn normalize_bounded_strings(values: &mut Map<String, Value>) {
         .collect();
     values.insert("favoriteGameIds".to_owned(), Value::Array(favorites));
 
+    let hidden_games = values["hiddenGameIds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|value| value.chars().take(128).collect::<String>())
+        .filter(|value| !value.is_empty())
+        .take(500)
+        .map(Value::String)
+        .collect();
+    values.insert("hiddenGameIds".to_owned(), Value::Array(hidden_games));
+
     let tile_sizes = values["homeTileSizes"]
         .as_object()
         .into_iter()
@@ -597,7 +609,7 @@ fn defaults() -> Map<String, Value> {
         "launchInConsoleMode":false, "consoleProfilePickerOnLaunch":true,
         "desktopRailCollapsed":true,
         "switchToConsoleOnPad":true, "leaveConsoleOnPointer":true,
-        "autoFullScreen":false, "favoriteGameIds":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
+        "autoFullScreen":false, "favoriteGameIds":[], "hiddenGameIds":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
         "showSessionReport":true, "showSessionTimeRemainingInStatsOverlay":false,
         "sessionClockShowEveryMinutes":60, "sessionClockShowDurationSeconds":30,
         "windowWidth":1400, "windowHeight":900, "keyboardLayout":"en-US",
@@ -706,6 +718,12 @@ mod tests {
                 )
                 .unwrap(),
             json!({"game-a":"wide"})
+        );
+        assert_eq!(
+            store
+                .set("hiddenGameIds", json!(["game-a", "", "game-b"]))
+                .unwrap(),
+            json!(["game-a", "game-b"])
         );
         let _ = fs::remove_dir_all(directory);
     }

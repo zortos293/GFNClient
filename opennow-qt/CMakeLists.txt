@@ -192,6 +192,7 @@ qt_add_qml_module(opennow-qt
         res/icons/nav-controller.svg
         res/icons/nav-friends.svg
         res/icons/nav-settings.svg
+        res/icons/nav-computer.svg
         res/icons/settings-account.svg
         res/icons/settings-streaming.svg
         res/icons/settings-video.svg
@@ -448,6 +449,46 @@ add_custom_command(
 )
 add_custom_target(opennow-streamer-ffi-build
     DEPENDS ${OPENNOW_STREAMER_FFI_ARTIFACTS})
+
+# The Rust core still probes streamer capabilities through the standalone
+# streamer executable next to opennow-core, so build and ship it alongside
+# the in-process FFI library. Always release: a debug streamer is too slow
+# for real-time use and would only bloat dev trees and packages.
+if(WIN32)
+    set(OPENNOW_STREAMER_BIN_NAME "opennow-streamer.exe")
+else()
+    set(OPENNOW_STREAMER_BIN_NAME "opennow-streamer")
+endif()
+set(OPENNOW_STREAMER_BIN_ARTIFACT
+    "${OPENNOW_STREAMER_ARTIFACT_ROOT}/${OPENNOW_STREAMER_PROFILE}/${OPENNOW_STREAMER_BIN_NAME}")
+add_custom_command(
+    OUTPUT "${OPENNOW_STREAMER_BIN_ARTIFACT}"
+    COMMAND "${CMAKE_COMMAND}" -E env --unset=MAKEFLAGS --unset=MFLAGS
+            "CMAKE=${CMAKE_COMMAND}"
+            "${CARGO_EXECUTABLE}" build
+            --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
+            --target-dir "${OPENNOW_STREAMER_TARGET_DIR}"
+            --package opennow-streamer
+            --bin opennow-streamer
+            ${OPENNOW_RUST_TARGET_ARGS}
+            ${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}
+            --release
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.lock"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
+        ${OPENNOW_STREAMER_RUST_SOURCES}
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer"
+    COMMENT "Building the standalone OpenNOW streamer executable"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
+add_custom_target(opennow-streamer-bin-build ALL
+    DEPENDS "${OPENNOW_STREAMER_BIN_ARTIFACT}")
+add_dependencies(opennow-qt opennow-streamer-bin-build)
+add_custom_command(TARGET opennow-qt POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${OPENNOW_STREAMER_BIN_ARTIFACT}"
+            "$<TARGET_FILE_DIR:opennow-qt>/${OPENNOW_STREAMER_BIN_NAME}")
 add_library(opennow-streamer-ffi SHARED IMPORTED GLOBAL)
 if(WIN32)
     set_target_properties(opennow-streamer-ffi PROPERTIES
@@ -803,8 +844,12 @@ if(NOT APPLE)
     )
     install(PROGRAMS "${OPENNOW_STREAMER_FFI_RUNTIME}"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(PROGRAMS "${OPENNOW_STREAMER_BIN_ARTIFACT}"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}")
 else()
     install(FILES "${OPENNOW_STREAMER_FFI_RUNTIME}"
+        DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS")
+    install(PROGRAMS "${OPENNOW_STREAMER_BIN_ARTIFACT}"
         DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS")
 endif()
 

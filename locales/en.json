@@ -2672,6 +2672,26 @@
     "s_qt_runtime_282": "Sign in — only entitled rates stay selectable",
     "s_qt_runtime_283": "Source on GitHub",
     "s_qt_runtime_284": "Unlock Deck resolutions and 90 FPS · refreshes entitlements",
-    "s_qt_runtime_285": "Region, bitrate and proxy apply to API calls and session setup; media always streams direct."
+    "s_qt_runtime_285": "Region, bitrate and proxy apply to API calls and session setup; media always streams direct.",
+    "s_qt_runtime_286": "%1 · %2",
+    "s_qt_runtime_287": "Browsing the GeForce NOW catalog.",
+    "s_qt_runtime_288": "GAMES",
+    "s_qt_runtime_289": "Hidden",
+    "s_qt_runtime_290": "Hidden from library",
+    "s_qt_runtime_291": "In your library",
+    "s_qt_runtime_292": "No matches for “%1”",
+    "s_qt_runtime_293": "PLAY",
+    "s_qt_runtime_294": "Resolution, frame rate and codec",
+    "s_qt_runtime_295": "Restored to library",
+    "s_qt_runtime_296": "Resume · in your library",
+    "s_qt_runtime_297": "Search games, commands and settings…",
+    "s_qt_runtime_298": "Stream settings",
+    "s_qt_runtime_299": "Unhide from library",
+    "s_qt_runtime_300": "★  Favourites",
+    "s_qt_runtime_301": "Check your connection and try again.",
+    "s_qt_runtime_302": "FEATURED",
+    "s_qt_runtime_303": "Loading the store…",
+    "s_qt_runtime_304": "Store unavailable",
+    "s_qt_runtime_305": "Computer mode"
   }
 }

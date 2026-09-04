@@ -349,9 +349,9 @@ ApplicationWindow {
         visible: !window.desktopSurfaceActive
         gradient: Gradient {
             orientation: Gradient.Vertical
-            GradientStop { position: 0; color: Qt.darker(Theme.shell, 1.35) }
+            GradientStop { position: 0; color: Qt.darker(Theme.shell, 1.12) }
             GradientStop { position: 0.5; color: Theme.shell }
-            GradientStop { position: 1; color: Qt.darker(Theme.shell, 1.35) }
+            GradientStop { position: 1; color: Qt.darker(Theme.shell, 1.12) }
         }
         Rectangle {
             anchors.left: parent.left

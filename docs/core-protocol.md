@@ -36,6 +36,38 @@ most 512 items; overflow drops the oldest event and emits a diagnostic counter.
 
 ## Implemented core methods
 
+### Store pagination (`catalog.storePages.v1`)
+
+The protocol-1 envelope and 1 MiB limit are unchanged. This additive capability
+advertises cursor pagination and separate storefront presentation. The existing
+`catalog.store.list` method now caps `limit` at 100 (default 100), returning one
+complete upstream page instead of aggregating thousands of games.
+
+Request: `{ "limit":100, "cursor":"", "searchQuery":"" }`. Cursor is an opaque
+string (at most 4096 UTF-8 bytes); search is at most 512 UTF-8 bytes. Response:
+`{ "games":[], "count":0, "totalCount":0, "hasNextPage":false,
+"nextCursor":"", "source":"store-browse", "fetchedAt":0 }`.
+Pass `nextCursor` unchanged to the next call with the same search. A final page
+has `hasNextPage:false`; empty non-final pages may advance past unmappable apps.
+Missing, repeated or oversized continuation cursors are errors, not completion.
+
+Each result is limited to 768 KiB after JSON encoding, leaving room for the
+envelope. Oversized pages are refetched with a smaller count at the same cursor;
+they are never truncated while advancing the cursor. A single oversized game
+returns `catalog_response_too_large` without disrupting the core connection.
+
+`catalog.store.presentation` accepts `{ "section":"marquee" }` (also `panels`
+or `filters`) and returns `{ "section":"marquee", "items":[] }`, independently
+bounded to 768 KiB. Failed/oversized optional sections do not fail game pages.
+
+The shell serializes game requests, merges by stable game identity, and retains
+loaded games and the failed cursor on error. Retries resume that page. Automatic
+loading yields between pages and stops after 100 pages or 10,000 games; further
+continuation requires the visible Load more action. Search/account changes
+cancel both channels before clearing their state; late responses are ignored.
+
+### Method list
+
 - `core.hello`
 - `app.status`
 - `settings.get`
@@ -55,6 +87,7 @@ most 512 items; overflow drops the oldest event and emits a diagnostic counter.
 - `auth.pin.status`, `auth.pin.set`, `auth.pin.clear`, `auth.pin.verify`
 - `catalog.public.list`
 - `catalog.library.list`
+- `catalog.store.list`, `catalog.store.presentation`
 - `network.regions.list`
 - `network.regions.ping`
 - `account.subscription.get`

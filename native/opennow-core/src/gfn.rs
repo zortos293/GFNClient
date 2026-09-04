@@ -1184,46 +1184,32 @@ impl GfnService {
     }
 
     pub fn store_catalog(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
+        let page = crate::store_catalog_page::PageRequest::parse(params)?;
         let client = client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
-        let session_payload = self.session()?;
-        let session = serde_json::from_value::<AuthSession>(session_payload["session"].clone())
-            .map_err(|_| ServiceError {
-                code: "authentication_required",
-                message: "Sign in to browse the GeForce NOW store catalog".to_owned(),
-            })?;
+        let session =
+            self.authenticated_session("Sign in to browse the GeForce NOW store catalog")?;
         let token = session
             .tokens
             .id_token
             .as_deref()
             .unwrap_or(&session.tokens.access_token);
         let vpc_id = self.vpc_id(&session, token);
-        let limit = params["limit"].as_u64().unwrap_or(1500).clamp(1, 3000) as usize;
-        let search = params["searchQuery"]
-            .as_str()
-            .unwrap_or("")
-            .trim()
-            .to_owned();
-        let mut cursor = String::new();
-        let mut games = Vec::new();
-        let mut total_count = 0_u64;
-
-        for _ in 0..15 {
-            let searching = !search.is_empty();
+        // Each retry starts at the SAME cursor. Never truncate a fetched page:
+        // doing so would skip games when returning NVIDIA's end cursor.
+        crate::store_catalog_page::fetch_bounded_page(page.limit, |fetch_count| {
+            let searching = !page.search.is_empty();
             let query = if searching {
                 STORE_SEARCH_QUERY
             } else {
                 STORE_BROWSE_QUERY
             };
             let mut variables = json!({
-                "vpcId":vpc_id,
-                "locale":"en_US",
+                "vpcId":vpc_id, "locale":"en_US",
                 "sortString":"itemMetadata.relevance:DESC,sortName:ASC",
-                "fetchCount":200,
-                "cursor":cursor,
-                "filters":{},
+                "fetchCount":fetch_count, "cursor":page.cursor, "filters":{}
             });
             if searching {
-                variables["searchString"] = Value::String(search.clone());
+                variables["searchString"] = Value::String(page.search.clone());
             }
             let response = client
                 .post(GRAPHQL_URL)
@@ -1232,10 +1218,7 @@ impl GfnService {
                 .send()
                 .map_err(|error| ServiceError::network("GFN store query failed", error))?;
             if !response.status().is_success() {
-                return Err(ServiceError::response(
-                    "GFN store query failed",
-                    response,
-                ));
+                return Err(ServiceError::response("GFN store query failed", response));
             }
             let payload = response
                 .json::<Value>()
@@ -1247,80 +1230,72 @@ impl GfnService {
                 });
             }
             let apps = &payload["data"]["apps"];
-            total_count = apps["pageInfo"]["totalCount"]
-                .as_u64()
-                .unwrap_or(total_count);
-            for app in apps["items"].as_array().into_iter().flatten() {
-                if let Some(game) = app_to_game(app) {
-                    games.push(game);
-                }
-                if games.len() >= limit {
-                    break;
-                }
-            }
-            if games.len() >= limit || !apps["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false) {
-                break;
-            }
-            let Some(next_cursor) = apps["pageInfo"]["endCursor"].as_str() else {
-                break;
-            };
-            if next_cursor.is_empty() || next_cursor == cursor {
-                break;
-            }
-            cursor = next_cursor.to_owned();
+            let items = apps["items"].as_array().ok_or_else(|| ServiceError {
+                code: "invalid_upstream_response",
+                message: "Store response has no games array".to_owned(),
+            })?;
+            let games: Vec<Value> = items.iter().filter_map(app_to_game).collect();
+            crate::store_catalog_page::page_result(&page.cursor, games, &apps["pageInfo"], now_ms())
+        })
+    }
+
+    pub fn store_presentation(
+        &self,
+        params: &Value,
+        settings: &Value,
+    ) -> Result<Value, ServiceError> {
+        let section = params["section"].as_str().unwrap_or("");
+        if !matches!(section, "marquee" | "panels" | "filters") {
+            return Err(ServiceError::invalid(
+                "Store presentation requires marquee, panels or filters",
+            ));
         }
-        let browse_by_id: HashMap<String, Value> = games
-            .iter()
-            .filter_map(|game| game_identity(game).map(|id| (id, game.clone())))
-            .collect();
-        // Storefront chrome is best-effort: panels, hero and categories must
-        // never fail the game list itself.
-        let panel_variables = json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MAIN"]});
-        let marquee_variables = json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MARQUEE"]});
-        let panels = fetch_panels_document(
+        let client = client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
+        let session = self.authenticated_session("Sign in to load the storefront")?;
+        let token = session
+            .tokens
+            .id_token
+            .as_deref()
+            .unwrap_or(&session.tokens.access_token);
+        let vpc_id = self.vpc_id(&session, token);
+        let (variables, request_type, sha, query) = match section {
+            "panels" => (
+                json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MAIN"]}),
+                "panels/MainV2",
+                STORE_PANELS_SHA,
+                STORE_PANELS_QUERY,
+            ),
+            "marquee" => (
+                json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MARQUEE"]}),
+                "panels/Marquee",
+                STORE_MARQUEE_SHA,
+                STORE_MARQUEE_QUERY,
+            ),
+            _ => (
+                json!({"locale":"en_US"}),
+                "filterGroupAndSortOrderDefinitions",
+                "ef725de5e93b093de1ac7418fed0ffb4f6ae2b9c14f743ab274a791521488eb9",
+                STORE_DEFINITIONS_QUERY,
+            ),
+        };
+        let payload = fetch_panels_document(
             &client,
             token,
-            panel_variables,
-            "panels/MainV2",
-            STORE_PANELS_SHA,
-            STORE_PANELS_QUERY,
-            "GFN store panels query",
-        )
-        .map(|payload| parse_store_panels(&payload, &browse_by_id))
-        .unwrap_or_default();
-        let marquee = fetch_panels_document(
-            &client,
-            token,
-            marquee_variables,
-            "panels/Marquee",
-            STORE_MARQUEE_SHA,
-            STORE_MARQUEE_QUERY,
-            "GFN store marquee query",
-        )
-        .map(|payload| parse_store_marquee(&payload, &browse_by_id))
-        .unwrap_or_default();
-        let definition_variables = json!({"locale":"en_US"});
-        let filter_groups = fetch_panels_document(
-            &client,
-            token,
-            definition_variables,
-            "filterGroupAndSortOrderDefinitions",
-            "ef725de5e93b093de1ac7418fed0ffb4f6ae2b9c14f743ab274a791521488eb9",
-            STORE_DEFINITIONS_QUERY,
-            "GFN store filter definitions query",
-        )
-        .map(|payload| parse_store_definitions(&payload))
-        .unwrap_or_default();
-        Ok(json!({
-            "games":games,
-            "count":games.len(),
-            "totalCount":total_count.max(games.len() as u64),
-            "source":"store-browse",
-            "marquee":marquee,
-            "panels":panels,
-            "filterGroups":filter_groups,
-            "fetchedAt":now_ms()
-        }))
+            variables,
+            request_type,
+            sha,
+            query,
+            "GFN storefront query",
+        )?;
+        let empty_index = HashMap::new();
+        let items = match section {
+            "panels" => parse_store_panels(&payload, &empty_index),
+            "marquee" => parse_store_marquee(&payload, &empty_index),
+            _ => parse_store_definitions(&payload),
+        };
+        // Optional chrome must not enlarge the games response or restart the core.
+        // An oversized/failed section is reported independently by the shell.
+        crate::store_catalog_page::bounded_result(json!({"section":section,"items":items}))
     }
 
     pub fn regions(&self) -> Result<Value, ServiceError> {
@@ -1379,7 +1354,12 @@ impl GfnService {
         let response = self
             .client
             .get(url)
-            .headers(lcars_headers(token, "NATIVE", "NVIDIA-CLASSIC", steam_deck)?)
+            .headers(lcars_headers(
+                token,
+                "NATIVE",
+                "NVIDIA-CLASSIC",
+                steam_deck,
+            )?)
             .send()
             .map_err(|error| ServiceError::network("Subscription request failed", error))?;
         if !response.status().is_success() {
@@ -2134,7 +2114,10 @@ fn fetch_panels_document(
             .map_err(|error| ServiceError::network(&format!("Invalid {context} response"), error))?
     } else {
         if !response.status().is_success() {
-            return Err(ServiceError::response(&format!("{context} failed"), response));
+            return Err(ServiceError::response(
+                &format!("{context} failed"),
+                response,
+            ));
         }
         response
             .json::<Value>()
@@ -2150,11 +2133,7 @@ fn fetch_panels_document(
 }
 
 fn marquee_hero_image(item: &Value) -> Option<String> {
-    first_image(
-        &item["images"],
-        &["MARQUEE_HERO_IMAGE", "HERO_IMAGE"],
-        1600,
-    )
+    first_image(&item["images"], &["MARQUEE_HERO_IMAGE", "HERO_IMAGE"], 1600)
 }
 
 fn parse_store_marquee(payload: &Value, browse_by_id: &HashMap<String, Value>) -> Vec<Value> {
@@ -2239,7 +2218,9 @@ fn parse_store_panels(payload: &Value, browse_by_id: &HashMap<String, Value>) ->
                 };
                 if game["id"].as_str().unwrap_or("").is_empty()
                     || game["title"].as_str().unwrap_or("").is_empty()
-                    || game["variants"].as_array().is_none_or(|variants| variants.is_empty())
+                    || game["variants"]
+                        .as_array()
+                        .is_none_or(|variants| variants.is_empty())
                 {
                     continue;
                 }
@@ -2249,9 +2230,9 @@ fn parse_store_panels(payload: &Value, browse_by_id: &HashMap<String, Value>) ->
                     .cloned()
                     .unwrap_or(game);
                 if games.len() < 24
-                    && !games.iter().any(|existing: &Value| {
-                        game_identity(existing) == game_identity(&resolved)
-                    })
+                    && !games
+                        .iter()
+                        .any(|existing: &Value| game_identity(existing) == game_identity(&resolved))
                 {
                     games.push(resolved);
                 }

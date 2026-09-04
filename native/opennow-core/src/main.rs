@@ -14,6 +14,7 @@ mod network;
 mod persistent_storage;
 mod proxy;
 mod settings;
+mod store_catalog_page;
 mod streamer;
 mod telemetry;
 mod thanks;
@@ -265,7 +266,7 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v5", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v5", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "social.capabilitySurface"]}),
                 None,
             ))
         }
@@ -414,6 +415,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
             let settings = core.settings.lock().expect("settings poisoned").all();
             core.gfn
                 .store_catalog(params, &settings)
+                .map(|value| (value, None))
+                .map_err(gfn_error)
+        }
+        "catalog.store.presentation" => {
+            let settings = core.settings.lock().expect("settings poisoned").all();
+            core.gfn
+                .store_presentation(params, &settings)
                 .map(|value| (value, None))
                 .map_err(gfn_error)
         }

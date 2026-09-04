@@ -114,6 +114,13 @@ pub fn log_line(level: &str, area: &str, message: &str) {
     write_line(level, area, message);
 }
 
+/// Low-frequency pipeline diagnostics must be visible both in standalone stderr
+/// captures and in the embedded Qt file sink. Never pass credentials or payloads.
+pub fn diagnostic(level: &str, area: &str, message: &str) {
+    log_line(level, area, message);
+    eprintln!("{message}");
+}
+
 /// Appends the first hit for `key` and then every [`THROTTLE_EVERY`]th
 /// repeat, tagging repeats with their running count. For hot paths where
 /// the same failure recurs per frame.
@@ -161,8 +168,10 @@ mod tests {
         set_log_file(&path).unwrap();
         assert_eq!(log_file_path().as_deref(), Some(path.as_str()));
         log_line("INFO", "engine", "hello");
+        diagnostic("INFO", "transport", "NVST rx-stats inbound=0 pings=97");
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("INFO engine hello"), "body was: {body}");
+        assert!(body.contains("INFO transport NVST rx-stats inbound=0 pings=97"));
         reset_for_tests();
         let _ = std::fs::remove_file(&path);
     }

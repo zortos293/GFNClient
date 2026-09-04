@@ -1514,6 +1514,7 @@ fn emit_nvst_terminal<R: NvstSessionResources>(
         lifecycle.state = State::Idle;
     }
     resources.stop();
+    opennow_streamer_protocol::log::log_line("WARN", "transport", &format!("{code}: {message}"));
     let _ = output.send(event("error", json!({ "code": code, "message": &message })));
     let _ = output.send(event(
         "status",

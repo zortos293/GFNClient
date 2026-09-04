@@ -19,7 +19,8 @@ FocusScope {
     readonly property string status: {
         if (ShellStore.streamState === "error")
             return "error"
-        if (ShellStore.streamState === "reconnecting" || ShellStore.streamerRestartAttempts > 0)
+        if (ShellStore.streamState === "reconnecting"
+                || (ShellStore.streamerRestartAttempts > 0 && root.streamer.status !== "streaming"))
             return "reconnecting"
         return String(root.streamer.status || ShellStore.streamState || "starting")
     }

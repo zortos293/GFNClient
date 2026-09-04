@@ -2671,6 +2671,7 @@
     "s_qt_runtime_281": "Sign in to unlock rates beyond 60 FPS",
     "s_qt_runtime_282": "Sign in — only entitled rates stay selectable",
     "s_qt_runtime_283": "Source on GitHub",
-    "s_qt_runtime_284": "Unlock Deck resolutions and 90 FPS · refreshes entitlements"
+    "s_qt_runtime_284": "Unlock Deck resolutions and 90 FPS · refreshes entitlements",
+    "s_qt_runtime_285": "Region, bitrate and proxy apply to API calls and session setup; media always streams direct."
   }
 }

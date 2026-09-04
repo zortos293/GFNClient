@@ -178,7 +178,7 @@ Item {
                                     id: detailLabel
                                     height: parent.height
                                     text: modelData.detail || ""
-                                    color: DesktopTokens.textMuted
+                                    color: modelData.detailColor || DesktopTokens.textMuted
                                     font.family: DesktopTokens.monoFont
                                     font.pixelSize: DesktopTokens.tinySize
                                     font.weight: Font.DemiBold

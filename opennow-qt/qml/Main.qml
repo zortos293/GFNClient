@@ -341,6 +341,31 @@ ApplicationWindow {
         return homeScreen
     }
 
+    // Full-window console backdrop. The 16:9 stage letterboxes on taller
+    // aspects (16:10, Deck 16:10); this fills the bars with theme-aware
+    // color so any aspect looks deliberate instead of void-black.
+    Rectangle {
+        anchors.fill: parent
+        visible: !window.desktopSurfaceActive
+        gradient: Gradient {
+            orientation: Gradient.Vertical
+            GradientStop { position: 0; color: Qt.darker(Theme.shell, 1.35) }
+            GradientStop { position: 0.5; color: Theme.shell }
+            GradientStop { position: 1; color: Qt.darker(Theme.shell, 1.35) }
+        }
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: Math.round(parent.height * 0.28)
+            gradient: Gradient {
+                orientation: Gradient.Vertical
+                GradientStop { position: 0; color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.07) }
+                GradientStop { position: 1; color: "transparent" }
+            }
+        }
+    }
+
     FocusScope {
         x: window.desktopSurfaceActive ? 0 : Math.round((window.width - width * scale) / 2)
         y: window.desktopSurfaceActive ? 0 : Math.round((window.height - height * scale) / 2)

@@ -43,7 +43,7 @@ Button {
                 text: control.text
                 color: control.primary ? Theme.faceText : control.danger ? "#FFC2C2" : Theme.label
                 font.family: Theme.bodyFont
-                font.pixelSize: DesktopTokens.px(12)
+                font.pixelSize: DesktopTokens.smallSize
                 font.weight: Font.Bold
                 anchors.verticalCenter: parent.verticalCenter
             }

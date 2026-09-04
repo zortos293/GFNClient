@@ -408,7 +408,6 @@ FocusScope {
             }
             return [
                 choice("Region", ShellStore.regions.length ? qsTr("%1 streaming regions discovered").arg(ShellStore.regions.length) : "Sign in to discover available regions", "region", regionValues, regionLabels),
-                {t:"Transport", d:"The separate native streamer owns negotiation and media transport", v:"Native NVST", info:true},
                 {t:"Proxy address", d:"HTTP(S), SOCKS4 or SOCKS5; credentials stay in the protected local settings file", v:root.proxyDisplay(settings.sessionProxyUrl), action:"proxy-url"},
                 toggle("Session proxy", "Use the configured community session proxy", "sessionProxyEnabled"),
                 toggle("L4S", "Request low-latency scalable throughput when available", "enableL4S"),

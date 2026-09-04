@@ -64,12 +64,13 @@ FocusScope {
     }
     // Keep desktop chrome proportionate on any display size. The 1600x900
     // default window renders at exactly 1.0; smaller windows (e.g. scaled
-    // 1080p screens) shrink instead of overflowing, larger ones grow modestly.
+    // 1080p screens) shrink instead of overflowing. Never grows above 1.0:
+    // the design size is the ceiling, so text stays reasonable everywhere.
     function updateUiScale() {
         if (root.width <= 0 || root.height <= 0)
             return
         const fitted = Math.min(root.width / 1600, root.height / 900)
-        DesktopTokens.uiScale = Math.min(1.25, Math.max(0.7, fitted))
+        DesktopTokens.uiScale = Math.min(1.0, Math.max(0.7, fitted))
     }
     onWidthChanged: root.updateUiScale()
     onHeightChanged: root.updateUiScale()

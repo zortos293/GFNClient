@@ -195,11 +195,12 @@ FocusScope {
                 items.push({ kind: "heading", label: group })
                 lastGroup = group
             }
-            const ping = ShellStore.regionPingResults ? ShellStore.regionPingResults[region.url] : undefined
+            const ping = root.regionPingMs(region.url)
             items.push({
                 kind: "choice",
                 label: region.name,
-                detail: ping === undefined || ping === null || ping === "" ? "" : (ping + " ms"),
+                detail: ping === null ? "" : (ping + " ms"),
+                detailColor: ping === null ? "" : root.pingRankColor(ping),
                 value: region.url
             })
         }
@@ -219,6 +220,48 @@ FocusScope {
             }
         }
         return selected
+    }
+
+    function regionPingMs(url) {
+        const raw = ShellStore.regionPingResults ? ShellStore.regionPingResults[url] : undefined
+        const n = Number(raw)
+        return Number.isFinite(n) ? n : null
+    }
+
+    function currentRegionPing() {
+        const selected = String(root.valueSetting("region", ""))
+        if (selected === "")
+            return null
+        const regions = ShellStore.regions || []
+        for (let i = 0; i < regions.length; ++i) {
+            if (regions[i].name === selected || regions[i].url === selected)
+                return root.regionPingMs(regions[i].url)
+        }
+        return null
+    }
+
+    // Ping quality ramp mirrors Electron's region picker: green <30,
+    // lime <80, amber <150, red beyond. Unmeasured regions stay muted.
+    function pingRankColor(ms) {
+        if (ms === null || ms === undefined)
+            return Theme.textMuted
+        if (ms < 30)
+            return "#58d98a"
+        if (ms < 80)
+            return "#84cc16"
+        if (ms < 150)
+            return "#eab308"
+        return "#ef4444"
+    }
+
+    function pingBarsLit(ms) {
+        if (ms === null || ms === undefined)
+            return 0
+        if (ms < 80)
+            return 3
+        if (ms < 150)
+            return 2
+        return 1
     }
 
     function themeMeta(id) {
@@ -838,6 +881,41 @@ FocusScope {
             DesktopSettingsPanel {
                 width: parent.width; padding: 18
                 DesktopSettingsRow { width: parent.width; rowHeight: 62; title: "Server region"; description: ShellStore.regions.length ? qsTr("%1 streaming regions from your account").arg(ShellStore.regions.length) : qsTr("Sign in to discover available regions")
+                    Item {
+                        width: signalBars.width + regionMs.implicitWidth + 14
+                        height: DesktopTokens.controlHeight
+                        Item {
+                            id: signalBars
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: DesktopTokens.px(16)
+                            height: DesktopTokens.px(13)
+                            Repeater {
+                                model: 3
+                                Rectangle {
+                                    required property int index
+                                    readonly property bool lit: root.pingBarsLit(root.currentRegionPing()) > index
+                                    x: index * (DesktopTokens.px(4) + DesktopTokens.px(2))
+                                    y: parent.height - height
+                                    width: DesktopTokens.px(4)
+                                    height: [DesktopTokens.px(5), DesktopTokens.px(9), DesktopTokens.px(13)][index]
+                                    radius: DesktopTokens.px(1)
+                                    color: lit ? root.pingRankColor(root.currentRegionPing()) : Qt.rgba(1,1,1,0.16)
+                                }
+                            }
+                        }
+                        Text {
+                            id: regionMs
+                            anchors.left: signalBars.right
+                            anchors.leftMargin: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: root.currentRegionPing() === null ? "—" : root.currentRegionPing() + " ms"
+                            color: root.pingRankColor(root.currentRegionPing())
+                            font.family: Theme.monoFont
+                            font.pixelSize: DesktopTokens.microSize
+                            font.weight: Font.Bold
+                        }
+                    }
                     DesktopSettingsButton { id: networkRegion; menu: true; text: root.currentRegionLabel(); compact: true; onClicked: root.openChoices(networkRegion, "region", root.regionChoiceItems()) }
                     DesktopSettingsButton { text: ShellStore.regionPingRequestId === "" ? qsTr("Ping regions") : qsTr("Pinging…"); compact: true; onClicked: ShellStore.pingRegions() }
                 }
@@ -850,11 +928,8 @@ FocusScope {
                 }
             }
             DesktopSettingsPanel { width: parent.width; padding: 18
-                Item { width: parent.width; height: 34
-                    Column { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; spacing: 2
-                        Row { spacing: 8; Text { text: qsTr("Transport"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.bodySize; font.weight: Font.Bold } Text { text: String(ShellStore.streamer && ShellStore.streamer.transport || qsTr("NEGOTIATED PER SESSION")).toUpperCase(); color: DesktopTokens.green; font.family: Theme.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.Bold } }
-                        Text { text: qsTr("The active GeForce NOW session selects the transport and endpoints used by the native streamer."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize }
-                    }
+                Item { width: parent.width; height: 30
+                    Text { anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Region, bitrate and proxy apply to API calls and session setup; media always streams direct."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize; elide: Text.ElideRight }
                 }
             }
         }

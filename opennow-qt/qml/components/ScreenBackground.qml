@@ -5,6 +5,11 @@ Rectangle {
     id: root
     property string artwork: ""
     property color tint: "#111827"
+    // Theme-aware scrim: the shell color carries the active theme pack, so
+    // one system themes desktop and console together. The per-screen tint
+    // survives only as a faint wash for identity — never as a dark crush.
+    readonly property color scrimMid: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.78)
+    readonly property color scrimFar: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.94)
     anchors.fill: parent
     color: Theme.shell
 
@@ -27,9 +32,14 @@ Rectangle {
         anchors.fill: parent
         gradient: Gradient {
             orientation: Gradient.Horizontal
-            GradientStop { position: 0; color: Qt.darker(root.tint, 1.5) }
-            GradientStop { position: 0.48; color: Qt.rgba(0.03, 0.05, 0.09, 0.72) }
-            GradientStop { position: 1; color: Qt.rgba(0.03, 0.04, 0.08, 0.94) }
+            GradientStop { position: 0; color: Theme.shell }
+            GradientStop { position: 0.48; color: root.scrimMid }
+            GradientStop { position: 1; color: root.scrimFar }
         }
+    }
+    Rectangle {
+        anchors.fill: parent
+        color: root.tint
+        opacity: 0.18
     }
 }

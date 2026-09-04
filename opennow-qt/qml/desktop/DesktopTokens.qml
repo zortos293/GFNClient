@@ -34,6 +34,7 @@ QtObject {
     readonly property int bodySize: px(15)
     readonly property int captionSize: px(13)
     readonly property int monoSize: px(12)
+    readonly property int smallSize: px(11)
     readonly property int microSize: px(10)
     readonly property int tinySize: px(9)
     readonly property int railWidth: px(232)

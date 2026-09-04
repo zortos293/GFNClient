@@ -406,8 +406,10 @@ if(MSVC)
     set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "opennow_streamer_ffi.dll")
     set(OPENNOW_STREAMER_FFI_LINK_NAME "opennow_streamer_ffi.dll.lib")
 elseif(WIN32)
+    # MinGW ld links directly against the DLL; current rustc no longer emits
+    # a separate GNU import library for cdylib targets.
     set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "opennow_streamer_ffi.dll")
-    set(OPENNOW_STREAMER_FFI_LINK_NAME "libopennow_streamer_ffi.dll.a")
+    set(OPENNOW_STREAMER_FFI_LINK_NAME "${OPENNOW_STREAMER_FFI_RUNTIME_NAME}")
 elseif(APPLE)
     set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "libopennow_streamer_ffi.dylib")
     set(OPENNOW_STREAMER_FFI_LINK_NAME "${OPENNOW_STREAMER_FFI_RUNTIME_NAME}")

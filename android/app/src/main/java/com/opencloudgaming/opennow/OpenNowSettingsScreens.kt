@@ -1272,6 +1272,30 @@ private fun SettingsContent(
                     val mode = TouchAimMode.valueOf(modeName)
                     viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(aimMode = mode)))
                 }
+                if (settings.androidTouch.aimMode == TouchAimMode.LockZone) {
+                    NumberSlider(
+                        stringResource(R.string.stream_joysticks_aim_zone_scale),
+                        settings.androidTouch.aimZoneScale,
+                        0.5f,
+                        1.5f,
+                        0.05f,
+                    ) { value ->
+                        viewModel.updateSettings(
+                            settings.copy(androidTouch = settings.androidTouch.copy(aimZoneScale = value)),
+                        )
+                    }
+                    NumberSlider(
+                        stringResource(R.string.stream_joysticks_aim_zone_sensitivity),
+                        settings.androidTouch.aimZoneSensitivity,
+                        0.25f,
+                        3f,
+                        0.05f,
+                    ) { value ->
+                        viewModel.updateSettings(
+                            settings.copy(androidTouch = settings.androidTouch.copy(aimZoneSensitivity = value)),
+                        )
+                    }
+                }
                 val joystickModeOptions = listOf(
                     SettingsChoiceOption(TouchJoystickMode.Fixed.name, stringResource(R.string.stream_panel_joystick_fixed)),
                     SettingsChoiceOption(TouchJoystickMode.Dynamic.name, stringResource(R.string.stream_panel_joystick_dynamic)),

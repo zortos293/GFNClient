@@ -34,6 +34,8 @@ class AppSettingsDefaultsTest {
         assertNull(settings.androidTouch.touchSkinTint)
         assertTrue(settings.androidTouch.touchButtonLabels)
         assertFalse(settings.androidTouch.gyroscopeEnabled)
+        assertEquals(1f, settings.androidTouch.aimZoneScale, 0.0001f)
+        assertEquals(1f, settings.androidTouch.aimZoneSensitivity, 0.0001f)
         assertEquals(1f, settings.androidTouch.faceButtonScale, 0.0001f)
         assertEquals(1f, settings.androidTouch.leftStickScale, 0.0001f)
         assertEquals(1f, settings.androidTouch.rightStickScale, 0.0001f)
@@ -199,6 +201,32 @@ class AppSettingsDefaultsTest {
 
         assertEquals(TouchAimMode.LockJoystick, defaulted.androidTouch.aimMode)
         assertEquals(TouchAimMode.LockZone, optedIn.androidTouch.aimMode)
+    }
+
+    @Test
+    fun touchAimZoneCustomizationPersistsAndNormalizes() {
+        val persisted = OpenNowJson.decodeFromString<AppSettings>(
+            """{"androidTouch":{"aimZoneScale":1.25,"aimZoneSensitivity":1.75}}""",
+        ).normalizedForAndroid()
+        val invalid = AppSettings(
+            androidTouch = AndroidTouchSettings(
+                aimZoneScale = Float.NaN,
+                aimZoneSensitivity = Float.POSITIVE_INFINITY,
+            ),
+        ).normalizedForAndroid()
+        val bounded = AppSettings(
+            androidTouch = AndroidTouchSettings(
+                aimZoneScale = 9f,
+                aimZoneSensitivity = 0.1f,
+            ),
+        ).normalizedForAndroid()
+
+        assertEquals(1.25f, persisted.androidTouch.aimZoneScale, 0.0001f)
+        assertEquals(1.75f, persisted.androidTouch.aimZoneSensitivity, 0.0001f)
+        assertEquals(1f, invalid.androidTouch.aimZoneScale, 0.0001f)
+        assertEquals(1f, invalid.androidTouch.aimZoneSensitivity, 0.0001f)
+        assertEquals(1.5f, bounded.androidTouch.aimZoneScale, 0.0001f)
+        assertEquals(0.25f, bounded.androidTouch.aimZoneSensitivity, 0.0001f)
     }
 
     @Test

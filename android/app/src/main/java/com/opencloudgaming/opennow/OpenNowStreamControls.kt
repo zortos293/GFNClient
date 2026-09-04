@@ -902,6 +902,28 @@ internal fun StreamControlsPanel(
                                     if (dynamic) R.string.stream_joysticks_dynamic_on else R.string.stream_joysticks_dynamic_off,
                                 ),
                             )
+                            if (lockZone) {
+                                TouchLayoutSlider(
+                                    R.string.stream_joysticks_aim_zone_scale,
+                                    settings.androidTouch.aimZoneScale,
+                                    0.5f,
+                                    1.5f,
+                                    TOUCH_SCALE_SLIDER_STEP,
+                                    onChange = { value ->
+                                        onTouchSettingsChange(settings.androidTouch.copy(aimZoneScale = value))
+                                    },
+                                )
+                                TouchLayoutSlider(
+                                    R.string.stream_joysticks_aim_zone_sensitivity,
+                                    settings.androidTouch.aimZoneSensitivity,
+                                    0.25f,
+                                    3f,
+                                    TOUCH_SCALE_SLIDER_STEP,
+                                    onChange = { value ->
+                                        onTouchSettingsChange(settings.androidTouch.copy(aimZoneSensitivity = value))
+                                    },
+                                )
+                            }
                             TouchLayoutSlider(
                                 R.string.stream_joysticks_stick_size,
                                 settings.androidTouch.stickScale,

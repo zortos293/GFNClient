@@ -369,6 +369,8 @@
     <string name="stream_joysticks_lock_zone">Lock Zone / Touch Aim</string>
     <string name="stream_joysticks_lock_zone_summary">Drag anywhere inside the right-side zone for fast right-stick controller aiming.</string>
     <string name="stream_joysticks_aim_zone_label">AIM ZONE</string>
+    <string name="stream_joysticks_aim_zone_scale">Aim zone scale</string>
+    <string name="stream_joysticks_aim_zone_sensitivity">Aim zone sensitivity</string>
     <string name="stream_joysticks_stick_size">Stick size</string>
     <string name="stream_joysticks_dead_zone">Dead zone</string>
     <string name="stream_joysticks_explainer">Dynamic mode keeps the saved stick area, but treats wherever your thumb first lands as neutral. This avoids sudden movement when you miss the exact center.</string>

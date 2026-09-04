@@ -367,6 +367,10 @@ data class AndroidTouchSettings(
     val extraButtonScale: Float = 1f,
     val joystickMode: TouchJoystickMode = TouchJoystickMode.Fixed,
     val aimMode: TouchAimMode = TouchAimMode.LockJoystick,
+    /** Multiplies the visible and interactive Lock Zone footprint without changing its response. */
+    val aimZoneScale: Float = 1f,
+    /** Multiplies Lock Zone right-stick response without changing the zone footprint. */
+    val aimZoneSensitivity: Float = 1f,
     val joystickDeadZone: Float = 0f,
     /** Opt-in motion aiming. Kept off for compatibility and to avoid unexpected camera motion. */
     val gyroscopeEnabled: Boolean = false,

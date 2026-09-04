@@ -156,6 +156,8 @@ internal fun TouchOverlay(
                         extraButtonScale = touch.extraButtonScale,
                         joystickMode = touch.joystickMode,
                         aimMode = touch.aimMode,
+                        aimZoneScale = touch.aimZoneScale,
+                        aimZoneSensitivity = touch.aimZoneSensitivity,
                         joystickDeadZone = touch.joystickDeadZone,
                         viewportHeight = maxHeight,
                         layoutEditing = layoutEditing,
@@ -181,6 +183,8 @@ internal fun TouchOverlay(
                         extraButtonScale = touch.extraButtonScale,
                         joystickMode = touch.joystickMode,
                         aimMode = touch.aimMode,
+                        aimZoneScale = touch.aimZoneScale,
+                        aimZoneSensitivity = touch.aimZoneSensitivity,
                         joystickDeadZone = touch.joystickDeadZone,
                         layoutEditing = layoutEditing,
                         getLocalOffset = getOrientationLocalOffset,
@@ -211,6 +215,8 @@ private fun PortraitTouchControls(
     extraButtonScale: Float,
     joystickMode: TouchJoystickMode,
     aimMode: TouchAimMode,
+    aimZoneScale: Float,
+    aimZoneSensitivity: Float,
     joystickDeadZone: Float,
     layoutEditing: Boolean,
     getLocalOffset: (String) -> TouchOffset,
@@ -233,11 +239,12 @@ private fun PortraitTouchControls(
                 client = client,
                 opacity = opacity,
                 deadZone = joystickDeadZone,
+                sensitivity = aimZoneSensitivity,
                 enabled = !layoutEditing,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .fillMaxWidth(0.54f)
-                    .fillMaxHeight(0.48f),
+                    .fillMaxWidth(scaledAimZoneFraction(0.54f, aimZoneScale))
+                    .fillMaxHeight(scaledAimZoneFraction(0.48f, aimZoneScale)),
             )
         }
         val shoulderScale = buttonScale * shoulderButtonScale * layoutScale
@@ -459,6 +466,8 @@ private fun BoxScope.LandscapeTouchControls(
     extraButtonScale: Float,
     joystickMode: TouchJoystickMode,
     aimMode: TouchAimMode,
+    aimZoneScale: Float,
+    aimZoneSensitivity: Float,
     joystickDeadZone: Float,
     viewportHeight: Dp,
     layoutEditing: Boolean,
@@ -477,11 +486,12 @@ private fun BoxScope.LandscapeTouchControls(
                 client = client,
                 opacity = opacity,
                 deadZone = joystickDeadZone,
+                sensitivity = aimZoneSensitivity,
                 enabled = !layoutEditing,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .fillMaxWidth(0.48f)
-                    .fillMaxHeight(0.72f),
+                    .fillMaxWidth(scaledAimZoneFraction(0.48f, aimZoneScale))
+                    .fillMaxHeight(scaledAimZoneFraction(0.72f, aimZoneScale)),
             )
         }
         val triggerWidth = 76.dp * shoulderScale
@@ -899,17 +909,30 @@ internal fun touchStickValue(
     deltaY: Float,
     maxTravel: Float,
     deadZone: Float,
+    sensitivity: Float = 1f,
 ): Offset {
     if (!deltaX.isFinite() || !deltaY.isFinite() || !maxTravel.isFinite() || maxTravel <= 0f) {
         return Offset.Zero
     }
-    val clamped = clampStickOffset(Offset(deltaX, deltaY), maxTravel)
-    val rawX = (clamped.x / maxTravel).coerceIn(-1f, 1f)
-    val rawY = (clamped.y / maxTravel).coerceIn(-1f, 1f)
+    val responsiveTravel = touchAimMaxTravel(maxTravel, sensitivity)
+    val clamped = clampStickOffset(Offset(deltaX, deltaY), responsiveTravel)
+    val rawX = (clamped.x / responsiveTravel).coerceIn(-1f, 1f)
+    val rawY = (clamped.y / responsiveTravel).coerceIn(-1f, 1f)
     val magnitude = sqrt(rawX * rawX + rawY * rawY).coerceIn(0f, 1f)
     val adjustedMagnitude = applyTouchJoystickDeadZone(magnitude, deadZone)
     val adjustment = if (magnitude > 0f) adjustedMagnitude / magnitude else 0f
     return Offset(rawX * adjustment, rawY * adjustment)
+}
+
+internal fun scaledAimZoneFraction(baseFraction: Float, scale: Float): Float {
+    if (!baseFraction.isFinite() || baseFraction <= 0f) return 0f
+    val safeScale = if (scale.isFinite()) scale.coerceIn(0.5f, 1.5f) else 1f
+    return (baseFraction * safeScale).coerceIn(0f, 1f)
+}
+
+internal fun touchAimMaxTravel(maxTravel: Float, sensitivity: Float): Float {
+    val safeSensitivity = if (sensitivity.isFinite()) sensitivity.coerceIn(0.25f, 3f) else 1f
+    return maxTravel / safeSensitivity
 }
 
 internal fun applyTouchJoystickDeadZone(value: Float, deadZone: Float): Float {
@@ -927,6 +950,7 @@ private fun LockZoneAimSurface(
     client: NativeStreamClient,
     opacity: Float,
     deadZone: Float,
+    sensitivity: Float,
     enabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -935,6 +959,7 @@ private fun LockZoneAimSurface(
     var aimAnchor by remember { mutableStateOf<Offset?>(null) }
     var aimOffset by remember { mutableStateOf(Offset.Zero) }
     val maxTravelPx = with(density) { LOCK_ZONE_MAX_TRAVEL_DP.dp.toPx() }
+    val responsiveTravelPx = touchAimMaxTravel(maxTravelPx, sensitivity)
 
     DisposableEffect(client, id) {
         onDispose {
@@ -955,7 +980,7 @@ private fun LockZoneAimSurface(
                     bounds.bottom.roundToInt(),
                 )
             }
-            .pointerInput(client, deadZone, enabled, maxTravelPx) {
+            .pointerInput(client, deadZone, sensitivity, enabled, maxTravelPx) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -965,9 +990,9 @@ private fun LockZoneAimSurface(
 
                     fun updateAim(position: Offset) {
                         val delta = position - anchor
-                        val value = touchStickValue(delta.x, delta.y, maxTravelPx, deadZone)
+                        val value = touchStickValue(delta.x, delta.y, maxTravelPx, deadZone, sensitivity)
                         currentOnChange(value.x, value.y)
-                        aimOffset = clampStickOffset(delta, maxTravelPx)
+                        aimOffset = clampStickOffset(delta, responsiveTravelPx)
                     }
 
                     try {

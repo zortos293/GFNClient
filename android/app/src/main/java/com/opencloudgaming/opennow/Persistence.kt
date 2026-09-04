@@ -335,6 +335,12 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
                 androidTouch.extraButtonAction(index)
             },
             extraButtonScale = androidTouch.extraButtonScale.finiteIn(0.6f, 1.6f, touchDefaults.extraButtonScale),
+            aimZoneScale = androidTouch.aimZoneScale.finiteIn(0.5f, 1.5f, touchDefaults.aimZoneScale),
+            aimZoneSensitivity = androidTouch.aimZoneSensitivity.finiteIn(
+                0.25f,
+                3f,
+                touchDefaults.aimZoneSensitivity,
+            ),
             joystickDeadZone = androidTouch.joystickDeadZone.finiteIn(0f, 0.3f, touchDefaults.joystickDeadZone),
             gyroscopeSensitivity = androidTouch.gyroscopeSensitivity.finiteIn(0.25f, 3f, touchDefaults.gyroscopeSensitivity),
             gyroscopeDeadZone = androidTouch.gyroscopeDeadZone.finiteIn(0f, 0.2f, touchDefaults.gyroscopeDeadZone),

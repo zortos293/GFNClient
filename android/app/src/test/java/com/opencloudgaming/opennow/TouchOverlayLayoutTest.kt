@@ -54,6 +54,34 @@ class TouchOverlayLayoutTest {
     }
 
     @Test
+    fun touchAimZoneSensitivityChangesRequiredFingerTravel() {
+        val moreSensitive = touchStickValue(
+            deltaX = 36f,
+            deltaY = 0f,
+            maxTravel = 72f,
+            deadZone = 0f,
+            sensitivity = 2f,
+        )
+        val lessSensitive = touchStickValue(
+            deltaX = 36f,
+            deltaY = 0f,
+            maxTravel = 72f,
+            deadZone = 0f,
+            sensitivity = 0.5f,
+        )
+
+        assertEquals(1f, moreSensitive.x, 0.0001f)
+        assertEquals(0.25f, lessSensitive.x, 0.0001f)
+    }
+
+    @Test
+    fun touchAimZoneScaleChangesAndBoundsTheInteractiveFootprint() {
+        assertEquals(0.36f, scaledAimZoneFraction(0.48f, 0.75f), 0.0001f)
+        assertEquals(0.72f, scaledAimZoneFraction(0.48f, 1.5f), 0.0001f)
+        assertEquals(1f, scaledAimZoneFraction(0.72f, 1.5f), 0.0001f)
+    }
+
+    @Test
     fun touchAimZoneUsesTheConfiguredDeadZoneAndRejectsInvalidGeometry() {
         val insideDeadZone = touchStickValue(deltaX = 4f, deltaY = 0f, maxTravel = 72f, deadZone = 0.08f)
         val invalid = touchStickValue(deltaX = 20f, deltaY = 0f, maxTravel = 0f, deadZone = 0f)

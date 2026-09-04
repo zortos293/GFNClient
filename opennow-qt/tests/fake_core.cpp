@@ -64,7 +64,11 @@ int main(int argc, char **argv)
                       << "\",\"ok\":true,\"result\":{\"games\":[],\"totalCount\":0}}\n" << std::flush;
         } else if (method == "catalog.store.list") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
-                      << "\",\"ok\":true,\"result\":{\"games\":[],\"totalCount\":0,\"source\":\"store-browse\"}}\n" << std::flush;
+                      << "\",\"ok\":true,\"result\":{\"games\":[],\"totalCount\":0,\"source\":\"store-browse\",\"hasNextPage\":false,\"nextCursor\":\"\"}}\n" << std::flush;
+        } else if (method == "catalog.store.presentation") {
+            std::cout << "{\"type\":\"response\",\"id\":\"" << id
+                      << "\",\"ok\":true,\"result\":{\"section\":\"" << field(line, "section")
+                      << "\",\"items\":[]}}\n" << std::flush;
         } else if (method == "test.streamer-event") {
             std::cout << "{\"type\":\"event\",\"name\":\"streamer.changed\",\"payload\":{\"status\":\"streaming\",\"sessionId\":\"fixture-session\",\"firstFrameLatencyMs\":37,\"mediaBackend\":\"ffmpeg\",\"deviceRecoveryCount\":2,\"queueDropCount\":4}}\n";
             std::cout << "{\"type\":\"response\",\"id\":\"" << id

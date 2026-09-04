@@ -130,7 +130,8 @@ FocusScope {
 
     HoverHandler {
         acceptedDevices: PointerDevice.Mouse
-        onHoveredChanged: root.hoverExpanded = root.collapsed && hovered
+        enabled: !SmokeTestMode && ShellStore.settings.desktopSidebarHover !== false
+        onHoveredChanged: root.hoverExpanded = root.collapsed && hovered && ShellStore.settings.desktopSidebarHover !== false
     }
 
     Item {
@@ -287,8 +288,8 @@ FocusScope {
                     Accessible.name: modelData.name
                     background: Rectangle {
                         radius: 10
-                        color: navButton.selected ? "#14FFFFFF"
-                            : (navButton.hovered || navButton.activeFocus ? "#0CFFFFFF" : "transparent")
+                        color: navButton.selected ? DesktopTokens.raisedStrong
+                            : (navButton.hovered || navButton.activeFocus ? DesktopTokens.raised : "transparent")
                     }
                     contentItem: Item {
                         DesktopGlyph {
@@ -304,7 +305,7 @@ FocusScope {
                             anchors.verticalCenter: parent.verticalCenter
                             visible: !root.compact
                             text: navButton.modelData.name
-                            color: navButton.selected ? DesktopTokens.text : "#B8FFFFFF"
+                            color: navButton.selected ? DesktopTokens.text : DesktopTokens.textMuted
                             font.family: DesktopTokens.bodyFont
                             font.pixelSize: DesktopTokens.px(14)
                             font.weight: navButton.selected ? Font.ExtraBold : Font.DemiBold
@@ -394,7 +395,7 @@ FocusScope {
                         x: 34
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData.name
-                        color: collectionHover.hovered ? "#E0FFFFFF" : "#A3FFFFFF"
+                        color: collectionHover.hovered ? DesktopTokens.text : DesktopTokens.textMuted
                         font.family: DesktopTokens.bodyFont
                         font.pixelSize: 13
                         font.weight: Font.DemiBold

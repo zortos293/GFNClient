@@ -61,7 +61,9 @@ QtObject {
     }
 
     function scaleForWindow(width, height) {
-        return 1
+        // Qt already accounts for display DPI. Keep logical text readable;
+        // use reflow, not aggressive downscaling, for smaller windows.
+        return Math.max(0.95, Math.min(1.15, Math.min(width / 1440, height / 900)))
     }
 
     function artworkUrl(game, preferHero) {

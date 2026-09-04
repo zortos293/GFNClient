@@ -15,12 +15,17 @@ Item {
     property var disabledHint: ""
     signal selected(int index, var value)
 
-    implicitWidth: Math.max(0, options.length * optionWidth + Math.max(0, options.length - 1) * 6)
-    implicitHeight: 36
+    implicitWidth: options.reduce((total, option) => total + root.widthFor(option), 8)
+    implicitHeight: DesktopTokens.px(40)
 
     function optionValue(option) {
         return (typeof option === "object" && option !== null && option.value !== undefined)
             ? option.value : option
+    }
+
+    function widthFor(option) {
+        return typeof option === "object" && option !== null && option.width !== undefined
+            ? Math.max(1, Number(option.width)) : DesktopTokens.px(optionWidth)
     }
 
     function optionLabel(option) {
@@ -42,46 +47,46 @@ Item {
         return false
     }
 
+    Rectangle { anchors.fill: parent; radius: height / 2; color: Theme.lightMode ? Qt.rgba(0,0,0,0.04) : Qt.rgba(0,0,0,0.35); border.width: 1; border.color: Theme.seam }
     Row {
-        spacing: 6
+        x: 4; y: 4
+        spacing: 0
         Repeater {
             model: root.options
-            delegate: Rectangle {
+            delegate: AbstractButton {
                 id: chip
                 required property int index
                 required property var modelData
                 readonly property bool on: index === root.selectedIndex
                 readonly property bool locked: root.isDisabled(modelData)
                 readonly property string label: root.optionLabel(modelData)
-                width: root.optionWidth
-                height: DesktopTokens.px(36)
-                radius: DesktopTokens.px(10)
-                color: chip.on ? "#F2FFFFFF" : (chip.locked ? "#08FFFFFF" : (chipHover.hovered ? "#1AFFFFFF" : "#0FFFFFFF"))
-                border.width: chip.on ? 0 : 1
-                border.color: chip.on ? "transparent" : (chip.locked ? "#14FFFFFF" : "#26FFFFFF")
+                width: root.widthFor(modelData)
+                height: root.height - 8
+                hoverEnabled: true
+                enabled: !locked
+                onClicked: root.selected(chip.index, chip.modelData)
+                background: Rectangle {
+                    radius: height / 2
+                    color: chip.on ? Theme.face : chip.hovered ? DesktopTokens.raised : "transparent"
+                    border.width: chip.activeFocus ? 2 : 0
+                    border.color: Theme.focus
+                }
                 opacity: chip.locked && !chip.on ? 0.45 : 1
 
                 Text {
                     anchors.centerIn: parent
                     width: parent.width - 8
-                    text: chip.locked && !chip.on ? "🔒 " + chip.label : chip.label
-                    color: chip.on ? "#0B0F1A" : DesktopTokens.textBody
-                    font.family: DesktopTokens.monoFont
-                    font.pixelSize: DesktopTokens.monoSize
-                    font.weight: Font.Bold
+                    text: chip.label
+                    color: chip.on ? Theme.faceText : DesktopTokens.textBody
+                    font.family: Theme.bodyFont
+                    font.pixelSize: DesktopTokens.px(13)
+                    font.weight: chip.on ? Font.ExtraBold : Font.Bold
                     horizontalAlignment: Text.AlignHCenter
                     elide: Text.ElideRight
                 }
-                ToolTip.visible: chip.locked && chipHover.hovered && root.disabledHint !== ""
+                ToolTip.visible: chip.locked && chip.hovered && root.disabledHint !== ""
                 ToolTip.text: root.disabledHint
                 ToolTip.delay: 400
-                HoverHandler { id: chipHover; cursorShape: chip.locked ? Qt.ForbiddenCursor : Qt.PointingHandCursor }
-                TapHandler {
-                    onTapped: {
-                        if (!chip.locked)
-                            root.selected(chip.index, chip.modelData)
-                    }
-                }
             }
         }
     }

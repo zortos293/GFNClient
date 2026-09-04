@@ -8,11 +8,13 @@ Item {
     visible: presented
     z: 10000
     property bool opened: false
-    property bool presented: false
+    readonly property bool presented: reveal.present
+    MotionProgress { id: reveal; shown: root.opened; enterDuration: 170; exitDuration: 150 }
     property Item anchorItem: null
     property var items: []
     property var selectedValue: ""
     property string footer: ""
+    property int keyboardIndex: -1
     signal chosen(var value)
 
     readonly property int rowHeight: DesktopTokens.px(32)
@@ -45,12 +47,11 @@ Item {
     }
 
     function showFor(anchor, choices, current, footerText) {
-        closeTimer.stop()
         anchorItem = anchor
         items = choices || []
         selectedValue = current
+        keyboardIndex = items.findIndex(item => item.kind !== "heading" && !item.disabled && String(item.value) === String(current))
         footer = footerText || ""
-        presented = true
         opened = true
         placeMenu()
         Qt.callLater(() => {
@@ -62,23 +63,31 @@ Item {
     function dismiss() {
         const wasOpen = root.opened
         opened = false
-        closeTimer.restart()
         if (wasOpen && anchorItem) {
             const anchor = anchorItem
             Qt.callLater(() => { if (anchor) anchor.forceActiveFocus() })
         }
     }
 
-    Timer {
-        id: closeTimer
-        interval: AppController.reducedMotion ? 0 : 150
-        onTriggered: root.presented = false
+    function moveChoice(direction) {
+        for (let step = 1; step <= items.length; ++step) {
+            const candidate = (Math.max(-1, keyboardIndex) + direction * step + items.length) % items.length
+            if (items[candidate].kind !== "heading" && !items[candidate].disabled) {
+                keyboardIndex = candidate
+                let offset = 0
+                for (let i = 0; i < candidate; ++i)
+                    offset += items[i].kind === "heading" ? headingHeight : rowHeight
+                choiceList.contentY = Math.max(0, Math.min(offset, choiceList.contentHeight - choiceList.height))
+                return
+            }
+        }
     }
+    onWidthChanged: if (opened) placeMenu()
+    onHeightChanged: if (opened) placeMenu()
 
     Rectangle {
         anchors.fill: parent
-        color: Qt.rgba(0, 0, 0, root.opened ? 0.12 : 0)
-        Behavior on color { ColorAnimation { duration: AppController.reducedMotion ? 0 : 150 } }
+        color: Qt.rgba(0, 0, 0, 0.12 * reveal.progress)
         MouseArea { anchors.fill: parent; onClicked: root.dismiss() }
     }
 
@@ -87,14 +96,13 @@ Item {
         width: root.menuWidth
         height: Math.min(Math.min(root.menuMaxHeight, root.height - DesktopTokens.px(24)), Math.max(DesktopTokens.px(48), root.menuContentHeight + root.menuMargin * 2))
         radius: root.menuRadius
-        color: "#FA141924"
+        color: Theme.shell
         border.width: 1
-        border.color: "#2EFFFFFF"
-        opacity: root.opened ? 1 : 0
-        scale: root.opened ? 1 : 0.97
+        border.color: Theme.seam
+        enabled: root.opened
+        opacity: reveal.progress
+        scale: reveal.zoom
         transformOrigin: Item.TopRight
-        Behavior on opacity { NumberAnimation { duration: AppController.reducedMotion ? 0 : 150; easing.type: Easing.OutCubic } }
-        Behavior on scale { NumberAnimation { duration: AppController.reducedMotion ? 0 : 170; easing.type: Easing.OutBack; easing.overshoot: 0.6 } }
 
         Flickable {
             id: choiceList
@@ -128,7 +136,7 @@ Item {
                             anchors.leftMargin: DesktopTokens.px(12)
                             anchors.verticalCenter: parent.verticalCenter
                             text: modelData.label
-                            color: "#6BFFFFFF"
+                            color: Theme.textMuted
                             font.family: DesktopTokens.monoFont
                             font.pixelSize: DesktopTokens.tinySize
                             font.weight: Font.DemiBold
@@ -140,7 +148,7 @@ Item {
                             opacity: parent.unavailable ? 0.42 : 1
                             anchors.fill: parent
                             radius: root.rowRadius
-                            color: rowHover.hovered ? "#0FFFFFFF" : (on ? "#17FFFFFF" : "transparent")
+                            color: rowHover.hovered || index === root.keyboardIndex ? DesktopTokens.raisedStrong : (on ? DesktopTokens.raised : "transparent")
                             border.width: on ? 1 : 0
                             border.color: DesktopTokens.focus
 
@@ -215,7 +223,7 @@ Item {
                         anchors.leftMargin: DesktopTokens.px(12)
                         anchors.verticalCenter: parent.verticalCenter
                         text: root.footer
-                        color: "#75FFFFFF"
+                        color: Theme.textMuted
                         font.family: DesktopTokens.monoFont
                         font.pixelSize: DesktopTokens.tinySize
                         font.weight: Font.DemiBold
@@ -228,14 +236,14 @@ Item {
                         spacing: DesktopTokens.px(12)
                         Text {
                             text: "ENTER  Pick"
-                            color: "#66FFFFFF"
+                            color: Theme.textMuted
                             font.family: DesktopTokens.monoFont
                             font.pixelSize: DesktopTokens.tinySize
                             font.weight: Font.DemiBold
                         }
                         Text {
                             text: "ESC  Cancel"
-                            color: "#66FFFFFF"
+                            color: Theme.textMuted
                             font.family: DesktopTokens.monoFont
                             font.pixelSize: DesktopTokens.tinySize
                             font.weight: Font.DemiBold
@@ -247,4 +255,16 @@ Item {
     }
 
     Keys.onEscapePressed: event => { root.dismiss(); event.accepted = true }
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+            root.moveChoice(event.key === Qt.Key_Down ? 1 : -1)
+            event.accepted = true
+        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            if (root.keyboardIndex >= 0) {
+                root.chosen(root.items[root.keyboardIndex].value)
+                root.dismiss()
+            }
+            event.accepted = true
+        }
+    }
 }

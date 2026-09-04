@@ -8,6 +8,10 @@ FocusScope {
     property string searchQuery: ""
     property string activeFilter: "all"
     property var contextGame: null
+    property var presentedContextGame: null
+    onContextGameChanged: if (contextGame) presentedContextGame = contextGame
+    MotionProgress { id: contextMotion; shown: root.contextGame !== null; enterDuration: 120; exitDuration: 120 }
+    MotionProgress { id: collectionMotion; shown: root.contextGame !== null && root.collectionOpen; enterDuration: 120; exitDuration: 120 }
     property point contextPoint: Qt.point(0, 0)
     signal detailsRequested(var game)
     signal playRequested(var game)
@@ -87,8 +91,9 @@ FocusScope {
         return result
     }
     readonly property var games: filteredGames()
-    readonly property int libraryColumns: Math.max(6, Math.floor((grid.width + 10) / 156))
-    readonly property int libraryCellW: Math.max(146, Math.floor(grid.width / libraryColumns))
+    readonly property real tileScale: Math.max(0.75, Math.min(1.5, Number(ShellStore.settings.posterSizeScale || 1.05))) / 1.05
+    readonly property int libraryColumns: Math.max(1, Math.floor((grid.width + 10) / (156 * tileScale)))
+    readonly property int libraryCellW: Math.max(1, Math.floor(grid.width / libraryColumns))
     readonly property int libraryCellH: Math.round(libraryCellW * 214 / 146)
 
     Row {
@@ -249,13 +254,14 @@ FocusScope {
     Rectangle {
         x: root.contextPoint.x; y: root.contextPoint.y
         width: 230; height: 286; radius: 12
-        visible: root.contextGame !== null
+        visible: contextMotion.present
+        enabled: root.contextGame !== null
         z: 41
         color: "#F710131D"
         border.width: 1; border.color: "#29FFFFFF"
         Column {
             x: 8; y: 8; width: 214; spacing: 0
-            Text { width: parent.width; height: 26; leftPadding: 8; text: root.contextGame ? String(root.contextGame.title || "").toUpperCase() : ""; color: DesktopTokens.textFaint; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.DemiBold; font.letterSpacing: 0.6 }
+            Text { width: parent.width; height: 26; leftPadding: 8; text: root.presentedContextGame ? String(root.presentedContextGame.title || "").toUpperCase() : ""; color: DesktopTokens.textFaint; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.DemiBold; font.letterSpacing: 0.6 }
             Rectangle {
                 id: playRow
                 width: parent.width; height: 36; radius: 9
@@ -292,15 +298,15 @@ FocusScope {
                 }
             }
         }
-        opacity: visible ? 1 : 0
-        scale: visible ? 1 : 0.96
-        Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
-        Behavior on scale { NumberAnimation { duration: DesktopTokens.quickDuration; easing.type: Easing.OutCubic } }
+        opacity: contextMotion.progress
+        scale: contextMotion.zoom
+        transformOrigin: Item.TopLeft
     }
     Rectangle {
         x: root.contextPoint.x + 238; y: root.contextPoint.y + 104
         width: 212; height: 76; radius: 12
-        visible: root.contextGame !== null && root.collectionOpen
+        visible: collectionMotion.present
+        enabled: root.contextGame !== null && root.collectionOpen
         z: 42
         color: "#F710131D"
         border.width: 1; border.color: "#29FFFFFF"
@@ -317,7 +323,8 @@ FocusScope {
                 onClicked: root.activateContext("favorite")
             }
         }
-        opacity: visible ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
+        opacity: collectionMotion.progress
+        scale: collectionMotion.zoom
+        transformOrigin: Item.TopLeft
     }
 }

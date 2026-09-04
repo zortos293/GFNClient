@@ -4,6 +4,10 @@ import OpenNOW
 
 FocusScope {
     id: root
+    property bool opened: false
+    visible: reveal.present
+    enabled: opened
+    MotionProgress { id: reveal; shown: root.opened }
     property string query: ""
     property string scopeFilter: "all"
     property int currentIndex: 0
@@ -11,8 +15,8 @@ FocusScope {
     signal routeRequested(string route)
     signal gameRequested(var game)
     anchors.fill: parent
-    onVisibleChanged: {
-        if (visible) {
+    onOpenedChanged: {
+        if (opened) {
             root.query = ""
             root.scopeFilter = "all"
             root.currentIndex = 0
@@ -115,8 +119,10 @@ FocusScope {
         + (actionList.length > 0 ? 26 + actionList.length * 40 : 0)
     readonly property real panelHeight: 58 + Math.min(root.contentHeight, 428) + 42
 
-    Rectangle { anchors.fill: parent; color: "#A8000000"; TapHandler { onTapped: root.closeRequested() } }
+    Rectangle { anchors.fill: parent; color: "#A8000000"; opacity: reveal.progress; TapHandler { onTapped: root.closeRequested() } }
     Rectangle {
+        opacity: reveal.progress; scale: reveal.zoom
+        transformOrigin: Item.Center
         x: Math.round((parent.width - 640) / 2)
         y: 120
         width: 640

@@ -26,6 +26,21 @@ QtObject {
     property int storeTotalCount: 0
     property string storeState: "idle"
     property string storeSource: "public"
+    property string storeError: ""
+    property string storeWarning: ""
+    property string storeSearchQuery: ""
+    property string storeNextCursor: ""
+    property bool storeHasMore: false
+    property bool storeReplacePage: true
+    property int storePageCount: 0
+    property var storeSeenCursors: ({})
+    property string storePresentationRequestId: ""
+    property int storePresentationIndex: 0
+    readonly property bool storeLoading: storeRequestId !== "" || storePageTimer.running
+    property Timer storePageTimer: Timer {
+        interval: 75
+        onTriggered: root.requestStorePage()
+    }
     // Storefront chrome from the CMS panels documents: marquee hero slides,
     // official shelves (GFN Thursday, per-store rows…), and filter groups.
     property var storeMarquee: []
@@ -46,6 +61,9 @@ QtObject {
     property var regions: []
     property var regionPingResults: ({})
     property string regionPingMessage: ""
+    property bool regionPingPending: false
+    readonly property bool regionPingBusy: regionPingPending || regionPingRequestId !== ""
+    onRegionPingMessageChanged: if (regionPingMessage !== "") accessibilityMessage = regionPingMessage
     property var savedAccounts: []
     property var gameAccounts: []
     property string gameAccountsState: "idle"
@@ -606,25 +624,110 @@ QtObject {
     }
 
     function refreshStore(searchQuery) {
-        if (!ready || storeRequestId !== "")
+        if (!ready)
             return
-        storeState = storeGames.length > 0 ? "refreshing" : "loading"
+        const query = String(searchQuery || "").trim()
+        if (storeLoading && storeSearchQuery === query) return
+        cancelStoreRequests()
+        if (query !== storeSearchQuery) storeGames = []
+        storeSearchQuery = query
+        storeNextCursor = ""
+        storeHasMore = true
+        storeReplacePage = true
+        storePageCount = 0
+        storeSeenCursors = Object.create(null)
+        storeError = ""
+        storeWarning = ""
+        storePresentationIndex = 0
         storeSource = signedIn ? "store-browse" : "public"
-        storeRequestId = CoreClient.request(signedIn ? "catalog.store.list" : "catalog.public.list", {
-            limit: signedIn ? 2500 : 360,
-            searchQuery: searchQuery || ""
+        requestStorePage()
+    }
+
+    function cancelStoreRequests() {
+        storePageTimer.stop()
+        const pageId = storeRequestId
+        const presentationId = storePresentationRequestId
+        storeRequestId = ""
+        storePresentationRequestId = ""
+        // Clear ownership before cancel() emits its synchronous failure signal.
+        if (pageId !== "") CoreClient.cancel(pageId)
+        if (presentationId !== "") CoreClient.cancel(presentationId)
+    }
+
+    function requestStorePage() {
+        if (!ready || storeRequestId !== "" || !storeHasMore) return
+        storePageTimer.stop()
+        storeError = ""
+        storeState = storeGames.length > 0 ? "refreshing" : "loading"
+        storeRequestId = CoreClient.request(storeSource === "store-browse" ? "catalog.store.list" : "catalog.public.list", {
+            limit: storeSource === "store-browse" ? 100 : 360,
+            cursor: storeNextCursor, searchQuery: storeSearchQuery
         }, 60000)
+        if (storeRequestId === "") {
+            storeState = "error"
+            storeError = qsTr("Could not start the Store request. Try again.")
+        }
+    }
+
+    function requestStorePresentation() {
+        if (!ready || storeSource !== "store-browse" || storePresentationRequestId !== "" || storePresentationIndex >= 3) return
+        storePresentationRequestId = CoreClient.request("catalog.store.presentation", {
+            section: ["marquee", "panels", "filters"][storePresentationIndex]
+        }, 30000)
+    }
+
+    function retryStore() {
+        if (storeLoading) return
+        if (storeError !== "") requestStorePage()
+        if (storeWarning !== "") {
+            storeWarning = ""
+            storePresentationIndex = 0
+            requestStorePresentation()
+        }
+    }
+
+    function acceptStorePage(result) {
+        storeRequestId = ""
+        const more = storeSource === "store-browse" && result.hasNextPage === true
+        const next = String(result.nextCursor || "")
+        if (!Array.isArray(result.games) || (more && (!next || next === storeNextCursor || storeSeenCursors[next]))) {
+            storeState = "error"
+            storeError = qsTr("The Store returned an invalid page. Try again.")
+            return
+        }
+        const merged = storeReplacePage ? [] : storeGames.slice()
+        const seen = Object.create(null)
+        const identity = game => String(game.uuid || game.id || game.launchAppId || "")
+        for (let i = 0; i < merged.length; ++i) seen[identity(merged[i])] = true
+        for (let i = 0; i < result.games.length; ++i) {
+            const game = result.games[i]
+            const key = identity(game)
+            if (key && !seen[key]) { merged.push(game); seen[key] = true }
+        }
+        storeGames = merged
+        storeReplacePage = false
+        storePageCount += 1
+        storeTotalCount = Math.max(merged.length, Number(result.totalCount || 0))
+        storeHasMore = more
+        storeNextCursor = next
+        if (next) storeSeenCursors[next] = true
+        storeState = "ready"
+        if (storePageCount === 1) requestStorePresentation()
+        // Bounded automatic work, with a visible continuation action beyond it.
+        // Also bounds broken services that keep returning fresh empty cursors.
+        if (more && storePageCount < 100 && merged.length < 10000) storePageTimer.restart()
     }
 
     function reloadStoreForSession() {
-        if (storeRequestId !== "") {
-            CoreClient.cancel(storeRequestId)
-            storeRequestId = ""
-        }
+        cancelStoreRequests()
         storeGames = []
+        storeTotalCount = 0
         storeMarquee = []
         storePanels = []
         storeFilterGroups = []
+        storeError = ""
+        storeWarning = ""
+        storeHasMore = false
         storeState = "idle"
         refreshStore("")
     }
@@ -653,12 +756,42 @@ QtObject {
     }
 
     function pingRegions() {
-        if (!ready || regions.length === 0 || regionPingRequestId !== "")
+        if (regionPingBusy)
             return
+        if (!ready) {
+            regionPingMessage = qsTr("The OpenNOW core is not ready. Try again shortly.")
+            return
+        }
+        if (!signedIn) {
+            regionPingMessage = qsTr("Sign in to measure region latency.")
+            return
+        }
+        if (regionsRequestId !== "" || regions.length === 0) {
+            regionPingPending = true
+            regionPingMessage = qsTr("Loading regions before measuring latency…")
+            refreshRegions()
+            if (regionsRequestId === "") {
+                regionPingPending = false
+                regionPingMessage = qsTr("Could not load regions. Try again.")
+            }
+            return
+        }
+        regionPingResults = ({})
         regionPingMessage = qsTr("Measuring region latency…")
         regionPingRequestId = CoreClient.request("network.regions.ping", {
             regions: regions
         }, 20000)
+        if (regionPingRequestId === "")
+            regionPingMessage = qsTr("Could not start the latency test. Try again.")
+    }
+
+    function resetRegionPing() {
+        const requestId = regionPingRequestId
+        regionPingRequestId = ""
+        regionPingPending = false
+        regionPingResults = ({})
+        regionPingMessage = ""
+        if (requestId !== "") CoreClient.cancel(requestId)
     }
 
     function refreshGameAccounts() {
@@ -2158,13 +2291,14 @@ QtObject {
                 root.catalogRequestId = ""
                 root.resolveDirectLaunch()
             } else if (requestId === root.storeRequestId) {
-                root.storeGames = result.games || []
-                root.storeTotalCount = Number(result.totalCount || root.storeGames.length)
-                root.storeMarquee = result.marquee || []
-                root.storePanels = result.panels || []
-                root.storeFilterGroups = result.filterGroups || []
-                root.storeState = "ready"
-                root.storeRequestId = ""
+                root.acceptStorePage(result)
+            } else if (requestId === root.storePresentationRequestId) {
+                root.storePresentationRequestId = ""
+                if (result.section === "marquee") root.storeMarquee = result.items || []
+                else if (result.section === "panels") root.storePanels = result.items || []
+                else if (result.section === "filters") root.storeFilterGroups = result.items || []
+                root.storePresentationIndex += 1
+                root.requestStorePresentation()
             } else if (requestId === root.deviceStartRequestId) {
                 root.authChallenge = result
                 root.authState = "waiting"
@@ -2219,6 +2353,7 @@ QtObject {
                 root.logoutRequestId = ""
                 root.subscription = null
                 root.regions = []
+                root.resetRegionPing()
                 root.reloadCatalogForSession()
                 if (root.authSession)
                     root.refreshAccountServices()
@@ -2231,6 +2366,7 @@ QtObject {
                 root.savedAccounts = []
                 root.subscription = null
                 root.regions = []
+                root.resetRegionPing()
                 root.reloadCatalogForSession()
                 root.accessibilityMessage = qsTr("All saved accounts signed out")
             } else if (requestId === root.subscriptionRequestId) {
@@ -2240,6 +2376,11 @@ QtObject {
                 root.regions = result.regions || []
                 root.regionsVpcId = result.vpcId || ""
                 root.regionsRequestId = ""
+                if (root.regionPingPending) {
+                    root.regionPingPending = false
+                    if (root.regions.length > 0) root.pingRegions()
+                    else root.regionPingMessage = qsTr("No streaming regions are available for this account.")
+                }
             } else if (requestId === root.regionPingRequestId) {
                 root.regionPingRequestId = ""
                 const values = {}
@@ -2248,8 +2389,9 @@ QtObject {
                 let bestPing = Number.MAX_VALUE
                 for (let index = 0; index < results.length; ++index) {
                     const item = results[index]
+                    const measured = Number(item.pingMs)
                     values[String(item.url || "")] = item.pingMs === null || item.pingMs === undefined
-                        ? null : Number(item.pingMs)
+                        || !Number.isFinite(measured) || measured < 0 ? null : measured
                     if (values[String(item.url || "")] !== null && Number(item.pingMs) < bestPing) {
                         bestPing = Number(item.pingMs)
                         for (let regionIndex = 0; regionIndex < root.regions.length; ++regionIndex) {
@@ -2268,6 +2410,8 @@ QtObject {
                 root.savedAccounts = result.accounts || []
                 root.accountsRequestId = ""
             } else if (requestId === root.accountSwitchRequestId) {
+                root.resetRegionPing()
+                root.regions = []
                 root.authSession = result.session || null
                 root.sessionPersistence = result.persistence || "os-credential-store"
                 root.authState = root.authSession ? "signed-in" : "error"
@@ -2495,6 +2639,13 @@ QtObject {
             }
         }
         function onRequestFailed(requestId, code, message) {
+            if (requestId === root.storePresentationRequestId && requestId !== "") {
+                root.storePresentationRequestId = ""
+                root.storeWarning = qsTr("Some storefront sections could not load: %1").arg(message)
+                root.storePresentationIndex += 1
+                root.requestStorePresentation()
+                return
+            }
             if (root.finishArtworkRequest(requestId, null, true))
                 return
             if (requestId === root.remoteSessionDiscoveryRequestId) {
@@ -2517,6 +2668,8 @@ QtObject {
             } else if (requestId === root.storeRequestId) {
                 root.storeState = "error"
                 root.storeRequestId = ""
+                root.storePageTimer.stop()
+                root.storeError = message
             } else if (requestId === root.providersRequestId) {
                 root.providersRequestId = ""
             } else if (requestId === root.authSessionRequestId) {
@@ -2544,6 +2697,8 @@ QtObject {
                 root.subscriptionRequestId = ""
             } else if (requestId === root.regionsRequestId) {
                 root.regionsRequestId = ""
+                root.regionPingPending = false
+                root.regionPingMessage = qsTr("Could not load regions: %1").arg(message)
             } else if (requestId === root.regionPingRequestId) {
                 root.regionPingRequestId = ""
                 root.regionPingMessage = message

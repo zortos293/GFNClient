@@ -546,7 +546,9 @@ FocusScope {
                 y: 202
                 width: 408
                 height: Math.min(260, root.providers.length * 52 + 16)
-                visible: root.providerOpen && !root.waiting && !root.failed
+                MotionProgress { id: providerMotion; shown: root.providerOpen && !root.waiting && !root.failed; enterDuration: 120; exitDuration: 120 }
+                visible: providerMotion.present
+                enabled: root.providerOpen && !root.waiting && !root.failed
                 z: 20
                 radius: 12
                 color: "#FA111722"
@@ -571,10 +573,9 @@ FocusScope {
                         onClicked: { root.providerOpen = false; ShellStore.startDeviceLogin(modelData.idpId || "", root.staySignedIn) }
                     }
                 }
-                opacity: visible ? 1 : 0
-                scale: visible ? 1 : .97
-                Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
-                Behavior on scale { NumberAnimation { duration: DesktopTokens.quickDuration; easing.type: Easing.OutCubic } }
+                opacity: providerMotion.progress
+                scale: providerMotion.zoom
+                transformOrigin: Item.TopLeft
             }
         }
 

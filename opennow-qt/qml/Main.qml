@@ -129,6 +129,7 @@ ApplicationWindow {
         onActivated: ShellStore.applyStreamShortcutAction("toggle-stats")
     }
     Shortcut {
+        objectName: "configuredStreamStatsShortcut"
         sequence: window.configuredStatsShortcut
         context: Qt.ApplicationShortcut
         enabled: window.streamStatsShortcutEnabled
@@ -186,7 +187,7 @@ ApplicationWindow {
     function showConfiguredStreamStats() {
         if (window.activeRoute !== "stream" || window.streamStatsAutoShown
                 || AppController.overlay !== ""
-                || !Boolean(ShellStore.settings.showNativeStreamerStats)
+                || !(ShellStore.settings.showStatsOnLaunch || ShellStore.settings.showNativeStreamerStats)
                 || !ShellStore.streamer || ShellStore.streamer.status !== "streaming")
             return
         window.streamStatsAutoShown = true
@@ -377,6 +378,7 @@ ApplicationWindow {
 
         Loader {
             id: routeLoader
+            objectName: "mainRouteLoader"
             anchors.fill: parent
             sourceComponent: window.desktopSurfaceActive
                 ? desktopAppScreen : window.componentForRoute(window.activeRoute)
@@ -394,17 +396,14 @@ ApplicationWindow {
                 }
             }
 
-            Behavior on opacity {
-                NumberAnimation { duration: Theme.enterDuration; easing.type: Easing.OutCubic }
-            }
         }
 
         Connections {
             target: AppController
             function onRouteChanged() {
                 window.updateStreamSurfaceLock()
-                routeLoader.opacity = 0
-                routeEnter.restart()
+                // The desktop shell and embedded video stay opaque. Animate
+                // the entering panel, never flash the entire app on navigation.
                 window.syncInputOwnership()
                 window.streamStatsAutoShown = false
                 Qt.callLater(() => window.showConfiguredStreamStats())
@@ -440,11 +439,6 @@ ApplicationWindow {
                 window.height = Number(ShellStore.settings.windowHeight)
                 window.geometryRestored = true
             }
-        }
-        Timer {
-            id: routeEnter
-            interval: AppController.reducedMotion ? 0 : 45
-            onTriggered: routeLoader.opacity = 1
         }
 
         Keys.onPressed: event => {
@@ -485,6 +479,7 @@ ApplicationWindow {
     }
 
     OverlayHost {
+        id: consoleOverlayHost
         readonly property real consoleScale: Math.min(window.width / 1920, window.height / 1080)
         x: Math.round((window.width - width * consoleScale) / 2)
         y: Math.round((window.height - height * consoleScale) / 2)
@@ -493,7 +488,7 @@ ApplicationWindow {
         scale: consoleScale
         transformOrigin: Item.TopLeft
         overlay: AppController.overlay
-        visible: (!window.desktopSurfaceActive || window.consoleOverlayFallbackActive)
+        visible: (!window.desktopSurfaceActive || window.consoleOverlayFallbackActive || consoleOverlayHost.present)
             && !window.streamQmlOverlayActive
         z: 1000
     }
@@ -504,6 +499,7 @@ ApplicationWindow {
         overlay: AppController.overlay
         inputBlocking: ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         visible: window.streamQmlOverlayActive
+            || (window.activeRoute === "stream" && desktopStreamOverlay.present)
         z: 1100
         onVisibleChanged: if (visible && inputBlocking) forceActiveFocus()
         onInputBlockingChanged: if (visible && inputBlocking) forceActiveFocus()

@@ -4,7 +4,12 @@ import OpenNOW
 
 FocusScope {
     id: root
-    focus: true
+    property bool opened: false
+    readonly property bool present: reveal.present
+    visible: present
+    enabled: opened
+    focus: opened
+    MotionProgress { id: reveal; shown: root.opened }
     Accessible.role: Accessible.Dialog
     Accessible.name: qsTr("End cloud session confirmation")
 
@@ -14,11 +19,14 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: "#A6000000"
+        opacity: reveal.progress
         TapHandler { onTapped: root.cancelRequested() }
     }
 
     Rectangle {
         id: card
+        opacity: reveal.progress
+        scale: reveal.zoom
         anchors.centerIn: parent
         width: Math.min(520, root.width - 48)
         height: 268
@@ -85,7 +93,7 @@ FocusScope {
         }
     }
 
-    onVisibleChanged: if (visible) Qt.callLater(keepPlayingButton.forceActiveFocus)
+    onOpenedChanged: if (opened) Qt.callLater(() => { if (root.opened) keepPlayingButton.forceActiveFocus() })
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
             root.cancelRequested()

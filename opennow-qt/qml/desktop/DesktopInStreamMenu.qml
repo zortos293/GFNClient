@@ -10,7 +10,11 @@ FocusScope {
     id: root
     width: 1440
     height: 900
-    focus: true
+    property bool opened: false
+    readonly property bool present: reveal.present
+    visible: present
+    enabled: opened
+    focus: opened
 
     signal resumeRequested()
     signal inviteRequested()
@@ -66,19 +70,21 @@ FocusScope {
         if (closing) return
         pendingAction = index
         closing = true
-        closeAnimation.restart()
-        actionTimer.restart()
+        if (reveal.progress === 0) Qt.callLater(root.finishAction)
     }
     function finishAction() {
-        if (pendingAction === 0) resumeRequested()
-        else if (pendingAction === 1) inviteRequested()
-        else if (pendingAction === 2) consoleModeRequested(!root.modeOn)
-        else if (pendingAction === 3) {
+        // A hidden callback or rapid toggle must never dispatch the action twice.
+        const action = pendingAction
+        pendingAction = -1
+        if (action === 0) resumeRequested()
+        else if (action === 1) inviteRequested()
+        else if (action === 2) consoleModeRequested(!root.modeOn)
+        else if (action === 3) {
             fullscreenRequested()
             resumeRequested()
         }
-        else if (pendingAction === 4) endSessionRequested()
-        else if (pendingAction === 5) statsRequested()
+        else if (action === 4) endSessionRequested()
+        else if (action === 5) statsRequested()
     }
     function clockText() {
         if (ShellStore.streamStartedAtMs <= 0)
@@ -91,11 +97,17 @@ FocusScope {
         return (hours > 0 ? hours + ":" : "") + String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0")
     }
 
+    MotionProgress {
+        id: reveal
+        objectName: "streamMenuMotion"
+        shown: root.opened && !root.closing
+        exitDuration: 140
+        onHidden: if (root.closing && root.pendingAction >= 0) root.finishAction()
+    }
     Rectangle {
         anchors.fill: parent
         color: "#B804060A"
-        opacity: root.closing ? 0 : 1
-        Behavior on opacity { NumberAnimation { duration: AppController.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic } }
+        opacity: reveal.progress
         TapHandler { onTapped: root.runAction(0) }
     }
 
@@ -121,11 +133,9 @@ FocusScope {
         color: "#F00A0E15"
         border.width: 1
         border.color: "#29FFFFFF"
-        opacity: root.closing ? 0 : 1
-        scale: root.closing && !AppController.reducedMotion ? 0.985 : 1
-        transform: Translate { id: panelTranslate; y: root.closing || AppController.reducedMotion ? 0 : 0 }
-        Behavior on opacity { NumberAnimation { duration: AppController.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic } }
-        Behavior on scale { NumberAnimation { duration: AppController.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic } }
+        opacity: reveal.progress
+        scale: reveal.zoom
+        transformOrigin: Item.Center
 
         Item {
             id: header
@@ -404,27 +414,12 @@ FocusScope {
     }
 
     Timer { interval: 1000; repeat: true; running: root.visible; onTriggered: root.nowMs = Date.now() }
-    Timer { id: actionTimer; interval: AppController.reducedMotion ? 0 : 145; onTriggered: root.finishAction() }
-    onVisibleChanged: if (visible) {
+    onOpenedChanged: if (opened) {
         closing = false
         pendingAction = -1
         selectedIndex = 0
         forceActiveFocus()
     }
-    ParallelAnimation {
-        id: closeAnimation
-        NumberAnimation { target: panel; property: "opacity"; to: 0; duration: AppController.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic }
-        NumberAnimation { target: panel; property: "scale"; to: AppController.reducedMotion ? 1 : 0.985; duration: AppController.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic }
-    }
-    SequentialAnimation {
-        running: true
-        ParallelAnimation {
-            NumberAnimation { target: panel; property: "opacity"; from: 0; to: 1; duration: AppController.reducedMotion ? 0 : 200; easing.type: Easing.OutCubic }
-            NumberAnimation { target: panel; property: "scale"; from: AppController.reducedMotion ? 1 : 0.975; to: 1; duration: AppController.reducedMotion ? 0 : 200; easing.type: Easing.OutBack }
-            NumberAnimation { target: panelTranslate; property: "y"; from: AppController.reducedMotion ? 0 : 12; to: 0; duration: AppController.reducedMotion ? 0 : 200; easing.type: Easing.OutCubic }
-        }
-    }
-
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
             root.runAction(0)

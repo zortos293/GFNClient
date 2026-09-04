@@ -85,7 +85,7 @@ FocusScope {
                 x: 0
                 y: 40
                 width: parent.width
-                height: parent.height - 40
+                height: parent.height - 40 - (pageStatus.visible ? pageStatus.height + 12 : 0)
                 cellWidth: width / root.columnCount
                 cellHeight: 250
                 model: root.games
@@ -118,7 +118,7 @@ FocusScope {
                         focused: root.currentIndex === parent.index
                         frameRadius: 21
                     }
-                    scale: root.currentIndex === index ? 1.045 : 1
+                    scale: !AppController.reducedMotion && root.currentIndex === index ? 1.045 : 1
                     z: root.currentIndex === index ? 20 : 0
                     Behavior on scale {
                         NumberAnimation {
@@ -129,13 +129,31 @@ FocusScope {
                 }
             }
 
+            Row {
+                id: pageStatus
+                anchors.bottom: parent.bottom; width: parent.width; spacing: 16
+                visible: root.games.length > 0 && (ShellStore.storeLoading || ShellStore.storeHasMore || ShellStore.storeError !== "" || ShellStore.storeWarning !== "")
+                Text {
+                    width: parent.width - 220
+                    text: ShellStore.storeError || ShellStore.storeWarning || qsTr("Loaded %1 of %2 games").arg(root.games.length).arg(ShellStore.storeTotalCount)
+                    color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 16
+                    wrapMode: Text.Wrap; textFormat: Text.PlainText
+                }
+                GlassButton {
+                    visible: !ShellStore.storeLoading
+                    text: ShellStore.storeError || ShellStore.storeWarning ? qsTr("Try again") : qsTr("Load more")
+                    onClicked: ShellStore.storeError || ShellStore.storeWarning ? ShellStore.retryStore() : ShellStore.requestStorePage()
+                }
+            }
             Column {
                 anchors.centerIn: parent
+                width: Math.min(parent.width - 48, 800)
                 spacing: 12
                 visible: root.games.length === 0
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: ShellStore.storeState === "error" ? qsTr("Catalog unavailable") : qsTr("Loading the live catalog…")
+                    text: ShellStore.storeState === "error" ? qsTr("Catalog unavailable")
+                        : ShellStore.storeState === "ready" ? qsTr("No games match these filters") : qsTr("Loading the live catalog…")
                     color: Theme.label
                     font.family: Theme.displayFont
                     font.pixelSize: 25
@@ -147,7 +165,12 @@ FocusScope {
                     text: qsTr("Try again")
                     glyph: "A"
                     primary: true
-                    onClicked: ShellStore.refreshStore("")
+                    onClicked: ShellStore.retryStore()
+                }
+                Text {
+                    width: parent.width; text: ShellStore.storeError; visible: text !== ""
+                    horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                    color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 16
                 }
             }
         }

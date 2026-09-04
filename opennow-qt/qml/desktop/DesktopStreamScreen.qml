@@ -24,6 +24,26 @@ FocusScope {
         return String(root.streamer.status || ShellStore.streamState || "starting")
     }
     readonly property bool streaming: root.status === "streaming"
+    property double clockNowMs: Date.now()
+    readonly property int clockSeconds: ShellStore.streamStartedAtMs > 0
+        ? Math.max(0, Math.floor((clockNowMs - ShellStore.streamStartedAtMs) / 1000)) : 0
+    Timer {
+        interval: 1000; repeat: true
+        running: root.visible && root.streaming && ShellStore.settings.sessionCounterEnabled === true
+        onTriggered: root.clockNowMs = Date.now()
+    }
+    Rectangle {
+        anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 24
+        width: sessionClock.implicitWidth + 24; height: 36; radius: 18; z: 4
+        color: Qt.rgba(Theme.shell.r,Theme.shell.g,Theme.shell.b,0.85)
+        visible: root.streaming && ShellStore.settings.sessionCounterEnabled === true
+            && AppController.overlay.indexOf("stats") < 0
+        Text {
+            id: sessionClock; anchors.centerIn: parent
+            text: Math.floor(root.clockSeconds / 3600) + ":" + String(Math.floor(root.clockSeconds / 60) % 60).padStart(2,"0") + ":" + String(root.clockSeconds % 60).padStart(2,"0")
+            color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12
+        }
+    }
     readonly property bool failed: root.status === "error"
     readonly property bool statusVisible: !root.streaming
     readonly property string artwork: DesktopTokens.decodeArtworkUrl(

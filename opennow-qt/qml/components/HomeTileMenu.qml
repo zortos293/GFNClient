@@ -14,7 +14,11 @@ FocusScope {
     signal removeRequested()
     signal closeRequested()
 
-    focus: visible
+    property bool opened: false
+    MotionProgress { id: reveal; shown: root.opened }
+    visible: reveal.present
+    enabled: opened
+    focus: opened
     z: 80
 
     readonly property var actions: [
@@ -35,9 +39,9 @@ FocusScope {
             root.removeRequested()
     }
 
-    onVisibleChanged: if (visible) {
+    onOpenedChanged: if (opened) {
         selectedAction = 0
-        Qt.callLater(actionList.forceActiveFocus)
+        Qt.callLater(() => { if (root.opened) actionList.forceActiveFocus() })
     }
 
     Keys.onEscapePressed: {
@@ -56,6 +60,8 @@ FocusScope {
 
     GlassPanel {
         id: menuPanel
+        scale: reveal.zoom
+        transformOrigin: Item.TopRight
         x: 1190
         y: 250
         width: 520
@@ -305,8 +311,5 @@ FocusScope {
         }
     }
 
-    opacity: visible ? 1 : 0
-    Behavior on opacity {
-        NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic }
-    }
+    opacity: reveal.progress
 }

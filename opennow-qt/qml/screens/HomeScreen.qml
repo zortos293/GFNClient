@@ -366,7 +366,7 @@ FocusScope {
 
     HomeTileMenu {
         anchors.fill: parent
-        visible: root.editMenuOpen
+        opened: root.editMenuOpen
         game: root.editingGame
         tileSize: root.editingTileSize
         homePosition: root.currentIndex

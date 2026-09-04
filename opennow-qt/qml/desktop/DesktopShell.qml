@@ -6,6 +6,9 @@ FocusScope {
     id: root
     default property alias contentData: contentHost.data
     property string route: "home"
+    readonly property bool settingsPage: route.indexOf("settings") === 0
+    readonly property int headerHeight: settingsPage ? DesktopTokens.px(60) : DesktopTokens.topBarHeight
+    readonly property int footerHeight: settingsPage ? DesktopTokens.px(36) : DesktopTokens.statusBarHeight
     property string title: qsTr("Home")
     property string subtitle: qsTr("Your library")
     property bool searchVisible: route !== "settings" && route.indexOf("settings-") !== 0 && route !== "friends"
@@ -60,12 +63,12 @@ FocusScope {
         height: root.height
 
         Rectangle {
-            width: parent.width; height: DesktopTokens.topBarHeight
+            width: parent.width; height: root.headerHeight
             color: DesktopTokens.topBar
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: DesktopTokens.seam }
             Row {
                 x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(10)
-                Text { text: root.title; color: DesktopTokens.text; font.family: DesktopTokens.displayFont; font.pixelSize: DesktopTokens.titleSize; font.weight: Font.Black; font.letterSpacing: -0.4 }
+                Text { text: root.title; color: DesktopTokens.text; font.family: DesktopTokens.displayFont; font.pixelSize: root.settingsPage ? DesktopTokens.px(22) : DesktopTokens.titleSize; font.weight: Font.Black; font.letterSpacing: -0.4 }
                 Text { anchors.baseline: parent.children[0].baseline; text: root.subtitle; color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.DemiBold; font.letterSpacing: 0.45 }
             }
             TextField {
@@ -85,7 +88,7 @@ FocusScope {
                 background: Rectangle { radius: DesktopTokens.px(10); color: "#59000000"; border.width: 1; border.color: DesktopTokens.seam }
                 onTextChanged: root.searchText = text
                 DesktopGlyph { x: DesktopTokens.px(11); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(14); height: DesktopTokens.px(14); icon: "desktop-search.svg" }
-                Rectangle { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(8); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(20); height: DesktopTokens.px(20); radius: DesktopTokens.px(6); color: "#1AFFFFFF"; border.width: 1; border.color: DesktopTokens.seam; Text { anchors.centerIn: parent; text: "/"; color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.monoSize } }
+                Rectangle { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(8); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(20); height: DesktopTokens.px(20); radius: DesktopTokens.px(6); color: "#1AFFFFFF"; border.width: 1; border.color: DesktopTokens.seam; Text { anchors.centerIn: parent; text: "/"; color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: root.settingsPage ? DesktopTokens.px(10) : DesktopTokens.monoSize } }
             }
             DesktopButton {
                 id: activeSessionButton
@@ -105,30 +108,30 @@ FocusScope {
 
         Item {
             id: contentHost
-            x: 0; y: DesktopTokens.topBarHeight
+            x: 0; y: root.headerHeight
             width: parent.width
-            height: parent.height - DesktopTokens.topBarHeight - DesktopTokens.statusBarHeight
+            height: parent.height - root.headerHeight - root.footerHeight
             clip: true
         }
 
         Rectangle {
             anchors.bottom: parent.bottom
             width: parent.width
-            height: DesktopTokens.statusBarHeight
+            height: root.footerHeight
             color: DesktopTokens.statusBar
             Rectangle { width: parent.width; height: 1; color: DesktopTokens.seam }
             Row { x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(16)
-                DesktopKeyHint { keyText: qsTr("Arrows"); label: qsTr("Move") }
-                DesktopKeyHint { keyText: qsTr("Enter"); label: qsTr("Play") }
-                DesktopKeyHint { keyText: "/"; label: qsTr("Search") }
-                DesktopKeyHint { keyText: qsTr("Ctrl K"); label: qsTr("Commands") }
-                DesktopKeyHint { keyText: "?"; label: qsTr("All shortcuts") }
+                DesktopKeyHint { compact: root.settingsPage; keyText: qsTr("Arrows"); label: qsTr("Move") }
+                DesktopKeyHint { compact: root.settingsPage; keyText: qsTr("Enter"); label: qsTr("Play") }
+                DesktopKeyHint { compact: root.settingsPage; keyText: "/"; label: qsTr("Search") }
+                DesktopKeyHint { compact: root.settingsPage; keyText: qsTr("Ctrl K"); label: qsTr("Commands") }
+                DesktopKeyHint { compact: root.settingsPage; keyText: "?"; label: qsTr("All shortcuts") }
             }
             Row { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(10)
                 Rectangle { width: 8; height: 8; radius: 4; color: DesktopTokens.green }
-                Text { text: root.regionStatusText(); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.monoSize; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+                Text { text: root.regionStatusText(); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: root.settingsPage ? DesktopTokens.px(10) : DesktopTokens.monoSize; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
                 Rectangle { width: 1; height: DesktopTokens.px(16); color: DesktopTokens.seam }
-                Text { text: String(ShellStore.settings.themePack || "nocturne").toUpperCase() + qsTr(" THEME"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.monoSize; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+                Text { text: String(ShellStore.settings.themePack || "nocturne").toUpperCase() + qsTr(" THEME"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: root.settingsPage ? DesktopTokens.px(10) : DesktopTokens.monoSize; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
             }
         }
     }

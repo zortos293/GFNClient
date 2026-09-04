@@ -8,6 +8,7 @@ Button {
     property bool danger: false
     property string shortcutText: ""
     property string glyph: ""
+    property string themedGlyph: ""
     property int glyphSize: 16
     property int cornerRadius: 10
     height: 36
@@ -25,7 +26,7 @@ Button {
              : (root.hovered || root.activeFocus ? "#1FFFFFFF" : "#0FFFFFFF")
         border.width: root.primary ? 0 : 1
         border.color: root.danger ? "#52FF8A80" : "#1FFFFFFF"
-        scale: root.down ? 0.985 : 1
+        scale: root.down && !AppController.reducedMotion ? 0.985 : 1
         Behavior on color { ColorAnimation { duration: DesktopTokens.quickDuration } }
         Behavior on scale { NumberAnimation { duration: DesktopTokens.quickDuration; easing.type: Easing.OutCubic } }
         Rectangle {
@@ -44,13 +45,23 @@ Button {
         Row {
             id: contentRow
             anchors.centerIn: parent
-            spacing: root.glyph !== "" ? 11 : 8
+            spacing: root.glyph !== "" || root.themedGlyph !== "" ? 11 : 8
             DesktopGlyph {
-                visible: root.glyph !== ""
+                visible: root.glyph !== "" && root.themedGlyph === ""
                 anchors.verticalCenter: parent.verticalCenter
                 width: root.glyphSize
                 height: root.glyphSize
                 icon: root.glyph
+            }
+            Loader {
+                active: root.themedGlyph !== ""
+                visible: active
+                anchors.verticalCenter: parent.verticalCenter
+                width: root.glyphSize; height: root.glyphSize
+                sourceComponent: DesktopSettingsIcon {
+                    glyph: root.themedGlyph
+                    ink: root.primary ? "#0A0D14" : Theme.label
+                }
             }
             Text {
                 visible: root.text !== ""

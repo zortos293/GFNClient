@@ -11,7 +11,9 @@ QtObject {
     readonly property bool lightMode: mode === "light" || (mode === "auto" && (packLight || systemLight))
     readonly property bool translucent: Boolean(ShellStore.settings.translucentUI)
     readonly property string accent: String(ShellStore.settings.appAccentColor || "blue")
-    readonly property color shell: themePack === "nocturne" ? "#0B0F1A"
+    readonly property color shell: lightMode && !packLight ? "#F2F5FA"
+                                  : !lightMode && packLight ? "#0B0F1A"
+                                  : themePack === "nocturne" ? "#0B0F1A"
                                   : themePack === "aurora" ? "#071A20"
                                   : themePack === "kraft" ? "#211D17"
                                   : themePack === "phosphor" ? "#07120B"
@@ -28,7 +30,12 @@ QtObject {
     readonly property color seam: lightMode ? Qt.rgba(0.04, 0.06, 0.10, 0.14) : Qt.rgba(1, 1, 1, 0.14)
     readonly property color label: lightMode ? "#111827" : "#FFFFFF"
     readonly property color textMuted: lightMode ? Qt.rgba(0.04, 0.06, 0.10, 0.64) : Qt.rgba(1, 1, 1, 0.64)
-    readonly property color focus: themePack === "nocturne" ? "#7FD4FF"
+    readonly property color customAccent: accent === "green" ? "#6EE7B7"
+        : accent === "violet" ? "#A78BFA" : accent === "amber" ? "#FFD166"
+        : accent === "rose" ? "#FF8A9A" : accent === "coral" ? "#FF8A80"
+        : accent === "white" ? "#FFFFFF" : "#7FD4FF"
+    readonly property color focus: ShellStore.settings.themeAccentOverride === true ? customAccent
+                                  : themePack === "nocturne" ? "#7FD4FF"
                                   : themePack === "aurora" ? "#6EE7B7"
                                   : themePack === "kraft" ? "#D3A85C"
                                   : themePack === "phosphor" ? "#6BFF8A"

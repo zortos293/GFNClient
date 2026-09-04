@@ -205,7 +205,8 @@ FocusScope {
     }
 
     GlassPanel {
-        visible: root.sessionClockVisible
+        MotionProgress { id: clockMotion; shown: root.sessionClockVisible }
+        visible: clockMotion.present
         z: 12
         x: 34; y: 34; width: 190; height: 58; panelRadius: 22; strong: true
         Row {
@@ -213,8 +214,7 @@ FocusScope {
             Text { text: "◷"; color: Theme.focus; font.pixelSize: 19; font.weight: Font.Black }
             Text { text: root.elapsed(root.elapsedSeconds); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 17; font.weight: Font.Bold }
         }
-        opacity: visible ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic } }
+        opacity: clockMotion.progress
     }
 
     GlassPanel {
@@ -239,8 +239,12 @@ FocusScope {
     }
 
     GlassPanel {
-        visible: root.streaming && ShellStore.antiAfkEnabled
-            && (Boolean(ShellStore.settings.showAntiAfkIndicator) || root.antiAfkReminderVisible)
+        MotionProgress {
+            id: afkMotion
+            shown: root.streaming && ShellStore.antiAfkEnabled
+                && (Boolean(ShellStore.settings.showAntiAfkIndicator) || root.antiAfkReminderVisible)
+        }
+        visible: afkMotion.present
         z: 12
         x: root.width - width - 34; y: 34; width: 180; height: 58; panelRadius: 22; strong: true
         Row {
@@ -248,8 +252,7 @@ FocusScope {
             Rectangle { width: 10; height: 10; radius: 5; color: Theme.mint }
             Text { text: qsTr("ANTI-AFK ON"); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Black; font.letterSpacing: 0.8 }
         }
-        opacity: visible ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic } }
+        opacity: afkMotion.progress
     }
 
     Keys.onPressed: event => {

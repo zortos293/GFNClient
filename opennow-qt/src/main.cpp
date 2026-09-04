@@ -4,6 +4,7 @@
 #include "CoreClient.h"
 #include "InputModeTracker.h"
 #include "Localization.h"
+#include "MotionAcceptance.h"
 #ifdef OPENNOW_EMBEDDED_STREAMER
 #include "NativeStreamRuntime.h"
 #endif
@@ -16,6 +17,7 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QTimer>
@@ -23,6 +25,7 @@
 #include <QFileInfo>
 #include <QVariant>
 #include <QVariantMap>
+#include <QJSValue>
 #include <QQmlError>
 #include <QQuickItem>
 #include <QQuickWindow>
@@ -195,6 +198,8 @@ int main(int argc, char *argv[])
         u"SmokeTestGame"_s,
         smokeTest ? QVariantMap{
             {u"title"_s, u"Smoke Test Game"_s},
+            {u"isAvailable"_s, true},
+            {u"isInLibrary"_s, true},
             {u"publisherName"_s, u"OpenNOW Test Fixture"_s},
             {u"genres"_s, QStringList{u"Fixture"_s}},
             {u"selectedVariantIndex"_s, 0},
@@ -211,6 +216,140 @@ int main(int argc, char *argv[])
                      &application, [] { QCoreApplication::exit(EXIT_FAILURE); },
                      Qt::QueuedConnection);
     engine.loadFromModule(u"OpenNOW"_s, u"Main"_s);
+    // Isolated visual acceptance options never start or alter a real account.
+    if (smokeTest && !engine.rootObjects().isEmpty()) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        const auto dimension = [&arguments](const QString &option, int fallback) {
+            const auto index = arguments.indexOf(option);
+            if (index < 0 || index + 1 >= arguments.size()) return fallback;
+            bool ok = false;
+            const int value = arguments.at(index + 1).toInt(&ok);
+            return ok ? qBound(540, value, 3840) : fallback;
+        };
+        if (window) window->resize(dimension(u"--smoke-width"_s, 1600),
+                                   dimension(u"--smoke-height"_s, 900));
+        if (arguments.contains(u"--smoke-paper-design"_s)) {
+            auto *store = engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (store) {
+                store->setProperty("settings", QVariantMap{
+                    {u"themePack"_s, u"aurora"_s}, {u"appTheme"_s, u"dark"_s},
+                    {u"desktopSidebarHover"_s, false}, {u"desktopRailCollapsed"_s, true},
+                    {u"resolution"_s, u"2560x1440"_s}, {u"fps"_s, 120},
+                    {u"codec"_s, u"av1"_s}, {u"colorQuality"_s, u"10bit_420"_s},
+                    {u"maxBitrateMbps"_s, 75}, {u"enableCloudGsync"_s, true}});
+                // Visual fixtures stay in the smoke-only QML store. The core is
+                // not started, so no account state or preferences are persisted.
+                QVariantList accounts;
+                const QStringList providers{u"Steam"_s, u"Epic Games"_s, u"Xbox"_s,
+                    u"Ubisoft"_s, u"Battle.net"_s, u"GOG"_s, u"Gaijin"_s};
+                for (qsizetype i = 0; i < providers.size(); ++i) {
+                    accounts.append(QVariantMap{
+                        {u"provider"_s, providers.at(i)}, {u"label"_s, providers.at(i)},
+                        {u"isConnected"_s, i < 3}, {u"supportsSync"_s, i < 3},
+                        {u"syncedGames"_s, 42},
+                        {u"status"_s, i < 3 ? u"connected"_s : i == 3 ? u"expired"_s : u"disconnected"_s}});
+                }
+                store->setProperty("gameAccounts", accounts);
+                store->setProperty("gameAccountsState", u"ready"_s);
+                store->setProperty("regions", QVariantList{
+                    QVariantMap{{u"name"_s,u"EU West"_s},{u"url"_s,u"https://west.example.invalid"_s}},
+                    QVariantMap{{u"name"_s,u"EU Central"_s},{u"url"_s,u"https://central.example.invalid"_s}},
+                    QVariantMap{{u"name"_s,u"US East"_s},{u"url"_s,u"https://east.example.invalid"_s}}});
+                store->setProperty("regionPingResults", QVariantMap{
+                    {u"https://west.example.invalid"_s,9},{u"https://central.example.invalid"_s,21},
+                    {u"https://east.example.invalid"_s,94}});
+            }
+        }
+        if (arguments.contains(u"--smoke-resolution-open"_s)) {
+            auto *picker = window ? window->findChild<QObject *>(u"renewResolutionPicker"_s) : nullptr;
+            if (!picker) return EXIT_FAILURE;
+            picker->setProperty("expanded", true);
+        }
+        if (arguments.contains(u"--smoke-light-theme"_s)) {
+            auto *store = engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (store) store->setProperty("settings", QVariantMap{{u"appTheme"_s, u"light"_s}});
+        }
+        if (arguments.contains(u"--smoke-settings-advanced"_s)) {
+            auto *settings = window ? window->findChild<QObject *>(u"desktopSettingsScreen"_s) : nullptr;
+            if (settings) settings->setProperty("advancedOpen", true);
+        }
+        const auto panelIndex = arguments.indexOf(u"--smoke-settings-panel"_s);
+        if (panelIndex >= 0 && panelIndex + 1 < arguments.size()) {
+            const auto panel = arguments.at(panelIndex + 1);
+            const QStringList panels{u"stats"_s,u"audio"_s,u"interface"_s,u"console"_s,
+                u"shortcuts"_s,u"controllers"_s,u"subscription"_s};
+            auto *settings = window ? window->findChild<QObject *>(u"desktopSettingsScreen"_s) : nullptr;
+            if (!settings || !panels.contains(panel)) return EXIT_FAILURE;
+            settings->setProperty("acceptancePanel", panel);
+        }
+        if (arguments.contains(u"--smoke-choice-open"_s)) {
+            auto *picker = window ? window->findChild<QObject *>(u"renewNetworkRegion"_s) : nullptr;
+            if (!picker && window) picker = window->findChild<QObject *>(u"renewLanguageChoice"_s);
+            if (!picker) return EXIT_FAILURE;
+            picker->setProperty("expanded", true);
+        }
+        if (arguments.contains(u"--smoke-renew-settings-actions"_s)) {
+            // Repeater delegates may be incubated after the settings Loader.
+            // Exercise controls once the first layout has had time to complete.
+            QTimer::singleShot(150, &application, [&application, &engine, window] {
+            const auto checkActions = [&engine, window]() -> int {
+            auto *store = engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!window || !store) return EXIT_FAILURE;
+            const auto findVisual = [](auto &&self, QQuickItem *item, const QString &name) -> QObject * {
+                if (!item) return nullptr;
+                if (item->objectName() == name) return item;
+                for (auto *child : item->childItems())
+                    if (auto *match = self(self, child, name)) return match;
+                return nullptr;
+            };
+            const auto findControl = [window, &findVisual](const QString &name) -> QObject * {
+                if (auto *object = window->findChild<QObject *>(name)) return object;
+                return findVisual(findVisual, window->contentItem(), name);
+            };
+            const auto setting = [store](const QString &key) {
+                const auto settings = store->property("settings");
+                return settings.canConvert<QJSValue>()
+                    ? settings.value<QJSValue>().property(key).toVariant()
+                    : settings.toMap().value(key);
+            };
+            bool exercised = false;
+            if (auto *region = window->findChild<QObject *>(u"renewNetworkRegion"_s)) {
+                exercised = true;
+                if (!QMetaObject::invokeMethod(region, "selected", Q_ARG(QVariant, QVariant(u"https://central.example.invalid"_s)))
+                    || setting(u"region"_s).toString() != u"https://central.example.invalid"_s) return EXIT_FAILURE;
+                auto *field = window->findChild<QObject *>(u"renewProxyAddress"_s);
+                auto *toggle = window->findChild<QObject *>(u"renewProxyEnabled"_s);
+                if (!field || !toggle) return EXIT_FAILURE;
+                field->setProperty("text", u"http://proxy.example.invalid:8080"_s);
+                if (!QMetaObject::invokeMethod(field,"editingFinished")
+                    || !QMetaObject::invokeMethod(toggle,"valueChangedByUser",Q_ARG(bool,true))
+                    || setting(u"sessionProxyUrl"_s).toString() != u"http://proxy.example.invalid:8080"_s
+                    || !setting(u"sessionProxyEnabled"_s).toBool()) return EXIT_FAILURE;
+            }
+            if (auto *channel = window->findChild<QObject *>(u"renewUpdateChannel"_s)) {
+                exercised = true;
+                if (!QMetaObject::invokeMethod(channel,"selected",Q_ARG(int,1),
+                        Q_ARG(QVariant,QVariant(QVariantMap{{u"label"_s,u"Nightly"_s},{u"value"_s,u"nightly"_s}})))
+                    || setting(u"updateChannel"_s).toString() != u"nightly"_s) return EXIT_FAILURE;
+            }
+            if (auto *fps = findControl(u"renew-statsShowFps"_s)) {
+                exercised = true;
+                auto *region = findControl(u"renew-statsShowRegion"_s);
+                if (!region || !QMetaObject::invokeMethod(fps,"valueChangedByUser",Q_ARG(bool,false))
+                    || !QMetaObject::invokeMethod(region,"valueChangedByUser",Q_ARG(bool,false))
+                    || !setting(u"statsShowFps"_s).isValid() || !setting(u"statsShowRegion"_s).isValid()
+                    || setting(u"statsShowFps"_s).toBool() || setting(u"statsShowRegion"_s).toBool()) return EXIT_FAILURE;
+            }
+            if (!exercised) return EXIT_FAILURE;
+            return EXIT_SUCCESS;
+            };
+            if (checkActions() != EXIT_SUCCESS) {
+                std::fprintf(stderr, "Desktop Renew settings action acceptance failed\n");
+                application.exit(EXIT_FAILURE);
+            }
+            });
+        }
+    }
     const auto qmlReadyMs = startupTimer.elapsed();
     controller.handleArguments(arguments);
     QObject::connect(&controller, &AppController::activationRequested,
@@ -319,13 +458,62 @@ int main(int argc, char *argv[])
         }
     } else {
         const auto screenshotIndex = arguments.indexOf(u"--screenshot"_s);
-        if (smokeFullscreenStatsShortcut) {
+        if (smokeTest && (arguments.contains(u"--smoke-region-ping"_s) || arguments.contains(u"--smoke-store-paging"_s))) {
+            const bool storePaging = arguments.contains(u"--smoke-store-paging"_s);
+            QQmlComponent component(&engine, QUrl(storePaging ? u"qrc:/acceptance/StorePagingAcceptance.qml"_s
+                : u"qrc:/acceptance/RegionPingAcceptance.qml"_s));
+            auto *fixture = component.create();
+            if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
+            fixture->setParent(&engine);
+            auto *client = fixture->property("client").value<QObject *>();
+            if (!client) return EXIT_FAILURE;
+            engine.rootContext()->setContextProperty(u"CoreClient"_s, client);
+            QTimer::singleShot(150, &application, [&, fixture, storePaging] {
+                auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+                auto *screen = window->findChild<QObject *>(storePaging ? u"desktopStoreContent"_s : u"desktopSettingsScreen"_s);
+                auto *row = window->findChild<QObject *>(storePaging ? u"storePageStatusText"_s : u"renewRegionLatency"_s);
+                auto *button = window->findChild<QObject *>(storePaging ? u"storePageRetry"_s : u"renewRegionPingButton"_s);
+                auto *picker = window->findChild<QObject *>(storePaging ? u"storeEmptyStatusText"_s : u"renewNetworkRegion"_s);
+                QVariant passed;
+                if (!screen || !row || !button || !picker
+                    || !QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
+                        Q_ARG(QVariant, QVariant::fromValue(screen)), Q_ARG(QVariant, QVariant::fromValue(row)),
+                        Q_ARG(QVariant, QVariant::fromValue(button)), Q_ARG(QVariant, QVariant::fromValue(picker)))
+                    || !passed.toBool() || qmlWarningOccurred) {
+                    qCritical("Store/region acceptance failed");
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                if (auto *results = window->findChild<QObject *>(u"renewNetworkRegion"_s))
+                    results->setProperty("expanded", true);
+                if (storePaging && arguments.contains(u"--smoke-store-navigation"_s)) {
+                    startStoreNavigationAcceptance(window, &qmlWarningOccurred);
+                    return;
+                }
+                QTimer::singleShot(250, &application, [&, window] {
+                    bool passed = !qmlWarningOccurred;
+                    const auto shot = arguments.indexOf(u"--screenshot"_s);
+                    if (shot >= 0 && shot + 1 < arguments.size()) {
+                        const auto path = arguments.at(shot + 1);
+                        passed = passed && QFileInfo(path).isAbsolute() && window->grabWindow().save(path);
+                    }
+                    application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
+                });
+            });
+        } else if (smokeTest && arguments.contains(u"--smoke-motion"_s)) {
+            auto *window = engine.rootObjects().isEmpty()
+                ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+            startMotionAcceptance(window, &controller, &qmlWarningOccurred,
+                                  arguments.contains(u"--smoke-motion-fullscreen"_s));
+        } else if (smokeFullscreenStatsShortcut) {
             auto *window = engine.rootObjects().isEmpty()
                 ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
             if (!window) return EXIT_FAILURE;
             window->showFullScreen();
             window->requestActivate();
-            auto *statsShortcut = window->findChild<QObject *>(u"streamStatsShortcut"_s);
+            auto *statsShortcut = window->findChild<QObject *>(
+                arguments.contains(u"--smoke-configured-stats-shortcut"_s)
+                    ? u"configuredStreamStatsShortcut"_s : u"streamStatsShortcut"_s);
             auto *copyShortcut = window->findChild<QObject *>(u"streamStatsCopyShortcut"_s);
             auto *streamSurface = window->findChild<QObject *>(u"streamSurfaceHost"_s);
             if (!statsShortcut || !copyShortcut || !streamSurface) return EXIT_FAILURE;

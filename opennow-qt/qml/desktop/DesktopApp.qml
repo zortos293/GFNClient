@@ -30,7 +30,7 @@ FocusScope {
     }
     function subtitleForRoute(value) {
         if (value === "library" || value === "game-detail") return qsTr("%1 games").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
-        if (value === "store") return qsTr("%1 in catalog").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
+        if (value === "store") return qsTr("%1 in catalog").arg(ShellStore.storeTotalCount || ShellStore.storeGames.length)
         if (value === "friends") {
             if (ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
                 return qsTr("Provider friends")
@@ -50,7 +50,8 @@ FocusScope {
         if (value === "settings-themes") return 8
         if (value === "settings-console") return 9
         if (value === "settings-advanced" || value === "settings-advanced-dropdown") return 11
-        return 0
+        if (value === "settings-account") return 0
+        return 3
     }
     function contentForRoute(value) {
         if (value === "store") return storeComponent
@@ -62,18 +63,21 @@ FocusScope {
     function toggleConsoleMode() {
         ShellStore.requestConsoleSurface(!DesktopTokens.consoleModeTargetOn(Window.window))
     }
-    // Keep desktop chrome proportionate on any display size. The 1600x900
-    // default window renders at exactly 1.0; smaller windows (e.g. scaled
-    // 1080p screens) shrink instead of overflowing. Never grows above 1.0:
-    // the design size is the ceiling, so text stays reasonable everywhere.
+    // Fit the design within bounded readable sizes, then apply the user's
+    // interface scale. Qt handles device-pixel-ratio changes independently.
     function updateUiScale() {
         if (root.width <= 0 || root.height <= 0)
             return
-        const fitted = Math.min(root.width / 1600, root.height / 900)
-        DesktopTokens.uiScale = Math.min(1.0, Math.max(0.7, fitted))
+        const fitted = DesktopTokens.scaleForWindow(root.width, root.height)
+        const preference = Number(ShellStore.settings.desktopUiScale || 1)
+        DesktopTokens.uiScale = Math.min(1.4, Math.max(0.9, fitted * preference))
     }
     onWidthChanged: root.updateUiScale()
     onHeightChanged: root.updateUiScale()
+    Connections {
+        target: ShellStore
+        function onSettingsChanged() { root.updateUiScale() }
+    }
     function resynchronizeStreamInput() {
         if (root.streamVisible)
             desktopStream.resynchronizeStreamInput()
@@ -105,6 +109,7 @@ FocusScope {
 
         Loader {
             id: pageLoader
+            objectName: "desktopPageLoader"
             anchors.fill: parent
             sourceComponent: root.contentForRoute(root.contentRoute)
             opacity: 1
@@ -112,7 +117,6 @@ FocusScope {
                 if (shell.visible && root.route !== "game-detail" && !root.commandOpen && item && item.forceActiveFocus)
                     Qt.callLater(() => item.forceActiveFocus())
             }
-            Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
         }
     }
 
@@ -138,13 +142,14 @@ FocusScope {
 
     DesktopGameModal {
         anchors.fill: parent
-        visible: root.shellVisible && root.route === "game-detail"
+        game: SmokeTestMode ? SmokeTestGame : ShellStore.selectedGame
+        opened: root.shellVisible && root.route === "game-detail"
         z: 100
         onCloseRequested: AppController.goBack()
         onPlayRequested: ShellStore.launchSelectedGame(false)
     }
     DesktopCommandPalette {
-        visible: root.commandOpen && root.shellVisible
+        opened: root.commandOpen && root.shellVisible
         z: 120
         onCloseRequested: root.commandOpen = false
         onRouteRequested: route => AppController.navigate(route)

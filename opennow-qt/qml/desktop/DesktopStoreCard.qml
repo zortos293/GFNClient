@@ -21,16 +21,16 @@ Item {
 
     width: tileWidth
     height: tileHeight
-    scale: selected ? DesktopTokens.cardHoverScale : 1
-    transformOrigin: Item.Center
-    z: selected ? 20 : 0
+    z: selected || visual.scale !== 1 ? 20 : 0
     Accessible.role: Accessible.Button
     Accessible.name: String(game && game.title || qsTr("Game"))
 
-    Behavior on scale {
-        NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic }
-    }
-
+    Item {
+        id: visual
+        anchors.fill: parent
+        scale: !AppController.reducedMotion && root.selected ? DesktopTokens.cardHoverScale : 1
+        transformOrigin: Item.Center
+        Behavior on scale { NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic } }
     RoundedArtwork {
         id: cover
         x: 0
@@ -121,6 +121,8 @@ Item {
             elide: Text.ElideRight
         }
     }
+
+    } // visual; the pointer target does not move during zoom
 
     MouseArea {
         id: pointer

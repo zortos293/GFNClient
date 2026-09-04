@@ -19,7 +19,7 @@ ItemDelegate {
     focusPolicy: Qt.StrongFocus
     Accessible.name: title
     Accessible.role: Accessible.Button
-    scale: highlighted ? 1.055 : 1
+    scale: !AppController.reducedMotion && highlighted ? 1.055 : 1
     z: highlighted ? 20 : 0
 
     background: RoundedArtwork {

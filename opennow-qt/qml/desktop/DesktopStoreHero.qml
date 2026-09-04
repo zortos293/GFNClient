@@ -228,7 +228,7 @@ Item {
                 height: 6
                 radius: 3
                 color: index === root.currentSlide ? DesktopTokens.mint : Qt.rgba(1, 1, 1, 0.28)
-                Behavior on width { NumberAnimation { duration: 180 } }
+                Behavior on width { NumberAnimation { duration: AppController.reducedMotion ? 0 : 180; easing.type: Easing.OutCubic } }
                 HoverHandler { cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: root.currentSlide = index }
             }

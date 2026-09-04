@@ -20,16 +20,16 @@ Item {
 
     width: tileWidth
     height: tileHeight
-    scale: highlighted ? DesktopTokens.cardHoverScale : 1
-    transformOrigin: Item.Center
-    z: highlighted ? 20 : 0
+    z: highlighted || visual.scale !== 1 ? 20 : 0
     Accessible.role: Accessible.Button
     Accessible.name: game ? String(game.title || qsTr("Game")) : qsTr("Game")
 
-    Behavior on scale {
-        NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic }
-    }
-
+    Item {
+        id: visual
+        anchors.fill: parent
+        scale: !AppController.reducedMotion && root.highlighted ? DesktopTokens.cardHoverScale : 1
+        transformOrigin: Item.Center
+        Behavior on scale { NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic } }
     RoundedArtwork {
         anchors.fill: parent
         artwork: root.artwork
@@ -52,6 +52,8 @@ Item {
             ColorAnimation { duration: Theme.focusDuration }
         }
     }
+
+    } // visual; hit-test handlers remain outside the transformed item
 
     HoverHandler {
         id: hoverHandler

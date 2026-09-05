@@ -13,6 +13,7 @@ const MAX_ENTRIES: usize = 512;
 
 pub struct StoreCache {
     root: PathBuf,
+    index: Mutex<Option<(String, crate::store_index::StoreIndex)>>,
     // IO is serialized, but network work never holds the lock. Invalidation
     // advances the epoch so an older in-flight fetch cannot refill cleared data.
     epoch: Mutex<u64>,
@@ -26,6 +27,7 @@ impl StoreCache {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             root: data_dir.join("store-cache-v1"),
+            index: Mutex::new(None),
             epoch: Mutex::new(0),
         }
     }
@@ -42,6 +44,7 @@ impl StoreCache {
         let epoch = {
             let mut epoch = self.epoch.lock().expect("Store cache poisoned");
             if refresh {
+                *self.index.lock().expect("Store index poisoned") = None;
                 *epoch = epoch.wrapping_add(1);
                 // Only this cache's generated, flat response files are targets.
                 if let Ok(entries) = fs::read_dir(&self.root) {
@@ -68,8 +71,53 @@ impl StoreCache {
             if self.write(&path, &value).is_err() {
                 eprintln!("store cache: response could not be persisted");
             }
+            *self.index.lock().expect("Store index poisoned") = None;
         }
         Ok(value)
+    }
+
+    pub fn local_query(&self, scope: &Value, params: &Value) -> Result<Value, ServiceError> {
+        let scope_key = digest(scope);
+        let read_key =
+            |key: &Value| self.read(&self.root.join(format!("{scope_key}-{}.json", digest(key))));
+        let mut cached = self.index.lock().expect("Store index poisoned");
+        if params["refresh"] == true || cached.as_ref().is_none_or(|(key, _)| key != &scope_key) {
+            let mut index = crate::store_index::StoreIndex::default();
+            let mut cursor = String::new();
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..100 {
+                let key = serde_json::json!(["page", 100, cursor, ""]);
+                let Some(page) = read_key(&key) else {
+                    break;
+                };
+                for (at, game) in page["games"].as_array().into_iter().flatten().enumerate() {
+                    index.add(game, key.clone(), format!("/games/{at}"), None);
+                }
+                index.pages += 1;
+                if page["hasNextPage"] == false {
+                    index.complete = true;
+                    break;
+                }
+                cursor = page["nextCursor"].as_str().unwrap_or("").to_owned();
+                index.next_upstream = cursor.clone();
+                if cursor.is_empty() || !seen.insert(cursor.clone()) {
+                    break;
+                }
+            }
+            let key = serde_json::json!(["presentation", "panels"]);
+            if let Some(panels) = read_key(&key) {
+                index.add_panels(&panels, &key);
+            }
+            *cached = Some((scope_key.clone(), index));
+        }
+        let (_, index) = cached.as_ref().expect("Store index initialized");
+        if index.pages == 0 {
+            return Err(ServiceError {
+                code: "store_cache_missing",
+                message: "No saved Store catalog yet. Load a catalog page first.".into(),
+            });
+        }
+        index.query(params, read_key)
     }
 
     fn read(&self, path: &PathBuf) -> Option<Value> {

@@ -16,6 +16,7 @@ mod proxy;
 mod settings;
 mod store_cache;
 mod store_catalog_page;
+mod store_index;
 mod streamer;
 mod telemetry;
 mod thanks;
@@ -267,7 +268,7 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v5", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v5", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "social.capabilitySurface"]}),
                 None,
             ))
         }
@@ -298,13 +299,14 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 "invalid_params".to_owned(),
                 "settings.set requires a value".to_owned(),
             ))?;
-            let applied = core
-                .settings
-                .lock()
-                .expect("settings poisoned")
+            let mut settings = core.settings.lock().expect("settings poisoned");
+            let applied = settings
                 .set(key, value)
                 .map_err(|message| ("invalid_setting".to_owned(), message))?;
-            let event = json!({"key":key, "value":applied});
+            let mut event = json!({"key":key, "value":applied});
+            if key == "launchInConsoleMode" && applied == json!(false) {
+                event["changes"] = json!({"switchToConsoleOnPad": false});
+            }
             Ok((event.clone(), Some(("settings.changed", event))))
         }
         "settings.reset" => {
@@ -412,6 +414,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 .map(|value| (value, None))
                 .map_err(gfn_error)
         }
+        "catalog.store.local" => {
+            let settings = core.settings.lock().expect("settings poisoned").all();
+            core.gfn
+                .store_local_catalog(params, &settings)
+                .map(|value| (value, None))
+                .map_err(gfn_error)
+        }
         "catalog.store.list" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
             core.gfn
@@ -485,9 +494,18 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
             .map_err(gfn_error),
         "session.create" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
-            core.streamer
-                .validate_codec(&settings)
-                .map_err(streamer_error)?;
+            let settings = if !params["runtimeCapabilities"].is_null() {
+                StreamerService::embedded_session_settings(
+                    &settings,
+                    &params["runtimeCapabilities"],
+                )
+                .map_err(streamer_error)?
+            } else {
+                core.streamer
+                    .validate_codec(&settings)
+                    .map_err(streamer_error)?;
+                settings
+            };
             core.gfn
                 .create_session(params, &settings)
                 .map(|value| (value.clone(), Some(("session.changed", value))))
@@ -711,9 +729,15 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 .as_str()
                 .unwrap_or_default()
                 .to_owned();
-            let unseen = highlights["version"]
+            // Historical notes remain readable without announcing an older
+            // release as an available update or navigating away from About.
+            let unseen = core.updater.state()["availableVersion"]
                 .as_str()
-                .is_some_and(|version| !version.is_empty() && version != seen);
+                .is_some_and(|version| {
+                    !version.is_empty()
+                        && version != seen
+                        && highlights["version"].as_str() == Some(version)
+                });
             Ok((
                 highlights.clone(),
                 unseen.then_some(("updater.highlights.show", highlights)),

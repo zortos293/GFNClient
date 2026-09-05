@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -71,7 +71,7 @@ impl DiagnosticsService {
 
     pub fn snapshot(&self) -> Value {
         let entries = self.entries.lock().expect("diagnostics poisoned");
-        let values = entries
+        let mut values = entries
             .iter()
             .rev()
             .take(200)
@@ -84,6 +84,34 @@ impl DiagnosticsService {
                 })
             })
             .collect::<Vec<_>>();
+        drop(entries);
+        // The in-app diagnostics screen uses this same bounded entry contract.
+        // Read adjacent embedded-runtime traces only on an explicit snapshot request.
+        for name in ["qt-native.log", "native-streamer.log"] {
+            if let Ok(tail) = native_log_tail(&self.directory.join(name)) {
+                for line in tail.lines().rev().take(60) {
+                    let Some((timestamp, detail)) = line.split_once(' ') else {
+                        continue;
+                    };
+                    let Ok(at_ms) = timestamp.parse::<u128>() else {
+                        continue;
+                    };
+                    values.push(json!({
+                        "atMs":at_ms.to_string(), "area":name,
+                        "event":"trace", "detail":redact(detail, 480)
+                    }));
+                }
+            }
+        }
+        values.sort_by_key(|entry| {
+            std::cmp::Reverse(
+                entry["atMs"]
+                    .as_str()
+                    .and_then(|value| value.parse::<u128>().ok())
+                    .unwrap_or(0),
+            )
+        });
+        values.truncate(200);
         json!({
             "entries": values,
             "persistent": true,
@@ -108,12 +136,12 @@ impl DiagnosticsService {
         );
         if let Ok(previous) = fs::read_to_string(&self.previous_path) {
             output.push_str("Previous run\n------------\n");
-            output.push_str(&redact(&previous, 500_000));
+            output.push_str(&redact_lines(&previous, 500_000));
             output.push_str("\n\n");
         }
         output.push_str("Current run\n-----------\n");
         if let Ok(current) = fs::read_to_string(&self.current_path) {
-            output.push_str(&redact(&current, 900_000));
+            output.push_str(&redact_lines(&current, 900_000));
         } else {
             let entries = self.entries.lock().expect("diagnostics poisoned");
             for entry in entries.iter() {
@@ -124,8 +152,24 @@ impl DiagnosticsService {
             output.push_str("\n\nStructured runtime snapshot\n---------------------------\n");
             let rendered =
                 serde_json::to_string_pretty(runtime).unwrap_or_else(|_| "{}".to_owned());
-            output.push_str(&redact(&rendered, 200_000));
+            output.push_str(&redact_lines(&rendered, 200_000));
             output.push('\n');
+        }
+        // The embedded streamer does not run as a child of the core. Include its
+        // adjacent file sink explicitly, bounded and redacted like the RPC log.
+        for name in [
+            "native-streamer.log",
+            "native-streamer.log.previous",
+            "native-streamer.previous.log",
+            "qt-native.log",
+            "qt-native.log.previous",
+        ] {
+            if let Ok(tail) = native_log_tail(&self.directory.join(name)) {
+                output.push_str(&format!(
+                    "\n\nNative media: {name}\n---------------------------\n"
+                ));
+                output.push_str(&redact_lines(&tail, 262_144));
+            }
         }
         fs::write(&temporary, output.as_bytes())?;
         fs::rename(&temporary, &path)?;
@@ -252,10 +296,64 @@ fn acceptance_value_is_safe(value: &Value) -> bool {
     }
 }
 
+fn native_log_tail(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let start = file.metadata()?.len().saturating_sub(262_144);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.take(262_144).read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(if start > 0 {
+        text.split_once('\n')
+            .map_or("", |(_, tail)| tail)
+            .to_owned()
+    } else {
+        text.into_owned()
+    })
+}
+
+fn redact_lines(value: &str, limit: usize) -> String {
+    let mut output = String::new();
+    for line in value.lines() {
+        let remaining = limit.saturating_sub(output.len());
+        if remaining < 4 {
+            break;
+        }
+        let rendered = redact(line, remaining - 4);
+        output.push_str(&rendered);
+        output.push('\n');
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn diagnostics_export_includes_bounded_redacted_native_log() {
+        let directory = env::temp_dir().join(format!("opennow-native-diagnostics-{}", now_ms()));
+        let service = DiagnosticsService::new(&directory).unwrap();
+        let path = directory.join("diagnostics/native-streamer.log");
+        fs::write(
+            &path,
+            format!(
+                "{}\ndecoder initialization failed token=secret https://example.com\n",
+                "x".repeat(300_000)
+            ),
+        )
+        .unwrap();
+        let tail = native_log_tail(&path).unwrap();
+        assert!(tail.len() < 262_144);
+        let exported = service.export().unwrap();
+        let text = fs::read_to_string(exported["path"].as_str().unwrap()).unwrap();
+        assert!(text.contains("Native media: native-streamer.log"));
+        assert!(text.contains("decoder initialization failed"));
+        assert!(!text.contains("secret"));
+        assert!(!text.contains("example.com"));
+        let _ = fs::remove_dir_all(directory);
+    }
 
     #[test]
     fn diagnostics_redact_and_export_atomically() {
@@ -280,6 +378,11 @@ mod tests {
     fn diagnostics_export_embeds_a_redacted_structured_runtime_snapshot() {
         let directory = env::temp_dir().join(format!("opennow-runtime-diagnostics-{}", now_ms()));
         let service = DiagnosticsService::new(&directory).unwrap();
+        fs::write(
+            directory.join("diagnostics/qt-native.log"),
+            "first handshake\nsecond user@example.com\n",
+        )
+        .unwrap();
         let exported = service
             .export_with_runtime(Some(&json!({
                 "kind":"opennow.acceptance",
@@ -292,10 +395,34 @@ mod tests {
         assert!(text.contains("Structured runtime snapshot"));
         assert!(text.contains("opennow.acceptance"));
         assert!(text.contains("queueDropCount"));
+        assert!(text.contains("qt-native.log"));
+        assert!(text.contains("first handshake\nsecond [redacted]\n"));
         assert!(!text.contains("user@example.com"));
         assert!(!text.contains("/home/alice"));
         assert!(!text.contains("Alice"));
         assert!(!text.contains("/Users/alice"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn snapshot_includes_bounded_native_and_qt_handshake_entries() {
+        let directory = env::temp_dir().join(format!("opennow-handshake-snapshot-{}", now_ms()));
+        let service = DiagnosticsService::new(&directory).unwrap();
+        let log = (1..=250)
+            .map(|i| format!("{i} qt-native delivered type=ready user@example.com\n"))
+            .collect::<String>();
+        fs::write(directory.join("diagnostics/qt-native.log"), log).unwrap();
+        let snapshot = service.snapshot();
+        let entries = snapshot["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 60);
+        assert_eq!(entries[0]["atMs"], "250");
+        assert!(
+            entries[0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("type=ready")
+        );
+        assert!(!snapshot.to_string().contains("user@example.com"));
         let _ = fs::remove_dir_all(directory);
     }
 

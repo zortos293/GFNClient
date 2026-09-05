@@ -1185,6 +1185,38 @@ impl GfnService {
         }))
     }
 
+    pub fn store_local_catalog(
+        &self,
+        params: &Value,
+        settings: &Value,
+    ) -> Result<Value, ServiceError> {
+        let session = self.authenticated_session("Sign in to browse saved Store games")?;
+        let scope = self.store_cache_scope(&session, settings)?;
+        let mut result = match self.store_cache.local_query(&scope, params) {
+            Err(error) if error.code == "store_cache_missing" => {
+                self.store_catalog(&json!({"limit":100,"cursor":"","searchQuery":""}), settings)?;
+                self.store_cache.local_query(&scope, params)?
+            }
+            result => result?,
+        };
+        // A cold/partial cache grows by at most one upstream page per explicit
+        // demand. Never crawl the entire catalog on startup or a search keypress.
+        if result["count"] == 0 && result["cacheComplete"] == false {
+            if let Some(cursor) = result["upstreamCursor"].as_str().filter(|s| !s.is_empty()) {
+                self.store_catalog(
+                    &json!({"limit":100,"cursor":cursor,"searchQuery":""}),
+                    settings,
+                )?;
+                result = self.store_cache.local_query(&scope, params)?;
+            }
+        }
+        result
+            .as_object_mut()
+            .expect("Local Store response")
+            .remove("upstreamCursor");
+        Ok(result)
+    }
+
     pub fn store_catalog(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
         let page = crate::store_catalog_page::PageRequest::parse(params)?;
         let client = client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
@@ -1282,8 +1314,11 @@ impl GfnService {
         let client = client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
         let session = self.authenticated_session("Sign in to load the storefront")?;
         let scope = self.store_cache_scope(&session, settings)?;
-        self.store_cache
-            .load_or_fetch(&scope, &json!(["presentation", section]), false, || {
+        let mut result = self.store_cache.load_or_fetch(
+            &scope,
+            &json!(["presentation", section]),
+            false,
+            || {
                 let token = session
                     .tokens
                     .id_token
@@ -1358,7 +1393,18 @@ impl GfnService {
                 // Optional chrome must not enlarge the games response or restart the core.
                 // An oversized/failed section is reported independently by the shell.
                 crate::store_catalog_page::bounded_result(json!({"section":section,"items":items}))
-            })
+            },
+        )?;
+        if section == "panels" && params["metadataOnly"] == true {
+            for panel in result["items"].as_array_mut().into_iter().flatten() {
+                for section in panel["sections"].as_array_mut().into_iter().flatten() {
+                    let count = section["games"].as_array().map_or(0, Vec::len);
+                    section["totalCount"] = json!(count);
+                    section["games"] = json!([]);
+                }
+            }
+        }
+        Ok(result)
     }
 
     pub fn regions(&self) -> Result<Value, ServiceError> {

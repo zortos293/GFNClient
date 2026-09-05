@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const NATIVE_TRANSPORT: &str = "nvst";
+const CONSOLE_POLICY_VERSION: &str = "qtConsoleModePolicyVersion";
 
 pub struct SettingsStore {
     path: PathBuf,
@@ -65,7 +66,23 @@ impl SettingsStore {
             passthrough,
         };
         store.migrate_native_fullscreen_shortcut();
+        // Old builds enabled automatic switching by default, so an existing
+        // true value is not reliable evidence of opt-in. Reset that policy once;
+        // subsequent explicit opt-ins survive every restart.
+        let migrate_console_policy =
+            store.passthrough.get(CONSOLE_POLICY_VERSION) != Some(&json!(1));
+        if migrate_console_policy {
+            store
+                .values
+                .insert("switchToConsoleOnPad".to_owned(), json!(false));
+            store
+                .passthrough
+                .insert(CONSOLE_POLICY_VERSION.to_owned(), json!(1));
+        }
         store.normalize();
+        if migrate_console_policy && store.path.exists() {
+            store.save()?;
+        }
         Ok(store)
     }
 
@@ -92,10 +109,17 @@ impl SettingsStore {
             let raw = self.values["sessionProxyUrl"].as_str().unwrap_or("");
             normalize_proxy_url(raw)?;
         }
+        let previous_values = self.values.clone();
         self.values.insert(key.to_owned(), value);
         self.normalize();
-        self.save()
-            .map_err(|error| format!("Could not save settings: {error}"))?;
+        if key == "launchInConsoleMode" && self.values.get(key) == Some(&json!(false)) {
+            self.values
+                .insert("switchToConsoleOnPad".to_owned(), json!(false));
+        }
+        if let Err(error) = self.save() {
+            self.values = previous_values;
+            return Err(format!("Could not save settings: {error}"));
+        }
         Ok(self.values.get(key).cloned().unwrap_or(Value::Null))
     }
 
@@ -133,7 +157,16 @@ impl SettingsStore {
             &mut self.values,
             "nativeVideoBackend",
             &[
-                "auto", "d3d11", "d3d12", "nvdec", "vaapi", "v4l2", "vulkan", "software",
+                "auto",
+                "d3d11",
+                "d3d12",
+                "nvdec",
+                "cuda",
+                "vaapi",
+                "v4l2",
+                "vulkan",
+                "videotoolbox",
+                "software",
             ],
             "auto",
         );
@@ -623,7 +656,7 @@ fn defaults() -> Map<String, Value> {
         "reducedMotion":false,
         "launchInConsoleMode":false, "consoleProfilePickerOnLaunch":true,
         "desktopRailCollapsed":true, "desktopSidebarHover":true, "desktopBackground":"art",
-        "switchToConsoleOnPad":true, "leaveConsoleOnPointer":true,
+        "switchToConsoleOnPad":false, "leaveConsoleOnPointer":true,
         "autoFullScreen":false, "favoriteGameIds":[], "hiddenGameIds":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
         "showSessionReport":true, "showSessionTimeRemainingInStatsOverlay":false,
         "sessionClockShowEveryMinutes":60, "sessionClockShowDurationSeconds":30,
@@ -645,6 +678,57 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn console_switching_is_opt_in_and_manual_desktop_survives_reload() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-console-policy-{unique}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("settings.json"),
+            serde_json::to_vec(&json!({
+                "launchInConsoleMode": true,
+                "switchToConsoleOnPad": true,
+                "unrelatedLegacySetting": "preserve"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["switchToConsoleOnPad"], json!(false));
+        assert_eq!(store.all()["launchInConsoleMode"], json!(true));
+        store.set("switchToConsoleOnPad", json!(true)).unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(
+            store.all()["switchToConsoleOnPad"],
+            json!(true),
+            "do not migrate a new opt-in twice"
+        );
+        // A failed atomic save must not change the in-memory policy either.
+        let blocked_temporary = directory.join("settings.json.tmp");
+        fs::create_dir(&blocked_temporary).unwrap();
+        assert!(store.set("launchInConsoleMode", json!(false)).is_err());
+        assert_eq!(store.all()["launchInConsoleMode"], json!(true));
+        assert_eq!(store.all()["switchToConsoleOnPad"], json!(true));
+        fs::remove_dir(blocked_temporary).unwrap();
+        store.set("launchInConsoleMode", json!(false)).unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["launchInConsoleMode"], json!(false));
+        assert_eq!(store.all()["switchToConsoleOnPad"], json!(false));
+        store.set("launchInConsoleMode", json!(true)).unwrap();
+        assert_eq!(
+            store.all()["switchToConsoleOnPad"],
+            json!(false),
+            "manual console is not automatic opt-in"
+        );
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(persisted["unrelatedLegacySetting"], json!("preserve"));
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn persists_and_normalizes_settings() {
@@ -671,7 +755,7 @@ mod tests {
             store.set("desktopSidebarHover", json!(false)).unwrap(),
             json!(false)
         );
-        assert_eq!(store.all()["switchToConsoleOnPad"], json!(true));
+        assert_eq!(store.all()["switchToConsoleOnPad"], json!(false));
         assert_eq!(store.all()["leaveConsoleOnPointer"], json!(true));
         assert_eq!(store.all()["shortcutToggleFullscreen"], json!("F11"));
         assert_eq!(store.all()["shortcutScreenshot"], json!("Ctrl+F11"));

@@ -41,6 +41,7 @@ struct State {
     status: &'static str,
     available_version: Option<String>,
     release_url: Option<String>,
+    notes_version: Option<String>,
     notes: Option<String>,
     message: String,
     last_checked_at: Option<u128>,
@@ -99,6 +100,7 @@ impl UpdaterService {
                 status: "idle",
                 available_version: None,
                 release_url: None,
+                notes_version: None,
                 notes: None,
                 message: "Ready to check GitHub Releases".to_owned(),
                 last_checked_at: None,
@@ -155,6 +157,9 @@ impl UpdaterService {
         let mut state = self.state.lock().expect("updater state poisoned");
         state.last_checked_at = Some(now_ms());
         state.downloaded = None;
+        // Reading release notes is independent of installing a newer version.
+        // A development build can be ahead of every published release.
+        update_highlights(&mut state, select_latest_release(&releases, channel));
         if let Some(release) = release {
             let version = release.tag_name.trim_start_matches('v').to_owned();
             let compatible = compatible_asset(&release.assets).cloned();
@@ -171,7 +176,6 @@ impl UpdaterService {
             state.release_url = trusted_release_url(&release.html_url)
                 .then(|| release.html_url.clone())
                 .or_else(|| Some(RELEASES_PAGE.to_owned()));
-            state.notes = release.body.as_deref().map(|value| bounded(value, 20_000));
             state.available =
                 compatible
                     .zip(manifest_url)
@@ -194,8 +198,6 @@ impl UpdaterService {
         } else {
             state.status = "not-available";
             state.available_version = None;
-            state.release_url = Some(RELEASES_PAGE.to_owned());
-            state.notes = None;
             state.available = None;
             state.message = "OpenNOW is up to date.".to_owned();
         }
@@ -257,8 +259,8 @@ impl UpdaterService {
     pub fn highlights(&self) -> Value {
         let state = self.state.lock().expect("updater state poisoned");
         json!({
-            "version": state.available_version,
-            "title": state.available_version.as_ref().map(|version| format!("OpenNOW {version}")),
+            "version": state.notes_version,
+            "title": state.notes_version.as_ref().map(|version| format!("OpenNOW {version}")),
             "bodyMarkdown": state.notes,
             "releaseUrl": state.release_url
         })
@@ -346,13 +348,40 @@ fn select_release<'a>(
     channel: &str,
     current: (u64, u64, u64),
 ) -> Option<&'a Release> {
+    select_latest_release(releases, channel)
+        .filter(|release| parse_version(&release.tag_name).is_some_and(|version| version > current))
+}
+
+fn select_latest_release<'a>(releases: &'a [Release], channel: &str) -> Option<&'a Release> {
     releases
         .iter()
         .filter(|release| !release.draft && (channel == "nightly" || !release.prerelease))
         .filter_map(|release| parse_version(&release.tag_name).map(|version| (release, version)))
-        .filter(|(_, version)| *version > current)
         .max_by_key(|(_, version)| *version)
         .map(|(release, _)| release)
+}
+
+fn update_highlights(state: &mut State, release: Option<&Release>) {
+    state.notes_version =
+        release.map(|release| release.tag_name.trim_start_matches('v').to_owned());
+    state.release_url = Some(
+        release
+            .filter(|release| trusted_release_url(&release.html_url))
+            .map_or_else(
+                || RELEASES_PAGE.to_owned(),
+                |release| release.html_url.clone(),
+            ),
+    );
+    state.notes = Some(match release {
+        Some(release) => release
+            .body
+            .as_deref()
+            .map(str::trim)
+            .filter(|body| !body.is_empty())
+            .map(|body| bounded(body, 20_000))
+            .unwrap_or_else(|| "No release notes were published for this release.".to_owned()),
+        None => "No published releases were found for this update channel.".to_owned(),
+    });
 }
 
 fn compatible_asset(assets: &[Asset]) -> Option<&Asset> {
@@ -703,6 +732,84 @@ mod tests {
         assert_eq!(parse_version("v10.2.3-beta.1"), Some((10, 2, 3)));
         assert!(select_release(&releases, "stable", (0, 9, 0)).is_none());
         assert!(select_release(&releases, "nightly", (0, 10, 0)).is_none());
+    }
+
+    fn notes_state() -> State {
+        State {
+            status: "not-available",
+            available_version: None,
+            release_url: None,
+            notes_version: None,
+            notes: None,
+            message: String::new(),
+            last_checked_at: None,
+            available: None,
+            downloaded: None,
+        }
+    }
+
+    #[test]
+    fn current_and_ahead_builds_keep_published_notes_without_offering_a_downgrade() {
+        let mut published = release("v0.5.4", false);
+        published.body = Some("# Changes\n\n- **Fixed** release notes".to_owned());
+        let releases = vec![published];
+        for current in [(0, 5, 4), (1, 0, 0)] {
+            assert!(select_release(&releases, "stable", current).is_none());
+            let mut state = notes_state();
+            update_highlights(&mut state, select_latest_release(&releases, "stable"));
+            assert_eq!(state.notes_version.as_deref(), Some("0.5.4"));
+            assert_eq!(state.notes, releases[0].body);
+            assert_eq!(
+                state.release_url.as_deref(),
+                Some(releases[0].html_url.as_str())
+            );
+            assert!(state_json(&state)["availableVersion"].is_null());
+            assert_eq!(state_json(&state)["canDownload"], false);
+        }
+    }
+
+    #[test]
+    fn notes_follow_channel_and_ignore_drafts_and_invalid_versions() {
+        let mut draft = release("v99.0.0", false);
+        draft.draft = true;
+        let releases = vec![
+            release("v1.0.0", false),
+            release("v1.1.0-beta", true),
+            draft,
+            release("not-a-version", false),
+        ];
+        let mut state = notes_state();
+        update_highlights(&mut state, select_latest_release(&releases, "nightly"));
+        assert_eq!(state.notes_version.as_deref(), Some("1.1.0-beta"));
+        update_highlights(&mut state, select_latest_release(&releases, "stable"));
+        assert_eq!(state.notes_version.as_deref(), Some("1.0.0"));
+        assert_eq!(
+            select_release(&releases, "stable", (0, 9, 0))
+                .unwrap()
+                .tag_name,
+            "v1.0.0"
+        );
+    }
+
+    #[test]
+    fn missing_bodies_and_empty_channels_replace_stale_notes_with_feedback() {
+        let mut state = notes_state();
+        for body in [None, Some(" \n\t".to_owned())] {
+            let mut published = release("v1.0.0", false);
+            published.body = body;
+            update_highlights(&mut state, Some(&published));
+            assert_eq!(
+                state.notes.as_deref(),
+                Some("No release notes were published for this release.")
+            );
+        }
+        update_highlights(&mut state, None);
+        assert!(state.notes_version.is_none());
+        assert_eq!(
+            state.notes.as_deref(),
+            Some("No published releases were found for this update channel.")
+        );
+        assert_eq!(state.release_url.as_deref(), Some(RELEASES_PAGE));
     }
 
     #[test]

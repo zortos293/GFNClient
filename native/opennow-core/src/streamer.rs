@@ -298,6 +298,68 @@ impl StreamerService {
         ensure_codec_available(&detection["capabilities"], codec)
     }
 
+    /// The in-process Qt streamer, not a separately installed executable, owns the usable
+    /// decode/presentation capabilities. Resolve Auto before asking CloudMatch for a seat.
+    pub fn embedded_session_settings(
+        settings: &Value,
+        capabilities: &Value,
+    ) -> Result<Value, StreamerError> {
+        if capabilities["protocolVersion"].as_u64() != Some(STREAMER_PROTOCOL_VERSION) {
+            return Err(invalid(
+                "Embedded streamer capabilities are missing or incompatible",
+            ));
+        }
+        let requested_backend = settings["nativeVideoBackend"].as_str().unwrap_or("auto");
+        let mut selected = capabilities.clone();
+        let backends = selected["videoBackends"]
+            .as_array_mut()
+            .ok_or_else(|| invalid("Embedded streamer did not report video backends"))?;
+        for backend in backends.iter_mut() {
+            let name = backend["backend"].as_str().unwrap_or("");
+            let matches = !matches!(name, "software" | "ffmpeg")
+                && (requested_backend == "auto"
+                    || requested_backend == name
+                    || (requested_backend == "nvdec" && name == "cuda"));
+            if !matches {
+                backend["available"] = json!(false);
+            }
+        }
+        if !backends
+            .iter()
+            .any(|backend| backend["available"].as_bool() == Some(true))
+        {
+            return Err(StreamerError {
+                code: "streamer_backend_unavailable",
+                message: format!(
+                    "The {requested_backend} backend is unavailable for embedded streaming on this device. Select Auto in Stream settings."
+                ),
+            });
+        }
+        let requested = settings["codec"]
+            .as_str()
+            .unwrap_or("auto")
+            .to_ascii_lowercase();
+        let mut resolved = settings.clone();
+        let codec = if requested == "auto" {
+            let color = settings["colorQuality"].as_str().unwrap_or("8bit_420");
+            let candidates: &[&str] = match color {
+                "8bit_444" | "10bit_444" => &["h265"],
+                "10bit_420" => &["av1", "h265"],
+                _ => &["av1", "h265", "h264"],
+            };
+            candidates.iter().find(|codec| codec_available(&selected, codec)).copied()
+                .ok_or_else(|| StreamerError { code: "streamer_codec_unavailable",
+                    message: "No available hardware codec supports the requested color mode. Try 8-bit 4:2:0 in Stream settings.".to_owned() })?
+        } else {
+            let codec =
+                normalize_codec_name(&requested).ok_or_else(|| invalid("Unknown video codec"))?;
+            ensure_codec_available(&selected, codec)?;
+            codec
+        };
+        resolved["codec"] = json!(codec);
+        Ok(resolved)
+    }
+
     pub fn prepare_embedded(
         &self,
         params: &Value,
@@ -314,6 +376,11 @@ impl StreamerService {
             ));
         }
         let mut context = streamer_context(session, settings);
+        if !params["runtimeCapabilities"].is_null() {
+            // Re-check the server's negotiated codec on resume/attachment as well. Never
+            // reinterpret compressed AV1 bytes as H.264 when a persisted session is resumed.
+            Self::embedded_session_settings(&context["settings"], &params["runtimeCapabilities"])?;
+        }
         context["surface"] = Value::Null;
         Ok(json!({
             "protocolVersion": STREAMER_PROTOCOL_VERSION,
@@ -1588,6 +1655,54 @@ mod tests {
         assert_eq!(state["streamer"]["processId"], Value::Null);
 
         fs::remove_file(fixture).expect("remove crash fixture");
+    }
+
+    #[test]
+    fn embedded_auto_selects_only_supported_codecs_and_preserves_manual_choices() {
+        let mut caps = json!({"protocolVersion":5,"videoBackends":[{
+            "backend":"d3d11","available":true,"codecs":[
+                {"codec":"h264","available":true}, {"codec":"h265","available":true},
+                {"codec":"av1","available":false}]}]});
+        let settings =
+            json!({"codec":"auto","nativeVideoBackend":"auto","colorQuality":"8bit_420"});
+        let resolve = |settings: &Value, caps: &Value| {
+            StreamerService::embedded_session_settings(settings, caps)
+        };
+        assert_eq!(resolve(&settings, &caps).unwrap()["codec"], "h265");
+        assert_eq!(settings["codec"], "auto"); // never rewrite the user's persisted Auto preference
+        caps["videoBackends"][0]["codecs"][1]["available"] = json!(false);
+        assert_eq!(resolve(&settings, &caps).unwrap()["codec"], "h264");
+        assert!(resolve(&json!({"codec":"av1"}), &caps).is_err());
+        assert!(resolve(&json!({"codec":"auto","colorQuality":"10bit_420"}), &caps).is_err());
+        for backend in ["d3d12", "vulkan", "software"] {
+            let error = resolve(&json!({"nativeVideoBackend":backend}), &caps).unwrap_err();
+            assert_eq!(error.code, "streamer_backend_unavailable");
+        }
+        assert_eq!(
+            resolve(&json!({"codec":"h264","nativeVideoBackend":"d3d11"}), &caps).unwrap()["codec"],
+            "h264"
+        );
+        caps["videoBackends"][0]["codecs"][2]["available"] = json!(true);
+        assert_eq!(resolve(&settings, &caps).unwrap()["codec"], "av1");
+        caps["videoBackends"][0]["available"] = json!(false);
+        assert!(resolve(&settings, &caps).is_err());
+        caps["videoBackends"][0]["available"] = json!(true);
+        caps["videoBackends"][0]["backend"] = json!("ffmpeg");
+        assert!(resolve(&settings, &caps).is_err());
+        assert!(resolve(&settings, &json!({})).is_err());
+    }
+
+    #[test]
+    fn embedded_prepare_rejects_an_incompatible_resumed_session() {
+        let service = StreamerService::new();
+        let result = service.prepare_embedded(
+            &json!({"session": {
+            "sessionId":"resume", "status":2, "negotiatedStreamProfile":{"codec":"AV1"}
+        }, "runtimeCapabilities":{"protocolVersion":5,"videoBackends":[{
+            "backend":"d3d11","available":true,"codecs":[{"codec":"h264","available":true}]}]}}),
+            &json!({"codec":"auto"}),
+        );
+        assert_eq!(result.unwrap_err().code, "streamer_codec_unavailable");
     }
 
     #[test]

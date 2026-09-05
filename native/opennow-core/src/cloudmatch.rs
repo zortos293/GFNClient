@@ -140,7 +140,7 @@ impl CloudMatchService {
             .and_then(|state| state.server_ip.as_deref())
             .filter(|server| control_base.contains(*server))
             .and_then(|server| trusted_learned_server_base(server).ok())
-            .unwrap_or(trusted_cloudmatch_base(&control_base)?);
+            .map_or_else(|| trusted_cloudmatch_base(&control_base), Ok)?;
         let token = session_token(auth);
         let headers = cloudmatch_headers(token, device_id)?;
         let payload = self.get_session(&client, &base, &session_id, &headers)?;
@@ -169,6 +169,12 @@ impl CloudMatchService {
 
         info["phase"] =
             Value::String(session_phase(info["status"].as_i64().unwrap_or_default()).to_owned());
+        if current
+            .as_ref()
+            .is_some_and(|state| state.info["resumePending"] == true)
+        {
+            mark_resume_progress(&mut info);
+        }
         let active = active_from_info(&info, &base, &zone, &app_id, client)?;
         *self.active.lock().expect("CloudMatch state poisoned") = Some(active);
         Ok(json!({"session":info}))
@@ -234,7 +240,7 @@ impl CloudMatchService {
                     .filter(|server| base_value.contains(*server))
                     .and_then(|server| trusted_learned_server_base(server).ok())
             })
-            .unwrap_or(trusted_cloudmatch_base(&base_value)?);
+            .map_or_else(|| trusted_cloudmatch_base(&base_value), Ok)?;
         let url = base
             .join(&format!("v2/session/{session_id}"))
             .map_err(|_| invalid("Invalid CloudMatch stop URL"))?;
@@ -267,7 +273,21 @@ impl CloudMatchService {
         device_id: &str,
     ) -> Result<Value, ServiceError> {
         let client = client_for_settings(&self.client, settings).map_err(invalid)?;
-        let requested = requested_streaming_base(params, settings, auth)?;
+        let current = self
+            .active
+            .lock()
+            .expect("CloudMatch state poisoned")
+            .clone();
+        let recovery_region = current
+            .as_ref()
+            .filter(|state| params["sessionId"].as_str() == Some(state.session_id.as_str()))
+            .and_then(|state| {
+                trusted_cloudmatch_base(&state.control_base)
+                    .ok()
+                    .or_else(|| trusted_cloudmatch_base(&format!("https://{}", state.zone)).ok())
+            });
+        let requested =
+            recovery_region.map_or_else(|| requested_streaming_base(params, settings, auth), Ok)?;
         let headers = cloudmatch_headers(session_token(auth), device_id)?;
         let mut bases = vec![requested.clone()];
         if let Ok(server_info_url) = requested.join("v2/serverInfo")
@@ -370,8 +390,10 @@ impl CloudMatchService {
         let app_id = first_string(&session["sessionRequestData"]["appId"])
             .or_else(|| first_string(&params["appId"]))
             .unwrap_or_else(|| "0".to_owned());
-        let recovery_mode = params["recoveryMode"].as_bool() == Some(true);
-        if initial_status != 1 && !(recovery_mode && matches!(initial_status, 2 | 3)) {
+        // A new native connection needs an explicit claim, even if the cloud
+        // seat still reports ready/streaming after the old connection died.
+        // Launching sessions are polled instead of sending SESSION_NOT_PAUSED.
+        if matches!(initial_status, 2 | 3) {
             let keyboard_layout = setting_string(settings, "keyboardLayout", "en-US");
             let language = setting_string(settings, "gameLanguage", "en_US");
             let mut url = control_base
@@ -380,13 +402,7 @@ impl CloudMatchService {
             url.query_pairs_mut()
                 .append_pair("keyboardLayout", &keyboard_layout)
                 .append_pair("languageCode", &language);
-            let body = json!({
-                "action": 2,
-                "data": "RESUME",
-                "sessionRequestData": build_create_body(&app_id, params, settings, device_id)["sessionRequestData"],
-                "metaData": null,
-                "adUpdates": null
-            });
+            let body = build_resume_body(&app_id, session, settings, device_id);
             let response = client
                 .put(url)
                 .headers(headers.clone())
@@ -394,13 +410,18 @@ impl CloudMatchService {
                 .send()
                 .map_err(|error| network("Session claim failed", error))?;
             let _ = read_cloudmatch_response("Session claim failed", response)?;
+            eprintln!(
+                "CloudMatch RESUME accepted; awaiting fresh ready status and stream endpoints"
+            );
         }
 
-        let payload = self.get_session(&client, &control_base, session_id, &headers)?;
         let zone = zone_base.host_str().unwrap_or_default();
-        let mut info = session_info(&payload, &control_base, zone, &app_id, device_id)?;
-        info["phase"] =
-            Value::String(session_phase(info["status"].as_i64().unwrap_or_default()).to_owned());
+        // Do not treat the pre-claim status or PUT acknowledgement as readiness.
+        // Qt schedules cancellable session.poll requests until the fresh GET
+        // reports status 2/3 with native endpoints. No long blocking RPC loop.
+        let mut info = session_info(&initial_payload, &control_base, zone, &app_id, device_id)?;
+        info["resumePending"] = json!(true);
+        info["phase"] = json!("resuming");
         let active = active_from_info(&info, &control_base, zone, &app_id, client)?;
         *self.active.lock().expect("CloudMatch state poisoned") = Some(active);
         Ok(json!({"session":info}))
@@ -597,6 +618,68 @@ fn requested_streaming_base(
     trusted_cloudmatch_base(raw)
 }
 
+fn mark_resume_progress(info: &mut Value) {
+    let ready = matches!(info["status"].as_i64(), Some(2 | 3))
+        && info["rtspsEndpoints"]
+            .as_array()
+            .is_some_and(|endpoints| !endpoints.is_empty());
+    info["resumePending"] = json!(!ready);
+    if !ready {
+        info["phase"] = json!("resuming");
+    }
+}
+
+fn build_resume_body(app_id: &str, session: &Value, settings: &Value, device_id: &str) -> Value {
+    let created = build_create_body(app_id, &json!({}), settings, device_id);
+    let source = &created["sessionRequestData"];
+    let mut request = serde_json::Map::new();
+    // Resume must not renegotiate codec, monitor geometry, FPS or bitrate.
+    for key in [
+        "appId",
+        "audioMode",
+        "remoteControllersBitmap",
+        "sdrHdrMode",
+        "networkTestSessionId",
+        "availableSupportedControllers",
+        "preferredController",
+        "clientVersion",
+        "deviceHashId",
+        "internalTitle",
+        "clientPlatformName",
+        "surroundAudioInfo",
+        "clientTimezoneOffset",
+        "clientIdentification",
+        "parentSessionId",
+        "streamerVersion",
+        "secureRTSPSupported",
+    ] {
+        request.insert(key.to_owned(), source[key].clone());
+    }
+    request.insert(
+        "metaData".to_owned(),
+        json!(
+            source["metaData"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|entry| entry["key"] != "clientPhysicalResolution")
+                .cloned()
+                .collect::<Vec<_>>()
+        ),
+    );
+    for key in [
+        "appLaunchMode",
+        "enablePersistingInGameSettings",
+        "clientPlatformName",
+    ] {
+        if !session["sessionRequestData"][key].is_null() {
+            request.insert(key.to_owned(), session["sessionRequestData"][key].clone());
+        }
+    }
+    json!({"action":2, "data":"RESUME", "sessionRequestData":request,
+        "metaData":null, "adUpdates":null})
+}
+
 fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: &str) -> Value {
     let (width, height) = parse_resolution(&setting_string(settings, "resolution", "1920x1080"));
     let fps = setting_i64(settings, "fps", 60).clamp(30, 240);
@@ -743,6 +826,13 @@ fn session_info(
         .as_deref()
         .filter(|host| is_zone_hostname(host))
         .map(|host| format!("https://{}", host.to_lowercase()))
+        // Keep regional discovery separate from the learned native/control IP.
+        // Direct polling responses do not always repeat sessionControlInfo.
+        .or_else(|| {
+            trusted_cloudmatch_base(&format!("https://{zone}"))
+                .ok()
+                .map(|base| base.origin().ascii_serialization())
+        })
         .unwrap_or_else(|| fallback_base.origin().ascii_serialization());
     let queue_position = queue_position(session);
     let seat_setup_step = value_i64(&session["seatSetupInfo"]["seatSetupStep"]);
@@ -1410,6 +1500,78 @@ fn network(context: &str, error: impl std::fmt::Display) -> ServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_resume_poll_retains_regional_discovery_endpoint() {
+        let direct = trusted_learned_server_base("80.84.160.10").unwrap();
+        let payload = json!({"session": {"sessionId":"resumed-seat", "status":2,
+            "connectionInfo":[{"usage":14, "ip":"80.84.160.10"},
+                {"usage":16, "ip":"80.84.160.10", "port":322}]}});
+        let info = session_info(
+            &payload,
+            &direct,
+            "np-sof-01.cloudmatchbeta.nvidiagrid.net",
+            "123",
+            "device",
+        )
+        .unwrap();
+        assert_eq!(
+            info["streamingBaseUrl"],
+            "https://np-sof-01.cloudmatchbeta.nvidiagrid.net"
+        );
+        assert_eq!(info["serverIp"], "80.84.160.10");
+        assert_eq!(info["rtspsEndpoints"][0], "rtsps://80.84.160.10:322");
+        assert!(
+            trusted_cloudmatch_base(direct.as_str()).is_err(),
+            "arbitrary caller-supplied IPs must remain rejected"
+        );
+    }
+
+    #[test]
+    fn resume_does_not_renegotiate_allocated_video_parameters() {
+        let original = json!({"sessionRequestData": {
+            "appLaunchMode":2, "enablePersistingInGameSettings":true,
+            "clientPlatformName":"windows"}});
+        let body = build_resume_body(
+            "123",
+            &original,
+            &json!({"resolution":"3840x2160", "fps":240, "codec":"av1"}),
+            "stable-device",
+        );
+        assert_eq!(body["action"], 2);
+        assert_eq!(body["data"], "RESUME");
+        let request = &body["sessionRequestData"];
+        assert_eq!(request["deviceHashId"], "stable-device");
+        assert_eq!(request["appLaunchMode"], 2);
+        assert_eq!(request["enablePersistingInGameSettings"], true);
+        assert!(request.get("clientRequestMonitorSettings").is_none());
+        assert!(request.get("requestedStreamingFeatures").is_none());
+        assert!(
+            request["metaData"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["key"] != "clientPhysicalResolution")
+        );
+    }
+
+    #[test]
+    fn resume_waits_for_fresh_ready_status_and_native_endpoints() {
+        for status in [1, 6, 2, 3] {
+            let mut info =
+                json!({"status":status, "phase":session_phase(status), "rtspsEndpoints":[]});
+            mark_resume_progress(&mut info);
+            assert_eq!(info["resumePending"], true);
+            assert_eq!(info["phase"], "resuming");
+        }
+        for status in [2, 3] {
+            let mut info = json!({"status":status, "phase":session_phase(status),
+                "rtspsEndpoints":["rtsps://example.invalid:48010"]});
+            mark_resume_progress(&mut info);
+            assert_eq!(info["resumePending"], false);
+            assert_eq!(info["phase"], session_phase(status));
+        }
+    }
 
     #[test]
     fn session_requests_keep_the_classic_nvst_client_identity() {

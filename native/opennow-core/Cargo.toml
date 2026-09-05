@@ -1,6 +1,6 @@
 [package]
 name = "opennow-core"
-version = "0.5.4"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"

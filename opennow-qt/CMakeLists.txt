@@ -4,7 +4,7 @@ if(POLICY CMP0207)
     cmake_policy(SET CMP0207 NEW)
 endif()
 
-project(OpenNOWQt VERSION 0.5.4 LANGUAGES CXX)
+project(OpenNOWQt VERSION 1.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -17,7 +17,7 @@ set(CMAKE_AUTOMOC ON)
 # propagated by the targets below, so avoid the redundant compiler subprocess.
 set(CMAKE_AUTOMOC_COMPILER_PREDEFINES OFF)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui GuiPrivate Network Multimedia Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui GuiPrivate Network Multimedia Test ShaderTools)
 find_package(SDL3 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -86,6 +86,12 @@ qt_add_resources(opennow-qt "opennow-locales"
     FILES ${OPENNOW_LOCALE_FILES}
 )
 
+qt_add_shaders(opennow-qt "opennow-stream-shaders"
+    PREFIX "/opennow/shaders"
+    BASE "shaders"
+    FILES shaders/streamvideo.vert shaders/streamvideo.frag
+)
+
 if(WIN32 OR APPLE)
     set(OPENNOW_EXECUTABLE_NAME "OpenNOW")
 else()
@@ -114,6 +120,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/DesktopButton.qml
         qml/desktop/DesktopCommandPalette.qml
         qml/desktop/DesktopFriendsScreen.qml
+        qml/desktop/DesktopUpdateScreen.qml
         qml/desktop/DesktopGameModal.qml
         qml/desktop/DesktopGlyph.qml
         qml/desktop/DesktopHomePoster.qml
@@ -128,6 +135,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/DesktopSettingsStepper.qml
         qml/desktop/DesktopSettingsResolution.qml
         qml/desktop/DesktopSettingsChoice.qml
+        qml/desktop/DesktopSettingsDisclosure.qml
         qml/desktop/DesktopSettingsField.qml
         qml/desktop/DesktopSettingsDropdown.qml
         qml/desktop/DesktopSettingsPanel.qml
@@ -152,6 +160,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/DesktopStoreShelf.qml
         qml/desktop/DesktopApp.qml
         qml/components/AppChrome.qml
+        qml/components/ReleaseNotes.qml
         qml/components/ArtworkSource.qml
         qml/components/ControllerGlyph.qml
         qml/components/FocusFrame.qml
@@ -168,6 +177,7 @@ qt_add_qml_module(opennow-qt
         qml/components/SettingRow.qml
         qml/components/RoundedArtwork.qml
         qml/components/MotionProgress.qml
+        qml/components/PageEntrance.qml
         qml/components/StoreBadge.qml
         qml/components/TogglePill.qml
         qml/components/VirtualKeyboard.qml
@@ -484,6 +494,7 @@ if(WIN32 AND MINGW AND OPENNOW_RUST_EFFECTIVE_TARGET MATCHES "-msvc$")
         if(OPENNOW_VSWHERE_EXECUTABLE)
             execute_process(COMMAND "${OPENNOW_VSWHERE_EXECUTABLE}" -latest -products * -property installationPath
                 OUTPUT_VARIABLE OPENNOW_VS_INSTALL OUTPUT_STRIP_TRAILING_WHITESPACE)
+            file(TO_CMAKE_PATH "${OPENNOW_VS_INSTALL}" OPENNOW_VS_INSTALL)
             if(OPENNOW_RUST_EFFECTIVE_TARGET MATCHES "^aarch64")
                 set(OPENNOW_CRT_ARCH arm64)
             elseif(OPENNOW_RUST_EFFECTIVE_TARGET MATCHES "^i686")
@@ -498,6 +509,8 @@ if(WIN32 AND MINGW AND OPENNOW_RUST_EFFECTIVE_TARGET MATCHES "-msvc$")
             endif()
         endif()
     endif()
+    # Install scripts require CMake-style paths, including user-supplied paths.
+    file(TO_CMAKE_PATH "${OPENNOW_MSVC_REDIST_DIR}" OPENNOW_MSVC_REDIST_DIR)
     if(NOT EXISTS "${OPENNOW_MSVC_REDIST_DIR}/vcruntime140.dll")
         message(FATAL_ERROR "Set OPENNOW_MSVC_REDIST_DIR to the Visual C++ CRT redistributable directory matching the Rust target")
     endif()
@@ -645,7 +658,19 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
     qt_add_resources(opennow-qt "region-ping-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/StorePagingAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml)
+    add_test(NAME qml-idle-mode
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-streaming --smoke-idle-mode --reduced-motion)
+    set_tests_properties(qml-idle-mode PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    add_test(NAME qml-stream-recovery
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-streaming --smoke-stream-recovery --reduced-motion)
+    set_tests_properties(qml-stream-recovery PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    add_test(NAME qml-backend-availability
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-streaming --smoke-backend-availability --reduced-motion)
+    set_tests_properties(qml-backend-availability PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     add_test(NAME qml-store-paging
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route store --smoke-store-paging --reduced-motion)
@@ -724,6 +749,11 @@ if(BUILD_TESTING)
         src/StreamVideoItem.h
     )
     target_include_directories(opennow-streamvideo-tests PRIVATE src)
+    qt_add_shaders(opennow-streamvideo-tests "opennow-stream-test-shaders"
+        PREFIX "/opennow/shaders"
+        BASE "shaders"
+        FILES shaders/streamvideo.vert shaders/streamvideo.frag
+    )
     target_link_libraries(opennow-streamvideo-tests PRIVATE
         Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Qml Qt6::Quick
         opennow-streamer-ffi)
@@ -897,12 +927,20 @@ if(BUILD_TESTING)
                 list(APPEND motion_args --smoke-motion-fullscreen)
             endif()
             add_test(NAME "qml-motion-${motion_mode}-${motion_window}" COMMAND opennow-qt ${motion_args})
+            add_test(NAME "qml-sidebar-${motion_mode}-${motion_window}" COMMAND opennow-qt ${motion_args} --smoke-sidebar)
+            add_test(NAME "qml-settings-motion-${motion_mode}-${motion_window}" COMMAND opennow-qt ${motion_args} --smoke-settings-motion)
+            # This sequence deliberately exercises over four seconds of motion.
+            math(EXPR settings_motion_timeout "${OPENNOW_QT_SMOKE_TIMEOUT} + 10")
+            set_tests_properties("qml-settings-motion-${motion_mode}-${motion_window}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${settings_motion_timeout})
+            set_tests_properties("qml-sidebar-${motion_mode}-${motion_window}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
             set_tests_properties("qml-motion-${motion_mode}-${motion_window}" PROPERTIES
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
         endforeach()
     endforeach()
 
-    foreach(route home library store friends settings settings-account settings-streaming settings-input settings-network settings-themes settings-advanced game-detail stream)
+    foreach(route home library store friends updates settings settings-account settings-streaming settings-input settings-network settings-themes settings-advanced game-detail stream)
         add_test(NAME "qml-desktop-route-${route}"
                  COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop --route "${route}" --reduced-motion)
         set_tests_properties("qml-desktop-route-${route}" PROPERTIES
@@ -910,7 +948,7 @@ if(BUILD_TESTING)
             TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
         )
     endforeach()
-    foreach(route settings-streaming settings-input settings-themes settings-account settings-network settings-advanced)
+    foreach(route settings-streaming settings-audio settings-console settings-input settings-themes settings-account settings-network settings-advanced)
         foreach(size desktop compact)
             if(size STREQUAL "desktop")
                 set(renew_width 1440)
@@ -958,7 +996,7 @@ if(BUILD_TESTING)
             --route settings-themes --smoke-paper-design --smoke-settings-panel interface --smoke-choice-open --reduced-motion)
     set_tests_properties(qml-renew-network-picker qml-renew-language-picker PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
-    foreach(route settings-network settings-advanced)
+    foreach(route settings-network settings-advanced settings-themes settings-input)
         add_test(NAME "qml-renew-actions-${route}"
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
                 --route "${route}" --smoke-paper-design --smoke-renew-settings-actions --reduced-motion)
@@ -998,12 +1036,22 @@ if(BUILD_TESTING)
                      --smoke-test
                      --allow-multiple-instances
                      --core "$<TARGET_FILE:opennow-fake-core>"
-                     --smoke-console-persistence-rollback
+                     --smoke-console-persistence-rollback --desktop
                      --reduced-motion)
     set_tests_properties(qml-console-mode-persistence-rollback PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
     )
+    foreach(notes_route updates settings-advanced)
+        foreach(notes_width 960 1600)
+            add_test(NAME "qml-release-notes-${notes_route}-${notes_width}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                    --desktop --route ${notes_route} --smoke-release-notes
+                    --smoke-width ${notes_width} --reduced-motion)
+            set_tests_properties("qml-release-notes-${notes_route}-${notes_width}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
+        endforeach()
+    endforeach()
     add_test(NAME qml-streamer-event-contract
              COMMAND opennow-qt
                      --smoke-test

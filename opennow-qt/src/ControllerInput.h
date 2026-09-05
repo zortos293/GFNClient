@@ -33,6 +33,7 @@ signals:
     void controllersChanged();
     void shellCaptureEnabledChanged();
     void controllerActivity();
+    void controllerActivityDetailed(const QString &device, const QString &control, int value);
     void gamepadSnapshot(quint8 controllerId, quint16 bitmap, quint16 buttons,
                          quint8 leftTrigger, quint8 rightTrigger,
                          qint16 leftStickX, qint16 leftStickY,
@@ -66,7 +67,8 @@ private:
     void closeController(SDL_JoystickID id);
     void handleButton(const SDL_GamepadButtonEvent &event, bool pressed);
     void handleAxis(const SDL_GamepadAxisEvent &event);
-    void updateDirection(RepeatingDirection &direction, bool active);
+    bool updateDirection(RepeatingDirection &direction, bool active);
+    void reportActivity(int slot, const QString &control, int value);
     void dispatchRepeats(qint64 now);
     void postKey(int key, bool pressed, bool autoRepeat = false);
     static int keyForButton(Uint8 button);

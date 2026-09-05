@@ -285,6 +285,7 @@ int main(int argc, char *argv[])
         if (arguments.contains(u"--smoke-choice-open"_s)) {
             auto *picker = window ? window->findChild<QObject *>(u"renewNetworkRegion"_s) : nullptr;
             if (!picker && window) picker = window->findChild<QObject *>(u"renewLanguageChoice"_s);
+            if (!picker && window) picker = window->findChild<QObject *>(u"streamBackendChoice"_s);
             if (!picker) return EXIT_FAILURE;
             picker->setProperty("expanded", true);
         }
@@ -313,6 +314,22 @@ int main(int argc, char *argv[])
                     : settings.toMap().value(key);
             };
             bool exercised = false;
+            if (auto *theme = findControl(u"renewThemeChoice"_s)) {
+                exercised = true;
+                const auto items = theme->property("items").value<QJSValue>();
+                if (items.property(u"length"_s).toInt() != 8) return EXIT_FAILURE;
+                theme->setProperty("expanded", true);
+                if (!QMetaObject::invokeMethod(theme,"selected",Q_ARG(QVariant,QVariant(u"bone"_s)))
+                    || setting(u"themePack"_s).toString() != u"bone"_s) return EXIT_FAILURE;
+            }
+            if (auto *shortcuts = findControl(u"renewShortcutsDisclosure"_s)) {
+                exercised = true;
+                auto *settings = findControl(u"desktopSettingsScreen"_s);
+                if (!QMetaObject::invokeMethod(shortcuts,"expansionRequested")) return EXIT_FAILURE;
+                auto *inlinePanel = findControl(u"renewInlineShortcuts"_s);
+                if (!settings || settings->property("advancedOpen").toBool()
+                    || !inlinePanel || !inlinePanel->property("expanded").toBool()) return EXIT_FAILURE;
+            }
             if (auto *region = window->findChild<QObject *>(u"renewNetworkRegion"_s)) {
                 exercised = true;
                 if (!QMetaObject::invokeMethod(region, "selected", Q_ARG(QVariant, QVariant(u"https://central.example.invalid"_s)))
@@ -458,7 +475,30 @@ int main(int argc, char *argv[])
         }
     } else {
         const auto screenshotIndex = arguments.indexOf(u"--screenshot"_s);
-        if (smokeTest && (arguments.contains(u"--smoke-region-ping"_s) || arguments.contains(u"--smoke-store-paging"_s))) {
+        if (smokeTest && (arguments.contains(u"--smoke-backend-availability"_s)
+                         || arguments.contains(u"--smoke-idle-mode"_s)
+                         || arguments.contains(u"--smoke-stream-recovery"_s))) {
+            QQmlComponent component(&engine, QUrl(arguments.contains(u"--smoke-idle-mode"_s)
+                ? u"qrc:/acceptance/IdleModeAcceptance.qml"_s
+                : arguments.contains(u"--smoke-stream-recovery"_s)
+                ? u"qrc:/acceptance/StreamRecoveryAcceptance.qml"_s
+                : u"qrc:/acceptance/BackendAvailabilityAcceptance.qml"_s));
+            auto *fixture = component.create();
+            if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
+            fixture->setParent(&engine);
+            if (arguments.contains(u"--smoke-stream-recovery"_s)) {
+                auto *client = fixture->property("client").value<QObject *>();
+                if (!client) return EXIT_FAILURE;
+                engine.rootContext()->setContextProperty(u"CoreClient"_s, client);
+            }
+            QTimer::singleShot(150, &application, [&, fixture] {
+                auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+                QVariant passed;
+                const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
+                    Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && passed.toBool() && !qmlWarningOccurred;
+                application.exit(ok ? EXIT_SUCCESS : EXIT_FAILURE);
+            });
+        } else if (smokeTest && (arguments.contains(u"--smoke-region-ping"_s) || arguments.contains(u"--smoke-store-paging"_s))) {
             const bool storePaging = arguments.contains(u"--smoke-store-paging"_s);
             QQmlComponent component(&engine, QUrl(storePaging ? u"qrc:/acceptance/StorePagingAcceptance.qml"_s
                 : u"qrc:/acceptance/RegionPingAcceptance.qml"_s));
@@ -509,6 +549,16 @@ int main(int argc, char *argv[])
                     application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
                 });
             });
+        } else if (smokeTest && arguments.contains(u"--smoke-settings-motion"_s)) {
+            auto *window = engine.rootObjects().isEmpty()
+                ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+            startSettingsMotionAcceptance(window, &controller, &qmlWarningOccurred,
+                                          arguments.contains(u"--smoke-motion-fullscreen"_s));
+        } else if (smokeTest && arguments.contains(u"--smoke-sidebar"_s)) {
+            auto *window = engine.rootObjects().isEmpty()
+                ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+            startSidebarAcceptance(window, &controller, &qmlWarningOccurred,
+                                   arguments.contains(u"--smoke-motion-fullscreen"_s));
         } else if (smokeTest && arguments.contains(u"--smoke-motion"_s)) {
             auto *window = engine.rootObjects().isEmpty()
                 ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
@@ -641,6 +691,36 @@ int main(int argc, char *argv[])
             QTimer::singleShot(3'000, &application, [&application] {
                 qCritical("Flat streamer event smoke test timed out");
                 application.exit(EXIT_FAILURE);
+            });
+        } else if (arguments.contains(u"--smoke-release-notes"_s)) {
+            auto *store = engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            store->setProperty("updaterState", QVariantMap{
+                {u"status"_s, u"available"_s}, {u"currentVersion"_s, QGuiApplication::applicationVersion()},
+                {u"message"_s, u"A new release is available."_s}, {u"canDownload"_s, true}});
+            store->setProperty("releaseHighlights", QVariantMap{{u"bodyMarkdown"_s,
+                u"# Release notes\n\n**Bold fix** and *emphasis*.\n\n- First item\n- Second item\n\n"
+                 "[Project](https://github.com/OpenCloudGaming/OpenNOW)\n\n"
+                 "| Feature | Status |\n| --- | --- |\n| Updates | Ready |\n\n```text\ncode block\n```"_s}});
+            QTimer::singleShot(500, &application, [&application, &engine, &controller, &qmlWarningOccurred] {
+                auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+                auto *notes = window->findChild<QObject *>(u"releaseNotesDocument"_s);
+                const bool desktop = window->property("desktopSurfaceActive").toBool();
+                const bool correctRoute = controller.route() != u"updates"_s
+                    || window->findChild<QObject *>(u"desktopUpdateScreen"_s);
+                QString plain;
+                const bool parsed = notes && QMetaObject::invokeMethod(notes, "getText",
+                    Q_RETURN_ARG(QString, plain), Q_ARG(int, 0),
+                    Q_ARG(int, notes->property("length").toInt()));
+                const auto text = plain;
+                const bool passed = desktop && correctRoute && parsed && !qmlWarningOccurred
+                    && text.contains(u"Bold fix"_s) && text.contains(u"Second item"_s)
+                    && text.contains(u"code block"_s) && !text.contains(u"**Bold fix**"_s)
+                    && !text.contains(u"# Release notes"_s)
+                    && notes->property("contentHeight").toReal() > 100
+                    && notes->property("height").toReal() >= notes->property("contentHeight").toReal()
+                        + notes->property("topPadding").toReal() + notes->property("bottomPadding").toReal();
+                if (!passed) qCritical("Release notes document or desktop update route failed");
+                application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
             });
         } else if (smokeConsolePersistenceRollback) {
             auto *window = engine.rootObjects().isEmpty()

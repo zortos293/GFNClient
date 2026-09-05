@@ -181,7 +181,7 @@ private slots:
         QVERIFY(main.contains(QStringLiteral(
             "window.lockedStreamDesktopSurface = !enabled")));
         QVERIFY(main.contains(QStringLiteral(
-            "if (window.activeRoute !== \"stream\"\n                && window.switchToConsoleOnPad")));
+            "const allowed = window.activeRoute !== \"stream\"\n                && window.switchToConsoleOnPad")));
         QVERIFY(!main.contains(QStringLiteral("function syncPadHold()")));
     }
 

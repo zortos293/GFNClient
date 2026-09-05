@@ -36,6 +36,8 @@ private slots:
     {
         ControllerInput input;
         const auto initialCount = input.controllerCount();
+        QSignalSpy activity(&input, &ControllerInput::controllerActivity);
+        QSignalSpy detailedActivity(&input, &ControllerInput::controllerActivityDetailed);
         ControllerKeySink sink;
         QCoreApplication::instance()->installEventFilter(&sink);
 
@@ -53,9 +55,22 @@ private slots:
 
         auto *joystick = SDL_GetJoystickFromID(id);
         QVERIFY(joystick);
+        // Hotplug and ordinary stick drift must not select console mode.
+        QCOMPARE(activity.size(), 0);
+        for (const auto drift : {1500, -2500, 0, 8000, -8000}) {
+            QVERIFY(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, drift));
+            SDL_UpdateJoysticks();
+            QTest::qWait(15);
+        }
+        QCOMPARE(activity.size(), 0);
         QVERIFY(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, -19'000));
         SDL_UpdateJoysticks();
         QTRY_COMPARE_WITH_TIMEOUT(sink.leftPresses, 1, 1'000);
+        QCOMPARE(activity.size(), 1);
+        QCOMPARE(detailedActivity.size(), 1);
+        QVERIFY(detailedActivity.at(0).at(0).toString().contains(QString::fromUtf8(descriptor.name)));
+        QCOMPARE(detailedActivity.at(0).at(1).toString(), QStringLiteral("axis:0"));
+        QCOMPARE(detailedActivity.at(0).at(2).toInt(), -19'000);
 
         // The 12k/18k hysteresis band must not emit a second navigation step.
         QVERIFY(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, -15'000));
@@ -65,6 +80,7 @@ private slots:
 
         // A held direction starts repeat after the 280ms delay.
         QTRY_VERIFY_WITH_TIMEOUT(sink.repeatedLeftPresses >= 1, 1'000);
+        QCOMPARE(activity.size(), 1); // Held repeats are not new device intent.
 
         // Releasing below 12k and crossing 18k again creates one fresh step.
         QVERIFY(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, -11'000));

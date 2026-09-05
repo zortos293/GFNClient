@@ -8,7 +8,7 @@ FocusScope {
     property string route: "home"
     readonly property bool settingsPage: route.indexOf("settings") === 0
     readonly property int headerHeight: settingsPage ? DesktopTokens.px(60) : DesktopTokens.topBarHeight
-    readonly property int footerHeight: settingsPage ? DesktopTokens.px(36) : DesktopTokens.statusBarHeight
+    readonly property int footerHeight: DesktopTokens.px(40)
     property string title: qsTr("Home")
     property string subtitle: qsTr("Your library")
     property bool searchVisible: route !== "settings" && route.indexOf("settings-") !== 0 && route !== "friends"
@@ -89,7 +89,7 @@ FocusScope {
                 background: Rectangle { radius: DesktopTokens.px(10); color: "#59000000"; border.width: 1; border.color: DesktopTokens.seam }
                 onTextChanged: root.searchText = text
                 DesktopGlyph { x: DesktopTokens.px(11); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(14); height: DesktopTokens.px(14); icon: "desktop-search.svg" }
-                Rectangle { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(8); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(20); height: DesktopTokens.px(20); radius: DesktopTokens.px(6); color: "#1AFFFFFF"; border.width: 1; border.color: DesktopTokens.seam; Text { anchors.centerIn: parent; text: "/"; color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: root.settingsPage ? DesktopTokens.px(10) : DesktopTokens.monoSize } }
+                Rectangle { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(8); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(20); height: DesktopTokens.px(20); radius: DesktopTokens.px(6); color: "#1AFFFFFF"; border.width: 1; border.color: DesktopTokens.seam; Text { anchors.centerIn: parent; text: "/"; color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11) } }
             }
             DesktopButton {
                 id: activeSessionButton
@@ -122,7 +122,7 @@ FocusScope {
             height: root.footerHeight
             color: DesktopTokens.statusBar
             clip: true
-            readonly property bool compactHints: root.settingsPage || width < 900
+            readonly property bool compactHints: true
             Rectangle { width: parent.width; height: 1; color: DesktopTokens.seam }
             Row { id: shortcutHints; x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(footer.compactHints ? 8 : 16)
                 DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Arrows"); label: qsTr("Move") }
@@ -134,9 +134,9 @@ FocusScope {
             Row { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(10)
                 visible: x >= shortcutHints.x + shortcutHints.width + DesktopTokens.px(16)
                 Rectangle { width: 8; height: 8; radius: 4; color: DesktopTokens.green }
-                Text { text: root.regionStatusText(); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: root.settingsPage ? DesktopTokens.px(10) : DesktopTokens.monoSize; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+                Text { text: root.regionStatusText(); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11); font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
                 Rectangle { width: 1; height: DesktopTokens.px(16); color: DesktopTokens.seam }
-                Text { text: String(ShellStore.settings.themePack || "nocturne").toUpperCase() + qsTr(" THEME"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: root.settingsPage ? DesktopTokens.px(10) : DesktopTokens.monoSize; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+                Text { text: String(ShellStore.settings.themePack || "nocturne").toUpperCase() + qsTr(" THEME"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11); font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
             }
         }
     }

@@ -13,6 +13,7 @@ QtObject {
         signal responseReceived(string requestId, var result)
         signal requestFailed(string requestId, string code, string message)
         signal eventReceived(string name, var payload)
+        function logShellDiagnostic(message) {} // No filesystem writes from the isolated mock.
         function request(method, params, timeout) {
             const id = "region-test-" + (++sequence)
             requests.push({ id: id, method: method, params: params })

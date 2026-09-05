@@ -18,23 +18,23 @@ FocusScope {
         interface:interfacePage, console:consolePage, shortcuts:shortcutsPage,
         controllers:controllersPage, subscription:subscriptionPage})
     readonly property bool compactNavigation: width < 1050
-    readonly property int selectedGroup: [0, 1, 2].indexOf(selectedSection) >= 0 ? 4
-        : [5, 10].indexOf(selectedSection) >= 0 ? 1
-        : [7, 8, 9].indexOf(selectedSection) >= 0 ? 2
-        : selectedSection === 6 ? 3 : selectedSection === 11 ? 5 : 0
+    readonly property int selectedGroup: sections.findIndex(section => section.page ===
+        ([0,1,2].indexOf(selectedSection) >= 0 ? 0 : selectedSection === 10 ? 5 : selectedSection === 7 ? 8 : selectedSection))
     onSelectedSectionChanged: { advancedOpen = false }
     signal requestConsoleMode(bool enabled)
 
     readonly property var sections: [
-        {label: qsTr("Stream"), detail: qsTr("Picture, codec, bitrate"), icon: "monitor", page: 3, keywords: "resolution fps hdr color audio stats overlay bitrate codec reflex"},
+        {label: qsTr("Stream"), detail: qsTr("Picture, codec, bitrate"), icon: "monitor", page: 3, keywords: "resolution fps hdr color audio stats overlay bitrate codec reflex backend gpu directx vulkan"},
+        {label: qsTr("Audio"), detail: qsTr("Output and stream audio"), icon: "wave", page: 4, keywords: "sound audio volume output microphone"},
         {label: qsTr("Controls"), detail: qsTr("Pads, mouse, shortcuts"), icon: "controller", page: 5, keywords: "controller gyroscope steam sensitivity keyboard language shortcuts"},
         {label: qsTr("Look"), detail: qsTr("Theme, accent, layout"), icon: "palette", page: 8, keywords: "theme accent interface language scale motion console sidebar tiles"},
+        {label: qsTr("Console mode"), detail: qsTr("Gamepad-first interface"), icon: "controller", page: 9, keywords: "console fullscreen gamepad startup"},
         {label: qsTr("Network"), detail: qsTr("Region, ping, proxy"), icon: "globe", page: 6, keywords: "server region ping proxy bandwidth l4s"},
         {label: qsTr("Account"), detail: qsTr("NVIDIA, stores, privacy"), icon: "person", page: 0, keywords: "profile subscription stores steam epic xbox ubisoft battle gaijin privacy"},
         {label: qsTr("About"), detail: qsTr("Updates, diagnostics"), icon: "info", page: 11, keywords: "version release update diagnostics"}
     ]
-    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Stream"), qsTr("Controls"), qsTr("Network"), qsTr("Look"), qsTr("Look"), qsTr("Look"), qsTr("Controls"), qsTr("About")]
-    readonly property var pageComponents: [accountGroup, subscriptionPage, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, shortcutsPage, aboutPage]
+    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Look"), qsTr("Look"), qsTr("Console mode"), qsTr("Controls"), qsTr("About")]
+    readonly property var pageComponents: [accountGroup, subscriptionPage, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage]
 
     function matchesSection(section) {
         const query = searchQuery.trim().toLowerCase()
@@ -533,10 +533,14 @@ FocusScope {
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
             Loader {
                 id: pageLoader
+                objectName: "settingsPageLoader"
                 width: contentFlick.width
                 sourceComponent: SmokeTestMode && root.acceptancePanel !== ""
                     ? root.acceptancePanels[root.acceptancePanel] : root.pageComponents[root.selectedSection]
-                onLoaded: contentFlick.contentY = 0
+                opacity: sectionEntrance.pageOpacity
+                transform: Translate { y: sectionEntrance.offset }
+                PageEntrance { id: sectionEntrance; objectName: "settingsPageEntrance" }
+                onLoaded: { contentFlick.contentY = 0; sectionEntrance.restart() }
             }
         }
     }
@@ -554,13 +558,15 @@ FocusScope {
             width: contentFlick.width; spacing: 20
             Loader { width: parent.width; sourceComponent: profilePage }
             Loader { width: parent.width; sourceComponent: storesPage }
-            DesktopSettingsAdvanced { detail: qsTr("Subscription · Profiles · Privacy"); expanded: root.advancedOpen; onClicked: root.advancedOpen = !root.advancedOpen }
-            Loader { width: parent.width; active: root.advancedOpen; visible: active; sourceComponent: subscriptionPage }
+            DesktopSettingsAdvanced { detail: qsTr("Subscription · Profiles"); expanded: root.advancedOpen; onClicked: root.advancedOpen = !root.advancedOpen }
+            DesktopSettingsDisclosure { objectName: "accountAdvancedDisclosure"; width: parent.width; expanded: root.advancedOpen; sourceComponent: subscriptionPage }
         }
     }
     Component {
         id: controlsGroup
         Column {
+            id: controlsRoot
+            property bool shortcutsOpen: root.selectedSection === 10
             width: contentFlick.width; spacing: 20
             DesktopSettingsPanel {
                 width: parent.width; paperStyle: true
@@ -597,8 +603,10 @@ FocusScope {
                 }
                 DesktopSettingsRow {
                     width: parent.width; paperStyle: true; glyph: "keyboard"; title: qsTr("Shortcuts")
+                    objectName: "renewShortcutsDisclosure"
                     description: qsTr("Local shortcuts are consumed before gameplay input"); showDivider: false; expandable: true
-                    onExpansionRequested: root.advancedOpen = !root.advancedOpen
+                    expanded: controlsRoot.shortcutsOpen
+                    onExpansionRequested: controlsRoot.shortcutsOpen = !controlsRoot.shortcutsOpen
                     Row { spacing: 10
                         DesktopKeyHint { keyText: String(root.valueSetting("shortcutToggleStats","Ctrl+N")); label: qsTr("stats") }
                         DesktopKeyHint { keyText: "Ctrl G"; label: qsTr("menu") }
@@ -606,19 +614,28 @@ FocusScope {
                     }
                 }
             }
-            DesktopSettingsAdvanced { detail: qsTr("Controller behavior · Cursor · Shortcuts"); expanded: root.advancedOpen; onClicked: root.advancedOpen = !root.advancedOpen }
-            Loader { width: parent.width; active: root.advancedOpen; visible: active; sourceComponent: controllersPage }
-            DesktopSettingsPanel {
-                width: parent.width; visible: root.advancedOpen; paperStyle: true
-                DesktopSettingsSection { text: qsTr("KEYBOARD & CURSOR") }
-                DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "keyboard"; title: qsTr("Statistics shortcut"); description: qsTr("Local shortcuts are consumed before gameplay input")
-                    DesktopSettingsField { width: DesktopTokens.px(200); text: String(root.valueSetting("shortcutToggleStats","Ctrl+N")); Accessible.name: qsTr("Statistics shortcut"); onEditingFinished: root.setSetting("shortcutToggleStats",text) }
-                }
-                DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "mouse"; title: qsTr("Cursor overlay"); showDivider: false
-                    DesktopSettingsToggle { checked: root.boolSetting("nativeCursorOverlay",true); onValueChangedByUser: value => root.setSetting("nativeCursorOverlay",value) }
+            DesktopSettingsDisclosure { objectName: "renewInlineShortcuts"; width: parent.width; expanded: controlsRoot.shortcutsOpen; sourceComponent: shortcutsPage }
+            DesktopSettingsDisclosure {
+                width: parent.width; expanded: controlsRoot.shortcutsOpen
+                sourceComponent: DesktopSettingsPanel {
+                    width: contentFlick.width; paperStyle: true
+                    DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "keyboard"; title: qsTr("Statistics shortcut"); showDivider: false
+                        DesktopSettingsField { width: DesktopTokens.px(200); text: String(root.valueSetting("shortcutToggleStats","Ctrl+N")); Accessible.name: qsTr("Statistics shortcut"); onEditingFinished: root.setSetting("shortcutToggleStats",text) }
+                    }
                 }
             }
-            Loader { width: parent.width; active: root.advancedOpen; visible: active; sourceComponent: shortcutsPage }
+            DesktopSettingsAdvanced { detail: qsTr("Controller behavior · Cursor"); expanded: root.advancedOpen; onClicked: root.advancedOpen = !root.advancedOpen }
+            DesktopSettingsDisclosure { width: parent.width; expanded: root.advancedOpen; sourceComponent: controllersPage }
+            DesktopSettingsDisclosure {
+                width: parent.width; expanded: root.advancedOpen
+                sourceComponent: DesktopSettingsPanel {
+                    width: contentFlick.width; paperStyle: true
+                    DesktopSettingsSection { text: qsTr("KEYBOARD & CURSOR") }
+                    DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "mouse"; title: qsTr("Cursor overlay"); showDivider: false
+                        DesktopSettingsToggle { checked: root.boolSetting("nativeCursorOverlay",true); onValueChangedByUser: value => root.setSetting("nativeCursorOverlay",value) }
+                    }
+                }
+            }
         }
     }
 
@@ -630,14 +647,17 @@ FocusScope {
             DesktopSettingsPanel {
                 width: parent.width; paperStyle: true
                 DesktopSettingsSection { text: qsTr("THEME") }
+                DesktopSettingsChoice {
+                    objectName: "renewThemeChoice"
+                    width: parent.width; glyph: "moon"; title: qsTr("Theme")
+                    description: qsTr("Uses the existing OpenNOW theme collection")
+                    items: ["aurora","nocturne","kraft","phosphor","hibiscus","chapel","bone","cobalt"].map(id => ({label:root.themeMeta(id).name,detail:root.themeMeta(id).blurb,value:id}))
+                    value: root.valueSetting("themePack","nocturne")
+                    onSelected: value => root.setChoice("themePack",value)
+                }
                 DesktopSettingsRow {
-                    width: parent.width; paperStyle: true; glyph: "moon"; title: qsTr("Theme"); description: qsTr("Uses the existing OpenNOW theme collection")
-                    expandable: true; onExpansionRequested: AppController.navigate("theme-store")
-                    DesktopSettingsSegmented {
-                        options: ["aurora","nocturne","kraft","phosphor"].map(value => ({label:root.themeMeta(value).name,value:value}))
-                        optionWidth: 74; selectedIndex: options.findIndex(item => item.value === root.valueSetting("themePack","nocturne"))
-                        onSelected: (index,item) => root.setChoice("themePack",item.value)
-                    }
+                    width: parent.width; paperStyle: true; glyph: "moon"; title: qsTr("Appearance")
+                    DesktopSettingsSegmented { options: ["auto","light","dark"]; selectedIndex: options.indexOf(root.valueSetting("appTheme","auto")); onSelected: (index,value) => root.setSetting("appTheme",value) }
                 }
                 DesktopSettingsRow {
                     width: parent.width; paperStyle: true; glyph: "palette"; title: qsTr("Accent"); description: qsTr("Selection, toggles and keyboard focus")
@@ -687,25 +707,19 @@ FocusScope {
                     DesktopSettingsToggle { checked: root.boolSetting("sessionCounterEnabled",false); onValueChangedByUser: value => root.setSetting("sessionCounterEnabled",value) }
                 }
             }
-            DesktopSettingsAdvanced { detail: qsTr("Appearance · All themes · Stats overlay · Motion · UI scale"); expanded: root.advancedOpen; onClicked: root.advancedOpen = !root.advancedOpen }
-            DesktopSettingsPanel {
-                width: parent.width; visible: root.advancedOpen; paperStyle: true
-                DesktopSettingsRow {
-                    width: parent.width; paperStyle: true; glyph: "moon"; title: qsTr("Appearance")
-                    DesktopSettingsSegmented { options: ["auto","light","dark"]; selectedIndex: options.indexOf(root.valueSetting("appTheme","auto")); onSelected: (index,value) => root.setSetting("appTheme",value) }
-                }
-                DesktopSettingsRow {
-                    width: parent.width; paperStyle: true; glyph: "palette"; title: qsTr("All themes")
-                    DesktopSettingsButton { text: root.themeMeta(String(root.valueSetting("themePack","nocturne"))).name + " · " + qsTr("Browse"); onClicked: AppController.navigate("theme-store") }
-                }
-                DesktopSettingsRow {
-                    width: parent.width; paperStyle: true; glyph: "grid"; title: qsTr("Interface scale"); showDivider: false
-                    DesktopSettingsSlider { from: 0.85; to: 1.25; stepSize: 0.05; decimals: 2; suffix: "×"; value: Number(root.valueSetting("desktopUiScale",1)); onCommitted: value => root.setSetting("desktopUiScale",value) }
+            Loader { width: parent.width; sourceComponent: statsSettingsPage }
+            DesktopSettingsAdvanced { detail: qsTr("Language · Interface scale · Motion"); expanded: root.advancedOpen; onClicked: root.advancedOpen = !root.advancedOpen }
+            DesktopSettingsDisclosure {
+                width: parent.width; expanded: root.advancedOpen
+                sourceComponent: DesktopSettingsPanel {
+                    width: contentFlick.width; paperStyle: true
+                    DesktopSettingsRow {
+                        width: parent.width; paperStyle: true; glyph: "grid"; title: qsTr("Interface scale"); showDivider: false
+                        DesktopSettingsSlider { from: 0.85; to: 1.25; stepSize: 0.05; decimals: 2; suffix: "×"; value: Number(root.valueSetting("desktopUiScale",1)); onCommitted: value => root.setSetting("desktopUiScale",value) }
+                    }
                 }
             }
-            Loader { width: parent.width; active: root.advancedOpen; visible: active; sourceComponent: interfacePage }
-            Loader { width: parent.width; active: root.advancedOpen; visible: active; sourceComponent: statsSettingsPage }
-            Loader { width: parent.width; active: root.advancedOpen; visible: active; sourceComponent: consolePage }
+            DesktopSettingsDisclosure { width: parent.width; expanded: root.advancedOpen; sourceComponent: interfacePage }
         }
     }
 
@@ -787,15 +801,15 @@ FocusScope {
             }
             DesktopSettingsRow {
                 width: parent.width; paperStyle: true; glyph: "crown"; title: root.liveTierBadge() || qsTr("Membership unavailable")
-                description: root.planChips().join(" · "); expandable: true; showDivider: root.advancedOpen
+                description: root.planChips().join(" · "); expandable: true; expanded: root.advancedOpen
                 onExpansionRequested: root.advancedOpen = !root.advancedOpen
                 Text { visible: ShellStore.subscription && ShellStore.subscription.remainingHours !== undefined; text: qsTr("%1 h left").arg(ShellStore.subscription ? ShellStore.subscription.remainingHours : ""); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12; font.weight: Font.Bold }
                 DesktopSettingsButton { text: qsTr("Manage"); onClicked: Qt.openUrlExternally("https://www.nvidia.com/en-us/account/") }
             }
-            DesktopSettingsRow { visible: root.advancedOpen; width: parent.width; paperStyle: true; glyph: "person"; title: qsTr("Show what I am playing"); description: qsTr("Discord activity sharing")
+            DesktopSettingsRow { objectName: "accountActivitySharing"; width: parent.width; paperStyle: true; glyph: "person"; title: qsTr("Show what I am playing"); description: qsTr("Discord activity sharing")
                 DesktopSettingsToggle { checked: root.boolSetting("discordRichPresence",false); onValueChangedByUser: value => root.setSetting("discordRichPresence",value) }
             }
-            DesktopSettingsRow { visible: root.advancedOpen; width: parent.width; paperStyle: true; glyph: "info"; title: qsTr("Crash reports"); description: qsTr("Optional error reporting"); showDivider: false
+            DesktopSettingsRow { objectName: "accountCrashReports"; width: parent.width; paperStyle: true; glyph: "info"; title: qsTr("Crash reports"); description: qsTr("Optional error reporting"); showDivider: false
                 DesktopSettingsToggle { checked: ShellStore.settings.errorReportingConsent === "granted"; onValueChangedByUser: value => root.setSetting("errorReportingConsent",value ? "granted" : "denied") }
             }
         }
@@ -904,11 +918,22 @@ FocusScope {
             DesktopSettingsPanel {
                 width: parent.width; paperStyle: true
                 DesktopSettingsSection { text: qsTr("CONNECTION") }
+                DesktopSettingsChoice {
+                    objectName: "streamBackendChoice"
+                    width: parent.width; glyph: "chip"; title: qsTr("Video backend")
+                    description: Qt.platform.os === "windows"
+                        ? qsTr("Auto uses DX11 hardware decoding. DX12 and Vulkan texture sharing are not supported by the Windows stream view yet. Applies to the next stream.")
+                        : qsTr("Choose a supported native backend. Applies to the next stream.")
+                    items: ShellStore.videoBackendItems()
+                    value: root.valueSetting("nativeVideoBackend", "auto")
+                    onSelected: value => root.setSetting("nativeVideoBackend", value)
+                }
                 DesktopSettingsRow {
                     width: parent.width; paperStyle: true; glyph: "chip"; title: qsTr("Codec")
-                    description: qsTr("Automatic chooses from codecs reported by the native streamer")
+                    description: ShellStore.streamerDetectionMessage
                     DesktopSettingsSegmented {
-                        options: [{label:qsTr("Auto"),value:"auto"},{label:"AV1",value:"av1"},{label:"H.265",value:"h265"},{label:"H.264",value:"h264"}]
+                        options: [{label:qsTr("Auto"),value:"auto"},{label:"AV1",value:"av1",enabled:ShellStore.codecAvailable("av1")},{label:"H.265",value:"h265",enabled:ShellStore.codecAvailable("h265")},{label:"H.264",value:"h264",enabled:ShellStore.codecAvailable("h264")}]
+                        disabledHint: qsTr("Not supported by the detected native decoder")
                         optionWidth: 64; selectedIndex: options.findIndex(item => item.value === root.valueSetting("codec","auto"))
                         onSelected: (index,item) => root.setChoice("codec",item.value)
                     }
@@ -928,25 +953,17 @@ FocusScope {
                     DesktopSettingsToggle { checked: root.boolSetting("enableCloudGsync",false); onValueChangedByUser: value => root.setSetting("enableCloudGsync",value) }
                 }
             }
-            DesktopSettingsAdvanced { detail: qsTr("Steam Deck identity · Audio · L4S · Stats overlay"); expanded: root.advancedOpen; onClicked: root.advancedOpen = !root.advancedOpen }
-            DesktopSettingsPanel {
-                width: parent.width; visible: root.advancedOpen; paperStyle: true
-                DesktopSettingsRow {
-                    width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Steam Deck identity"); description: qsTr("Unlock Deck resolutions and 90 FPS · refreshes entitlements")
-                    DesktopSettingsToggle { checked: root.boolSetting("identifyAsSteamDeck",false); onValueChangedByUser: value => root.setSetting("identifyAsSteamDeck",value) }
-                }
-                DesktopSettingsRow {
-                    width: parent.width; paperStyle: true; glyph: "speed"; title: qsTr("All frame rates"); showDivider: false
-                    DesktopSettingsSegmented {
-                        options: ["AUTO","30","60","90","120","144","165","240"]; optionWidth: 42
-                        selectedIndex: options.indexOf(Number(root.valueSetting("fps",60)) === 0 ? "AUTO" : String(root.valueSetting("fps",60)))
-                        disabledValues: root.unentitledFpsValues()
-                        onSelected: (index,value) => root.setSetting("fps",value === "AUTO" ? 0 : Number(value))
+            DesktopSettingsAdvanced { detail: qsTr("Steam Deck identity"); expanded: root.advancedOpen; onClicked: root.advancedOpen = !root.advancedOpen }
+            DesktopSettingsDisclosure {
+                width: parent.width; expanded: root.advancedOpen
+                sourceComponent: DesktopSettingsPanel {
+                    width: contentFlick.width; paperStyle: true
+                    DesktopSettingsRow {
+                        width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Steam Deck identity"); description: qsTr("Unlock Deck resolutions and 90 FPS · refreshes entitlements")
+                        DesktopSettingsToggle { checked: root.boolSetting("identifyAsSteamDeck",false); onValueChangedByUser: value => root.setSetting("identifyAsSteamDeck",value) }
                     }
                 }
             }
-            Loader { width: parent.width; active: root.advancedOpen; visible: active; sourceComponent: statsSettingsPage }
-            Loader { width: parent.width; active: root.advancedOpen; visible: active; sourceComponent: audioPage }
         }
     }
 
@@ -975,7 +992,7 @@ FocusScope {
             DesktopSettingsRow {
                 width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Switch to console mode when a pad wakes up")
                 description: qsTr("Open the gamepad-first shell when a controller becomes active")
-                DesktopSettingsToggle { checked: root.boolSetting("switchToConsoleOnPad",true); onValueChangedByUser: value => root.setSetting("switchToConsoleOnPad",value) }
+                DesktopSettingsToggle { checked: root.boolSetting("switchToConsoleOnPad",false); onValueChangedByUser: value => root.setSetting("switchToConsoleOnPad",value) }
             }
             DesktopSettingsRow {
                 width: parent.width; paperStyle: true; glyph: "mouse"; title: qsTr("Return to desktop on pointer input")
@@ -1057,13 +1074,16 @@ FocusScope {
                 detail: qsTr("Low-latency transport")
                 expanded: root.advancedOpen; onClicked: root.advancedOpen = !root.advancedOpen
             }
-            DesktopSettingsPanel {
-                width: parent.width; paperStyle: true; visible: root.advancedOpen
-                DesktopSettingsSection { text: qsTr("TRANSPORT") }
-                DesktopSettingsRow {
-                    width: parent.width; paperStyle: true; glyph: "bolt"; title: qsTr("L4S")
-                    description: qsTr("Request scalable low-latency transport for the next session"); showDivider: false
-                    DesktopSettingsToggle { checked: root.boolSetting("enableL4S",false); onValueChangedByUser: value => root.setSetting("enableL4S",value) }
+            DesktopSettingsDisclosure {
+                width: parent.width; expanded: root.advancedOpen
+                sourceComponent: DesktopSettingsPanel {
+                    width: contentFlick.width; paperStyle: true
+                    DesktopSettingsSection { text: qsTr("TRANSPORT") }
+                    DesktopSettingsRow {
+                        width: parent.width; paperStyle: true; glyph: "bolt"; title: qsTr("L4S")
+                        description: qsTr("Request scalable low-latency transport for the next session"); showDivider: false
+                        DesktopSettingsToggle { checked: root.boolSetting("enableL4S",false); onValueChangedByUser: value => root.setSetting("enableL4S",value) }
+                    }
                 }
             }
         }
@@ -1118,7 +1138,7 @@ FocusScope {
             DesktopSettingsRow {
                 width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Enter console mode when a gamepad is the only input")
                 description: qsTr("Ignored while a mouse has moved in the last 30 seconds")
-                DesktopSettingsToggle { checked: root.boolSetting("switchToConsoleOnPad",true); onValueChangedByUser: value => root.setSetting("switchToConsoleOnPad",value) }
+                DesktopSettingsToggle { checked: root.boolSetting("switchToConsoleOnPad",false); onValueChangedByUser: value => root.setSetting("switchToConsoleOnPad",value) }
             }
             DesktopSettingsRow {
                 width: parent.width; paperStyle: true; glyph: "mouse"; title: qsTr("Leave console mode on keyboard or mouse input")
@@ -1244,7 +1264,7 @@ FocusScope {
                     width: parent.width; paperStyle: true
                     leadingIcon: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
                     title: "OpenNOW " + String(ShellStore.updaterState.currentVersion || qsTr("unknown"))
-                    description: qsTr("Qt Quick · native streaming runtime")
+                    description: qsTr("Your games, anywhere.")
                     DesktopSettingsButton { text: ShellStore.updaterState.status === "checking" ? qsTr("Checking…") : qsTr("Check for updates"); primary: true; enabled: ShellStore.updaterState.status !== "checking"; onClicked: ShellStore.checkForUpdates() }
                 }
                 DesktopSettingsRow {
@@ -1261,6 +1281,7 @@ FocusScope {
                     width: parent.width; paperStyle: true; glyph: "info"; title: qsTr("Update status")
                     description: String(ShellStore.updaterState.message || ShellStore.updaterState.status || qsTr("idle"))
                     showDivider: false
+                    DesktopSettingsButton { text: qsTr("Updates"); onClicked: AppController.navigate("updates") }
                 }
             }
             DesktopSettingsPanel {
@@ -1269,7 +1290,7 @@ FocusScope {
                 Column {
                     x: DesktopTokens.px(20); width: parent.width-DesktopTokens.px(40); spacing: 8
                     Text { width: parent.width; text: ShellStore.releaseHighlights.title || qsTr("Release notes"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.px(15); font.weight: Font.ExtraBold; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
-                    Text { width: parent.width; bottomPadding: 20; text: ShellStore.releaseHighlights.bodyMarkdown || qsTr("Check for updates to load verified release information from GitHub."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.px(13); wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+                    ReleaseNotes { width: parent.width; bottomPadding: 20; text: ShellStore.releaseHighlights.bodyMarkdown || qsTr("Check for updates to load verified release information from GitHub."); font.pixelSize: DesktopTokens.px(13) }
                 }
             }
             DesktopSettingsPanel {

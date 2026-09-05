@@ -31,6 +31,189 @@ struct Run {
 };
 }
 
+void startSettingsMotionAcceptance(QQuickWindow *window, AppController *controller,
+                                   const bool *qmlWarningOccurred, bool fullscreen)
+{
+    if (!window) { QCoreApplication::exit(1); return; }
+    if (fullscreen) window->showFullScreen();
+    struct State {
+        int tick = 0;
+        bool disclosureMoved = false, resolutionMoved = false, choiceMoved = false;
+        bool sectionMoved = false, pageMoved = false;
+        QPointer<QQuickItem> settings, disclosure, resolution, choice;
+        double closedHeight = 0;
+    };
+    const auto state = std::make_shared<State>();
+    auto *timer = new QTimer(window);
+    timer->setInterval(20);
+    QObject::connect(timer, &QTimer::timeout, window, [=] {
+        const auto find = [window](const char *name) {
+            return findItem(window->contentItem(), QString::fromLatin1(name));
+        };
+        const auto require = [=](bool ok, const char *message) {
+            if (!ok) {
+                qCritical("Settings motion tick %d: %s", state->tick, message);
+                timer->stop(); QCoreApplication::exit(1);
+            }
+            return ok;
+        };
+        const auto intermediate = [](QQuickItem *item, const char *property) {
+            const auto value = item ? item->property(property).toDouble() : 1.0;
+            return value > 0 && value < 1;
+        };
+        const int tick = ++state->tick;
+        if (!require(!*qmlWarningOccurred, "QML warning")) return;
+        auto *outer = find("mainRouteLoader");
+        if (!require(outer && outer->opacity() == 1, "page transition faded the entire shell")) return;
+        if (!require(!fullscreen || window->visibility() == QWindow::FullScreen,
+                     "transition changed fullscreen")) return;
+        state->sectionMoved |= intermediate(find("settingsPageEntrance"), "progress");
+        state->pageMoved |= intermediate(find("desktopPageEntrance"), "progress");
+        state->disclosureMoved |= intermediate(state->disclosure, "revealProgress");
+        state->resolutionMoved |= intermediate(state->resolution, "revealProgress");
+        state->choiceMoved |= intermediate(state->choice, "revealProgress");
+        if (controller->reducedMotion()
+            && !require(!state->sectionMoved && !state->pageMoved && !state->disclosureMoved
+                        && !state->resolutionMoved && !state->choiceMoved, "reduced motion animated")) return;
+        if (tick == 1) controller->navigate(QStringLiteral("settings-account"));
+        if (tick == 20) {
+            state->settings = find("desktopSettingsScreen");
+            auto *sharing = find("accountActivitySharing");
+            auto *reports = find("accountCrashReports");
+            state->disclosure = find("accountAdvancedDisclosure");
+            if (!require(state->settings && !state->settings->property("advancedOpen").toBool()
+                         && sharing && sharing->isVisible() && reports && reports->isVisible()
+                         && state->disclosure, "privacy controls hidden behind Advanced")) return;
+            // Only disclosure state is changed; never mutate privacy preferences.
+            state->settings->setProperty("advancedOpen", true);
+        }
+        if (tick == 30 || tick == 36) state->settings->setProperty("advancedOpen", false);
+        if (tick == 33) state->settings->setProperty("advancedOpen", true);
+        if (tick == 55) {
+            if (!require(state->disclosure->height() == 0 && !state->disclosure->isVisible(),
+                         "Advanced did not finish closing")) return;
+            state->settings->setProperty("selectedSection", 3);
+        }
+        if (tick == 60) {
+            state->resolution = find("renewResolutionPicker");
+            if (!require(state->resolution, "resolution picker missing")) return;
+            state->closedHeight = state->resolution->height();
+            state->resolution->setProperty("expanded", true);
+        }
+        if (tick == 66 || tick == 70) state->resolution->setProperty("expanded", false);
+        if (tick == 68) state->resolution->setProperty("expanded", true);
+        if (tick == 90) {
+            if (!require(std::abs(state->resolution->height() - state->closedHeight) < 0.1
+                         && state->resolution->property("revealProgress").toDouble() == 0,
+                         "resolution reversal left incorrect bounds")) return;
+            state->settings->setProperty("selectedSection", 8);
+        }
+        if (tick == 100) {
+            state->choice = find("renewThemeChoice");
+            if (!require(state->choice, "theme picker missing")) return;
+            state->closedHeight = state->choice->height();
+            state->choice->setProperty("expanded", true);
+        }
+        if (tick == 106 || tick == 140) state->choice->setProperty("expanded", false);
+        if (tick == 108) state->choice->setProperty("expanded", true);
+        if (tick == 130 && !require(state->choice->height() > state->closedHeight
+                && state->choice->property("revealProgress").toDouble() == 1, "theme picker did not expand")) return;
+        if (tick == 155) {
+            if (!require(std::abs(state->choice->height() - state->closedHeight) < 0.1,
+                         "theme picker did not collapse")) return;
+            state->settings->setProperty("selectedSection", 5);
+        }
+        if (tick == 165 || tick == 185) {
+            auto *shortcuts = find("renewShortcutsDisclosure");
+            if (!require(shortcuts && QMetaObject::invokeMethod(shortcuts, "expansionRequested"),
+                         "shortcuts disclosure missing")) return;
+        }
+        if (tick == 180) {
+            auto *shortcuts = find("renewInlineShortcuts");
+            if (!require(shortcuts && shortcuts->height() > 0, "shortcuts have no expanded height")) return;
+        }
+        if (tick == 205) controller->navigate(QStringLiteral("library"));
+        if (tick == 208) controller->navigate(QStringLiteral("home"));
+        if (tick == 230) {
+            auto *page = find("desktopPageLoader");
+            if (!require(page && page->opacity() == 1, "rapid navigation left a faded page")) return;
+            if (!controller->reducedMotion()
+                && !require(state->disclosureMoved && state->resolutionMoved && state->choiceMoved
+                            && state->sectionMoved && state->pageMoved, "missing intermediate animation frames")) return;
+            timer->stop(); QCoreApplication::exit(0);
+        }
+    });
+    timer->start();
+}
+
+void startSidebarAcceptance(QQuickWindow *window, AppController *controller,
+                            const bool *qmlWarningOccurred, bool fullscreen)
+{
+    if (!window) { QCoreApplication::exit(1); return; }
+    if (fullscreen) window->showFullScreen();
+    auto *sidebar = findItem(window->contentItem(), QStringLiteral("desktopSidebar"));
+    auto *icon = findItem(window->contentItem(), QStringLiteral("sidebarIcon-home"));
+    auto *star = findItem(window->contentItem(), QStringLiteral("sidebarCollectionIcon-favorites"));
+    if (!sidebar || !icon || !star) { QCoreApplication::exit(1); return; }
+    sidebar->setProperty("collapsed", true);
+    sidebar->setProperty("hoverExpanded", false);
+    struct State { int tick = 0; QPointF origin, starOrigin; QSizeF starSize; double width = 0; bool intermediate = false; };
+    const auto state = std::make_shared<State>();
+    auto *timer = new QTimer(window);
+    timer->setInterval(20);
+    QObject::connect(timer, &QTimer::timeout, window, [=] {
+        const int tick = ++state->tick;
+        const auto fail = [timer](const char *message) {
+            qCritical("Sidebar acceptance: %s", message);
+            timer->stop(); QCoreApplication::exit(1);
+        };
+        if (*qmlWarningOccurred) { fail("QML warning"); return; }
+        if (tick == 15) {
+            state->origin = icon->mapToScene(QPointF{});
+            state->starOrigin = star->mapToScene(QPointF{});
+            state->starSize = star->size();
+            state->width = sidebar->width();
+            sidebar->setProperty("hoverExpanded", true);
+        }
+        if (tick > 15) {
+            const auto delta = icon->mapToScene(QPointF{}) - state->origin;
+            if (std::abs(delta.x()) > 0.5 || std::abs(delta.y()) > 0.5) {
+                fail("compact and expanded navigation icons shifted"); return;
+            }
+            const auto starDelta = star->mapToScene(QPointF{}) - state->starOrigin;
+            if (std::abs(starDelta.x()) > 0.5 || std::abs(starDelta.y()) > 0.5
+                || star->size() != state->starSize || !star->isVisible()) {
+                fail("favourite star moved, resized or disappeared"); return;
+            }
+            for (auto *ancestor = star; ancestor != sidebar; ancestor = ancestor->parentItem()) {
+                if (!ancestor || ancestor->opacity() != 1) {
+                    fail("favourite star faded during sidebar transition"); return;
+                }
+            }
+            int stars = 0;
+            const auto countStars = [&](auto &&self, QQuickItem *item) -> void {
+                if (item->property("icon").toString() == QStringLiteral("desktop-star.svg")) ++stars;
+                for (auto *child : item->childItems()) self(self, child);
+            };
+            countStars(countStars, sidebar);
+            if (stars != 1) { fail("sidebar duplicated the favourite star"); return; }
+            const auto reveal = sidebar->property("reveal").toDouble();
+            if (reveal > 0 && reveal < 1) state->intermediate = true;
+        }
+        if (tick == 35) sidebar->setProperty("hoverExpanded", false);
+        if (tick == 55) sidebar->setProperty("collapsed", false);
+        if (tick == 58) sidebar->setProperty("collapsed", true);
+        if (tick == 80) {
+            if (std::abs(sidebar->width() - state->width) > 0.5
+                || (!controller->reducedMotion() && !state->intermediate)) {
+                fail("drawer did not animate and settle"); return;
+            }
+            timer->stop(); QCoreApplication::exit(0);
+        }
+    });
+    timer->start();
+}
+
 void startStoreNavigationAcceptance(QQuickWindow *window, const bool *qmlWarningOccurred)
 {
     auto *page = findItem(window->contentItem(), QStringLiteral("desktopStoreContent"));

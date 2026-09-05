@@ -33,22 +33,60 @@ FocusScope {
 
     readonly property int railInnerWidth: Math.max(200, content.width - 48)
     readonly property int railCount: Math.max(1, Math.floor((root.railInnerWidth + 14) / (132 + 14)))
-    readonly property var filteredCatalog: root.buildFiltered(root.storeGames, root.searchText, root.activeGenre, root.activeStore, root.activeCategoryId)
+    readonly property var filteredCatalog: ShellStore.storeUsesLocalIndex ? root.storeGames : root.buildFiltered(root.storeGames, root.searchText, root.activeGenre, root.activeStore, root.activeCategoryId)
     readonly property var heroGames: root.buildHero(root.filteredCatalog)
     readonly property var newGames: root.buildNew(root.filteredCatalog, root.heroGames)
     readonly property var popularGames: root.buildPopular(root.filteredCatalog, root.heroGames, root.newGames)
     readonly property var categories: root.buildCategories(root.storeGames)
     readonly property var genreOptions: root.optionsFor("genre", root.storeGames)
     readonly property var storeOptions: root.optionsFor("store", root.storeGames)
-    readonly property var currentMenuOptions: openMenu === "genre" ? genreOptions : storeOptions
+    readonly property var categoryOptions: ["featured"].concat(root.allCategoryMetadata().map(item => item.id))
+    function allCategoryMetadata() {
+        const values = (ShellStore.storeFacets.categories || []).slice()
+        const panels = ShellStore.storePanels || []
+        for (let p = 0; p < panels.length; ++p)
+            for (let s = 0; s < (panels[p].sections || []).length; ++s) {
+                const id = "shelf:" + p + ":" + s
+                if (!values.some(item => item.id === id)) values.push({id:id,label:panels[p].sections[s].title})
+            }
+        return values
+    }
+    readonly property var currentMenuOptions: openMenu === "category" ? categoryOptions : openMenu === "genre" ? genreOptions : storeOptions
     readonly property int catalogCount: Number(ShellStore.storeTotalCount || (root.storeGames || []).length)
     readonly property string catalogState: ShellStore.storeState
     readonly property string catalogError: ShellStore.storeError
     onSearchTextChanged: storeSearchDelay.restart()
+    onActiveGenreChanged: storeSearchDelay.restart()
+    onActiveStoreChanged: storeSearchDelay.restart()
+    onActiveCategoryIdChanged: storeSearchDelay.restart()
+    function queryFilters() {
+        const filters = {}
+        if (activeGenre !== qsTr("All")) filters.genre = activeGenre
+        if (activeStore !== qsTr("All")) filters.store = activeStore
+        if (activeCategoryId !== "featured") filters.categoryId = activeCategoryId
+        return filters
+    }
+    function categoryLabel(id) {
+        const item = root.allCategoryMetadata().find(item => item.id === id)
+        return item ? item.label : qsTr("Featured")
+    }
+    function refreshResults() { ShellStore.refreshStore(root.searchText, true, root.queryFilters()) }
+    Connections {
+        target: ShellStore
+        function onStoreSessionReset() { if (root.visible) ShellStore.ensureStore(root.searchText,root.queryFilters()) }
+    }
     Timer {
         id: storeSearchDelay
         interval: 300
-        onTriggered: ShellStore.ensureStore(root.searchText)
+        onTriggered: {
+            const filters = root.queryFilters()
+            if (root.searchText.trim() !== ShellStore.storeSearchQuery
+                || JSON.stringify(filters) !== JSON.stringify(ShellStore.storeFilters)) {
+                scrollAnimation.stop()
+                content.contentY = 0
+                ShellStore.ensureStore(root.searchText, filters)
+            }
+        }
     }
 
     function catalogList() {
@@ -310,13 +348,16 @@ FocusScope {
             const sections = panels[p].sections || []
             for (let s = 0; s < sections.length; ++s) {
                 const games = root.decorateList(root.takeSlice(sections[s].games || [], 0, 12))
-                if (games.length === 0)
+                const total = Number(sections[s].totalCount || games.length)
+                if (total === 0)
                     continue
                 result.push({
                     zone: "panel" + result.length,
                     title: String(sections[s].title || panels[p].title || ""),
                     games: games,
-                    panel: true
+                    panel: true, totalCount:total,
+                    categoryId: "shelf:" + p + ":" + s, seeAll: true,
+                    lazy: sections[s].totalCount !== undefined
                 })
             }
         }
@@ -324,7 +365,13 @@ FocusScope {
     }
 
     readonly property var panelShelves: root.buildPanelShelves()
-    readonly property var shelfModels: root.panelShelves.concat([
+    function pagedRows() {
+        const rows = []
+        for (let at = 0; at < root.filteredCatalog.length; at += root.railCount)
+            rows.push({zone:"results" + at, title: at === 0 ? qsTr("More from the catalog") : "", games:root.decorateList(root.filteredCatalog.slice(at,at+root.railCount)), panel:false, seeAll:false})
+        return rows
+    }
+    readonly property var shelfModels: root.panelShelves.concat(ShellStore.storeUsesLocalIndex ? root.pagedRows() : [
         {zone: "new", title: qsTr("Recently added"), games: root.newGames, panel: false, seeAll: true},
         {zone: "popular", title: qsTr("More from the catalog"), games: root.popularGames, panel: false, seeAll: true}
     ])
@@ -344,6 +391,11 @@ FocusScope {
                 return shelves[index]
         }
         return null
+    }
+    function shelfGamesFor(zone) {
+        const index = root.shelfModels.findIndex(shelf => shelf.zone === zone)
+        const item = index >= 0 ? shelfRepeater.itemAt(index) : null
+        return item ? item.displayGames : []
     }
 
     function buildNew(filtered, heroGames) {
@@ -386,7 +438,7 @@ FocusScope {
             {id: "featured", label: qsTr("Featured")},
             {id: "new", label: qsTr("New releases")}
         ]
-        if (root.catalogHasFreeFlag(games))
+        if (ShellStore.storeUsesLocalIndex || root.catalogHasFreeFlag(games))
             list.push({id: "free", label: qsTr("Free to play")})
         list.push({id: "rtx", label: qsTr("RTX")})
         list.push({id: "coming", label: qsTr("Coming soon")})
@@ -395,6 +447,8 @@ FocusScope {
 
     function optionsFor(kind, games) {
         const values = [qsTr("All")]
+        const globalValues = ShellStore.storeFacets[kind === "genre" ? "genres" : "stores"] || []
+        for (const value of globalValues) if (values.indexOf(value) < 0) values.push(value)
         const source = games || []
         for (let gameIndex = 0; gameIndex < source.length; ++gameIndex) {
             const game = source[gameIndex]
@@ -465,7 +519,10 @@ FocusScope {
                 activeCategory = categories[focusIndex].label
             }
             else if (focusIndex === categories.length + 2) {
-                ShellStore.refreshStore(root.searchText, true)
+                openMenu = openMenu === "category" ? "" : "category"
+                menuIndex = 0
+            } else if (focusIndex === categories.length + 3) {
+                root.refreshResults()
             } else {
                 openMenu = focusIndex === categories.length ? (openMenu === "genre" ? "" : "genre")
                                                             : (openMenu === "store" ? "" : "store")
@@ -473,13 +530,12 @@ FocusScope {
             }
             return
         }
-        const games = root.shelfModelFor(focusZone)
-        if (games && games.games.length)
-            gameSelected(games.games[Math.min(focusIndex, games.games.length - 1)])
+        const games = root.shelfGamesFor(focusZone)
+        if (games.length) gameSelected(games[Math.min(focusIndex, games.length - 1)])
     }
 
     function syncFreeCategory() {
-        if (root.activeCategoryId === "free" && !root.catalogHasFreeFlag(root.storeGames)) {
+        if (!ShellStore.storeUsesLocalIndex && root.activeCategoryId === "free" && !root.catalogHasFreeFlag(root.storeGames)) {
             root.activeCategoryId = "featured"
             root.activeCategory = qsTr("Featured")
         }
@@ -487,10 +543,11 @@ FocusScope {
 
     Keys.onPressed: event => {
         if (event.key === Qt.Key_F5) {
-            ShellStore.refreshStore(root.searchText, true)
+            root.refreshResults()
         } else if (root.openMenu.length && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
             const option = root.currentMenuOptions[Math.min(root.menuIndex, Math.max(0, root.currentMenuOptions.length - 1))]
             if (root.openMenu === "genre") root.activeGenre = option
+            else if (root.openMenu === "category") root.activeCategoryId = option
             else root.activeStore = option
             root.openMenu = ""
         } else if (root.openMenu.length && event.key === Qt.Key_Up) {
@@ -506,16 +563,18 @@ FocusScope {
         } else if (event.key === Qt.Key_Right) {
             let count = 2
             if (focusZone === "chips")
-                count = root.categories.length + 3
+                count = root.categories.length + 4
             else {
                 const shelf = root.shelfModelFor(focusZone)
                 if (shelf)
-                    count = Math.max(1, shelf.games.length)
+                    count = Math.max(1, root.shelfGamesFor(focusZone).length)
             }
             root.focusIndex = Math.min(Math.max(0, count - 1), root.focusIndex + 1)
         } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
             const order = root.shelfZoneOrder()
             const at = order.indexOf(focusZone)
+            if (event.key === Qt.Key_Down && at === order.length - 1 && ShellStore.storeHasMore && !ShellStore.storeLoading)
+                ShellStore.requestStorePage()
             if (at < 0) {
                 root.selectZone(order[0], 0)
             } else {
@@ -523,11 +582,11 @@ FocusScope {
             let count = 2
             const target = order[next]
             if (target === "chips")
-                count = root.categories.length + 3
+                count = root.categories.length + 4
             else {
                 const shelf = root.shelfModelFor(target)
                 if (shelf)
-                    count = Math.max(1, shelf.games.length)
+                    count = Math.max(1, root.shelfGamesFor(target).length)
             }
             root.selectZone(target, Math.min(root.focusIndex, Math.max(0, count - 1)))
             }
@@ -548,6 +607,12 @@ FocusScope {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
+        // Loading is tied to movement near the end, never to page arrival:
+        // an empty/filtered result cannot accidentally crawl the whole cache.
+        onContentYChanged: {
+            if (moving && contentY + height >= contentHeight - 240 && !ShellStore.storeLoading
+                    && ShellStore.storeHasMore && !ShellStore.storeError) ShellStore.requestStorePage()
+        }
         onMovementStarted: scrollAnimation.stop()
 
         DesktopStoreHero {
@@ -614,11 +679,19 @@ FocusScope {
                 }
             }
             DesktopStoreChip {
+                id: categoryChip
+                text: root.activeCategoryId.indexOf("shelf:") === 0 ? root.categoryLabel(root.activeCategoryId) : qsTr("Categories")
+                hasMenu: true
+                selected: root.openMenu === "category" || (root.focusZone === "chips" && root.focusIndex === root.categories.length + 2)
+                onHoveredChanged: if (hovered) root.pointZone("chips", root.categories.length + 2)
+                onClicked: { root.openMenu = root.openMenu === "category" ? "" : "category"; root.menuIndex = 0 }
+            }
+            DesktopStoreChip {
                 objectName: "storeRefreshButton"
                 text: qsTr("Refresh")
-                selected: root.focusZone === "chips" && root.focusIndex === root.categories.length + 2
-                onHoveredChanged: if (hovered) root.pointZone("chips", root.categories.length + 2)
-                onClicked: ShellStore.refreshStore(root.searchText, true)
+                selected: root.focusZone === "chips" && root.focusIndex === root.categories.length + 3
+                onHoveredChanged: if (hovered) root.pointZone("chips", root.categories.length + 3)
+                onClicked: root.refreshResults()
             }
         }
 
@@ -671,12 +744,24 @@ FocusScope {
                         : ""
                     showSeeAll: Boolean(modelData.seeAll)
                     games: modelData.games
+                    categoryId: modelData.lazy ? modelData.categoryId : ""
+                    totalCount: Number(modelData.totalCount || modelData.games.length)
+                    materialized: root.focusZone === modelData.zone || (shelvesColumn.y + y + height >= content.contentY - 180 && shelvesColumn.y + y <= content.contentY + content.height + 180)
                     active: root.focusZone === modelData.zone
                     selectedIndex: root.focusIndex
                     onGamePointed: index => root.pointZone(modelData.zone, index)
                     onGameActivated: game => root.gameSelected(game)
-                    onSeeAllRequested: root.routeRequested("library")
+                    onSeeAllRequested: {
+                        if (modelData.categoryId) root.activeCategoryId = modelData.categoryId
+                        else { root.activeCategoryId = "all"; storeSearchDelay.restart() }
+                    }
                 }
+            }
+            DesktopSettingsButton {
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: ShellStore.storeHasMore && !ShellStore.storeLoading
+                text: qsTr("Load more")
+                onClicked: ShellStore.requestStorePage()
             }
         }
     }
@@ -687,7 +772,7 @@ FocusScope {
         z: 400
         visible: filterMotion.present
         enabled: root.openMenu.length > 0
-        readonly property var anchorChip: root.presentedMenu === "genre" ? genreChip : storeChip
+        readonly property var anchorChip: root.presentedMenu === "category" ? categoryChip : root.presentedMenu === "genre" ? genreChip : storeChip
         x: Math.max(12, Math.min(chips.x + anchorChip.x, root.width - width - 12))
         y: Math.max(12, Math.min(chips.y + anchorChip.y + anchorChip.height + 6 - content.contentY, root.height - height - 12))
         width: Math.min(284, root.width - 24)
@@ -709,7 +794,7 @@ FocusScope {
             currentIndex: root.menuIndex
             onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-            model: root.presentedMenu === "genre" ? root.genreOptions : root.storeOptions
+            model: root.presentedMenu === "category" ? root.categoryOptions : root.presentedMenu === "genre" ? root.genreOptions : root.storeOptions
             delegate: Button {
                     id: menuButton
                     required property string modelData
@@ -738,7 +823,7 @@ FocusScope {
                         x: storeLogo.visible ? 39 : 9
                         width: parent.width - x - 14
                         anchors.verticalCenter: parent.verticalCenter
-                        text: root.presentedMenu === "store" ? DesktopTokens.storeLabel(menuButton.modelData) : DesktopTokens.genreLabel(menuButton.modelData)
+                        text: root.presentedMenu === "category" ? root.categoryLabel(menuButton.modelData) : root.presentedMenu === "store" ? DesktopTokens.storeLabel(menuButton.modelData) : DesktopTokens.genreLabel(menuButton.modelData)
                         color: "#FFFFFF"
                         font.family: Theme.bodyFont
                         font.pixelSize: 12
@@ -749,6 +834,7 @@ FocusScope {
                     }
                     onClicked: {
                         if (root.openMenu === "genre") root.activeGenre = modelData
+                        else if (root.openMenu === "category") root.activeCategoryId = modelData
                         else root.activeStore = modelData
                         root.openMenu = ""
                         root.forceActiveFocus()
@@ -812,7 +898,7 @@ FocusScope {
 
     onStoreGamesChanged: root.syncFreeCategory()
     Component.onCompleted: {
-        ShellStore.ensureStore(root.searchText)
+        ShellStore.ensureStore(root.searchText, root.queryFilters())
         root.syncFreeCategory()
         root.forceActiveFocus()
     }

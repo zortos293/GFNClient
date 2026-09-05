@@ -4,6 +4,7 @@ import OpenNOW
 
 FocusScope {
     id: root
+    readonly property bool streamPointerLocked: streamVideo.inputEnabled && streamVideo.relativeMouse
     focus: true
     Accessible.role: Accessible.Pane
     Accessible.name: qsTr("Live session")

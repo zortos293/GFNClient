@@ -2,6 +2,8 @@ import QtQuick
 import OpenNOW
 
 QtObject {
+    property Component paletteComponent: Component { DesktopCommandPalette {} }
+    property Component shelfComponent: Component { DesktopStoreShelf {} }
     property QtObject client: QtObject {
         property string state: "ready"
         property string lastError: ""
@@ -10,6 +12,7 @@ QtObject {
         signal responseReceived(string requestId, var result)
         signal requestFailed(string requestId, string code, string message)
         signal eventReceived(string name, var payload)
+        function logShellDiagnostic(message) {} // No filesystem writes from the isolated mock.
         function request(method, params, timeout) {
             const id = "store-test-" + (++sequence)
             requests.push({id:id, method:method, params:params})
@@ -34,9 +37,10 @@ QtObject {
         ShellStore.authSession = {user:{userId:"store-fixture", displayName:"Store Test"}}
         ShellStore.reloadStoreForSession()
         const first = ShellStore.storeRequestId
-        check(client.requests.find(r => r.id === first).params.limit === 100, "unbounded page requested")
+        check(client.requests.find(r => r.id === first).params.limit === 40, "unbounded page requested")
+        check(client.requests.find(r => r.id === first).method === "catalog.store.local", "Store did not use its local index")
         client.responseReceived(first, page([game("a"),game("b")], "cursor-one", true))
-        check(ShellStore.storeGames.length === 2 && ShellStore.storeLoading, "first page not shown while loading")
+        check(ShellStore.storeGames.length === 2 && !ShellStore.storeLoading && ShellStore.storeHasMore, "Store automatically continued instead of waiting for demand")
         check(status.text.indexOf("2") >= 0, "progress not visible")
         ShellStore.requestStorePage()
         const second = ShellStore.storeRequestId
@@ -66,9 +70,15 @@ QtObject {
         ShellStore.ensureStore("")
         check(ShellStore.storeGames.length === 3 && ShellStore.storeGames[0].id === "a"
             && !ShellStore.storeLoading, "clearing search did not restore browse cache")
+        ShellStore.ensureStore("", {categoryId:"shelf:0:0"})
+        client.responseReceived(ShellStore.storeRequestId, page([game("category-only")], "", false))
+        const filteredRequestCount = client.requests.filter(r => r.method === "catalog.store.local").length
+        ShellStore.ensureStore("", {})
+        check(ShellStore.storeGames.length === 3 && ShellStore.storeGames[0].id === "a"
+            && client.requests.filter(r => r.method === "catalog.store.local").length === filteredRequestCount, "leaving a category reloaded the browse cache")
         ShellStore.refreshStore("", true)
         check(ShellStore.storeLoading && ShellStore.storeGames.length === 3, "manual refresh did not retain artwork")
-        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.refresh === true, "manual refresh did not bypass disk cache")
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.refresh === true, "manual refresh did not request a local index rebuild")
         client.responseReceived(ShellStore.storeRequestId, page([game("resume")], "resume-next", true))
         const inFlightCount = client.requests.length
         ShellStore.ensureStore("")
@@ -99,6 +109,51 @@ QtObject {
         ShellStore.requestStorePage()
         client.responseReceived(ShellStore.storeRequestId, page([game("wrong")], "repeat", true))
         check(ShellStore.storeState === "error" && ShellStore.storeGames.length === 1, "repeated cursor continued")
+
+        // Filtering/ranking belongs to the complete local index, not the
+        // currently materialized games or a second QML substring matcher.
+        ShellStore.ensureStore("fortntie", {genre:"ACTION"})
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.genre === "ACTION", "local facet not forwarded")
+        const ranked = game("fortnite")
+        ranked.title = "Fortnite"
+        client.responseReceived(ShellStore.storeRequestId, {source:"store-local",games:[ranked],
+            totalCount:1,hasNextPage:false,nextCursor:"",facets:{genres:["ACTION","MUSIC"],
+                stores:["EPIC","STEAM"],categories:[{id:"shelf:0:0",label:"All official games",count:90}]}})
+        check(screen.filteredCatalog.length === 1, "ranked match was discarded by UI substring filtering")
+        check(screen.genreOptions.indexOf("MUSIC") >= 0 && screen.categoryOptions.indexOf("shelf:0:0") >= 0,
+            "facets were restricted to visible games")
+
+        const palette = paletteComponent.createObject(screen, {opened:true})
+        check(palette !== null, "palette fixture failed to load")
+        palette.query = "fortntie"
+        palette.requestGames()
+        const paletteFirst = palette.searchRequestId
+        check(client.requests.find(r => r.id === paletteFirst).params.limit === 6, "palette search was unbounded")
+        palette.query = "cs2"
+        palette.requestGames()
+        client.responseReceived(paletteFirst, {games:[ranked]})
+        check(palette.localGames.length === 0, "stale palette search was accepted")
+        client.responseReceived(palette.searchRequestId, {games:[game("cs2")]})
+        check(palette.gameList.length === 1 && palette.gameList[0].id === "cs2", "palette ignored ranked local results")
+        palette.opened = false
+        palette.destroy()
+
+        const shelf = shelfComponent.createObject(screen, {width:600,materialized:false,categoryId:"shelf:0:0",totalCount:90})
+        const hiddenRequestCount = client.requests.length
+        shelf.requestVisible()
+        check(client.requests.length === hiddenRequestCount, "offscreen shelf requested games")
+        shelf.materialized = true
+        shelf.requestVisible()
+        check(client.requests.find(r => r.id === shelf.requestId).params.limit === shelf.tileCount,
+            "visible shelf requested more than its visible tiles")
+        const shelfPending = shelf.requestId
+        shelf.materialized = false
+        client.responseReceived(shelfPending, {games:[ranked]})
+        check(shelf.localGames.length === 0, "hidden shelf retained a cancelled response")
+        shelf.categoryId = ""
+        shelf.games = [ranked]
+        check(shelf.tileWidth < 160, "short final row stretched its posters")
+        shelf.destroy()
 
         // An account switch cancels both channels, and late results cannot leak.
         ShellStore.retryStore()

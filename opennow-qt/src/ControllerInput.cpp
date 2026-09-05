@@ -197,7 +197,7 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
     const auto key = keyForButton(event.button);
     if (key != 0) {
         postKey(key, pressed);
-        if (pressed) emit controllerActivity();
+        if (pressed) reportActivity(slotIndex, QStringLiteral("button:%1").arg(event.button), 1);
     }
 }
 
@@ -219,13 +219,15 @@ void ControllerInput::handleAxis(const SDL_GamepadAxisEvent &event)
     if (!m_shellCaptureEnabled) return;
 
     const auto value = event.value;
+    bool activated = false;
     if (event.axis == SDL_GAMEPAD_AXIS_LEFTX) {
-        updateDirection(m_left, value < (m_left.active ? -axisReleaseThreshold : -axisPressThreshold));
-        updateDirection(m_right, value > (m_right.active ? axisReleaseThreshold : axisPressThreshold));
+        activated |= updateDirection(m_left, value < (m_left.active ? -axisReleaseThreshold : -axisPressThreshold));
+        activated |= updateDirection(m_right, value > (m_right.active ? axisReleaseThreshold : axisPressThreshold));
     } else if (event.axis == SDL_GAMEPAD_AXIS_LEFTY) {
-        updateDirection(m_up, value < (m_up.active ? -axisReleaseThreshold : -axisPressThreshold));
-        updateDirection(m_down, value > (m_down.active ? axisReleaseThreshold : axisPressThreshold));
+        activated |= updateDirection(m_up, value < (m_up.active ? -axisReleaseThreshold : -axisPressThreshold));
+        activated |= updateDirection(m_down, value > (m_down.active ? axisReleaseThreshold : axisPressThreshold));
     }
+    if (activated) reportActivity(slotIndex, QStringLiteral("axis:%1").arg(event.axis), value);
 }
 
 quint16 ControllerInput::gamepadBitmap() const
@@ -316,17 +318,28 @@ quint8 ControllerInput::triggerValue(qint16 value)
         std::clamp(static_cast<double>(value) / 32767.0, 0.0, 1.0) * 255.0));
 }
 
-void ControllerInput::updateDirection(RepeatingDirection &direction, bool active)
+void ControllerInput::reportActivity(int slotIndex, const QString &control, int value)
 {
-    if (direction.active == active) return;
+    const auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
+    const auto *name = SDL_GetGamepadName(slot.gamepad);
+    const auto device = QStringLiteral("slot:%1 id:%2 %3")
+        .arg(slotIndex + 1).arg(slot.instanceId)
+        .arg(name ? QString::fromUtf8(name).left(128) : QStringLiteral("unknown"));
+    emit controllerActivity();
+    emit controllerActivityDetailed(device, control, value);
+}
+
+bool ControllerInput::updateDirection(RepeatingDirection &direction, bool active)
+{
+    if (direction.active == active) return false;
     direction.active = active;
     if (active) {
         direction.pressedAt = m_clock.elapsed();
         direction.repeatedAt = direction.pressedAt;
         postKey(direction.key, true);
         postKey(direction.key, false);
-        emit controllerActivity();
     }
+    return active;
 }
 
 void ControllerInput::dispatchRepeats(qint64 now)

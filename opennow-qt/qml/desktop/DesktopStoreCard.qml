@@ -62,11 +62,12 @@ Item {
     }
 
     Text {
+        id: cardTitle
         objectName: "storeCardTitle"
         x: 0
         y: root.artHeight + 8
         width: root.tileWidth
-        height: 40
+        height: implicitHeight
         text: root.game ? String(root.game.title || qsTr("Untitled game")) : qsTr("Untitled game")
         color: Qt.rgba(1, 1, 1, 0.88)
         font.family: Theme.bodyFont
@@ -80,7 +81,7 @@ Item {
 
     Row {
         x: 0
-        y: root.artHeight + 52
+        y: cardTitle.y + cardTitle.height + 4
         visible: root.owned || root.freeToPlay || root.price !== "" || root.discount !== ""
         width: root.tileWidth
         height: 17

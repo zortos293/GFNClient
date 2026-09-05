@@ -57,8 +57,9 @@ Item {
                 id: chip
                 required property int index
                 required property var modelData
-                readonly property bool on: index === root.selectedIndex
+                readonly property bool on: index === root.selectedIndex && !locked
                 readonly property bool locked: root.isDisabled(modelData)
+                objectName: "settingsOption-" + String(root.optionValue(modelData))
                 readonly property string label: root.optionLabel(modelData)
                 width: root.widthFor(modelData)
                 height: root.height - 8
@@ -71,7 +72,7 @@ Item {
                     border.width: chip.activeFocus ? 2 : 0
                     border.color: Theme.focus
                 }
-                opacity: chip.locked && !chip.on ? 0.45 : 1
+                opacity: chip.locked ? 0.45 : 1
 
                 Text {
                     anchors.centerIn: parent

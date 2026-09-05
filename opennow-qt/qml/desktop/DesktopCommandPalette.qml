@@ -11,6 +11,50 @@ FocusScope {
     property string query: ""
     property string scopeFilter: "all"
     property int currentIndex: 0
+    property string searchRequestId: ""
+    property var localGames: []
+    property string searchError: ""
+    property bool searching: false
+    function cancelSearch() {
+        searchDelay.stop()
+        const id = searchRequestId
+        searchRequestId = ""
+        searching = false
+        if (id !== "") CoreClient.cancel(id)
+    }
+    function requestGames() {
+        cancelSearch()
+        if (!opened || scopeFilter === "actions" || !query.trim() || !ShellStore.ready || !ShellStore.signedIn) return
+        searching = true
+        searchRequestId = CoreClient.request("catalog.store.local", {searchQuery:query.trim(),cursor:"",limit:6}, 30000)
+        if (!searchRequestId) searching = false
+    }
+    function scheduleSearch() {
+        cancelSearch()
+        searching = opened && scopeFilter !== "actions" && query.trim() !== "" && ShellStore.ready && ShellStore.signedIn
+        if (searching) searchDelay.restart()
+    }
+    Timer { id: searchDelay; interval: 180; onTriggered: root.requestGames() }
+    Connections {
+        target: CoreClient
+        function onResponseReceived(id, result) {
+            if (!root.searchRequestId || id !== root.searchRequestId) return
+            root.searchRequestId = ""
+            root.searching = false
+            root.localGames = result.games || []
+        }
+        function onRequestFailed(id, code, message) {
+            if (!root.searchRequestId || id !== root.searchRequestId) return
+            root.searchRequestId = ""
+            root.searching = false
+            root.searchError = message
+        }
+    }
+    Connections {
+        target: ShellStore
+        function onAuthSessionChanged() { root.localGames = []; root.searchError = ""; root.scheduleSearch() }
+    }
+    Component.onDestruction: root.cancelSearch()
     signal closeRequested()
     signal routeRequested(string route)
     signal gameRequested(var game)
@@ -22,7 +66,7 @@ FocusScope {
             root.currentIndex = 0
             field.text = ""
             field.forceActiveFocus()
-        }
+        } else root.cancelSearch()
     }
 
     readonly property var actions: [
@@ -44,6 +88,8 @@ FocusScope {
     }
 
     function matchedGames() {
+        if (root.query.trim() && ShellStore.signedIn)
+            return root.localGames.filter(game => !ShellStore.isHidden(game))
         const source = ShellStore.catalogGames || []
         const result = []
         for (let index = 0; index < source.length && result.length < 6; ++index) {
@@ -111,11 +157,11 @@ FocusScope {
         root.closeRequested()
     }
 
-    onQueryChanged: root.currentIndex = 0
-    onScopeFilterChanged: root.currentIndex = 0
+    onQueryChanged: { root.currentIndex = 0; root.localGames = []; root.searchError = ""; root.scheduleSearch() }
+    onScopeFilterChanged: { root.currentIndex = 0; root.scheduleSearch() }
     onFlatCountChanged: root.clampCurrent()
 
-    readonly property real contentHeight: (gameList.length > 0 ? 26 + gameList.length * 56 : 0)
+    readonly property real contentHeight: (flatCount === 0 ? 56 : 0) + (gameList.length > 0 ? 26 + gameList.length * 56 : 0)
         + (actionList.length > 0 ? 26 + actionList.length * 40 : 0)
     readonly property real panelHeight: 58 + Math.min(root.contentHeight, 428) + 42
 
@@ -319,7 +365,9 @@ FocusScope {
                     height: 56
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
-                    text: qsTr("No matches for “%1”").arg(root.query)
+                    text: root.searching ? qsTr("Searching…") : root.searchError || qsTr("No matches for “%1”").arg(root.query)
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
                     color: DesktopTokens.textMuted
                     font.family: DesktopTokens.bodyFont
                     font.pixelSize: DesktopTokens.captionSize

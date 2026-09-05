@@ -119,7 +119,11 @@ Item {
         Accessible.name: root.title
         onClicked: root.expansionRequested()
         background: Rectangle { radius: 10; color: parent.activeFocus || parent.hovered ? DesktopTokens.raised : "transparent" }
-        DesktopSettingsIcon { anchors.centerIn: parent; width: 14; height: 14; glyph: "chevron"; rotation: root.expanded ? -90 : 90; ink: root.expanded ? Theme.focus : Theme.textMuted }
+        DesktopSettingsIcon {
+            anchors.centerIn: parent; width: 14; height: 14; glyph: "chevron"
+            rotation: root.expanded ? -90 : 90; ink: root.expanded ? Theme.focus : Theme.textMuted
+            Behavior on rotation { enabled: !AppController.reducedMotion; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        }
     }
 
     function centerTrailing() {

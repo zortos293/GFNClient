@@ -5,11 +5,13 @@ import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "desktopSidebar"
     property string currentRoute: "home"
     property bool collapsed: true
     property bool hoverExpanded: false
     readonly property bool overlayOpen: !collapsed || hoverExpanded
-    readonly property bool compact: !overlayOpen || width < DesktopTokens.railWidth - 1
+    readonly property bool compact: !overlayOpen
+    readonly property real reveal: Math.max(0, Math.min(1, (width - DesktopTokens.railCollapsedWidth) / (DesktopTokens.railWidth - DesktopTokens.railCollapsedWidth)))
     readonly property bool consoleModeOn: DesktopTokens.consoleModeOn(Window.window)
     readonly property bool consoleModePending: DesktopTokens.consoleModePending(Window.window)
     readonly property bool friendsAvailable: Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
@@ -29,7 +31,7 @@ FocusScope {
     }
 
     Behavior on width {
-        NumberAnimation { duration: DesktopTokens.motionDuration; easing.type: Easing.OutCubic }
+        NumberAnimation { duration: AppController.reducedMotion ? 0 : DesktopTokens.motionDuration; easing.type: Easing.OutCubic }
     }
 
     readonly property var navItems: [
@@ -137,9 +139,9 @@ FocusScope {
     Item {
         anchors.fill: parent
         clip: true
-        anchors.topMargin: root.compact ? 16 : 20
-        anchors.leftMargin: root.compact ? 14 : 12
-        anchors.rightMargin: root.compact ? 14 : 12
+        anchors.topMargin: 16
+        anchors.leftMargin: 14
+        anchors.rightMargin: 14
         anchors.bottomMargin: 12
 
         Flickable {
@@ -158,7 +160,7 @@ FocusScope {
             Column {
                 id: topColumn
                 width: railFlick.width
-                spacing: root.compact ? 10 : 22
+                spacing: 10
 
         Item {
             width: parent.width
@@ -166,12 +168,10 @@ FocusScope {
 
             Image {
                 id: brandMark
-                width: root.compact ? 40 : 22
-                height: root.compact ? 22 : 12
+                width: 40
+                height: 22
                 anchors.verticalCenter: parent.verticalCenter
-                anchors.horizontalCenter: root.compact ? parent.horizontalCenter : undefined
-                anchors.left: root.compact ? undefined : parent.left
-                anchors.leftMargin: root.compact ? 0 : 10
+                x: 2
                 source: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
                 fillMode: Image.PreserveAspectFit
                 smooth: false
@@ -179,7 +179,8 @@ FocusScope {
             }
 
             Text {
-                visible: !root.compact
+                visible: root.reveal > 0
+                        opacity: root.reveal
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.left: brandMark.right
                 anchors.leftMargin: 10
@@ -193,7 +194,7 @@ FocusScope {
 
             Rectangle {
                 id: collapseButton
-                visible: !root.compact
+                visible: false
                 width: 28
                 height: 28
                 anchors.verticalCenter: parent.verticalCenter
@@ -226,43 +227,43 @@ FocusScope {
         }
 
         Item {
-            visible: root.compact
             width: parent.width
             height: 28
             Rectangle {
                 id: expandButton
                 width: 40
                 height: 28
-                anchors.horizontalCenter: parent.horizontalCenter
+                x: 2
                 radius: 9
                 color: expandHover.hovered || expandButton.activeFocus ? "#17FFFFFF" : "#0FFFFFFF"
                 border.width: 1
                 border.color: "#17FFFFFF"
                 Accessible.role: Accessible.Button
-                Accessible.name: qsTr("Expand sidebar")
+                Accessible.name: root.overlayOpen ? qsTr("Collapse sidebar") : qsTr("Expand sidebar")
                 Accessible.onPressAction: {
+                    const closing = root.overlayOpen
                     root.hoverExpanded = false
-                    root.collapseRequested(false)
+                    root.collapseRequested(closing)
                 }
 
                 DesktopGlyph {
                     anchors.centerIn: parent
                     width: 13
                     height: 13
-                    icon: "desktop-expand.svg"
+                    icon: root.overlayOpen ? "desktop-collapse.svg" : "desktop-expand.svg"
                 }
                 HoverHandler { id: expandHover; cursorShape: Qt.PointingHandCursor }
                 TapHandler {
                     onTapped: {
+                        const closing = root.overlayOpen
                         root.hoverExpanded = false
-                        root.collapseRequested(false)
+                        root.collapseRequested(closing)
                     }
                 }
             }
         }
 
         Item {
-            visible: root.compact
             width: parent.width
             height: 1
             Rectangle {
@@ -283,7 +284,7 @@ FocusScope {
                     id: navButton
                     required property var modelData
                     width: parent.width
-                    height: root.compact ? 44 : 38
+                    height: 44
                     padding: 0
                     readonly property bool selected: root.routeSelected(modelData.route)
                     Accessible.name: modelData.name
@@ -294,7 +295,8 @@ FocusScope {
                     }
                     contentItem: Item {
                         DesktopGlyph {
-                            x: root.compact ? (parent.width - 18) / 2 : 10
+                            objectName: "sidebarIcon-" + navButton.modelData.route
+                            x: 13
                             anchors.verticalCenter: parent.verticalCenter
                             width: 18
                             height: 18
@@ -302,9 +304,10 @@ FocusScope {
                             active: navButton.selected
                         }
                         Text {
-                            x: 39
+                            x: 48
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: !root.compact
+                            visible: root.reveal > 0
+                        opacity: root.reveal
                             text: navButton.modelData.name
                             color: navButton.selected ? DesktopTokens.text : DesktopTokens.textMuted
                             font.family: DesktopTokens.bodyFont
@@ -340,28 +343,24 @@ FocusScope {
             }
         }
 
-        Column {
+        Item {
             width: parent.width
-            visible: !root.compact
-            spacing: 1
+            height: 11 + collectionRows.height
 
-            Rectangle {
-                width: parent.width
+            // Keep the compact rail's separator and favourite icon in place.
+            // Only the text and the rows below Favourites reveal with the rail.
+            Item {
+                width: DesktopTokens.railWidth - 28
                 height: 1
-                color: DesktopTokens.seamSoft
-            }
-
-            Item {
-                width: parent.width
-                height: 20
-            }
-
-            Item {
-                width: parent.width
-                height: 26
+                Rectangle {
+                    x: 8; width: 28; height: 1
+                    color: DesktopTokens.seamSoft
+                }
                 Text {
-                    x: 10
+                    x: 48
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: root.reveal > 0
+                    opacity: root.reveal
                     text: qsTr("COLLECTIONS")
                     color: DesktopTokens.textFaint
                     font.family: DesktopTokens.monoFont
@@ -375,27 +374,50 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 11
                     height: 11
+                    visible: root.reveal > 0
+                    opacity: root.reveal
                     icon: "desktop-plus.svg"
                 }
             }
 
+            Column {
+                id: collectionRows
+                y: 11
+                width: parent.width
+                height: 44 + (implicitHeight - 44) * root.reveal
+                clip: true
+                spacing: 1
             Repeater {
                 model: root.collections
                 delegate: Item {
+                    id: collectionRow
+                    required property int index
                     required property var modelData
+                    readonly property bool favourite: index === 0
                     width: parent.width
-                    height: 32
+                    height: favourite ? 44 : 32
+                    opacity: favourite ? 1 : root.reveal
+                    enabled: favourite || root.overlayOpen
+                    clip: true
+                    Item {
+                    // Counts stay at their expanded position, outside the clip
+                    // until there is room; they must never slide over the icon.
+                    width: DesktopTokens.railWidth - 28
+                    height: collectionRow.favourite ? 44 : 32
                     DesktopGlyph {
-                        x: 10
+                        objectName: "sidebarCollectionIcon-" + collectionRow.modelData.filter
+                        x: collectionRow.favourite ? 13 : 15
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 14
-                        height: 14
-                        icon: modelData.icon
+                        width: collectionRow.favourite ? 18 : 14
+                        height: width
+                        icon: collectionRow.modelData.icon
                     }
                     Text {
-                        x: 34
+                        x: 48
                         anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.name
+                        visible: root.reveal > 0
+                        opacity: root.reveal
+                        text: collectionRow.modelData.name
                         color: collectionHover.hovered ? DesktopTokens.text : DesktopTokens.textMuted
                         font.family: DesktopTokens.bodyFont
                         font.pixelSize: 13
@@ -405,7 +427,9 @@ FocusScope {
                         anchors.right: parent.right
                         anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.count
+                        visible: root.reveal > 0
+                        opacity: root.reveal
+                        text: collectionRow.modelData.count
                         color: "#4DFFFFFF"
                         font.family: DesktopTokens.monoFont
                         font.pixelSize: 10
@@ -413,31 +437,9 @@ FocusScope {
                     }
                     HoverHandler { id: collectionHover; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: root.routeRequested("library") }
+                    }
                 }
             }
-        }
-
-        Item {
-            visible: root.compact
-            width: parent.width
-            height: 1
-            Rectangle {
-                width: 28
-                height: 1
-                anchors.horizontalCenter: parent.horizontalCenter
-                color: DesktopTokens.seamSoft
-            }
-        }
-
-        Item {
-            visible: root.compact
-            width: parent.width
-            height: 44
-            DesktopGlyph {
-                anchors.centerIn: parent
-                width: 18
-                height: 18
-                icon: "desktop-star.svg"
             }
         }
             }
@@ -451,7 +453,6 @@ FocusScope {
             spacing: 4
 
             Rectangle {
-                visible: !root.compact
                 width: parent.width
                 height: 1
                 color: DesktopTokens.seamSoft
@@ -475,17 +476,18 @@ FocusScope {
                 }
                 contentItem: Item {
                     DesktopGlyph {
-                        x: root.compact ? (parent.width - 17) / 2 : 10
+                        x: 13.5
                         anchors.verticalCenter: parent.verticalCenter
                         width: 17
                         height: 17
                         icon: "desktop-gamepad.svg"
                     }
                     Column {
-                        x: 37
+                        x: 48
                         width: Math.max(0, parent.width - x - 52)
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: !root.compact
+                        visible: root.reveal > 0
+                        opacity: root.reveal
                         spacing: 2
                         Text {
                             width: parent.width
@@ -526,7 +528,8 @@ FocusScope {
                         anchors.right: parent.right
                         anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: !root.compact
+                        visible: root.reveal > 0
+                        opacity: root.reveal
                         width: 32
                         height: 19
                         radius: 999
@@ -569,10 +572,10 @@ FocusScope {
                 }
                 contentItem: Item {
                     Rectangle {
-                        x: root.compact ? (parent.width - (root.compact ? 36 : 28)) / 2 : 10
+                        x: 4
                         anchors.verticalCenter: parent.verticalCenter
-                        width: root.compact ? 36 : 28
-                        height: root.compact ? 36 : 28
+                        width: 36
+                        height: 36
                         radius: 999
                         color: "#17FFFFFF"
                         border.width: 1
@@ -592,7 +595,8 @@ FocusScope {
                         x: 48
                         width: Math.max(0, parent.width - x - 28)
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: !root.compact
+                        visible: root.reveal > 0
+                        opacity: root.reveal
                         spacing: 2
                         Text {
                             width: parent.width
@@ -620,7 +624,8 @@ FocusScope {
                         anchors.right: parent.right
                         anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: !root.compact
+                        visible: root.reveal > 0
+                        opacity: root.reveal
                         width: 10
                         height: 10
                         icon: "desktop-chevron-up.svg"

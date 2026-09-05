@@ -33,10 +33,10 @@ FocusScope {
                 width: parent.width; height: 310; panelRadius: 26
                 Flickable {
                     anchors.fill: parent; anchors.margins: 22; contentHeight: notes.height; clip: true
-                    Text {
+                    ReleaseNotes {
                         id: notes; width: parent.width
-                        text: ShellStore.releaseHighlights.bodyMarkdown || qsTr("Release notes appear here after an update check. Qt packages are only offered after platform signing and update metadata verification are available.")
-                        color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; wrapMode: Text.WordWrap
+                        text: ShellStore.releaseHighlights.bodyMarkdown || qsTr("Check for updates to load verified release information from GitHub.")
+                        font.pixelSize: 14
                     }
                 }
             }

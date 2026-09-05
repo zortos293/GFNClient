@@ -1,7 +1,11 @@
 #include "NativeStreamRuntime.h"
+#include "DiagnosticsPaths.h"
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QDateTime>
+#include <QSysInfo>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QMetaObject>
@@ -10,6 +14,7 @@
 #include <QStandardPaths>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <limits>
@@ -24,6 +29,39 @@ namespace {
 constexpr std::size_t CommandQueueCapacity = 128;
 constexpr std::size_t ResponseQueueCapacity = 128;
 constexpr std::size_t EventQueueCapacity = 256;
+
+// GUI-thread control-plane diagnostics only. Never log raw commands or callback
+// payloads (they may contain session credentials), or write on each video frame.
+void handshakeLog(const QString &detail)
+{
+    QDir directory(coreDiagnosticsDataRoot());
+    if (!directory.mkpath(u"diagnostics"_s) || !directory.cd(u"diagnostics"_s)) return;
+    const auto path = directory.filePath(u"qt-native.log"_s);
+    QFile file(path);
+    if (file.size() > 1024 * 1024) {
+        QFile::remove(path + u".previous"_s);
+        if (!QFile::rename(path, path + u".previous"_s)) return;
+    }
+    if (file.open(QIODevice::WriteOnly | QIODevice::Append))
+        file.write((QString::number(QDateTime::currentMSecsSinceEpoch())
+                    + u" qt-native "_s + detail + u"\n"_s).toUtf8());
+}
+
+QString handshakeSummary(const QJsonObject &object)
+{
+    QStringList fields;
+    for (const auto *key : {"id", "type", "event", "status", "code", "protocolVersion", "phase"}) {
+        const auto value = object.value(QLatin1String(key));
+        const auto text = value.isString() ? value.toString()
+                        : value.isDouble() ? QString::number(value.toDouble()) : QString{};
+        if (!text.isEmpty() && text.size() <= 64
+            && std::all_of(text.begin(), text.end(), [](QChar c) {
+                return (c.isLetterOrNumber() && c.unicode() < 128)
+                    || c == u'-' || c == u'_' || c == u'.';
+            })) fields.append(QLatin1String(key) + u"="_s + text);
+    }
+    return fields.join(u' ');
+}
 
 QString statusText(OpenNowStreamerStatus status)
 {
@@ -96,6 +134,10 @@ struct NativeStreamRuntime::Private {
     std::shared_ptr<CallbackState> callbackState;
     QString lastError;
     bool graphicsActive = false;
+    bool firstNotification = false;
+    std::atomic<quint64> presentationGeneration{0};
+    std::atomic_bool presentationAllowed{false};
+    QString presentationStartId;
 };
 
 NativeStreamRuntime::NativeStreamRuntime(QObject *parent)
@@ -156,8 +198,39 @@ QString NativeStreamRuntime::lastError() const
     return d->lastError;
 }
 
+quint64 NativeStreamRuntime::presentationGeneration() const
+{
+    return d->presentationGeneration.load(std::memory_order_acquire);
+}
+
+bool NativeStreamRuntime::presentationAllowed() const
+{
+    return d->presentationAllowed.load(std::memory_order_acquire);
+}
+
+void NativeStreamRuntime::invalidatePresentation()
+{
+    d->presentationAllowed.store(false, std::memory_order_release);
+    d->presentationGeneration.fetch_add(1, std::memory_order_acq_rel);
+    d->presentationStartId.clear();
+    emit frameAvailable(); // Repaint even when the dead transport sends no more frames.
+}
+
+void NativeStreamRuntime::reportPresentationError(const QString &message)
+{
+    QMetaObject::invokeMethod(this, [this, message] {
+        invalidatePresentation();
+        setLastError(message);
+        qWarning("Stream presentation: %s", qUtf8Printable(message));
+        emit presentationError(message);
+    }, Qt::QueuedConnection);
+}
+
 bool NativeStreamRuntime::start()
 {
+    handshakeLog(u"runtime.start build=diagnostics-v2 app=%1 qt=%2 arch=%3 abi=%4"_s
+        .arg(QCoreApplication::applicationVersion(), QString::fromLatin1(qVersion()),
+             QSysInfo::currentCpuArchitecture()).arg(OPENNOW_STREAMER_FFI_ABI_VERSION));
     if (!d->api.create || !d->api.send || !d->api.destroy) {
         setLastError(u"The embedded streamer FFI is incomplete."_s);
         return false;
@@ -172,8 +245,7 @@ bool NativeStreamRuntime::start()
     // the engine. Packaged builds never spawn the legacy child streamer, so
     // without this the video pipeline logs nowhere.
     if (d->api.setLogFile) {
-        const auto dataRoot =
-            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        const auto dataRoot = coreDiagnosticsDataRoot();
         if (!dataRoot.isEmpty()) {
             QDir directory(dataRoot);
             if (directory.mkpath(u"diagnostics"_s) && directory.cd(u"diagnostics"_s)) {
@@ -201,6 +273,7 @@ bool NativeStreamRuntime::start()
 
     OpenNowStreamer *handle = nullptr;
     const auto status = d->api.create(&config, &handle);
+    handshakeLog(u"runtime.create result=%1 handle_present=%2"_s.arg(int(status)).arg(handle != nullptr));
     if (status != OPENNOW_STREAMER_OK || !handle) {
         setLastError(status == OPENNOW_STREAMER_OK
                          ? u"The embedded streamer did not return a runtime handle."_s
@@ -225,6 +298,15 @@ bool NativeStreamRuntime::send(const QJsonObject &command)
 
 bool NativeStreamRuntime::sendBytes(const QByteArray &command)
 {
+    const auto object = QJsonDocument::fromJson(command).object();
+    const auto type = object.value(u"type"_s).toString();
+    if (type == u"start"_s || type == u"stop"_s) {
+        invalidatePresentation();
+        if (type == u"start"_s) {
+            d->firstNotification = false;
+            d->presentationStartId = object.value(u"id"_s).toString();
+        }
+    }
     if (command.size() > MaximumCallbackBytes) {
         setLastError(statusText(OPENNOW_STREAMER_MESSAGE_TOO_LARGE));
         return false;
@@ -239,6 +321,8 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
                 static_cast<std::size_t>(command.size()));
         }
     }
+    handshakeLog(u"send %1 bytes=%2 queue_result=%3"_s
+        .arg(handshakeSummary(object)).arg(command.size()).arg(int(status)));
     if (status != OPENNOW_STREAMER_OK) {
         setLastError(statusText(status));
         return false;
@@ -249,6 +333,7 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
 
 bool NativeStreamRuntime::shutdown(int timeoutMs)
 {
+    invalidatePresentation();
     OpenNowStreamer *handle = nullptr;
     std::shared_ptr<CallbackState> callbacks;
     bool graphicsActive = false;
@@ -572,8 +657,17 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         if (!reschedule) state->drainScheduled = false;
     }
 
-    if (dropped > 0) emit callbacksDropped(dropped);
-    if (framePending) emit frameAvailable();
+    if (dropped > 0) {
+        handshakeLog(u"callback_queue dropped=%1"_s.arg(dropped));
+        emit callbacksDropped(dropped);
+    }
+    if (framePending) {
+        if (!d->firstNotification) {
+            handshakeLog(u"first frame notification delivered to Qt GUI (not yet presentation)"_s);
+            d->firstNotification = true;
+        }
+        emit frameAvailable();
+    }
     while (!messages.isEmpty()) {
         const auto message = messages.dequeue();
         if (message.cursor) {
@@ -583,9 +677,24 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         QJsonParseError error;
         const auto document = QJsonDocument::fromJson(message.bytes, &error);
         if (error.error != QJsonParseError::NoError || !document.isObject()) {
+            handshakeLog(u"callback rejected: malformed JSON bytes=%1"_s.arg(message.bytes.size()));
             setLastError(u"The embedded streamer callback contained malformed JSON."_s);
             continue;
         }
+        const auto kind = document.object().value(u"type"_s).toString();
+        const auto status = document.object().value(u"status"_s).toString();
+        if (message.event && (kind == u"error"_s
+                || (kind == u"status"_s && (status == u"stopped"_s || status == u"error"_s)))) {
+            invalidatePresentation();
+        } else if (!message.event && !d->presentationStartId.isEmpty()
+                && document.object().value(u"id"_s).toString() == d->presentationStartId) {
+            d->presentationStartId.clear();
+            d->presentationAllowed.store(kind == u"ok"_s, std::memory_order_release);
+            emit frameAvailable();
+        }
+        if (kind != u"telemetry"_s && kind != u"stats"_s && kind != u"log"_s)
+            handshakeLog(u"delivered %1 bytes=%2"_s.arg(handshakeSummary(document.object()))
+                         .arg(message.bytes.size()));
         if (message.event)
             emit eventReceived(document.object());
         else

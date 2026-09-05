@@ -7,6 +7,7 @@ FocusScope {
     height: 900
     property string overlay: ""
     property bool inputBlocking: false
+    property bool pointerLocked: false
     focus: visible && inputBlocking
     readonly property bool present: menuView.present || exitView.present || statsVisible
 
@@ -69,6 +70,7 @@ FocusScope {
         id: statsView
         anchors.fill: parent
         visible: root.statsVisible
+        pointerLocked: root.pointerLocked
         focus: false
         expanded: root.overlay === "desktop-stream-stats-expanded"
             || root.overlay === "stream-stats-expanded"

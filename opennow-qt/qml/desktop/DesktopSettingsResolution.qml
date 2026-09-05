@@ -31,9 +31,14 @@ Item {
         }
         return list.filter(group => group.items.length)
     }
-    implicitHeight: expanded ? header.height + Math.min(DesktopTokens.px(250), gridContents.implicitHeight + 18) + 12 : DesktopTokens.px(68)
+    readonly property real revealProgress: reveal.progress
+    readonly property real optionsHeight: Math.min(DesktopTokens.px(250), gridContents.implicitHeight + 18)
+    implicitHeight: header.height + (optionsHeight + 12) * reveal.progress
+    clip: true
+    MotionProgress { id: reveal; shown: root.expanded; enterDuration: 200; exitDuration: 160 }
     onExpandedChanged: {
         if (expanded) gridFlick.forceActiveFocus()
+        else stepper.focusSelector()
     }
     function step(direction) {
         if (!available.length) return
@@ -41,19 +46,21 @@ Item {
         root.selected(available[(Math.max(0,index) + direction + available.length) % available.length].value)
     }
     Rectangle {
-        visible: root.expanded; x: 8; y: 0; width: parent.width-16; height: parent.height-8
+        visible: reveal.present; opacity: reveal.progress
+        x: 8; y: 0; width: parent.width-16; height: parent.height
         radius: 16; color: DesktopTokens.raised; border.width: 1; border.color: Theme.focus
     }
     DesktopSettingsRow {
         id: header
         width: parent.width; paperStyle: true; glyph: "monitor"; expanded: root.expanded
-        rowHeight: DesktopTokens.px(root.expanded ? 64 : 68)
+        rowHeight: DesktopTokens.px(68)
         title: qsTr("Resolution")
         description: root.expanded ? qsTr("%1 available · Esc closes").arg(root.available.length)
             : root.current ? root.current.detail : root.value.replace("x", "×")
         showDivider: !root.expanded; expandable: true
         onExpansionRequested: root.expanded = !root.expanded
         DesktopSettingsStepper {
+            id: stepper
             visible: !root.expanded
             text: root.current ? root.current.label : root.value.replace("x","×")
             previousEnabled: root.available.length > 1; nextEnabled: previousEnabled
@@ -70,9 +77,11 @@ Item {
     }
     Flickable {
         id: gridFlick
-        visible: root.expanded
+        visible: reveal.present
+        enabled: root.expanded
+        opacity: reveal.progress
         x: 20; y: header.height; width: parent.width-40
-        height: root.height-header.height-16
+        height: Math.max(0, root.optionsHeight - 4)
         contentWidth: width; contentHeight: gridContents.implicitHeight+14
         clip: true; boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -124,7 +133,9 @@ Item {
     Rectangle {
         anchors.left: gridFlick.left; anchors.right: gridFlick.right
         anchors.bottom: gridFlick.bottom; height: 40
-        visible: root.expanded && gridFlick.contentY + gridFlick.height < gridFlick.contentHeight - 2
+        visible: reveal.present && gridFlick.contentY + gridFlick.height < gridFlick.contentHeight - 2
+        enabled: root.expanded
+        opacity: reveal.progress
         gradient: Gradient {
             GradientStop { position: 0; color: "transparent" }
             GradientStop { position: 1; color: Theme.shell }

@@ -18,7 +18,14 @@ ApplicationWindow {
     readonly property bool settingsLoaded: Object.keys(ShellStore.settings || {}).length > 0
     property bool consoleHeldByPad: false
     property bool pointerRecentlyActive: false
+    property bool desktopSelectedByPointer: false
+    property bool desktopExplicitlySelected: false
+    property bool startupModeApplied: false
+    property bool startupConsoleRequested: false
+    property double lastControllerDiagnosticMs: 0
     property bool forceConsole: false
+    property bool launchModeOverridden: false
+    readonly property string effectiveLaunchMode: launchModeOverridden ? "" : LaunchModeOverride
     property bool streamStatsAutoShown: false
     property bool streamSurfaceLocked: false
     property bool lockedStreamDesktopSurface: true
@@ -33,23 +40,29 @@ ApplicationWindow {
             || AppController.overlay === "desktop-stream-stats-expanded"
             || AppController.overlay === "stream-stats"
             || AppController.overlay === "stream-stats-expanded")
-    readonly property bool switchToConsoleOnPad: !settingsLoaded
-        || ShellStore.settings.switchToConsoleOnPad !== false
+    readonly property bool switchToConsoleOnPad: settingsLoaded
+        && ShellStore.settings.switchToConsoleOnPad === true
+    onSwitchToConsoleOnPadChanged: {
+        window.consoleHeldByPad = false
+        if (switchToConsoleOnPad)
+            window.desktopExplicitlySelected = false // deliberate opt-in overrides a manual hold
+    }
     readonly property bool leaveConsoleOnPointer: !settingsLoaded
         || ShellStore.settings.leaveConsoleOnPointer !== false
-    readonly property bool pointerHoldsDesktop: leaveConsoleOnPointer && pointerRecentlyActive
-        && LaunchModeOverride !== "console"
+    readonly property bool pointerHoldsDesktop: leaveConsoleOnPointer && desktopSelectedByPointer
+        && effectiveLaunchMode !== "console"
         && !forceConsole
-    readonly property bool consolePreferred: LaunchModeOverride === "console"
+    readonly property bool consolePreferred: effectiveLaunchMode === "console"
         || forceConsole
-        || (!pointerHoldsDesktop && (
-            (settingsLoaded && ShellStore.settings.launchInConsoleMode === true)
+        || (!desktopExplicitlySelected && !pointerHoldsDesktop && (
+            startupConsoleRequested
             || (consoleHeldByPad && switchToConsoleOnPad)))
-    readonly property bool desktopRequested: LaunchModeOverride === "desktop"
-        || (LaunchModeOverride !== "console" && !consolePreferred)
+    // Command-line flags choose the initial shell, not a permanent mode lock.
+    readonly property bool desktopRequested: effectiveLaunchMode === "desktop"
+        || (effectiveLaunchMode !== "console" && !consolePreferred)
     readonly property bool desktopEligibleRoute: ["joining",
         "accounts", "profile-pin", "game-accounts", "persistent-storage", "media",
-        "diagnostics", "updates", "feedback", "theme-store"].indexOf(activeRoute) < 0
+        "diagnostics", "feedback", "theme-store"].indexOf(activeRoute) < 0
     readonly property bool targetDesktopSurface: streamSurfaceLocked
         ? lockedStreamDesktopSurface : desktopRequested && desktopEligibleRoute
     readonly property bool streamQmlOverlayActive: activeRoute === "stream"
@@ -203,6 +216,12 @@ ApplicationWindow {
     }
 
     function applyConsoleSurface(enabled) {
+        window.startupModeApplied = true
+        window.startupConsoleRequested = false
+        window.launchModeOverridden = true
+        window.desktopExplicitlySelected = !enabled
+        window.desktopSelectedByPointer = false
+        pointerGrace.stop()
         window.pointerRecentlyActive = false
         window.forceConsole = enabled
         if (!enabled)
@@ -233,18 +252,46 @@ ApplicationWindow {
     function notePointerInput() {
         window.pointerRecentlyActive = true
         pointerGrace.restart()
-        if (window.leaveConsoleOnPointer && LaunchModeOverride !== "console" && !window.forceConsole)
+        if (window.leaveConsoleOnPointer && effectiveLaunchMode !== "console" && !window.forceConsole) {
+            window.desktopSelectedByPointer = true
             window.consoleHeldByPad = false
+            window.startupConsoleRequested = false
+        }
     }
 
-    function noteControllerInput() {
+    function noteControllerInput(device, control, value) {
         // Device enumeration is not user intent (virtual/idle pads are common),
         // and a live stream must never swap render trees because input mode
         // changed. Only real controller activity outside a stream selects it.
-        if (window.activeRoute !== "stream"
+        const allowed = window.activeRoute !== "stream"
                 && window.switchToConsoleOnPad
-                && !window.pointerRecentlyActive)
+                && !window.desktopExplicitlySelected
+                && !window.pointerRecentlyActive
+        const switching = allowed && !window.consoleHeldByPad
+        const now = Date.now()
+        if (switching || now - window.lastControllerDiagnosticMs >= 1000) {
+            window.lastControllerDiagnosticMs = now
+            CoreClient.logShellDiagnostic("controller decision=" + (switching ? "console" : "no-switch")
+                + " device=" + String(device || "unknown") + " control=" + String(control || "unknown")
+                + " value=" + String(value) + " route=" + window.activeRoute
+                + " optedIn=" + window.switchToConsoleOnPad
+                + " explicitDesktop=" + window.desktopExplicitlySelected
+                + " pointerGrace=" + window.pointerRecentlyActive)
+        }
+        if (allowed) {
+            window.desktopSelectedByPointer = false
             window.consoleHeldByPad = true
+        }
+    }
+
+    function initializeStartupMode() {
+        if (window.startupModeApplied || !window.settingsLoaded)
+            return
+        window.startupModeApplied = true
+        window.startupConsoleRequested = ShellStore.settings.launchInConsoleMode === true
+            && !window.desktopSelectedByPointer && !window.desktopExplicitlySelected
+        CoreClient.logShellDiagnostic("startup console=" + window.startupConsoleRequested
+            + " autoSwitch=" + window.switchToConsoleOnPad)
     }
 
     function updateStreamSurfaceLock() {
@@ -270,6 +317,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        initializeStartupMode()
         updateStreamSurfaceLock()
         modeInitialized = true
         window.synchronizeRenderedSurface()
@@ -432,6 +480,7 @@ ApplicationWindow {
             function onStreamerChanged() { window.showConfiguredStreamStats() }
             function onConsoleSurfaceRequested(enabled) { window.applyConsoleSurface(enabled) }
             function onSettingsChanged() {
+                window.initializeStartupMode()
                 window.syncInputOwnership()
                 if (window.geometryRestored || !ShellStore.settings.windowWidth)
                     return
@@ -496,6 +545,8 @@ ApplicationWindow {
     DesktopStreamOverlayHost {
         id: desktopStreamOverlay
         anchors.fill: parent
+        pointerLocked: window.activeRoute === "stream" && routeLoader.item
+            && routeLoader.item.streamPointerLocked === true
         overlay: AppController.overlay
         inputBlocking: ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         visible: window.streamQmlOverlayActive
@@ -627,8 +678,14 @@ ApplicationWindow {
             function onInputModeChanged() {
                 if (AppController.inputMode === "pointer" || AppController.inputMode === "keyboard")
                     window.notePointerInput()
-                else if (AppController.inputMode === "controller")
-                    window.noteControllerInput()
+            }
+        }
+        Connections {
+            target: ControllerInput
+            // Only fresh navigation/button edges signal activity. Repeated keys,
+            // hotplug, battery polling and input-label changes cannot select a shell.
+            function onControllerActivityDetailed(device, control, value) {
+                window.noteControllerInput(device, control, value)
             }
         }
         Connections {

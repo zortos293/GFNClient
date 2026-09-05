@@ -9,6 +9,10 @@ Item {
     id: root
     objectName: "desktopStreamStats"
     property bool expanded: false
+    property bool pointerLocked: false
+    // A HUD must never compete with gameplay for hover, taps or wheel input.
+    // Shortcut-driven cycling/copy remains available while pointer input is off.
+    enabled: !pointerLocked
     signal cycleRequested()
     signal copyRequested()
     signal closeRequested()
@@ -38,7 +42,9 @@ Item {
         const total = start > 0 ? Math.floor(Math.max(0, nowMs - start) / 1000) : 0
         return Math.floor(total / 3600) + ":" + String(Math.floor(total / 60) % 60).padStart(2, "0") + ":" + String(total % 60).padStart(2, "0")
     }
-    readonly property string region: String(session.regionName || session.region || session.serverRegionId || qsTr("Region unavailable"))
+    readonly property string region: String(session.regionName || session.region || session.serverRegionId
+        || (typeof session.serverLocation === "string" ? session.serverLocation : "")
+        || session.zone || qsTr("Region unavailable"))
     readonly property string rig: String(session.rigName || session.gpuName || session.gpuType || "")
     readonly property string videoText: {
         const parts = []
@@ -65,8 +71,7 @@ Item {
         ].filter(item => shown(item.key))
     }
     function compactItems() {
-        const items = cards.filter(item => ["Ping","Fps","Bitrate","Drops","Jitter"].indexOf(item.key) >= 0)
-            .map(item => ({text:format(item.value, item.decimals) + " " + item.unit}))
+        const items = cards.map(item => ({text:item.label + " " + format(item.value, item.decimals) + " " + item.unit}))
         if (shown("Video")) items.push({text:videoText})
         if (shown("Region")) items.push({text:region})
         return items
@@ -137,6 +142,7 @@ Item {
         y: root.bottomAligned ? root.height - height - root.inset : root.inset
         radius: 22; color: root.surface; border.width: 1; border.color: Theme.seam
         Flickable {
+            interactive: !root.pointerLocked
             anchors.fill: parent; anchors.margins: 10
             contentWidth: width; contentHeight: panelContents.implicitHeight
             clip: true; boundsBehavior: Flickable.StopAtBounds

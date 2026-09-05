@@ -27,14 +27,19 @@ Item {
         }
         return groups.filter(group => group.items.length)
     }
-    implicitHeight: header.height + (expanded ? search.height + Math.min(DesktopTokens.px(260), grid.implicitHeight + 12) + 28 : 0)
+    readonly property real revealProgress: reveal.progress
+    readonly property real optionsHeight: Math.min(DesktopTokens.px(260), grid.implicitHeight + 12)
+    implicitHeight: header.height + (search.height + optionsHeight + 28) * reveal.progress
+    clip: true
+    MotionProgress { id: reveal; shown: root.expanded; enterDuration: 200; exitDuration: 160 }
     onExpandedChanged: {
         if (expanded) { search.clear(); search.forceActiveFocus() }
         else selector.forceActiveFocus()
     }
     Rectangle {
-        visible: root.expanded
-        x: 8; width: parent.width-16; height: parent.height-8
+        visible: reveal.present
+        opacity: reveal.progress
+        x: 8; width: parent.width-16; height: parent.height
         radius: 16; color: DesktopTokens.raised
         border.width: 1; border.color: Theme.focus
     }
@@ -56,7 +61,9 @@ Item {
     }
     DesktopSettingsField {
         id: search
-        visible: root.expanded
+        visible: reveal.present
+        enabled: root.expanded
+        opacity: reveal.progress
         x: 20; y: header.height; width: parent.width - 40
         placeholderText: qsTr("Filter options…")
         Accessible.name: root.title + ": " + placeholderText
@@ -64,9 +71,11 @@ Item {
     }
     Flickable {
         id: scroll
-        visible: root.expanded
+        visible: reveal.present
+        enabled: root.expanded
+        opacity: reveal.progress
         x: 20; y: search.y + search.height + 12; width: parent.width-40
-        height: Math.max(0, root.height-y-16)
+        height: root.optionsHeight
         contentWidth: width; contentHeight: grid.implicitHeight
         clip: true; boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -93,7 +102,8 @@ Item {
                             delegate: AbstractButton {
                                 id: tile
                                 required property var modelData
-                                readonly property bool chosen: String(modelData.value) === String(root.value)
+                                readonly property bool chosen: enabled && String(modelData.value) === String(root.value)
+                                objectName: "settingsChoice-" + String(modelData.value)
                                 width: Math.floor((parent.width-(parent.columns-1)*8)/parent.columns)
                                 height: DesktopTokens.px(56)
                                 enabled: !modelData.disabled; opacity: enabled ? 1 : 0.45

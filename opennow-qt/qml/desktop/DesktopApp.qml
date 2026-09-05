@@ -19,9 +19,11 @@ FocusScope {
     readonly property bool signInVisible: !ShellStore.authRestorePending && (!ShellStore.signedIn || route === "sign-in")
     readonly property bool sessionStartingVisible: !signInVisible && route === "inserting"
     readonly property bool streamVisible: !signInVisible && route === "stream"
+    readonly property bool streamPointerLocked: streamVisible && desktopStream.streamPointerLocked
     readonly property bool shellVisible: !signInVisible && !sessionStartingVisible && !streamVisible
 
     function titleForRoute(value) {
+        if (value === "updates") return qsTr("Updates")
         if (value === "library" || value === "game-detail") return qsTr("Library")
         if (value === "store") return qsTr("Store")
         if (value === "friends") return qsTr("Friends")
@@ -29,13 +31,10 @@ FocusScope {
         return qsTr("Home")
     }
     function subtitleForRoute(value) {
+        if (value === "updates") return ""
         if (value === "library" || value === "game-detail") return qsTr("%1 games").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
         if (value === "store") return qsTr("%1 in catalog").arg(ShellStore.storeTotalCount || ShellStore.storeGames.length)
-        if (value === "friends") {
-            if (ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
-                return qsTr("Provider friends")
-            return qsTr("Friends unavailable")
-        }
+        if (value === "friends") return qsTr("Coming soon")
         if (value.indexOf("settings") === 0 || value === "controllers") return settingsSubtitle
         return ShellStore.catalogTotalCount
             ? qsTr("%1 games").arg(ShellStore.catalogTotalCount)
@@ -45,15 +44,18 @@ FocusScope {
         if (value === "settings-subscription") return 1
         if (value === "settings-stores" || value === "game-accounts") return 2
         if (value === "settings-streaming" || value === "settings-video" || value === "settings-video-dropdown") return 3
+        if (value === "settings-audio") return 4
         if (value === "controllers" || value === "settings-input") return 5
         if (value === "settings-network") return 6
         if (value === "settings-themes") return 8
         if (value === "settings-console") return 9
+        if (value === "settings-shortcuts") return 10
         if (value === "settings-advanced" || value === "settings-advanced-dropdown") return 11
         if (value === "settings-account") return 0
         return 3
     }
     function contentForRoute(value) {
+        if (value === "updates") return updatesComponent
         if (value === "store") return storeComponent
         if (value === "friends") return friendsComponent
         if (value.indexOf("settings") === 0 || value === "controllers") return settingsComponent
@@ -112,8 +114,11 @@ FocusScope {
             objectName: "desktopPageLoader"
             anchors.fill: parent
             sourceComponent: root.contentForRoute(root.contentRoute)
-            opacity: 1
+            opacity: pageEntrance.pageOpacity
+            transform: Translate { y: pageEntrance.offset }
+            PageEntrance { id: pageEntrance; objectName: "desktopPageEntrance" }
             onLoaded: {
+                pageEntrance.restart()
                 if (shell.visible && root.route !== "game-detail" && !root.commandOpen && item && item.forceActiveFocus)
                     Qt.callLater(() => item.forceActiveFocus())
             }
@@ -216,6 +221,7 @@ FocusScope {
         }
     }
     Component { id: friendsComponent; DesktopFriendsScreen {} }
+    Component { id: updatesComponent; DesktopUpdateScreen {} }
     Component {
         id: settingsComponent
         DesktopSettingsScreen {

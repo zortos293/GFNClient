@@ -9,6 +9,7 @@ Rectangle {
     signal previous()
     signal next()
     signal openRequested()
+    function focusSelector() { selector.forceActiveFocus() }
     implicitWidth: DesktopTokens.px(190)
     implicitHeight: DesktopTokens.px(40)
     radius: height / 2
@@ -23,6 +24,7 @@ Rectangle {
             DesktopSettingsIcon { anchors.centerIn: parent; width: 14; height: 14; glyph: "chevron"; rotation: 180; ink: Theme.textMuted; opacity: parent.enabled ? 1 : 0.3 }
         }
         AbstractButton {
+            id: selector
             width: DesktopTokens.px(112); height: DesktopTokens.px(30)
             Accessible.name: root.text; onClicked: root.openRequested()
             background: Rectangle { radius: height/2; color: parent.activeFocus || parent.hovered ? DesktopTokens.raised : "transparent" }

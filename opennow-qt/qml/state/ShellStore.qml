@@ -23,6 +23,10 @@ QtObject {
     // users, static public list otherwise. Separate from the library channel
     // so store browsing never disturbs library counts or filters.
     property var storeGames: []
+    property var storeFacets: ({genres:[], stores:[], categories:[]})
+    property var storeFilters: ({})
+    property bool storeUsesLocalIndex: false
+    signal storeSessionReset()
     property int storeTotalCount: 0
     property string storeState: "idle"
     property string storeSource: "public"
@@ -82,7 +86,7 @@ QtObject {
     property string mediaMessage: ""
     property var diagnostics: ({entries: []})
     property string diagnosticsMessage: ""
-    property var updaterState: ({status: "idle", currentVersion: "0.5.4", canCheck: true})
+    property var updaterState: ({status: "idle", currentVersion: Qt.application.version, canCheck: true})
     property var releaseHighlights: ({})
     property var socialCapabilities: ({
         friendsAvailable: false,
@@ -110,6 +114,12 @@ QtObject {
     property string streamMessage: ""
     property int streamerRestartAttempts: 0
     property int sessionReconnectAttempts: 0
+    readonly property int maximumSessionReconnectAttempts: 8
+    property bool sessionRecoveryPending: false
+    property string recoverySessionId: ""
+    property string recoveryDiscoveryRequestId: ""
+    property int resumePollAttempts: 0
+    property double resumePollDeadlineMs: 0
     property int streamerRestartRecoveryCount: 0
     property int sessionRecoveryCount: 0
     property var guidePagesVisited: []
@@ -293,9 +303,23 @@ QtObject {
     }
 
     property Timer streamerRestartTimer: Timer {
-        interval: Math.min(4000, 500 * Math.pow(2, root.streamerRestartAttempts))
+        interval: Math.min(8000, 1000 * Math.pow(2, Math.min(3, root.sessionReconnectAttempts)))
         repeat: false
-        onTriggered: root.startNativeStreamer()
+        onTriggered: root.recoverStreamingSession(root.streamMessage)
+    }
+
+    property Timer recoveryStopTimer: Timer {
+        interval: 30000
+        repeat: false
+        running: root.sessionRecoveryPending && root.streamerStopRequestId !== ""
+        onTriggered: {
+            // Keep the outstanding stop ownership: starting another connection
+            // while a decoder/transport worker is still alive is unsafe.
+            root.sessionRecoveryPending = false
+            root.streamState = "error"
+            root.streamMessage = qsTr("The previous native stream is still stopping. Retry after cleanup finishes, or restart OpenNOW.")
+            root.lastError = root.streamMessage
+        }
     }
 
     property Timer autoUpdateCheckTimer: Timer {
@@ -380,7 +404,8 @@ QtObject {
         if (activeSession && String(activeSession.sessionId || "") === String(session.sessionId || "")) {
             if (AppController.route !== "stream")
                 AppController.navigate("stream")
-            startNativeStreamer()
+            if (!streamer || streamer.status === "stopped" || streamer.status === "error")
+                recoverStreamingSession(qsTr("Resuming your active GeForce NOW session…"))
             return
         }
         conflictSession = session
@@ -402,7 +427,10 @@ QtObject {
             ? capabilities.videoBackends : []
         for (let backendIndex = 0; backendIndex < backends.length; ++backendIndex) {
             const backend = backends[backendIndex]
-            if (!backend.available)
+            const requested = String(settings.nativeVideoBackend || "auto")
+            if (!backend.available || ["software", "ffmpeg"].indexOf(backend.backend) >= 0
+                    || (requested !== "auto" && requested !== backend.backend
+                    && !(requested === "nvdec" && backend.backend === "cuda")))
                 continue
             const codecs = backend.codecs || []
             for (let codecIndex = 0; codecIndex < codecs.length; ++codecIndex) {
@@ -478,9 +506,10 @@ QtObject {
 
     function codecAvailable(codec) {
         const name = String(codec || "h264").toLowerCase()
-        const codecs = streamerDetection && streamerDetection.availableCodecs
-            ? streamerDetection.availableCodecs : ["h264"]
-        return codecs.indexOf(name) >= 0
+        // Bind directly to current capabilities and backend preference. Do not leave old
+        // support enabled while a reconnect or a new hardware probe is pending.
+        return nativeRuntimeReady
+            && codecNamesFromCapabilities(nativeRuntimeCapabilities).indexOf(name) >= 0
     }
 
     function availableCodecValues() {
@@ -628,14 +657,17 @@ QtObject {
         reloadStoreForSession()
     }
 
-    function ensureStore(searchQuery) {
+    function ensureStore(searchQuery, filters) {
         const query = String(searchQuery || "").trim()
-        if (query === storeSearchQuery && (storeLoading || storeState !== "idle")) return
+        const nextFilters = filters || ({})
+        const sameFilters = JSON.stringify(nextFilters) === JSON.stringify(storeFilters)
+        if (query === storeSearchQuery && sameFilters && (storeLoading || storeState !== "idle")) return
         const cached = storeBrowseCache
-        if (query === "" && cached) {
+        if (query === "" && JSON.stringify(nextFilters) === "{}" && cached) {
             cancelStoreRequests()
             storeBrowseCache = null
             storeSearchQuery = ""
+            storeFilters = ({})
             storeGames = cached.games
             storeTotalCount = cached.totalCount
             storeState = cached.state
@@ -647,34 +679,59 @@ QtObject {
             storeSeenCursors = cached.seenCursors
             storeForceRefresh = false
             storeLastPageCached = cached.lastPageCached
-            if (cached.resume && storeHasMore) storePageTimer.restart()
             requestStorePresentation()
             return
         }
-        refreshStore(query)
+        refreshStore(query, false, nextFilters)
     }
 
-    function refreshStore(searchQuery, forceRefresh) {
+    function videoBackendItems() {
+        const backends = nativeRuntimeCapabilities.videoBackends || []
+        const result = [{label: qsTr("Auto (recommended)"), value: "auto",
+            detail: qsTr("Use a supported native backend")}]
+        const choices = Qt.platform.os === "windows"
+            ? [{label:"DirectX 11", value:"d3d11"}, {label:"DirectX 12", value:"d3d12"}, {label:"Vulkan", value:"vulkan"}]
+            : Qt.platform.os === "osx"
+                ? [{label:"Metal / VideoToolbox", value:"videotoolbox"}]
+                : backends.filter(backend => ["vulkan", "cuda", "vaapi", "v4l2"].indexOf(backend.backend) >= 0)
+                    .map(backend => ({label:String(backend.backend).toUpperCase(), value:backend.backend}))
+        for (const choice of choices) {
+            const backend = backends.find(backend => backend.backend === choice.value)
+            result.push(Object.assign({}, choice, {
+                disabled: !nativeRuntimeReady || !backend || !backend.available,
+                detail: !nativeRuntimeReady ? qsTr("Checking hardware…")
+                    : !backend ? qsTr("Not supported by this stream view")
+                    : backend.available ? qsTr("Hardware decoding")
+                    : String(backend.reason || qsTr("Unavailable on this device"))
+            }))
+        }
+        return result
+    }
+
+    function refreshStore(searchQuery, forceRefresh, filters) {
         if (!ready)
             return
         const query = String(searchQuery || "").trim()
-        if (storeLoading && storeSearchQuery === query && !forceRefresh) return
-        if (!forceRefresh && storeSearchQuery === "" && query !== "" && storePageCount > 0) {
+        const nextFilters = filters || ({})
+        const sameFilters = JSON.stringify(nextFilters) === JSON.stringify(storeFilters)
+        if (storeLoading && storeSearchQuery === query && sameFilters && !forceRefresh) return
+        if (!forceRefresh && storeSearchQuery === "" && JSON.stringify(storeFilters) === "{}" && (query !== "" || !sameFilters) && storePageCount > 0) {
             storeBrowseCache = {games: storeGames, totalCount: storeTotalCount,
                 state: storeState, error: storeError, nextCursor: storeNextCursor,
                 hasMore: storeHasMore, pageCount: storePageCount,
                 seenCursors: storeSeenCursors, lastPageCached: storeLastPageCached, resume: storeLoading}
         }
         cancelStoreRequests()
-        if (query !== storeSearchQuery) {
+        if (query !== storeSearchQuery || !sameFilters) {
             storeGames = []
             storeTotalCount = 0
         }
-        if (query === "" || forceRefresh) {
+        if (forceRefresh) {
             storeBrowseCache = null
             storePresentationIndex = 0
         }
         storeSearchQuery = query
+        storeFilters = nextFilters
         storeForceRefresh = forceRefresh === true
         storeLastPageCached = false
         storeNextCursor = ""
@@ -704,9 +761,10 @@ QtObject {
         storePageTimer.stop()
         storeError = ""
         storeState = storeGames.length > 0 ? "refreshing" : "loading"
-        storeRequestId = CoreClient.request(storeSource === "store-browse" ? "catalog.store.list" : "catalog.public.list", {
-            limit: storeSource === "store-browse" ? 100 : 360,
+        storeRequestId = CoreClient.request(storeSource === "store-browse" ? "catalog.store.local" : "catalog.public.list", {
+            limit: 40,
             cursor: storeNextCursor, searchQuery: storeSearchQuery,
+            genre: storeFilters.genre || "", store: storeFilters.store || "", categoryId: storeFilters.categoryId || "",
             refresh: storeForceRefresh && storeNextCursor === ""
         }, 60000)
         if (storeRequestId === "") {
@@ -718,7 +776,7 @@ QtObject {
     function requestStorePresentation() {
         if (!ready || storeSource !== "store-browse" || storePresentationRequestId !== "" || storePresentationIndex >= 3) return
         storePresentationRequestId = CoreClient.request("catalog.store.presentation", {
-            section: ["marquee", "panels", "filters"][storePresentationIndex]
+            section: ["marquee", "panels", "filters"][storePresentationIndex], metadataOnly:true
         }, 30000)
     }
 
@@ -754,16 +812,17 @@ QtObject {
         storeReplacePage = false
         storeForceRefresh = false
         storeLastPageCached = result.cacheHit === true
+        storeUsesLocalIndex = result.source === "store-local"
         storePageCount += 1
         storeTotalCount = Math.max(merged.length, Number(result.totalCount || 0))
+        if (result.facets) storeFacets = result.facets
         storeHasMore = more
         storeNextCursor = next
         if (next) storeSeenCursors[next] = true
         storeState = "ready"
         if (storePageCount === 1) requestStorePresentation()
-        // Bounded automatic work, with a visible continuation action beyond it.
-        // Also bounds broken services that keep returning fresh empty cursors.
-        if (more && storePageCount < 100 && merged.length < 10000) storePageTimer.restart()
+        // Demand-driven: the viewport or Load more owns continuation. Never
+        // enumerate the whole disk catalog just because Store was opened.
     }
 
     function reloadStoreForSession() {
@@ -772,6 +831,9 @@ QtObject {
         storeForceRefresh = false
         storeLastPageCached = false
         storeSearchQuery = ""
+        storeFilters = ({})
+        storeFacets = ({genres:[], stores:[], categories:[]})
+        storeUsesLocalIndex = false
         storePageCount = 0
         storeGames = []
         storeTotalCount = 0
@@ -782,7 +844,8 @@ QtObject {
         storeWarning = ""
         storeHasMore = false
         storeState = "idle"
-        refreshStore("")
+        // Store is loaded only when its view is opened, not during login on Home.
+        storeSessionReset()
     }
 
     function refreshAccountServices() {
@@ -1313,7 +1376,15 @@ QtObject {
             return
         streamState = "requesting"
         streamMessage = qsTr("Requesting a cloud gaming seat…")
-        streamCreateRequestId = CoreClient.request("session.create", pendingLaunchParams, 35000)
+        if (!nativeRuntimeReady) {
+            ensureNativeRuntimeReady()
+            streamState = "error"
+            streamMessage = qsTr("The native decoder is still being detected. Please try again in a moment.")
+            lastError = streamMessage
+            return
+        }
+        streamCreateRequestId = CoreClient.request("session.create",
+            Object.assign({}, pendingLaunchParams, {runtimeCapabilities: nativeRuntimeCapabilities}), 35000)
     }
 
     function resolveSessionConflict(choice) {
@@ -1399,6 +1470,7 @@ QtObject {
         const previousSession = activeSession
         activeSession = normalizedStreamingSession(session)
         if (!activeSession) {
+            cancelSessionRecovery()
             runtimeStreamProfile = ({})
             if (previousSession && streamer && streamer.status !== "stopped")
                 stopNativeStreamer("The remote session ended")
@@ -1422,9 +1494,6 @@ QtObject {
         if (streamState === "ready" || streamState === "streaming") {
             if (streamStartedAtMs === 0)
                 streamStartedAtMs = Date.now()
-            if (sessionReconnectAttempts > 0)
-                sessionRecoveryCount += 1
-            sessionReconnectAttempts = 0
             streamMessage = qsTr("Your GeForce NOW seat is ready.")
             streamPollTimer.stop()
             if (AppController.route !== "stream")
@@ -1477,7 +1546,8 @@ QtObject {
     }
 
     function startNativeStreamer() {
-        if (!ready || !activeSession || streamerStartRequestId !== ""
+        if (!ready || !activeSession || sessionRecoveryPending || activeSession.resumePending
+                || streamerStopRequestId !== "" || streamerStartRequestId !== ""
                 || streamerPrepareRequestId !== "")
             return
         if (streamer && streamer.sessionId === activeSession.sessionId
@@ -1503,7 +1573,8 @@ QtObject {
             return
         }
         streamerPrepareRequestId = CoreClient.request("streamer.prepare", {
-            session: activeSession
+            session: activeSession,
+            runtimeCapabilities: nativeRuntimeCapabilities
         }, 15000)
         if (streamerPrepareRequestId === "")
             acceptStreamerSnapshot(Object.assign({}, streamer, {
@@ -1515,8 +1586,8 @@ QtObject {
 
     function retryNativeStreamer() {
         streamerRestartAttempts = 0
-        streamer = null
-        startNativeStreamer()
+        sessionReconnectAttempts = 0
+        recoverStreamingSession(streamMessage)
     }
 
     function acceptStreamerSnapshot(snapshot) {
@@ -1539,16 +1610,12 @@ QtObject {
             streamStartedAtMs = startedAt
 
         const status = String(streamer.status || "unknown")
-        if (activeSession && status !== "stopped" && status !== "error") {
+        if (activeSession && !sessionRecoveryPending && status !== "stopped" && status !== "error") {
             streamState = status
             streamMessage = streamer.message || streamMessage
             setStreamInputPaused(desiredStreamInputPaused)
         }
         if (status === "streaming") {
-            if (streamerRestartAttempts > 0) {
-                streamerRestartRecoveryCount += streamerRestartAttempts
-                streamerRestartAttempts = 0
-            }
             return
         }
         if (status !== "error" && status !== "stopped")
@@ -1563,7 +1630,6 @@ QtObject {
             refreshMedia()
         }
         if (status === "stopped" && (streamerStopExpected || !activeSession)) {
-            streamerStopExpected = false
             streamInputStateKnown = false
             return
         }
@@ -1571,33 +1637,99 @@ QtObject {
             ? qsTr("Native media startup failed") : qsTr("The native media runtime stopped unexpectedly"))
         if (!activeSession)
             return
-        if (streamerRestartAttempts < 2) {
-            streamerRestartAttempts += 1
-            streamerRestartTimer.restart()
+        if (sessionRecoveryPending || streamerRestartTimer.running)
             return
-        }
-        recoverStreamingSession(streamMessage)
+        scheduleSessionRecovery(streamMessage)
     }
 
     function recoverStreamingSession(reason) {
-        if (!ready || !activeSession || sessionClaimRequestId !== "")
+        if (!activeSession || sessionClaimRequestId !== "" || recoveryDiscoveryRequestId !== ""
+                || streamerStopRequestId !== "")
             return
-        if (sessionReconnectAttempts >= 2) {
+        if (!ready) {
+            streamerRestartTimer.restart()
+            return
+        }
+        if (sessionReconnectAttempts >= maximumSessionReconnectAttempts) {
             streamState = "error"
             streamMessage = reason || qsTr("The streaming session could not be recovered")
             lastError = streamMessage
             return
         }
         sessionReconnectAttempts += 1
+        streamerRestartTimer.stop()
+        sessionRecoveryPending = true
+        recoverySessionId = String(activeSession.sessionId || "")
         streamState = "reconnecting"
         streamMessage = qsTr("Reconnecting to the GeForce NOW session…")
+        streamPollTimer.stop()
+        for (const id of [streamerPrepareRequestId, streamPollRequestId])
+            if (id !== "") CoreClient.cancel(id)
+        streamerPrepareRequestId = ""
+        streamPollRequestId = ""
+        // Stop/reap the previous native connection before claiming fresh keys.
+        // This is NOT session.stop: the cloud game must remain alive.
+        if (NativeStreamRuntime.running && streamer && streamer.status !== "stopped") {
+            stopNativeStreamer("Reconnecting the native media transport")
+            if (streamerStopRequestId === "")
+                scheduleSessionRecovery(lastError || qsTr("Could not stop the previous native connection"))
+            return
+        }
+        discoverRecoverySession()
+    }
+
+    function scheduleSessionRecovery(reason) {
+        sessionRecoveryPending = false
+        streamMessage = reason || qsTr("Connection lost. Waiting to reconnect…")
+        if (!activeSession || streamStopRequestId !== "") return
+        if (sessionReconnectAttempts >= maximumSessionReconnectAttempts) {
+            streamState = "error"
+            lastError = streamMessage
+            return
+        }
+        streamState = "reconnecting"
+        streamerRestartTimer.restart()
+    }
+
+    function discoverRecoverySession() {
+        if (!sessionRecoveryPending || !activeSession
+                || String(activeSession.sessionId) !== recoverySessionId) return
+        recoveryDiscoveryRequestId = CoreClient.request("session.remote.list", {
+            sessionId: recoverySessionId,
+            streamingBaseUrl: activeSession.streamingBaseUrl
+        }, 30000)
+        if (recoveryDiscoveryRequestId === "") scheduleSessionRecovery(qsTr("Waiting for the connection…"))
+    }
+
+    function acceptRecoverySessions(result) {
+        if (!sessionRecoveryPending || !activeSession
+                || String(activeSession.sessionId) !== recoverySessionId) return
+        const existing = (result.sessions || []).find(session => String(session.sessionId) === recoverySessionId)
+        if (!existing) {
+            scheduleSessionRecovery(qsTr("The previous session is not available yet. Retrying…"))
+            return
+        }
         sessionClaimIsRecovery = true
         sessionClaimRequestId = CoreClient.request("session.claim", {
-            sessionId: activeSession.sessionId,
-            streamingBaseUrl: activeSession.streamingBaseUrl,
+            sessionId: recoverySessionId,
+            streamingBaseUrl: existing.streamingBaseUrl || activeSession.streamingBaseUrl,
             appId: String(activeSession.appId || "0"),
             recoveryMode: true
         }, 35000)
+        if (sessionClaimRequestId === "") scheduleSessionRecovery(qsTr("Waiting to resume the session…"))
+    }
+
+    function cancelSessionRecovery() {
+        streamerRestartTimer.stop()
+        for (const id of [recoveryDiscoveryRequestId, sessionClaimRequestId])
+            if (id !== "") CoreClient.cancel(id)
+        recoveryDiscoveryRequestId = ""
+        sessionClaimRequestId = ""
+        sessionRecoveryPending = false
+        sessionClaimIsRecovery = false
+        recoverySessionId = ""
+        resumePollAttempts = 0
+        resumePollDeadlineMs = 0
     }
 
     function artworkUrl(sourceUrl) {
@@ -1878,6 +2010,12 @@ QtObject {
     function pollStreamingSession() {
         if (!ready || !activeSession || streamPollRequestId !== "" || streamStopRequestId !== "")
             return
+        if (activeSession.resumePending && (++resumePollAttempts > 60
+                || (resumePollDeadlineMs > 0 && Date.now() >= resumePollDeadlineMs))) {
+            streamPollTimer.stop()
+            scheduleSessionRecovery(qsTr("The resumed session did not become ready. Retrying…"))
+            return
+        }
         streamPollRequestId = CoreClient.request("session.poll", {
             sessionId: activeSession.sessionId,
             streamingBaseUrl: activeSession.streamingBaseUrl
@@ -1885,6 +2023,7 @@ QtObject {
     }
 
     function stopStreamingSession() {
+        cancelSessionRecovery()
         if (activeSession && streamStartedAtMs > 0) {
             const snapshot = streamer || ({})
             lastSessionReport = {
@@ -2038,6 +2177,11 @@ QtObject {
         CoreClient.request("settings.reset", {})
     }
 
+    function applyCoupledSettings(changes) {
+        for (const key of Object.keys(changes || {}))
+            root.applySetting(key, changes[key])
+    }
+
     function applySetting(key, value) {
         const updated = Object.assign({}, settings)
         updated[key] = value
@@ -2088,6 +2232,7 @@ QtObject {
             } else if (pending.operation === "stop") {
                 streamerStopRequestId = ""
                 lastError = message
+                if (sessionRecoveryPending) scheduleSessionRecovery(message)
             } else if (pending.operation === "input") {
                 streamInputPauseRequestId = ""
             } else if (pending.operation === "control") {
@@ -2121,6 +2266,7 @@ QtObject {
                 Qt.callLater(() => root.startNativeStreamer())
         } else if (pending.operation === "start") {
             streamerStartRequestId = ""
+            if (sessionRecoveryPending) return
             updateStreamerFields({
                 status: "streaming",
                 message: qsTr("Native-owned NVST media transport is active"),
@@ -2133,6 +2279,10 @@ QtObject {
             streamerStopRequestId = ""
             updateStreamerFields({status: "stopped", message: pending.reason || qsTr("Stream stopped"),
                                   sessionId: null, transport: null, inputReady: false})
+            if (sessionRecoveryPending) {
+                streamerStartRequestId = ""
+                discoverRecoverySession()
+            }
         } else if (pending.operation === "input") {
             streamInputPauseRequestId = ""
             currentStreamInputPaused = Boolean(pending.paused)
@@ -2185,7 +2335,20 @@ QtObject {
             fields.bitrateMbps = Number(event.bitrateMbps)
         if (event.peakBitrateMbps !== undefined)
             fields.peakBitrateMbps = Number(event.peakBitrateMbps)
+        // Keep missing measurements unavailable instead of converting null to 0.
+        for (const key of ["pingMs", "jitterMs", "packetLossPercent", "decodeTimeMs", "latencyMs"]) {
+            if (event[key] !== undefined)
+                fields[key] = event[key] === null || !Number.isFinite(Number(event[key]))
+                    ? null : Number(event[key])
+        }
         if (event.event === "first-frame") {
+            // A seat claim or transport handshake is not proof of video recovery.
+            // Reset retry budgets only after the media pipeline produces video.
+            if (sessionReconnectAttempts > 0)
+                sessionRecoveryCount += 1
+            sessionReconnectAttempts = 0
+            streamerRestartRecoveryCount += streamerRestartAttempts
+            streamerRestartAttempts = 0
             if (streamer && (streamer.firstFrameLatencyMs === undefined
                     || streamer.firstFrameLatencyMs === null)) {
                 fields.firstFrameLatencyMs = Math.max(0,
@@ -2213,7 +2376,6 @@ QtObject {
             fields.status = "error"
             fields.message = String(event.message || qsTr("Native media runtime failed"))
             fields.errorCode = String(event.code || "native_stream_error")
-            sendNativeCommand("stop", {reason: fields.message}, "error-stop")
         } else if (type === "input-ready") {
             fields.inputReady = true
             fields.inputUnavailableReason = null
@@ -2250,6 +2412,12 @@ QtObject {
 
     property Connections nativeRuntimeConnections: Connections {
         target: NativeStreamRuntime
+        function onPresentationError(message) {
+            root.lastError = message
+            if (root.activeSession)
+                root.updateStreamerFields({status: "error", message: message,
+                    errorCode: "streamer_presentation_failed"})
+        }
         function onResponseReceived(response) { root.acceptNativeResponse(response) }
         function onEventReceived(event) { root.acceptNativeEvent(event) }
         function onCallbacksDropped(count) {
@@ -2304,6 +2472,7 @@ QtObject {
                 if (result.settings.autoCheckForUpdates && root.updaterCheckRequestId === "")
                     root.autoUpdateCheckTimer.restart()
             } else if (requestId === root.consoleSurfaceRequestId) {
+                root.applyCoupledSettings(result.changes)
                 root.consoleSurfaceRequestId = ""
                 root.consoleSurfaceConfirmedValue = Boolean(result.value)
                 root.consoleSurfaceInitialized = true
@@ -2627,9 +2796,19 @@ QtObject {
             } else if (requestId === root.remoteSessionsRequestId) {
                 root.remoteSessionsRequestId = ""
                 root.inspectRemoteSessions(result)
+            } else if (requestId === root.recoveryDiscoveryRequestId) {
+                root.recoveryDiscoveryRequestId = ""
+                root.acceptRecoverySessions(result)
             } else if (requestId === root.sessionClaimRequestId) {
+                const recovering = root.sessionClaimIsRecovery
                 root.sessionClaimRequestId = ""
                 root.sessionClaimIsRecovery = false
+                if (recovering && root.sessionRecoveryPending
+                        && (!root.activeSession || String(root.activeSession.sessionId) !== root.recoverySessionId)) return
+                root.sessionRecoveryPending = false
+                root.resumePollAttempts = 0
+                root.resumePollDeadlineMs = Date.now() + 90000
+                root.streamer = null
                 root.pendingLaunchParams = null
                 root.conflictSession = null
                 root.remoteSessions = []
@@ -2853,14 +3032,15 @@ QtObject {
                 root.remoteSessionsRequestId = ""
                 root.streamMessage = qsTr("Could not check existing sessions; starting a new one.")
                 root.createPendingSession()
+            } else if (requestId === root.recoveryDiscoveryRequestId) {
+                root.recoveryDiscoveryRequestId = ""
+                root.scheduleSessionRecovery(message)
             } else if (requestId === root.sessionClaimRequestId) {
                 const recovering = root.sessionClaimIsRecovery
                 root.sessionClaimRequestId = ""
                 root.sessionClaimIsRecovery = false
-                if (recovering && root.sessionReconnectAttempts < 2) {
-                    root.streamState = "reconnecting"
-                    root.streamMessage = qsTr("Session recovery was interrupted. Retrying…")
-                    Qt.callLater(() => root.recoverStreamingSession(message))
+                if (recovering) {
+                    root.scheduleSessionRecovery(message)
                 } else {
                     root.streamState = "error"
                     root.streamMessage = message
@@ -2872,6 +3052,11 @@ QtObject {
                 root.streamPollTimer.stop()
             } else if (requestId === root.streamPollRequestId) {
                 root.streamPollRequestId = ""
+                if (root.activeSession && root.activeSession.resumePending) {
+                    root.streamMessage = qsTr("Waiting for the resumed session…")
+                    root.streamPollTimer.restart()
+                    return
+                }
                 root.sessionReconnectAttempts += 1
                 root.streamState = root.activeSession && root.sessionReconnectAttempts <= 8 ? "reconnecting" : "error"
                 root.streamMessage = root.streamState === "reconnecting"
@@ -2890,6 +3075,8 @@ QtObject {
         }
         function onEventReceived(name, payload) {
             if (name === "settings.changed") {
+                // Coupled preferences are saved atomically by the core.
+                root.applyCoupledSettings(payload.changes)
                 if (payload.key === "launchInConsoleMode") {
                     const persisted = Boolean(payload.value)
                     root.consoleSurfaceConfirmedValue = persisted

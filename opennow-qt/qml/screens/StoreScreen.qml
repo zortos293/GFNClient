@@ -183,5 +183,9 @@ FocusScope {
         onRouteRequested: route => AppController.navigate(route)
     }
 
+    Connections {
+        target: ShellStore
+        function onStoreSessionReset() { if (root.visible) ShellStore.ensureStore("") }
+    }
     Component.onCompleted: ShellStore.ensureStore("")
 }

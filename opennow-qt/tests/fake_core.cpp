@@ -35,7 +35,7 @@ int main(int argc, char **argv)
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"settings\":{\"launchInConsoleMode\":"
                       << (launchInConsoleMode ? "true" : "false")
-                      << ",\"reducedMotion\":true,\"appLanguage\":\"system\",\"autoCheckForUpdates\":false}}}\n" << std::flush;
+                      << ",\"switchToConsoleOnPad\":false,\"reducedMotion\":true,\"appLanguage\":\"system\",\"autoCheckForUpdates\":false}}}\n" << std::flush;
         } else if (method == "settings.set") {
             const auto consoleModeWrite = line.find("\"key\":\"launchInConsoleMode\"")
                 != std::string::npos;
@@ -46,9 +46,11 @@ int main(int argc, char **argv)
                 launchInConsoleMode = line.find("\"value\":true") != std::string::npos;
                 std::cout << "{\"type\":\"response\",\"id\":\"" << id
                           << "\",\"ok\":true,\"result\":{\"key\":\"launchInConsoleMode\",\"value\":"
-                          << (launchInConsoleMode ? "true" : "false") << "}}\n";
+                          << (launchInConsoleMode ? "true" : "false")
+                          << (launchInConsoleMode ? "" : ",\"changes\":{\"switchToConsoleOnPad\":false}") << "}}\n";
                 std::cout << "{\"type\":\"event\",\"name\":\"settings.changed\",\"payload\":{\"key\":\"launchInConsoleMode\",\"value\":"
-                          << (launchInConsoleMode ? "true" : "false") << "}}\n" << std::flush;
+                          << (launchInConsoleMode ? "true" : "false")
+                          << (launchInConsoleMode ? "" : ",\"changes\":{\"switchToConsoleOnPad\":false}") << "}}\n" << std::flush;
             } else {
                 std::cout << "{\"type\":\"response\",\"id\":\"" << id
                           << "\",\"ok\":true,\"result\":{}}\n" << std::flush;

@@ -102,9 +102,10 @@ impl D3d11FrameSubmitter {
             let _ = self
                 .events
                 .push(BackendEvent::QueueOverflow(Subsystem::VideoDecode));
-            if !key_frame {
-                let _ = self.events.push(BackendEvent::KeyFrameRequired);
-            }
+            // The submitting owner handles DroppedOldest synchronously and
+            // invalidates its compressed chain before submitting again. A second
+            // asynchronous KeyFrameRequired can arrive after the recovery IDR
+            // and incorrectly discard that new, healthy chain.
         }
         Ok(outcome)
     }
@@ -149,6 +150,47 @@ struct FrameSlot {
     output_view: ID3D11VideoProcessorOutputView,
 }
 
+impl FrameSlot {
+    fn new(
+        device: &ID3D11Device,
+        video_device: &ID3D11VideoDevice,
+        enumerator: &ID3D11VideoProcessorEnumerator,
+        width: u32,
+        height: u32,
+        format: DXGI_FORMAT,
+    ) -> Result<Self, String> {
+        let description = frame_slot_description(width, height, format);
+        let mut texture = None;
+        unsafe {
+            device
+                .CreateTexture2D(&description, None, Some(&mut texture))
+                .map_err(|error| format!("CreateTexture2D frame slot: {error}"))?;
+        }
+        let texture = texture.ok_or("D3D11 returned no frame-slot texture")?;
+        let description = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+            ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
+                Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
+            },
+        };
+        let mut output_view = None;
+        unsafe {
+            video_device
+                .CreateVideoProcessorOutputView(
+                    &texture,
+                    enumerator,
+                    &description,
+                    Some(&mut output_view),
+                )
+                .map_err(|error| format!("CreateVideoProcessorOutputView: {error}"))?;
+        }
+        Ok(Self {
+            texture,
+            output_view: output_view.ok_or("D3D11 returned no frame-slot output view")?,
+        })
+    }
+}
+
 struct ProcessorResources {
     input_width: u32,
     input_height: u32,
@@ -159,7 +201,7 @@ struct ProcessorResources {
     enumerator: ID3D11VideoProcessorEnumerator,
     processor: ID3D11VideoProcessor,
     input_views: HashMap<(usize, u32), ID3D11VideoProcessorInputView>,
-    slots: Vec<FrameSlot>,
+    slots: [Option<FrameSlot>; MAX_FRAME_SLOTS],
 }
 
 struct AdoptedResources {
@@ -335,7 +377,20 @@ impl AdoptedResources {
             right: processor.output_width as i32,
             bottom: processor.output_height as i32,
         };
-        let output_view = processor.slots[slot].output_view.clone();
+        if processor.slots[slot].is_none() {
+            processor.slots[slot] = Some(FrameSlot::new(
+                &self.device,
+                &self.video_device,
+                &processor.enumerator,
+                processor.output_width,
+                processor.output_height,
+                processor.output_format,
+            )?);
+        }
+        let active_slot = processor.slots[slot]
+            .as_ref()
+            .expect("initialized frame slot");
+        let output_view = active_slot.output_view.clone();
         unsafe {
             self.video_context.VideoProcessorSetStreamFrameFormat(
                 &processor.processor,
@@ -380,7 +435,7 @@ impl AdoptedResources {
         }
         self.generation = self.generation.wrapping_add(1).max(1);
         Ok(D3d11RecordedFrame {
-            texture: processor.slots[slot].texture.as_raw(),
+            texture: active_slot.texture.as_raw(),
             texture_format: d3d11_texture_format(processor.output_format),
             width: processor.output_width,
             height: processor.output_height,
@@ -451,38 +506,9 @@ impl AdoptedResources {
                 );
             }
         }
-        let mut slots = Vec::with_capacity(MAX_FRAME_SLOTS);
-        for _ in 0..MAX_FRAME_SLOTS {
-            let description = frame_slot_description(output_width, output_height, output_format);
-            let mut texture = None;
-            unsafe {
-                self.device
-                    .CreateTexture2D(&description, None, Some(&mut texture))
-                    .map_err(|error| format!("CreateTexture2D frame slot: {error}"))?;
-            }
-            let texture = texture.ok_or("D3D11 returned no frame-slot texture")?;
-            let output_description = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
-                ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
-                Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
-                    Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
-                },
-            };
-            let mut output_view = None;
-            unsafe {
-                self.video_device
-                    .CreateVideoProcessorOutputView(
-                        &texture,
-                        &enumerator,
-                        &output_description,
-                        Some(&mut output_view),
-                    )
-                    .map_err(|error| format!("CreateVideoProcessorOutputView: {error}"))?;
-            }
-            slots.push(FrameSlot {
-                texture,
-                output_view: output_view.ok_or("D3D11 returned no frame-slot output view")?,
-            });
-        }
+        // QRhi owns slot reuse. Allocate only the slots it actually visits;
+        // reserving the ABI maximum would waste seven 4K textures on D3D11.
+        let slots = std::array::from_fn(|_| None);
         self.processor = Some(ProcessorResources {
             input_width,
             input_height,
@@ -531,10 +557,22 @@ impl DecoderDevice for AdoptedResources {
             let adapter = dxgi_device
                 .GetAdapter()
                 .map_err(|error| format!("Qt D3D11 adapter: {error}"))?;
-            Ok(adapter
+            let description = adapter
                 .GetDesc()
-                .map_err(|error| format!("Qt D3D11 adapter description: {error}"))?
-                .AdapterLuid)
+                .map_err(|error| format!("Qt D3D11 adapter description: {error}"))?;
+            let name_end = description
+                .Description
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(description.Description.len());
+            video_log!(
+                "Qt decoder adapter name={} vendor={:04x} device={:04x} dedicated_video_mb={}",
+                String::from_utf16_lossy(&description.Description[..name_end]),
+                description.VendorId,
+                description.DeviceId,
+                description.DedicatedVideoMemory / (1024 * 1024)
+            );
+            Ok(description.AdapterLuid)
         }
     }
 
@@ -585,9 +623,9 @@ struct ReadyDecodedFrame {
     decoder_generation: u64,
 }
 
-// The decoder surface is a reference-counted D3D11 resource from the same protected device. It is
-// produced by Media Foundation and consumed by the Qt render thread only after ownership moves
-// through the mutex-protected ready queue.
+// The decoder surface AND its Media Foundation sample lease move together.
+// The sample prevents decoder-pool reuse while Qt records the video blit on
+// the same protected immediate context. Neither is mutated through this queue.
 unsafe impl Send for ReadyDecodedFrame {}
 
 struct D3d11Pipeline {
@@ -886,6 +924,7 @@ fn run_decoder_worker(
     let _apartment = match DecoderThreadApartment::initialize() {
         Ok(apartment) => apartment,
         Err(error) => {
+            video_log!("Embedded D3D11 COM initialization failed: {error}");
             let _ = startup_sender.send(Err(error));
             return;
         }
@@ -893,6 +932,7 @@ fn run_decoder_worker(
     let mut decoder = match Decoder::new(&device, format, mode) {
         Ok(decoder) => decoder,
         Err(error) => {
+            video_log!("Embedded D3D11 decoder initialization failed: {error}");
             let _ = startup_sender.send(Err(error));
             return;
         }
@@ -902,18 +942,22 @@ fn run_decoder_worker(
         return;
     }
 
-    eprintln!(
+    video_log!(
         "Embedded D3D11 decoder worker started codec={} pollMs={}",
         format.codec.label(),
         DECODER_POLL_INTERVAL.as_millis()
     );
     let mut submitted_any = false;
+    // One worker-owned access unit may be waiting for a replacement MFT's
+    // NeedInput event. Keep its already-queued descendants in order.
+    let mut pending_frame = None;
     let mut submitted_frames = 0_u64;
     let mut produced_frames = 0_u64;
     let mut last_progress_log = Instant::now();
+    let mut output = VecDeque::with_capacity(2);
     while !stopping.load(Ordering::Acquire) {
         let mut made_progress = false;
-        let mut output = VecDeque::with_capacity(2);
+        output.clear();
         match decoder.poll_output(&mut output, &events) {
             Ok(produced) => {
                 made_progress |= produced > 0;
@@ -948,14 +992,14 @@ fn run_decoder_worker(
                     .clear();
                 encoded.clear();
                 decoder_generation.fetch_add(1, Ordering::AcqRel);
-                eprintln!("Embedded D3D11 decoder failed: {message}");
+                video_log!("Embedded D3D11 decoder failed: {message}");
                 let _ = events.push(BackendEvent::DeviceLost {
                     subsystem: Subsystem::VideoDecode,
                     message,
                 });
                 let _ = events.push(BackendEvent::KeyFrameRequired);
                 frame_ready();
-                wait_for_recovery_keyframe(
+                pending_frame = wait_for_recovery_keyframe(
                     &device,
                     format,
                     mode,
@@ -973,7 +1017,7 @@ fn run_decoder_worker(
         }
 
         while decoder.wants_input() {
-            let Some(frame) = encoded.try_pop() else {
+            let Some(frame) = next_encoded_frame(&mut pending_frame, &encoded) else {
                 break;
             };
             if frame.reset_decoder && submitted_any {
@@ -987,23 +1031,21 @@ fn run_decoder_worker(
                     Ok(replacement) => {
                         decoder = replacement;
                         submitted_any = false;
-                        // A newly-created asynchronous MFT must first publish NeedInput. Put the
-                        // recovery keyframe back at the front by clearing the stale queue and
-                        // retaining it as the only valid prediction-chain root.
-                        encoded.clear();
-                        let _ = encoded.push_or_clear_on_overflow(frame, true);
+                        // The queued frames follow this keyframe. Clearing them
+                        // silently breaks the next P-frame's reference chain.
+                        pending_frame = Some(frame);
                         made_progress = true;
                         break;
                     }
                     Err(message) => {
-                        eprintln!("Embedded D3D11 decoder reset failed: {message}");
+                        video_log!("Embedded D3D11 decoder reset failed: {message}");
                         let _ = events.push(BackendEvent::DeviceLost {
                             subsystem: Subsystem::VideoDecode,
                             message,
                         });
                         let _ = events.push(BackendEvent::KeyFrameRequired);
                         frame_ready();
-                        wait_for_recovery_keyframe(
+                        pending_frame = wait_for_recovery_keyframe(
                             &device,
                             format,
                             mode,
@@ -1029,14 +1071,14 @@ fn run_decoder_worker(
                     .clear();
                 encoded.clear();
                 decoder_generation.fetch_add(1, Ordering::AcqRel);
-                eprintln!("Embedded D3D11 decoder input failed: {message}");
+                video_log!("Embedded D3D11 decoder input failed: {message}");
                 let _ = events.push(BackendEvent::DeviceLost {
                     subsystem: Subsystem::VideoDecode,
                     message,
                 });
                 let _ = events.push(BackendEvent::KeyFrameRequired);
                 frame_ready();
-                wait_for_recovery_keyframe(
+                pending_frame = wait_for_recovery_keyframe(
                     &device,
                     format,
                     mode,
@@ -1062,7 +1104,7 @@ fn run_decoder_worker(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .len();
-            eprintln!(
+            video_log!(
                 "Embedded D3D11 decoder progress codec={} submitted={submitted_frames} produced={produced_frames} encodedQueued={} decodedReady={decoded_ready} generation={}",
                 format.codec.label(),
                 encoded.len(),
@@ -1072,13 +1114,20 @@ fn run_decoder_worker(
         }
 
         if !made_progress {
-            let _ = encoded.wait_for_value(DECODER_POLL_INTERVAL);
+            let _ = encoded.wait_for_decoder(DECODER_POLL_INTERVAL, decoder.wants_input());
         } else {
             thread::yield_now();
         }
     }
     decoder.stop();
-    eprintln!("Embedded D3D11 decoder worker stopped");
+    video_log!("Embedded D3D11 decoder worker stopped");
+}
+
+fn next_encoded_frame(
+    pending: &mut Option<EncodedVideoFrame>,
+    encoded: &BoundedQueue<EncodedVideoFrame>,
+) -> Option<EncodedVideoFrame> {
+    pending.take().or_else(|| encoded.try_pop())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1094,7 +1143,7 @@ fn wait_for_recovery_keyframe(
     frame_ready: &dyn Fn(),
     decoder: &mut Decoder,
     submitted_any: &mut bool,
-) {
+) -> Option<EncodedVideoFrame> {
     while !stopping.load(Ordering::Acquire) {
         let Some(frame) = encoded.pop_timeout(DECODER_POLL_INTERVAL) else {
             continue;
@@ -1111,14 +1160,12 @@ fn wait_for_recovery_keyframe(
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clear();
                 decoder_generation.fetch_add(1, Ordering::AcqRel);
-                encoded.clear();
-                let _ = encoded.push_or_clear_on_overflow(frame, true);
                 let _ = events.push(BackendEvent::DeviceRecovered(Subsystem::VideoDecode));
                 frame_ready();
-                return;
+                return Some(frame);
             }
             Err(message) => {
-                eprintln!("Embedded D3D11 decoder recovery failed: {message}");
+                video_log!("Embedded D3D11 decoder recovery failed: {message}");
                 let _ = events.push(BackendEvent::DeviceLost {
                     subsystem: Subsystem::VideoDecode,
                     message,
@@ -1128,6 +1175,7 @@ fn wait_for_recovery_keyframe(
             }
         }
     }
+    None
 }
 
 unsafe fn clone_interface<T: Interface>(pointer: *mut c_void) -> Result<T, String> {
@@ -1268,6 +1316,19 @@ mod tests {
         D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice,
     };
     use ::windows::Win32::Graphics::Dxgi::IDXGIAdapter;
+    use ::windows::Win32::Media::MediaFoundation::{
+        IMFSample, MFCreateDXGISurfaceBuffer, MFCreateSample,
+    };
+
+    // Test-only observation of the concrete MF sample's COM ownership. Keeping
+    // a texture alive alone must not satisfy the sample-lease regression check.
+    fn sample_ref_count(sample: &IMFSample) -> u32 {
+        let identity = sample.cast::<::windows::core::IUnknown>().unwrap();
+        unsafe {
+            (identity.vtable().AddRef)(identity.as_raw());
+            (identity.vtable().Release)(identity.as_raw()) - 1
+        }
+    }
 
     fn encoded_frame(sequence: i64, key_frame: bool) -> EncodedVideoFrame {
         EncodedVideoFrame {
@@ -1278,6 +1339,20 @@ mod tests {
             key_frame,
             reset_decoder: key_frame,
         }
+    }
+
+    #[test]
+    fn decoder_reset_keeps_keyframe_and_queued_descendants_in_order() {
+        let queue = BoundedQueue::new(2);
+        let mut pending = Some(encoded_frame(10, true));
+        queue.push(encoded_frame(11, false)).unwrap();
+        queue.push(encoded_frame(12, false)).unwrap();
+        for sequence in 10..=12 {
+            let frame = next_encoded_frame(&mut pending, &queue).unwrap();
+            assert_eq!(frame.timestamp_100ns, sequence * 166_667);
+            assert_eq!(frame.key_frame, sequence == 10);
+        }
+        assert!(next_encoded_frame(&mut pending, &queue).is_none());
     }
 
     #[test]
@@ -1341,7 +1416,132 @@ mod tests {
     }
 
     #[test]
-    fn full_decode_queue_requests_a_keyframe_after_dropping_a_delta_frame() {
+    fn conversion_allocates_only_visited_qrhi_slots_and_reuses_them() {
+        let _runtime = EmbeddedMediaRuntime::initialize().expect("Media Foundation");
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .expect("D3D11 test device");
+        }
+        let device = device.unwrap();
+        let context = context.unwrap();
+        let format = VideoFormat {
+            codec: crate::VideoCodec::H264,
+            width: 64,
+            height: 64,
+            frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
+            frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
+            average_bitrate: 10_000_000,
+            pixel_format: VideoPixelFormat::Nv12,
+            chroma_format: VideoChromaFormat::Cs420,
+            full_range: false,
+        };
+        let mut resources = unsafe {
+            AdoptedResources::new(
+                AdoptedD3d11Context {
+                    device: device.as_raw(),
+                    immediate_context: context.as_raw(),
+                },
+                format,
+            )
+        }
+        .expect("adopt device");
+        resources
+            .ensure_processor(64, 64, DXGI_FORMAT_NV12, 64, 64)
+            .unwrap();
+        assert!(
+            resources
+                .processor
+                .as_ref()
+                .unwrap()
+                .slots
+                .iter()
+                .all(Option::is_none)
+        );
+        let mut description = frame_slot_description(64, 64, DXGI_FORMAT_NV12);
+        description.BindFlags = ::windows::Win32::Graphics::Direct3D11::D3D11_BIND_DECODER.0 as u32;
+        let mut texture = None;
+        unsafe {
+            device
+                .CreateTexture2D(&description, None, Some(&mut texture))
+                .unwrap();
+        }
+        let texture = texture.unwrap();
+        let sample = unsafe {
+            let buffer =
+                MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &texture, 0, false).unwrap();
+            let sample = MFCreateSample().unwrap();
+            sample.AddBuffer(&buffer).unwrap();
+            sample
+        };
+        let baseline_refs = sample_ref_count(&sample);
+        let frame = DecodedVideoFrame::from_sample(sample.clone(), 166_667).unwrap();
+        assert_eq!(
+            sample_ref_count(&sample),
+            baseline_refs + 1,
+            "decoded frame must lease the sample, not only its texture"
+        );
+        let mut ready = VecDeque::from([frame]);
+        assert_eq!(sample_ref_count(&sample), baseline_refs + 1);
+        let frame = ready.pop_back().unwrap();
+        let first = resources.record(0, &frame).unwrap();
+        assert_eq!(first.texture, resources.record(0, &frame).unwrap().texture);
+        assert_ne!(first.texture, resources.record(3, &frame).unwrap().texture);
+        assert_eq!(
+            sample_ref_count(&sample),
+            baseline_refs + 1,
+            "recording must not release the sample before the frame token"
+        );
+        assert_eq!(
+            resources
+                .processor
+                .as_ref()
+                .unwrap()
+                .slots
+                .iter()
+                .filter(|slot| slot.is_some())
+                .count(),
+            2
+        );
+        assert!(resources.record(8, &frame).is_err());
+        drop(frame);
+        assert_eq!(
+            sample_ref_count(&sample),
+            baseline_refs,
+            "frame release must return its lease without leaking samples"
+        );
+        resources.reconfigure(VideoFormat {
+            width: 128,
+            ..format
+        });
+        assert!(resources.processor.is_none());
+        resources
+            .ensure_processor(128, 64, DXGI_FORMAT_NV12, 128, 64)
+            .unwrap();
+        assert!(
+            resources
+                .processor
+                .as_ref()
+                .unwrap()
+                .slots
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn full_decode_queue_reports_loss_synchronously_without_a_stale_recovery_event() {
         let encoded = Arc::new(BoundedQueue::new(2));
         let events = Arc::new(BoundedQueue::new(8));
         let submitter = D3d11FrameSubmitter {
@@ -1366,7 +1566,7 @@ mod tests {
             events.try_pop(),
             Some(BackendEvent::QueueOverflow(Subsystem::VideoDecode))
         );
-        assert_eq!(events.try_pop(), Some(BackendEvent::KeyFrameRequired));
+        assert_eq!(events.try_pop(), None);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Matches the Qt shell's rotation policy for `native-streamer.log`.
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
@@ -25,6 +25,7 @@ const THROTTLE_EVERY: u64 = 600;
 struct LogState {
     file: File,
     path: String,
+    bytes: u64,
 }
 
 fn state() -> &'static Mutex<Option<LogState>> {
@@ -55,7 +56,10 @@ pub fn set_log_file(path: &str) -> Result<(), String> {
         return Err("log file path is empty".to_owned());
     }
     let file_path = Path::new(trimmed);
-    if let Some(parent) = file_path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = file_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("cannot create log directory: {error}"))?;
     }
@@ -76,6 +80,7 @@ pub fn set_log_file(path: &str) -> Result<(), String> {
         .map_err(|error| format!("cannot open log file: {error}"))?;
     let mut guard = state().lock().expect("log state poisoned");
     *guard = Some(LogState {
+        bytes: file.metadata().map(|metadata| metadata.len()).unwrap_or(0),
         file,
         path: trimmed.to_owned(),
     });
@@ -105,13 +110,146 @@ fn write_line(level: &str, area: &str, message: &str) {
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
         .take(2048)
         .collect();
-    let _ = writeln!(state.file, "{} {level} {area} {flat}", now_ms());
-    let _ = state.file.flush();
+    let line = format!("{} {level} {area} {flat}\n", now_ms());
+    if state.bytes + line.len() as u64 > MAX_LOG_BYTES {
+        // Keep the append handle valid on Windows, including other existing writers.
+        if std::fs::copy(&state.path, format!("{}.previous", state.path)).is_ok()
+            && state.file.set_len(0).is_ok()
+        {
+            state.bytes = 0;
+        } else {
+            return; // Do not grow an unbounded log if rotation fails.
+        }
+    }
+    if state.file.write_all(line.as_bytes()).is_ok() {
+        state.bytes += line.len() as u64;
+    }
+}
+
+/// Timed, payload-free connection stage. An early return is visible as incomplete.
+pub struct Stage {
+    name: &'static str,
+    started: Instant,
+    complete: bool,
+}
+
+impl Stage {
+    pub fn begin(name: &'static str) -> Self {
+        log_line("INFO", "stage", &format!("{name} begin"));
+        Self {
+            name,
+            started: Instant::now(),
+            complete: false,
+        }
+    }
+
+    pub fn complete(&mut self) {
+        self.complete = true;
+    }
+}
+
+impl Drop for Stage {
+    fn drop(&mut self) {
+        log_line(
+            if self.complete { "INFO" } else { "WARN" },
+            "stage",
+            &format!(
+                "{} {} elapsed_ms={}",
+                self.name,
+                if self.complete {
+                    "complete"
+                } else {
+                    "incomplete"
+                },
+                self.started.elapsed().as_millis()
+            ),
+        );
+    }
+}
+
+/// Only protocol discriminators and numeric counters, never payloads, free-form
+/// server messages, session IDs, addresses, credentials, SDP or user paths.
+pub fn message_summary(value: &serde_json::Value) -> String {
+    let mut fields = Vec::new();
+    for key in [
+        "id",
+        "type",
+        "event",
+        "status",
+        "code",
+        "backend",
+        "phase",
+        "protocolVersion",
+        "protocol",
+        "paused",
+        "fps",
+        "width",
+        "height",
+        "framesReceived",
+        "framesDecoded",
+        "framesDropped",
+    ] {
+        let Some(value) = value.get(key) else {
+            continue;
+        };
+        let text = match value {
+            serde_json::Value::String(text)
+                if text.len() <= 64
+                    && text
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "-_. /".contains(c))
+                    && !text.contains('/') =>
+            {
+                text.clone()
+            }
+            serde_json::Value::Number(_) | serde_json::Value::Bool(_) => value.to_string(),
+            _ => continue,
+        };
+        fields.push(format!("{key}={text}"));
+    }
+    fields.join(" ")
 }
 
 /// Appends one line. No-op until [`set_log_file`] succeeds.
 pub fn log_line(level: &str, area: &str, message: &str) {
     write_line(level, area, message);
+}
+
+/// Periodic media/transport counters must not wait for disk I/O. The diagnostics
+/// worker has a fixed queue; under slow storage it drops traces, never media.
+pub fn log_async(level: &'static str, area: &'static str, message: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc::{SyncSender, sync_channel};
+    type Line = (&'static str, &'static str, String);
+    static DROPPED: AtomicU64 = AtomicU64::new(0);
+    static SENDER: OnceLock<Option<SyncSender<Line>>> = OnceLock::new();
+    let sender = SENDER.get_or_init(|| {
+        let (sender, receiver) = sync_channel::<Line>(64);
+        std::thread::Builder::new()
+            .name("opennow-diagnostics".to_owned())
+            .spawn(move || {
+                while let Ok((level, area, message)) = receiver.recv() {
+                    write_line(level, area, &message);
+                    let dropped = DROPPED.swap(0, Ordering::Relaxed);
+                    if dropped > 0 {
+                        write_line(
+                            "WARN",
+                            "diagnostics",
+                            &format!("trace_queue_dropped={dropped}"),
+                        );
+                    }
+                }
+            })
+            .ok()
+            .map(|_| sender)
+    });
+    if let Some(sender) = sender
+        && sender
+            .try_send((level, area, message.chars().take(2048).collect()))
+            .is_err()
+    {
+        DROPPED.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Appends the first hit for `key` and then every [`THROTTLE_EVERY`]th
@@ -144,6 +282,78 @@ pub(crate) fn reset_for_tests() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn summaries_exclude_payloads_and_untrusted_messages() {
+        let summary = message_summary(&serde_json::json!({
+            "id":"native-12", "type":"error", "code":"nvst-rtsp-timeout",
+            "message":"secret https://private.example", "context":{"token":"credential"},
+            "phase":"https://private.example", "width":1920
+        }));
+        assert!(summary.contains("id=native-12"));
+        assert!(summary.contains("code=nvst-rtsp-timeout"));
+        assert!(summary.contains("width=1920"));
+        for forbidden in ["secret", "private", "credential", "context", "message"] {
+            assert!(!summary.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn active_log_rotation_and_incomplete_stages_are_visible() {
+        let _guard = TEST_LOG.lock().unwrap_or_else(|error| error.into_inner());
+        reset_for_tests();
+        let path = temp_path("active-rotation.log");
+        let _ = std::fs::remove_file(&path);
+        set_log_file(&path).unwrap();
+        for _ in 0..1100 {
+            log_line("INFO", "test", &"x".repeat(2048));
+        }
+        {
+            let _stage = Stage::begin("test.incomplete");
+        }
+        {
+            let mut stage = Stage::begin("test.complete");
+            stage.complete();
+        }
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.len() as u64 <= MAX_LOG_BYTES);
+        assert!(Path::new(&format!("{path}.previous")).exists());
+        assert!(body.contains("test.incomplete incomplete elapsed_ms="));
+        assert!(body.contains("test.complete complete elapsed_ms="));
+        reset_for_tests();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}.previous"));
+    }
+
+    // These tests replace the process-global log sink and throttle counters.
+    // Hold one guard across setup, assertions and teardown, not just each write.
+    static TEST_LOG: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn asynchronous_counters_reach_the_sink() {
+        let _guard = TEST_LOG.lock().unwrap_or_else(|error| error.into_inner());
+        reset_for_tests();
+        let path = temp_path("async.log");
+        let _ = std::fs::remove_file(&path);
+        set_log_file(&path).unwrap();
+        log_async("INFO", "transport", "inbound=0 frames=0");
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("inbound=0 frames=0")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "diagnostic worker did not write the trace"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        reset_for_tests();
+        let _ = std::fs::remove_file(&path);
+    }
+
     fn temp_path(name: &str) -> String {
         let mut path = std::env::temp_dir();
         path.push(format!(
@@ -155,6 +365,7 @@ mod tests {
 
     #[test]
     fn log_lines_reach_the_configured_file() {
+        let _guard = TEST_LOG.lock().unwrap_or_else(|error| error.into_inner());
         reset_for_tests();
         let path = temp_path("lines.log");
         let _ = std::fs::remove_file(&path);
@@ -169,6 +380,7 @@ mod tests {
 
     #[test]
     fn oversized_logs_rotate_to_previous() {
+        let _guard = TEST_LOG.lock().unwrap_or_else(|error| error.into_inner());
         reset_for_tests();
         let path = temp_path("rotate.log");
         let previous = format!("{path}.previous");
@@ -191,6 +403,7 @@ mod tests {
 
     #[test]
     fn throttled_repeats_stay_bounded() {
+        let _guard = TEST_LOG.lock().unwrap_or_else(|error| error.into_inner());
         reset_for_tests();
         let path = temp_path("throttle.log");
         let _ = std::fs::remove_file(&path);
@@ -207,6 +420,7 @@ mod tests {
 
     #[test]
     fn logging_without_a_sink_is_a_silent_noop() {
+        let _guard = TEST_LOG.lock().unwrap_or_else(|error| error.into_inner());
         reset_for_tests();
         log_line("INFO", "engine", "nowhere");
         log_throttled("noop-key", "WARN", "decode", "nowhere");

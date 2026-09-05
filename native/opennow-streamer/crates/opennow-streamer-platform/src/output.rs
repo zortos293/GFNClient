@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(target_os = "linux")]
+use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor as IoCursor;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::AtomicBool;
@@ -7,6 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crate::audio_playout::AudioPlayoutBuffer;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use image::ImageReader;
@@ -60,8 +63,7 @@ pub(crate) struct OutputBuffers {
     video: Mutex<Option<DecodedVideoFrame>>,
     #[cfg(target_os = "linux")]
     linux_video: Mutex<VecDeque<QueuedLinuxVideoFrame>>,
-    audio: Mutex<VecDeque<f32>>,
-    audio_capacity: usize,
+    audio: Mutex<AudioPlayoutBuffer>,
     captured_input: Arc<CapturedInputQueue>,
 }
 
@@ -151,13 +153,9 @@ impl OutputBuffers {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
             linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
-            audio: Mutex::new(VecDeque::with_capacity(
+            audio: Mutex::new(AudioPlayoutBuffer::new(
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
             )),
-            audio_capacity: AUDIO_SAMPLE_RATE as usize
-                * AUDIO_CHANNELS as usize
-                * MAX_AUDIO_LATENCY_MS
-                / 1_000,
             captured_input,
         }
     }
@@ -240,26 +238,10 @@ impl OutputBuffers {
     }
 
     pub(crate) fn push_audio(&self, samples: &[f32]) -> usize {
-        let mut audio = self.audio.lock().unwrap_or_else(|error| error.into_inner());
-        let overflow = audio
-            .len()
-            .saturating_add(samples.len())
-            .saturating_sub(self.audio_capacity);
-        if overflow > 0 {
-            let drain_count = overflow.min(audio.len());
-            audio.drain(..drain_count);
-        }
-        if samples.len() >= self.audio_capacity {
-            audio.clear();
-            audio.extend(
-                samples[samples.len() - self.audio_capacity..]
-                    .iter()
-                    .copied(),
-            );
-        } else {
-            audio.extend(samples.iter().copied());
-        }
-        overflow
+        self.audio
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(samples)
     }
 
     pub(crate) fn clear(&self) {
@@ -273,10 +255,10 @@ impl OutputBuffers {
     }
 
     fn fill_audio(&self, destination: &mut [f32]) {
-        let mut audio = self.audio.lock().unwrap_or_else(|error| error.into_inner());
-        for sample in destination {
-            *sample = audio.pop_front().unwrap_or(0.0);
-        }
+        self.audio
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .fill(destination);
     }
 }
 
@@ -3037,12 +3019,11 @@ mod tests {
             video: Mutex::new(None),
             #[cfg(target_os = "linux")]
             linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
-            audio: Mutex::new(VecDeque::new()),
-            audio_capacity: 4,
+            audio: Mutex::new(AudioPlayoutBuffer::new(4)),
             captured_input: Arc::new(CapturedInputQueue::default()),
         };
-        assert_eq!(output.push_audio(&[1.0, 2.0, 3.0]), 0);
-        assert_eq!(output.push_audio(&[4.0, 5.0, 6.0]), 2);
+        assert_eq!(output.push_audio(&[1.0, 2.0]), 0);
+        assert_eq!(output.push_audio(&[3.0, 4.0, 5.0, 6.0]), 2);
         let mut values = [0.0; 4];
         output.fill_audio(&mut values);
         assert_eq!(values, [3.0, 4.0, 5.0, 6.0]);

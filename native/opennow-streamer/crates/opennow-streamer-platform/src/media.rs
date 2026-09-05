@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvError, Sender, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+#[cfg(target_os = "windows")]
+use std::time::Duration;
 use std::time::Instant;
 
 use openh264::OpenH264API;
@@ -15,6 +17,7 @@ use crate::output::{DecodedVideoFrame, OutputBuffers};
 use crate::output::{HeadlessAudioOutput, WindowsBridge};
 use crate::queue::{BoundedQueue, PushResult};
 use crate::runtime::HostCommand;
+use crate::video_queue::VideoQueue;
 
 #[cfg(target_os = "linux")]
 use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
@@ -546,7 +549,7 @@ pub enum PushOutcome {
 }
 
 struct SharedPipeline {
-    video: Arc<BoundedQueue<EncodedFrame>>,
+    video: Arc<VideoQueue>,
     audio: Arc<BoundedQueue<EncodedFrame>>,
     output: Arc<OutputBuffers>,
     feedback: Sender<MediaFeedback>,
@@ -599,23 +602,29 @@ impl MediaSink {
     }
 
     fn push_video(&self, frame: EncodedFrame) -> PushOutcome {
-        if !frame.keyframe && self.shared.video_desynced.load(Ordering::Acquire) {
-            self.mark_video_desynced(&frame.mid, "waiting for a decodable H.264 keyframe");
-        } else if !frame.contiguous {
-            self.mark_video_desynced(&frame.mid, "RTP video discontinuity");
-        }
         let mid = frame.mid.clone();
-        match self.shared.video.push(frame) {
-            PushResult::Queued => PushOutcome::Queued,
-            PushResult::DroppedOldest => {
-                self.mark_video_desynced(&mid, "encoded video queue overflow");
-                let _ = self.shared.feedback.send(MediaFeedback::QueueDropped {
-                    media: "video",
-                    count: 1,
-                });
-                PushOutcome::DroppedOldest
-            }
-            PushResult::Closed => PushOutcome::Closed,
+        let Ok(result) = self.shared.video.push(frame) else {
+            return PushOutcome::Closed;
+        };
+        if result.request_keyframe {
+            opennow_streamer_protocol::log::log_async(
+                "WARN",
+                "video-reference",
+                "compressed chain invalidated; waiting for a fresh keyframe",
+            );
+            let _ = self.shared.feedback.send(MediaFeedback::RequestKeyframe {
+                mid,
+                reason: "compressed video discontinuity or queue overflow".to_owned(),
+            });
+        }
+        if result.dropped > 0 {
+            let _ = self.shared.feedback.send(MediaFeedback::QueueDropped {
+                media: "video",
+                count: result.dropped,
+            });
+            PushOutcome::DroppedOldest
+        } else {
+            PushOutcome::Queued
         }
     }
 
@@ -630,16 +639,6 @@ impl MediaSink {
                 PushOutcome::DroppedOldest
             }
             PushResult::Closed => PushOutcome::Closed,
-        }
-    }
-
-    fn mark_video_desynced(&self, mid: &str, reason: &str) {
-        self.shared.video_desynced.store(true, Ordering::Release);
-        if !self.shared.keyframe_requested.swap(true, Ordering::AcqRel) {
-            let _ = self.shared.feedback.send(MediaFeedback::RequestKeyframe {
-                mid: mid.to_owned(),
-                reason: reason.to_owned(),
-            });
         }
     }
 }
@@ -730,7 +729,7 @@ impl MediaSession {
         let video_decoder = (!use_windows_backend).then(H264Decoder::new).transpose()?;
         let audio_decoder = OpusDecoder::new(2)?;
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -808,7 +807,7 @@ impl MediaSession {
         let shared = Arc::new(SharedPipeline {
             // Keep a bounded scheduler-burst reserve. The VideoToolbox worker drains this queue
             // asynchronously; decoded frames remain latest-first at the Metal presentation edge.
-            video: Arc::new(BoundedQueue::new(macos_video_queue_capacity(stream.fps))),
+            video: Arc::new(VideoQueue::new(macos_video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -891,7 +890,7 @@ impl MediaSession {
         let session = opennow_streamer_platform_linux::LinuxSession::start(config)
             .map_err(|error| error.to_string())?;
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1015,7 +1014,7 @@ impl MediaSession {
         let session = opennow_streamer_platform_linux::LinuxSession::start(config)
             .map_err(|error| error.to_string())?;
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1091,7 +1090,7 @@ impl MediaSession {
         frames: crate::GraphicsFramePublisher,
     ) -> Result<Self, String> {
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(BoundedQueue::new(macos_video_queue_capacity(stream.fps))),
+            video: Arc::new(VideoQueue::new(macos_video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1272,7 +1271,7 @@ impl MediaSession {
         let audio = HeadlessAudioOutput::start(Arc::clone(&output))?;
         let bridge = Arc::new(WindowsBridge::new());
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1319,12 +1318,23 @@ impl MediaSession {
         let video_worker = thread::Builder::new()
             .name("opennow-embedded-d3d11-submit".to_owned())
             .spawn(move || {
+                opennow_streamer_protocol::log::log_line("INFO", "d3d11-submit", &format!(
+                    "worker started width={} height={} fps={}; awaiting compressed video", stream.width, stream.height, stream.fps));
+                let mut received = 0_u64;
+                let mut skipped_paused = 0_u64;
+                let mut skipped_reference = 0_u64;
+                let mut last_report = Instant::now();
                 let mut clock = AdaptiveSampleClock::new(stream.fps);
-                while let Some(frame) = video_shared.video.pop() {
-                    if video_shared.paused.load(Ordering::Acquire) {
-                        continue;
+                while let Some(packet) = video_shared.video.pop_packet() {
+                    let frame = packet.frame;
+                    received += 1;
+                    if received == 1 || last_report.elapsed() >= Duration::from_secs(2) {
+                        opennow_streamer_protocol::log::log_async("INFO", "d3d11-submit", &format!(
+                            "received={received} skipped_paused={skipped_paused} skipped_reference={skipped_reference} keyframe={} bytes={}", frame.keyframe, frame.data.len()));
+                        last_report = Instant::now();
                     }
-                    if video_shared.video_desynced.load(Ordering::Acquire) && !frame.keyframe {
+                    if video_shared.paused.load(Ordering::Acquire) {
+                        skipped_paused += 1;
                         continue;
                     }
                     let timestamp_100ns =
@@ -1341,17 +1351,23 @@ impl MediaSession {
                         timestamp_100ns,
                         duration_100ns,
                         key_frame: frame.keyframe,
-                        reset_decoder: frame.keyframe
-                            && video_shared.video_desynced.load(Ordering::Acquire),
+                        reset_decoder: packet.reset_decoder,
                     };
-                    let submission_result = video_submission
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .push(encoded);
+                    // Validate after allocation, under the same lock that publishes loss.
+                    // Only compressed-queue admission runs here, never GPU/codec work.
+                    let Some(submission_result) = video_shared.video.submit_if_current(
+                        packet.generation,
+                        || video_submission
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .push(encoded),
+                    ) else {
+                        skipped_reference += 1;
+                        continue;
+                    };
                     let submission = match submission_result {
                         Ok(submission) => submission,
                         Err(message) => {
-                            video_shared.video_desynced.store(true, Ordering::Release);
                             let _ = video_shared.feedback.send(MediaFeedback::DecoderError {
                                 codec: match frame.codec {
                                     MediaCodec::H264 => "h264",
@@ -1361,7 +1377,7 @@ impl MediaSession {
                                 },
                                 message,
                             });
-                            request_keyframe(
+                            invalidate_embedded_video(
                                 &video_shared,
                                 &frame.mid,
                                 "embedded D3D11 submission failed",
@@ -1381,8 +1397,7 @@ impl MediaSession {
                         });
                     }
                     if !submission.queued {
-                        video_shared.video_desynced.store(true, Ordering::Release);
-                        request_keyframe(
+                        invalidate_embedded_video(
                             &video_shared,
                             &frame.mid,
                             "embedded D3D11 compressed-video queue overflow",
@@ -1390,12 +1405,6 @@ impl MediaSession {
                         continue;
                     }
                     report_video_frame_accepted(&video_shared, &frame);
-                    if frame.keyframe {
-                        video_shared.video_desynced.store(false, Ordering::Release);
-                        video_shared
-                            .keyframe_requested
-                            .store(false, Ordering::Release);
-                    }
                     if submission.needs_graphics {
                         video_notifier.publish_initial(
                             &frame.mid,
@@ -1442,7 +1451,7 @@ impl MediaSession {
         #[cfg(target_os = "linux")] linux_software_fallback: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1589,6 +1598,11 @@ impl MediaSession {
         if let Some(worker) = self.embedded_host_worker.take() {
             let _ = worker.join();
         }
+        // Clear after all publishers stop, so a late decoder callback cannot
+        // republish the previous session's surface into the next session.
+        if let Some(frames) = &self.embedded_frames {
+            frames.clear();
+        }
     }
 }
 
@@ -1599,6 +1613,7 @@ struct EmbeddedD3d11State {
     producer: Option<(crate::GraphicsContext, crate::D3d11FrameProducer)>,
     frame_ready: Arc<dyn Fn() + Send + Sync>,
     keyframe_required: bool,
+    playback_started: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -1655,6 +1670,7 @@ impl EmbeddedD3d11State {
             producer: None,
             frame_ready: Arc::new(|| {}),
             keyframe_required: false,
+            playback_started: false,
         }
     }
 
@@ -1663,11 +1679,7 @@ impl EmbeddedD3d11State {
     }
 
     fn reset(&mut self) {
-        self.producer = None;
-        self.submission
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .reset();
+        detach_d3d11_producer(&self.submission, &mut self.producer);
         self.keyframe_required = false;
     }
 
@@ -1679,28 +1691,29 @@ impl EmbeddedD3d11State {
         &mut self,
         context: crate::GraphicsContext,
         command: crate::GraphicsRecordCommand,
-    ) -> Result<crate::GraphicsRecordedFrame, String> {
+    ) -> Result<crate::GraphicsRecordedFrame, crate::GraphicsFrameError> {
         use opennow_streamer_platform_windows::{
             AdoptedD3d11Context, D3d11FrameProducer, WindowsDecoderMode,
         };
 
         if context.api != crate::GraphicsApi::D3d11 {
-            return Err("an embedded Windows frame requires a D3D11 graphics context".to_owned());
+            return Err(
+                "an embedded Windows frame requires a D3D11 graphics context"
+                    .to_owned()
+                    .into(),
+            );
         }
         if self
             .producer
             .as_ref()
             .is_none_or(|(adopted, _)| *adopted != context)
         {
-            let replacing_context = self.producer.take().is_some();
+            let replacing_context = self.producer.is_some();
             if replacing_context {
                 // Frames submitted through the old Qt device cannot be replayed on the new one.
                 // Switch the submit path back to its bounded pre-context queue before adopting
                 // the replacement device, then request one clean prediction chain.
-                self.submission
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .reset();
+                detach_d3d11_producer(&self.submission, &mut self.producer);
                 self.keyframe_required = true;
             }
             let (producer, submitter) = unsafe {
@@ -1739,7 +1752,7 @@ impl EmbeddedD3d11State {
         let frame = producer
             .acquire_latest()
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "the D3D11 decoder has not produced a frame yet".to_owned())?;
+            .ok_or(crate::GraphicsFrameError::NotReady)?;
         let recorded = unsafe {
             frame.record(
                 AdoptedD3d11Context {
@@ -1768,6 +1781,19 @@ impl EmbeddedD3d11State {
             presentation_time_ns: recorded.presentation_time_ns,
         })
     }
+}
+
+#[cfg(target_os = "windows")]
+fn detach_d3d11_producer<T>(submission: &Mutex<EmbeddedD3d11Submission>, producer: &mut Option<T>) {
+    // Drop closes the decoder queue and joins its worker. First remove the submitter
+    // under the submission lock, then release that lock before the potentially slow
+    // destructor. Concurrent compressed frames must use the bounded staging queue,
+    // never a closed decoder queue (reported as "backend worker disconnected").
+    submission
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .reset();
+    drop(producer.take());
 }
 
 #[cfg(target_os = "windows")]
@@ -1889,6 +1915,12 @@ impl EmbeddedD3d11FrameNotifier {
             return;
         };
         let Some(lease) = self.frames.context() else {
+            opennow_streamer_protocol::log::log_throttled(
+                "d3d11-publish-no-context",
+                "WARN",
+                "d3d11-publish",
+                "frame ready but Qt graphics context is absent",
+            );
             return;
         };
         let sequence = self.sequence.fetch_add(1, Ordering::AcqRel) + 1;
@@ -1907,7 +1939,15 @@ impl EmbeddedD3d11FrameNotifier {
                 presentation_time_ns: self.presentation_time_ns.load(Ordering::Acquire),
             },
         };
-        let _ = self.frames.publish(lease, Arc::new(pending));
+        let result = self.frames.publish(lease, Arc::new(pending));
+        if sequence == 1 || result.is_err() {
+            opennow_streamer_protocol::log::log_throttled(
+                "d3d11-publish-result",
+                "INFO",
+                "d3d11-publish",
+                &format!("sequence={sequence} result={result:?}"),
+            );
+        }
     }
 }
 
@@ -1929,17 +1969,22 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
         &self,
         context: crate::GraphicsContext,
         command: crate::GraphicsRecordCommand,
-    ) -> Result<crate::GraphicsRecordedFrame, String> {
+    ) -> Result<crate::GraphicsRecordedFrame, crate::GraphicsFrameError> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let result = state.record(context, command);
+        if result.is_ok() && !state.playback_started {
+            state.playback_started = true;
+            let _ = self.shared.feedback.send(MediaFeedback::PlaybackStarted {
+                backend: "D3D11/Qt",
+            });
+        }
         let keyframe_required = state.take_keyframe_required();
         drop(state);
         if keyframe_required {
-            self.shared.video_desynced.store(true, Ordering::Release);
-            request_keyframe(
+            invalidate_embedded_video(
                 &self.shared,
                 &self.mid,
-                "embedded D3D11 decoder queue overflow",
+                "embedded D3D11 decoder lost references or graphics device",
             );
             let _ = self.shared.feedback.send(MediaFeedback::QueueDropped {
                 media: "d3d11-decode",
@@ -2134,6 +2179,18 @@ fn media_timestamp_100ns(timestamp: u64, clock_rate_hz: u32) -> i64 {
         .checked_div(u128::from(clock_rate_hz))
         .unwrap_or(0);
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+#[cfg(target_os = "windows")]
+fn invalidate_embedded_video(shared: &SharedPipeline, mid: &str, reason: &str) {
+    // Invalidate queued AND already-dequeued access units. An older keyframe
+    // submission must never clear a newer decoder/transport failure.
+    shared.video.clear();
+    opennow_streamer_protocol::log::log_async("WARN", "video-reference", reason);
+    let _ = shared.feedback.send(MediaFeedback::RequestKeyframe {
+        mid: mid.to_owned(),
+        reason: reason.to_owned(),
+    });
 }
 
 #[cfg(target_os = "windows")]
@@ -3599,6 +3656,42 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn embedded_d3d11_detaches_submission_before_retiring_decoder() {
+        struct RetiredDecoder<'a>(&'a Mutex<EmbeddedD3d11Submission>);
+        impl Drop for RetiredDecoder<'_> {
+            fn drop(&mut self) {
+                // Simulate a concurrent submission while decoder teardown joins its
+                // worker. No old prediction chain or locked submission mutex may remain.
+                let mut submission = self.0.try_lock().expect("teardown held submission lock");
+                assert!(submission.pending.is_empty());
+                assert!(submission.submitter.is_none());
+                let outcome = submission.push(embedded_h264_frame(100, true)).unwrap();
+                assert!(outcome.queued && outcome.needs_graphics);
+            }
+        }
+        let submission = Mutex::new(EmbeddedD3d11Submission::new());
+        submission
+            .lock()
+            .unwrap()
+            .push(embedded_h264_frame(1, true))
+            .unwrap();
+        let mut producer = Some(RetiredDecoder(&submission));
+        detach_d3d11_producer(&submission, &mut producer);
+        assert!(producer.is_none());
+        assert_eq!(
+            submission
+                .lock()
+                .unwrap()
+                .pending
+                .front()
+                .unwrap()
+                .timestamp_100ns,
+            100
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn embedded_d3d11_overflow_discards_the_entire_reference_chain() {
         let mut state = EmbeddedD3d11Submission::new();
         let capacity = opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY;
@@ -3812,7 +3905,7 @@ mod tests {
         let output = Arc::new(OutputBuffers::new());
         let (feedback, _receiver) = std::sync::mpsc::channel();
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(BoundedQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output: Arc::clone(&output),
             feedback,
@@ -3991,7 +4084,7 @@ mod tests {
                 keyframe: false,
                 contiguous: true,
             }),
-            PushOutcome::Queued
+            PushOutcome::DroppedOldest
         );
         assert!(matches!(
             receiver.recv_timeout(std::time::Duration::from_secs(1)),

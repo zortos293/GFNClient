@@ -79,6 +79,20 @@ pub struct GraphicsFrameInfo {
     pub presentation_time_ns: u64,
 }
 
+/// A bootstrap frame can initialize an asynchronous decoder on the render
+/// thread without having decoded output yet. This is not a render failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphicsFrameError {
+    NotReady,
+    Failed(String),
+}
+
+impl From<String> for GraphicsFrameError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
 pub trait GraphicsFrame: Send + Sync + 'static {
     fn info(&self) -> GraphicsFrameInfo;
 
@@ -86,7 +100,7 @@ pub trait GraphicsFrame: Send + Sync + 'static {
         &self,
         context: GraphicsContext,
         command: GraphicsRecordCommand,
-    ) -> Result<GraphicsRecordedFrame, String>;
+    ) -> Result<GraphicsRecordedFrame, GraphicsFrameError>;
 }
 
 #[cfg(target_os = "linux")]
@@ -104,9 +118,11 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
         &self,
         context: GraphicsContext,
         command: GraphicsRecordCommand,
-    ) -> Result<GraphicsRecordedFrame, String> {
+    ) -> Result<GraphicsRecordedFrame, GraphicsFrameError> {
         if context.api != GraphicsApi::Vulkan {
-            return Err("a Linux decoded frame requires a Vulkan graphics context".to_owned());
+            return Err("a Linux decoded frame requires a Vulkan graphics context"
+                .to_owned()
+                .into());
         }
         let frame = unsafe {
             self.record(
@@ -149,9 +165,13 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
         &self,
         context: GraphicsContext,
         command: GraphicsRecordCommand,
-    ) -> Result<GraphicsRecordedFrame, String> {
+    ) -> Result<GraphicsRecordedFrame, GraphicsFrameError> {
         if context.api != GraphicsApi::Metal {
-            return Err("a macOS VideoToolbox frame requires a Metal graphics context".to_owned());
+            return Err(
+                "a macOS VideoToolbox frame requires a Metal graphics context"
+                    .to_owned()
+                    .into(),
+            );
         }
         let frame = unsafe {
             self.record(
@@ -371,7 +391,10 @@ impl RenderThreadGraphics {
         frame
             .frame
             .record(context, command)
-            .map_err(GraphicsRuntimeError::RecordFailed)
+            .map_err(|error| match error {
+                GraphicsFrameError::NotReady => GraphicsRuntimeError::NoFrame,
+                GraphicsFrameError::Failed(message) => GraphicsRuntimeError::RecordFailed(message),
+            })
     }
 
     pub fn shutdown(&self) -> Result<(), GraphicsRuntimeError> {
@@ -459,7 +482,7 @@ mod tests {
             &self,
             context: GraphicsContext,
             command: GraphicsRecordCommand,
-        ) -> Result<GraphicsRecordedFrame, String> {
+        ) -> Result<GraphicsRecordedFrame, GraphicsFrameError> {
             self.records
                 .lock()
                 .expect("record calls")

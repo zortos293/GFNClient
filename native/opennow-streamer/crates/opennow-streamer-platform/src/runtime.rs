@@ -113,6 +113,43 @@ impl MediaRuntime {
         feedback: Sender<MediaFeedback>,
         stream: MediaStreamConfig,
     ) -> Result<MediaSession, String> {
+        self.start_with_backend(feedback, stream, "auto")
+    }
+
+    pub fn validate_backend(&self, requested: &str) -> Result<(), String> {
+        if !self.is_embedded() {
+            return Ok(());
+        }
+        #[cfg(target_os = "windows")]
+        let supported = matches!(requested, "auto" | "d3d11");
+        #[cfg(target_os = "macos")]
+        let supported = matches!(requested, "auto" | "videotoolbox");
+        #[cfg(target_os = "linux")]
+        let supported = requested == "auto"
+            || (matches!(requested, "vulkan" | "cuda" | "nvdec" | "vaapi" | "v4l2")
+                && crate::embedded_video_backends().iter().any(|backend| {
+                    backend.available
+                        && (backend.backend == requested
+                            || (requested == "nvdec" && backend.backend == "cuda"))
+                }));
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        let supported = requested == "auto";
+        if supported {
+            Ok(())
+        } else {
+            Err(format!(
+                "Backend {requested} is not supported by this embedded stream view. Select Auto in Stream settings."
+            ))
+        }
+    }
+
+    pub fn start_with_backend(
+        &self,
+        feedback: Sender<MediaFeedback>,
+        stream: MediaStreamConfig,
+        requested: &str,
+    ) -> Result<MediaSession, String> {
+        self.validate_backend(requested)?;
         if let MediaRuntimeMode::Embedded(frames) = &self.mode {
             let session = MediaSession::spawn_embedded(
                 Arc::clone(&self.output),
@@ -121,7 +158,11 @@ impl MediaRuntime {
                 stream,
                 frames.clone(),
                 #[cfg(target_os = "linux")]
-                self.linux_selection.clone(),
+                if requested == "auto" {
+                    self.linux_selection.clone()
+                } else {
+                    crate::linux_backend::select_requested_video_path(requested)
+                },
             )?;
             if self.paused.load(Ordering::Acquire) {
                 session.set_paused(true);
@@ -1046,6 +1087,24 @@ fn ensure_macos_main_thread() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::backend_preference_allows_value;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn embedded_windows_rejects_unimplemented_backend_overrides() {
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let runtime = super::create_embedded_runtime(frames);
+        assert!(runtime.validate_backend("auto").is_ok());
+        assert!(runtime.validate_backend("d3d11").is_ok());
+        for backend in ["d3d12", "vulkan", "software", "invalid"] {
+            assert!(
+                runtime
+                    .validate_backend(backend)
+                    .unwrap_err()
+                    .contains("Select Auto")
+            );
+        }
+        runtime.shutdown();
+    }
 
     #[test]
     fn video_backend_preference_selects_only_auto_or_the_requested_hardware() {

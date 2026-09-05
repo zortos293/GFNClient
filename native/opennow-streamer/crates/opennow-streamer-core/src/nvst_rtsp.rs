@@ -121,10 +121,17 @@ impl RtspClient {
         body: &str,
         timeout: Duration,
     ) -> Result<RtspResponse, NvstRtspError> {
+        let mut stage = opennow_streamer_protocol::log::Stage::begin("rtsps.request");
         self.cseq += 1;
-        eprintln!(
-            "NVST RTSPS request method={method} cseq={} uri={uri}",
-            self.cseq
+        opennow_streamer_protocol::log::log_line(
+            "INFO",
+            "rtsps",
+            &format!(
+                "request method={method} cseq={} timeout_ms={} body_bytes={}",
+                self.cseq,
+                timeout.as_millis(),
+                body.len()
+            ),
         );
         let mut request = format!(
             "{method} {uri} RTSP/1.0\r\nCSeq: {}\r\nRequest-Id: {}\r\n",
@@ -144,22 +151,15 @@ impl RtspClient {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(response) = take_rtsp_response(&mut self.buffer, self.cseq)? {
-                eprintln!(
-                    "NVST RTSPS response method={method} cseq={} status={} {} responseCseq={} requestId={}",
-                    self.cseq,
-                    response.status,
-                    response.status_text,
-                    response
-                        .headers
-                        .get("cseq")
-                        .map(String::as_str)
-                        .unwrap_or("missing"),
-                    response
-                        .headers
-                        .get("request-id")
-                        .map(String::as_str)
-                        .unwrap_or("missing")
+                opennow_streamer_protocol::log::log_line(
+                    "INFO",
+                    "rtsps",
+                    &format!(
+                        "response method={method} cseq={} status={}",
+                        self.cseq, response.status
+                    ),
                 );
+                stage.complete();
                 return Ok(response);
             }
             if Instant::now() >= deadline {
@@ -411,7 +411,10 @@ pub fn prepare_owned_nvst(
     })?;
     let identity = bundle.identity();
 
+    let mut connect_stage = opennow_streamer_protocol::log::Stage::begin("rtsps.connect");
     let (mut client, target) = RtspClient::connect(endpoint, session_id)?;
+    connect_stage.complete();
+    drop(connect_stage);
     let host = target
         .strip_prefix("rtsps://")
         .or_else(|| target.strip_prefix("rtsp://"))
@@ -542,6 +545,27 @@ pub fn prepare_owned_nvst(
         handoff["bundlePeerIp"] = json!(media.ip);
         handoff["bundlePeerPort"] = json!(media.port);
     }
+
+    // Only log transport shape, never SDP, runtime keys, or ICE credentials.
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "nvst-handoff",
+        &format!(
+            "video_local_port={mjolnir_port} bundle_local_port={client_port} video_peer_port={video_peer_port} bundle_peer_port={} same_peer_host={} ping_version={ping_version} ping_bytes={} legacy_ping_payload={} srtp_profile={srtp_profile} rtcp_on_sctp={rtcp_on_sctp} sockets_retained=true reachability=unverified",
+            context
+                .session
+                .media_connection_info
+                .as_ref()
+                .map_or(u32::from(video_peer_port), |media| media.port),
+            context
+                .session
+                .media_connection_info
+                .as_ref()
+                .is_none_or(|media| media.ip == video_peer_ip),
+            ping_payload.len(),
+            ping_payload == "PING"
+        ),
+    );
 
     let announce_body = build_announce(
         context,

@@ -334,7 +334,7 @@ pub struct NvstFeedbackState {
     received_packets: AtomicU32,
     report_prior: Mutex<(u32, u32)>,
     reception_timing: Mutex<ReceptionTiming>,
-    /// Set when the receiver hits unrecoverable loss and needs a fresh keyframe.
+    /// Remains set through send attempts until assembly receives a fresh keyframe.
     keyframe_needed: AtomicBool,
     /// Missing extended RTP sequence ranges awaiting RFC 4585 generic NACK.
     pending_nacks: Mutex<VecDeque<PendingNackRange>>,
@@ -481,8 +481,16 @@ impl NvstFeedbackState {
         );
         self.last_completed_rtp_timestamp
             .store(frame.timestamp, Ordering::Release);
-        if frame.keyframe {
-            self.keyframe_needed.store(false, Ordering::Release);
+        if frame.keyframe && self.keyframe_needed.swap(false, Ordering::AcqRel) {
+            opennow_streamer_protocol::log::log_async(
+                "INFO",
+                "nvst-keyframe",
+                &format!(
+                    "assembled frame={} bytes={} recovery_pending=false",
+                    frame.frame_index,
+                    frame.bytes.len()
+                ),
+            );
         }
     }
 
@@ -520,6 +528,20 @@ impl NvstFeedbackState {
     fn stream_snapshot(&self) -> Option<(u32, u32)> {
         let ssrc = self.video_ssrc.load(Ordering::Acquire);
         (ssrc != 0).then(|| (ssrc, self.highest_sequence.load(Ordering::Acquire)))
+    }
+
+    /// Measured RTP interarrival jitter (90 kHz video clock) and cumulative
+    /// packet loss percentage. Reading UI telemetry must not reset RTCP's
+    /// interval counters or substitute discovery ping for streaming RTT.
+    pub fn network_metrics(&self) -> Option<(f64, f64)> {
+        let report = self.report_snapshot(false)?;
+        let base = self.base_sequence.load(Ordering::Acquire);
+        let expected = report
+            .highest_sequence
+            .saturating_sub(base)
+            .saturating_add(1);
+        let loss = f64::from(report.cumulative_lost.max(0)) * 100.0 / f64::from(expected.max(1));
+        Some((f64::from(report.jitter) / 90.0, loss.clamp(0.0, 100.0)))
     }
 
     fn report_snapshot(&self, update_interval: bool) -> Option<RtcpReportBlock> {
@@ -565,9 +587,25 @@ impl NvstFeedbackState {
         })
     }
 
-    /// Atomically takes the pending keyframe request, returning true if one was set.
-    fn take_keyframe_request(&self) -> bool {
-        self.keyframe_needed.swap(false, Ordering::AcqRel)
+    fn keyframe_request_pending(&self) -> bool {
+        self.keyframe_needed.load(Ordering::Acquire)
+    }
+
+    /// Control IDR does not need a video SSRC; RTCP PLI does. Sending either
+    /// request is not evidence that a keyframe was received, so keep retrying.
+    fn keyframe_request_routes(
+        &self,
+        now: Instant,
+        last_attempt: Instant,
+        rtcp_open: bool,
+        control_open: bool,
+    ) -> (bool, bool) {
+        if !self.keyframe_request_pending()
+            || now.saturating_duration_since(last_attempt) < KEYFRAME_REQUEST_COOLDOWN
+        {
+            return (false, false);
+        }
+        (rtcp_open && self.stream_snapshot().is_some(), control_open)
     }
 
     fn take_nack(&self, now: Instant) -> Option<(u64, u64)> {
@@ -4194,16 +4232,80 @@ fn bind_nvst_udp_socket(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket
         Domain::IPV6
     };
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+    // Reservation is the availability check: never probe, close, then rebind.
+    // SO_REUSEADDR on Windows can steal an occupied UDP port and makes packet
+    // delivery indeterminate. Keep this exact exclusive socket through ANNOUNCE.
+    #[cfg(windows)]
+    set_exclusive_udp_address(&socket)?;
+    #[cfg(unix)]
     socket.set_reuse_address(true)?;
     if let Err(error) = socket.set_recv_buffer_size(NVST_UDP_RECEIVE_BUFFER_BYTES) {
+        log_udp_error("receive-buffer", port, &error);
         eprintln!(
             "NVST could not enlarge UDP receive buffer to {NVST_UDP_RECEIVE_BUFFER_BYTES} bytes: {error}"
         );
     }
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
-    socket.bind(&SocketAddr::new(bind_ip, port).into())?;
+    if let Err(error) = socket.bind(&SocketAddr::new(bind_ip, port).into()) {
+        log_udp_error("bind-unavailable", port, &error);
+        return Err(error);
+    }
+    opennow_streamer_protocol::log::log_async(
+        "INFO",
+        "nvst-udp",
+        &format!(
+            "bound local_port={} ipv4={} exclusive={} receive_buffer_bytes={} reachability=unverified",
+            socket
+                .local_addr()?
+                .as_socket()
+                .map_or(0, |addr| addr.port()),
+            bind_ip.is_ipv4(),
+            cfg!(windows),
+            socket.recv_buffer_size().unwrap_or(0)
+        ),
+    );
     Ok(socket.into())
+}
+
+#[cfg(windows)]
+fn set_exclusive_udp_address(socket: &Socket) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        SO_EXCLUSIVEADDRUSE, SOCKET_ERROR, SOL_SOCKET, WSAGetLastError, setsockopt,
+    };
+    let enabled: u32 = 1;
+    // SAFETY: socket is live; enabled is a valid DWORD for the duration of the
+    // synchronous setsockopt call. This runs before bind and before publication.
+    let result = unsafe {
+        setsockopt(
+            socket.as_raw_socket() as _,
+            SOL_SOCKET,
+            SO_EXCLUSIVEADDRUSE,
+            (&enabled as *const u32).cast(),
+            std::mem::size_of_val(&enabled) as i32,
+        )
+    };
+    if result == SOCKET_ERROR {
+        // SAFETY: read the calling thread's Winsock error immediately on failure.
+        return Err(std::io::Error::from_raw_os_error(unsafe {
+            WSAGetLastError()
+        }));
+    }
+    Ok(())
+}
+
+fn log_udp_error(operation: &str, local_port: u16, error: &std::io::Error) {
+    // Structured OS codes, never endpoints, payloads, or ICE credentials.
+    opennow_streamer_protocol::log::log_async(
+        "WARN",
+        "nvst-udp",
+        &format!(
+            "operation={operation} local_port={local_port} kind={:?} os_code={:?}",
+            error.kind(),
+            error.raw_os_error()
+        ),
+    );
 }
 
 /// Reserves the dedicated NATT-only video (Mjolnir) socket. The native streamer
@@ -4222,15 +4324,30 @@ fn reserve_nvst_socket_pair() -> std::io::Result<(UdpSocket, UdpSocket)> {
     // that already have either port occupied.
     const OFFICIAL_MJOLNIR_PORT: u16 = 49_005;
     const OFFICIAL_BUNDLE_PORT: u16 = 49_006;
+    reserve_nvst_socket_pair_preferred(OFFICIAL_MJOLNIR_PORT, OFFICIAL_BUNDLE_PORT)
+}
+
+fn reserve_nvst_socket_pair_preferred(
+    video_port: u16,
+    bundle_port: u16,
+) -> std::io::Result<(UdpSocket, UdpSocket)> {
     const MAX_PAIR_ATTEMPTS: usize = 32;
     let bind_ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-    let mut last_error = match bind_nvst_udp_socket(bind_ip, OFFICIAL_MJOLNIR_PORT) {
-        Ok(mjolnir) => match bind_nvst_udp_socket(bind_ip, OFFICIAL_BUNDLE_PORT) {
-            Ok(bundle) => return Ok((bundle, mjolnir)),
+    let mut last_error = match bind_nvst_udp_socket(bind_ip, video_port) {
+        Ok(mjolnir) => match bind_nvst_udp_socket(bind_ip, bundle_port) {
+            Ok(bundle) => {
+                log_reserved_pair("preferred", &bundle, &mjolnir);
+                return Ok((bundle, mjolnir));
+            }
             Err(error) => error,
         },
         Err(error) => error,
     };
+    opennow_streamer_protocol::log::log_async(
+        "WARN",
+        "nvst-udp",
+        "preferred-pair-unavailable falling_back=dynamic-adjacent",
+    );
 
     for _ in 0..MAX_PAIR_ATTEMPTS {
         let mjolnir = reserve_nvst_mjolnir_udp_socket()?;
@@ -4239,11 +4356,68 @@ fn reserve_nvst_socket_pair() -> std::io::Result<(UdpSocket, UdpSocket)> {
             continue;
         };
         match bind_nvst_udp_socket(bind_ip, bundle_port) {
-            Ok(bundle) => return Ok((bundle, mjolnir)),
+            Ok(bundle) => {
+                log_reserved_pair("dynamic", &bundle, &mjolnir);
+                return Ok((bundle, mjolnir));
+            }
             Err(error) => last_error = error,
         }
     }
     Err(last_error)
+}
+
+fn log_reserved_pair(selection: &str, bundle: &UdpSocket, video: &UdpSocket) {
+    opennow_streamer_protocol::log::log_async(
+        "INFO",
+        "nvst-udp",
+        &format!(
+            "reserved selection={selection} video_local_port={} bundle_local_port={} sockets_retained=true reachability=unverified",
+            video.local_addr().map_or(0, |addr| addr.port()),
+            bundle.local_addr().map_or(0, |addr| addr.port())
+        ),
+    );
+}
+
+fn log_udp_receiver_start(
+    role: &str,
+    socket: &UdpSocket,
+    peer: SocketAddr,
+    config: &NvstVideoConfig,
+) {
+    opennow_streamer_protocol::log::log_async(
+        "INFO",
+        "nvst-udp",
+        &format!(
+            "receiver-start role={role} local_port={} peer_port={} ipv4={} ping_version={:?} ping_bytes={} authenticated_natt={} same_video_bundle_host={} reachability=awaiting-inbound",
+            socket.local_addr().map_or(0, |addr| addr.port()),
+            peer.port(),
+            peer.is_ipv4(),
+            config.ping_version,
+            config.ping_payload.len(),
+            config.stun_credentials.is_some(),
+            config.video_peer.ip() == config.bundle_peer().ip()
+        ),
+    );
+}
+
+fn log_udp_first_inbound(
+    role: &str,
+    local_port: u16,
+    peer: SocketAddr,
+    source: SocketAddr,
+    bytes: usize,
+    origin: Instant,
+) {
+    opennow_streamer_protocol::log::log_async(
+        "INFO",
+        "nvst-udp",
+        &format!(
+            "first-inbound role={role} local_port={local_port} source_port={} expected_peer={} bytes={bytes} elapsed_ms={} authentication=not-yet-checked",
+            source.port(),
+            source == peer,
+            origin.elapsed().as_millis()
+        ),
+    );
 }
 
 pub fn spawn_nvst_udp_receiver(
@@ -4593,12 +4767,17 @@ fn run_nvst_webrtc_bundle(
         input_ready,
     } = outputs;
     let bundle_peer = config.bundle_peer();
+    let local_port = socket.local_addr().map_or(0, |addr| addr.port());
+    log_udp_receiver_start("bundle", &socket, bundle_peer, &config);
     let stun_credentials = config.stun_credentials.clone();
     let ping_payload = config.ping_payload.clone();
     // Feedback plane shared with the Mjolnir video receiver: it publishes the
     // stream SSRC/sequence and recovery requests; this bundle sends the RTCP
     // Receiver Reports / NACK / PLI over the `rtcp1` SCTP data channel.
     let feedback = config.feedback();
+    // Arm startup before either feedback channel opens. In particular, control
+    // IDR must work even if no video packet has arrived to identify its SSRC.
+    feedback.request_keyframe();
     let audio_track = config.audio_track().cloned();
     let frame_time_us = config.frame_time_us;
     // With a dedicated Mjolnir video socket the bundle only carries
@@ -4612,6 +4791,7 @@ fn run_nvst_webrtc_bundle(
     let receive_destination = logical_ice_addr(physical_local, 1);
     let receive_source = logical_ice_addr(bundle_peer, 2);
     let mut receiver = NvstVideoReceiver::new(config);
+    let mut video_delivery_gap = false;
     let mut datagram = vec![0_u8; 65_536];
     let mut inbound_datagrams = 0_u64;
     let mut outbound_datagrams = 0_u64;
@@ -4627,7 +4807,8 @@ fn run_nvst_webrtc_bundle(
     let rtcp_sender_ssrc = RTCP_SENDER_SSRC;
     let mut last_rtcp_send = Instant::now() - SRTCP_RR_INTERVAL;
     let mut last_recovery_send = Instant::now();
-    let mut last_keyframe_send = Instant::now() - KEYFRAME_REQUEST_COOLDOWN;
+    let mut last_keyframe_attempt = Instant::now() - KEYFRAME_REQUEST_COOLDOWN;
+    let mut keyframe_attempts = 0_u64;
     let mut rtcp_reports_sent = 0_u64;
     let mut qos_sequence = 0_u32;
     let mut last_qos_send = Instant::now() - QOS_REPORT_INTERVAL;
@@ -4912,6 +5093,15 @@ fn run_nvst_webrtc_bundle(
         }
 
         if now.duration_since(last_control_stats_log) >= Duration::from_secs(2) {
+            opennow_streamer_protocol::log::log_async(
+                "INFO",
+                "nvst-bundle",
+                &format!(
+                    "{} local_port={local_port} peer_port={} inbound={inbound_datagrams} outbound={outbound_datagrams} pings={hole_punch_pings} dtls_ready={dtls_ready} sctp_started={sctp_started} frame_ack={frame_acks_sent} pacing={frame_pacing_reports_sent} qos={qos_reports_sent}",
+                    receiver.stats_line(control_stats_origin),
+                    bundle_peer.port()
+                ),
+            );
             eprintln!(
                 "NVST control-stats elapsed={:.1}s frameAck={frame_acks_sent} lastAck={last_ack_frame:?} pacing={frame_pacing_reports_sent} qos={qos_reports_sent}",
                 now.saturating_duration_since(control_stats_origin)
@@ -4970,36 +5160,43 @@ fn run_nvst_webrtc_bundle(
                     }
                 }
             }
-            if feedback.take_keyframe_request() {
-                if now.duration_since(last_keyframe_send) < KEYFRAME_REQUEST_COOLDOWN {
-                    feedback.request_keyframe();
-                } else {
-                    let mut sent = false;
-                    if rtcp_channel_open
-                        && let Some(channel_id) = rtcp_channel
-                        && let Some(mut channel) = rtc.channel(channel_id)
-                    {
-                        let pli = build_rtcp_pli(rtcp_sender_ssrc, media_ssrc);
-                        if channel.write(true, &pli).unwrap_or(false) {
-                            eprintln!("NVST rtcp1 PLI sent for mediaSsrc={media_ssrc}");
-                            sent = true;
-                        }
-                    }
-                    if input_state.control_is_open()
-                        && let Some(channels) = input_channels
-                        && channels.send_control(&mut rtc, &idr_request().encoded())
-                    {
-                        eprintln!("NVST control 0x302 IDR request sent");
-                        sent = true;
-                    }
-                    if !sent {
-                        feedback.request_keyframe();
-                    } else {
-                        last_keyframe_send = now;
-                    }
-                }
-            }
             last_recovery_send = now;
+        }
+
+        // Do not gate control IDR on stream_snapshot(): it is needed most when
+        // the server has not sent any video yet. Bound failed sends as well as
+        // successful ones, and leave the request armed until a keyframe arrives.
+        let (try_pli, try_idr) = feedback.keyframe_request_routes(
+            now,
+            last_keyframe_attempt,
+            rtcp_channel_open,
+            input_state.control_is_open(),
+        );
+        if try_pli || try_idr {
+            let mut pli_queued = false;
+            if try_pli
+                && let Some((media_ssrc, _)) = feedback.stream_snapshot()
+                && let Some(channel_id) = rtcp_channel
+                && let Some(mut channel) = rtc.channel(channel_id)
+            {
+                pli_queued = channel
+                    .write(true, &build_rtcp_pli(rtcp_sender_ssrc, media_ssrc))
+                    .unwrap_or(false);
+            }
+            let idr_queued = try_idr
+                && input_channels.is_some_and(|channels| {
+                    channels.send_control(&mut rtc, &idr_request().encoded())
+                });
+            last_keyframe_attempt = now;
+            keyframe_attempts = keyframe_attempts.saturating_add(1);
+            opennow_streamer_protocol::log::log_async(
+                "INFO",
+                "nvst-keyframe",
+                &format!(
+                    "attempt={keyframe_attempts} pli_queued={pli_queued} idr_queued={idr_queued} stream_known={} awaiting_assembled_keyframe=true",
+                    feedback.stream_snapshot().is_some()
+                ),
+            );
         }
 
         let timeout = loop {
@@ -5034,6 +5231,11 @@ fn run_nvst_webrtc_bundle(
                 }
                 Ok(Output::Event(event)) => match event {
                     Event::IceConnectionStateChange(state) => {
+                        opennow_streamer_protocol::log::log_async(
+                            "INFO",
+                            "nvst-ice",
+                            &format!("state={state:?}"),
+                        );
                         eprintln!("NVST ICE state: {state:?}");
                         // Official GFN treats hole-punch / ICE receive failure as
                         // non-fatal. Media is gated on DTLS, not ICE success.
@@ -5084,8 +5286,6 @@ fn run_nvst_webrtc_bundle(
                         }
                         if Some(id) == rtcp_channel {
                             rtcp_channel_open = true;
-                            // Ask for a keyframe immediately so the decoder can start.
-                            feedback.request_keyframe();
                         }
                     }
                     Event::ChannelData(data) => {
@@ -5326,6 +5526,7 @@ fn run_nvst_webrtc_bundle(
                                     &media_consumer,
                                     &event_sender,
                                     transport_origin,
+                                    &mut video_delivery_gap,
                                     event,
                                 ) {
                                     rtc.disconnect();
@@ -5363,6 +5564,16 @@ fn run_nvst_webrtc_bundle(
             match socket.recv_from(&mut datagram) {
                 Ok((length, source)) => {
                     inbound_datagrams += 1;
+                    if inbound_datagrams == 1 {
+                        log_udp_first_inbound(
+                            "bundle",
+                            local_port,
+                            bundle_peer,
+                            source,
+                            length,
+                            transport_origin,
+                        );
+                    }
                     if inbound_datagrams == 1
                         || (verbose_diagnostics_enabled() && inbound_datagrams % 50 == 0)
                     {
@@ -5427,7 +5638,8 @@ fn run_nvst_webrtc_bundle(
                 {
                     let _ = rtc.handle_input(Input::Timeout(Instant::now()));
                 }
-                Err(_) => {
+                Err(error) => {
+                    log_udp_error("bundle-receive", local_port, &error);
                     forward_optional(&event_sender, receiver.stop());
                     return;
                 }
@@ -5460,12 +5672,15 @@ fn run_nvst_udp_receiver(
         run_nvst_webrtc_bundle(socket, config, commands, outputs, transport_origin, rtc);
         return;
     }
+    let local_port = socket.local_addr().map_or(0, |addr| addr.port());
+    log_udp_receiver_start("video", &socket, config.video_peer, &config);
     let NvstReceiverOutputs {
         media_consumer,
         event_sender,
         ..
     } = outputs;
     let mut receiver = NvstVideoReceiver::new(config);
+    let mut video_delivery_gap = false;
     let stun_credentials = receiver.config.stun_credentials.clone();
     let mut datagram = vec![0_u8; 65_536];
     let mut peer_seen = false;
@@ -5526,6 +5741,7 @@ fn run_nvst_udp_receiver(
                     &transaction_id,
                 );
                 if let Err(error) = socket.send_to(&ping, receiver.config.video_peer) {
+                    log_udp_error("video-natt-send", local_port, &error);
                     eprintln!("NVST NATT send failed: {error}");
                     forward_optional(&event_sender, receiver.stop());
                     return;
@@ -5535,6 +5751,7 @@ fn run_nvst_udp_receiver(
                 if let Err(error) =
                     socket.send_to(&receiver.config.ping_payload, receiver.config.video_peer)
                 {
+                    log_udp_error("video-ping-send", local_port, &error);
                     eprintln!("NVST ping send failed: {error}");
                     forward_optional(&event_sender, receiver.stop());
                     return;
@@ -5548,6 +5765,14 @@ fn run_nvst_udp_receiver(
             Ok((length, source)) => {
                 inbound_datagrams += 1;
                 if inbound_datagrams == 1 {
+                    log_udp_first_inbound(
+                        "video",
+                        local_port,
+                        receiver.config.video_peer,
+                        source,
+                        length,
+                        transport_origin,
+                    );
                     eprintln!(
                         "NVST raw-SRTP inbound first datagram: source={source} bytes={length} peer={}",
                         receiver.config.video_peer
@@ -5585,6 +5810,7 @@ fn run_nvst_udp_receiver(
                         &media_consumer,
                         &event_sender,
                         transport_origin,
+                        &mut video_delivery_gap,
                         event,
                     ) {
                         forward_optional(&event_sender, receiver.stop());
@@ -5594,7 +5820,8 @@ fn run_nvst_udp_receiver(
             }
             Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(_) => {
+            Err(error) => {
+                log_udp_error("video-receive", local_port, &error);
                 forward_optional(&event_sender, receiver.stop());
                 return;
             }
@@ -5610,6 +5837,15 @@ fn run_nvst_udp_receiver(
         }
         if now.duration_since(last_stats_log) >= Duration::from_secs(2) {
             last_stats_log = now;
+            opennow_streamer_protocol::log::log_async(
+                "INFO",
+                "nvst-video",
+                &format!(
+                    "{} local_port={local_port} peer_port={} inbound={inbound_datagrams} pings={pings_sent} rr={receiver_reports_sent} stun_ok={handled_stun} stun_invalid={invalid_stun} wrong_source={wrong_source}",
+                    receiver.stats_line(stats_origin),
+                    receiver.config.video_peer.port()
+                ),
+            );
             eprintln!(
                 "NVST rx-stats {} inbound={inbound_datagrams} pings={pings_sent} rr={receiver_reports_sent}",
                 receiver.stats_line(stats_origin),
@@ -5617,6 +5853,15 @@ fn run_nvst_udp_receiver(
         }
         let timeout = receiver.poll_timeout(now);
         if timeout.is_some() {
+            opennow_streamer_protocol::log::log_async(
+                "WARN",
+                "nvst-video",
+                &format!(
+                    "media-timeout local_port={local_port} peer_port={} inbound={inbound_datagrams} pings={pings_sent} stun_ok={handled_stun} wrong_source={wrong_source} {} firewall_status=unknown",
+                    receiver.config.video_peer.port(),
+                    receiver.stats_line(stats_origin)
+                ),
+            );
             eprintln!(
                 "NVST transport timeout counters: pings={pings_sent}, inbound={inbound_datagrams}, stunHandled={handled_stun}, stunInvalid={invalid_stun}, nonStun={non_stun}, wrongSource={wrong_source}"
             );
@@ -5635,6 +5880,7 @@ fn forward_receive_event(
     media_consumer: &MediaConsumer,
     event_sender: &Sender<NvstReceiveEvent>,
     transport_origin: Instant,
+    delivery_gap: &mut bool,
     event: NvstReceiveEvent,
 ) -> bool {
     if let NvstReceiveEvent::Frame(frame) = event {
@@ -5652,11 +5898,18 @@ fn forward_receive_event(
                 .try_into()
                 .unwrap_or(u64::MAX),
             keyframe: frame.keyframe,
-            contiguous: frame.contiguous,
+            contiguous: frame.contiguous && !*delivery_gap,
         };
         let (reason, keep_running) = match deliver_media_frame(media_consumer, media_frame) {
-            Ok(()) => return true,
+            Ok(()) => {
+                *delivery_gap = false;
+                return true;
+            }
             Err(TransportError::MediaConsumerBackpressured) => {
+                // This is loss AFTER assembly. Preserve it until a frame really
+                // reaches the decoder; requesting an IDR alone leaves dependent
+                // frames decoding against a missing reference in the meantime.
+                *delivery_gap = true;
                 (NvstDropReason::MediaConsumerBackpressured, true)
             }
             Err(TransportError::MediaConsumerClosed) => {
@@ -5681,6 +5934,115 @@ mod tests {
     const TEST_PEER: &str = "192.0.2.20";
 
     #[test]
+    fn startup_keyframe_control_request_does_not_wait_for_video_ssrc() {
+        let feedback = NvstFeedbackState::default();
+        let now = Instant::now();
+        let previous = now - KEYFRAME_REQUEST_COOLDOWN;
+        feedback.request_keyframe();
+        assert_eq!(feedback.stream_snapshot(), None);
+        assert_eq!(
+            feedback.keyframe_request_routes(now, previous, false, false),
+            (false, false)
+        );
+        assert!(feedback.keyframe_request_pending());
+        assert_eq!(
+            feedback.keyframe_request_routes(now, previous, true, false),
+            (false, false)
+        );
+        assert_eq!(
+            feedback.keyframe_request_routes(now, previous, false, true),
+            (false, true)
+        );
+        assert_eq!(
+            feedback.keyframe_request_routes(now, previous, true, true),
+            (false, true)
+        );
+        feedback.publish_stream(7, 10, 90_000, now);
+        assert_eq!(
+            feedback.keyframe_request_routes(now, previous, true, true),
+            (true, true)
+        );
+        assert_eq!(
+            feedback.keyframe_request_routes(now, previous, true, false),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn network_telemetry_preserves_rtcp_interval_and_reports_real_loss() {
+        let feedback = NvstFeedbackState::default();
+        assert_eq!(feedback.network_metrics(), None);
+        let now = Instant::now();
+        feedback.publish_stream(7, 100, 90_000, now);
+        feedback.publish_stream(7, 102, 93_000, now + Duration::from_millis(40));
+        let first = feedback.network_metrics().unwrap();
+        assert!(first.0 > 0.0);
+        assert!((first.1 - 100.0 / 3.0).abs() < 0.001);
+        assert_eq!(feedback.network_metrics(), Some(first));
+        let report = feedback.report_snapshot(true).unwrap();
+        assert_eq!(report.cumulative_lost, 1);
+        assert!(report.fraction_lost > 0);
+    }
+
+    #[test]
+    fn keyframe_retries_are_bounded_and_stop_only_on_assembled_keyframe() {
+        let feedback = NvstFeedbackState::default();
+        let now = Instant::now();
+        feedback.request_keyframe();
+        feedback.publish_stream(7, 10, 90_000, now);
+        assert_eq!(
+            feedback.keyframe_request_routes(now, now - KEYFRAME_REQUEST_COOLDOWN, true, true),
+            (true, true)
+        );
+        // Queue success is not completion. The same cooldown applies if the
+        // channel refused the write; neither outcome consumes the request.
+        assert!(feedback.keyframe_request_pending());
+        assert_eq!(
+            feedback.keyframe_request_routes(now, now, true, true),
+            (false, false)
+        );
+        assert_eq!(
+            feedback.keyframe_request_routes(
+                now + KEYFRAME_REQUEST_COOLDOWN - Duration::from_millis(1),
+                now,
+                true,
+                true
+            ),
+            (false, false)
+        );
+        let retry_at = now + KEYFRAME_REQUEST_COOLDOWN;
+        assert_eq!(
+            feedback.keyframe_request_routes(retry_at, now, true, true),
+            (true, true)
+        );
+        let mut frame = EncodedVideoAccessUnit {
+            codec: NvstVideoCodec::H264,
+            timestamp: 90_000,
+            frame_index: 42,
+            first_stream_packet_index: 10,
+            keyframe: false,
+            contiguous: true,
+            bytes: vec![0, 0, 0, 1, 0x41],
+        };
+        feedback.publish_completed_frame(&frame);
+        assert!(feedback.keyframe_request_pending());
+        frame.keyframe = true;
+        frame.bytes[4] = 0x65;
+        feedback.publish_completed_frame(&frame);
+        assert!(!feedback.keyframe_request_pending());
+        assert_eq!(
+            feedback.keyframe_request_routes(retry_at, now, true, true),
+            (false, false)
+        );
+        // Subsequent loss or decoder rejection must re-arm recovery.
+        feedback.request_keyframe();
+        assert_eq!(
+            feedback.keyframe_request_routes(retry_at, now, true, true),
+            (true, true)
+        );
+    }
+
+    #[test]
     fn video_delivery_preserves_the_server_frame_index_for_feedback() {
         let (media_consumer, media_receiver) = std::sync::mpsc::sync_channel(1);
         let (event_sender, _event_receiver) = std::sync::mpsc::channel();
@@ -5688,6 +6050,7 @@ mod tests {
             &media_consumer,
             &event_sender,
             Instant::now(),
+            &mut false,
             NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
                 codec: NvstVideoCodec::Av1,
                 timestamp: 90_000,
@@ -5704,8 +6067,9 @@ mod tests {
 
     #[test]
     fn transient_video_consumer_backpressure_does_not_stop_receiver() {
-        let (media_consumer, _media_receiver) = std::sync::mpsc::sync_channel(1);
+        let (media_consumer, media_receiver) = std::sync::mpsc::sync_channel(1);
         let (event_sender, event_receiver) = std::sync::mpsc::channel();
+        let mut delivery_gap = false;
         let frame = || {
             NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
                 codec: NvstVideoCodec::H265,
@@ -5722,18 +6086,39 @@ mod tests {
             &media_consumer,
             &event_sender,
             Instant::now(),
+            &mut delivery_gap,
             frame(),
         ));
         assert!(forward_receive_event(
             &media_consumer,
             &event_sender,
             Instant::now(),
+            &mut delivery_gap,
             frame(),
         ));
         assert!(matches!(
             event_receiver.recv().expect("backpressure event"),
             NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured)
         ));
+        assert!(delivery_gap);
+        assert!(media_receiver.recv().unwrap().contiguous);
+        assert!(forward_receive_event(
+            &media_consumer,
+            &event_sender,
+            Instant::now(),
+            &mut delivery_gap,
+            frame(),
+        ));
+        assert!(!media_receiver.recv().unwrap().contiguous);
+        assert!(!delivery_gap);
+        assert!(forward_receive_event(
+            &media_consumer,
+            &event_sender,
+            Instant::now(),
+            &mut delivery_gap,
+            frame(),
+        ));
+        assert!(media_receiver.recv().unwrap().contiguous);
     }
 
     fn legacy_handoff() -> Value {
@@ -6022,6 +6407,53 @@ mod tests {
         assert!(bundle_addr.ip().is_unspecified());
         assert!(video_addr.ip().is_unspecified());
         assert_eq!(bundle_addr.port(), video_addr.port() + 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_udp_reservation_rejects_port_sharing() {
+        let owner = reserve_nvst_mjolnir_udp_socket().unwrap();
+        let address = owner.local_addr().unwrap();
+        let contender = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+        contender.set_reuse_address(true).unwrap();
+        assert!(
+            contender.bind(&address.into()).is_err(),
+            "a sharing socket must not steal the reserved port"
+        );
+        assert!(bind_nvst_udp_socket(address.ip(), address.port()).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn occupied_video_port_selects_distinct_retained_pair() {
+        let (occupied_bundle, occupied_video) = reserve_nvst_socket_pair().unwrap();
+        let video_port = occupied_video.local_addr().unwrap().port();
+        let bundle_port = occupied_bundle.local_addr().unwrap().port();
+        let (bundle, video) = reserve_nvst_socket_pair_preferred(video_port, bundle_port).unwrap();
+        assert_ne!(video.local_addr().unwrap().port(), video_port);
+        assert_ne!(bundle.local_addr().unwrap().port(), bundle_port);
+        assert_eq!(
+            bundle.local_addr().unwrap().port(),
+            video.local_addr().unwrap().port() + 1
+        );
+        assert!(UdpSocket::bind(video.local_addr().unwrap()).is_err());
+        assert!(UdpSocket::bind(bundle.local_addr().unwrap()).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn occupied_bundle_releases_partial_video_reservation() {
+        let (occupied_bundle, available_video) = reserve_nvst_socket_pair().unwrap();
+        let address = available_video.local_addr().unwrap();
+        let bundle_port = occupied_bundle.local_addr().unwrap().port();
+        drop(available_video);
+        let (bundle, video) =
+            reserve_nvst_socket_pair_preferred(address.port(), bundle_port).unwrap();
+        assert_ne!(bundle.local_addr().unwrap().port(), bundle_port);
+        assert_ne!(video.local_addr().unwrap().port(), address.port());
+        let reclaimed = bind_nvst_udp_socket(address.ip(), address.port())
+            .expect("failed pair must release video reservation");
+        assert_eq!(reclaimed.local_addr().unwrap(), address);
     }
 
     #[test]
@@ -6833,7 +7265,7 @@ mod tests {
                 NvstDropReason::FrameDiscontinuity
             )]
         );
-        assert!(feedback.take_keyframe_request());
+        assert!(feedback.keyframe_request_pending());
     }
 
     #[test]
@@ -6919,7 +7351,7 @@ mod tests {
             })
             .expect("following frame");
         assert!(!frame.contiguous);
-        assert!(feedback.take_keyframe_request());
+        assert!(feedback.keyframe_request_pending());
     }
 
     #[test]
@@ -6975,7 +7407,7 @@ mod tests {
                 RtpParseError::MissingNvVideoHeader
             ))]
         );
-        assert!(feedback.take_keyframe_request());
+        assert!(feedback.keyframe_request_pending());
     }
 
     #[test]

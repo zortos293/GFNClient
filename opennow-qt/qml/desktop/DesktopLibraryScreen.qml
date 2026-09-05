@@ -96,11 +96,11 @@ FocusScope {
     readonly property int libraryCellW: Math.max(1, Math.floor(grid.width / libraryColumns))
     readonly property int libraryCellH: Math.round(libraryCellW * 214 / 146)
 
-    Row {
+    Flow {
         id: filterRow
         x: 24
         y: 16
-        height: 40
+        width: parent.width - 48
         spacing: 8
         Repeater {
             model: [
@@ -141,18 +141,18 @@ FocusScope {
                         id: chipRow
                         anchors.centerIn: parent
                         spacing: 8
-                        Rectangle {
+                        Image {
                             visible: ["steam","epic","gog"].indexOf(filterButton.modelData.key) >= 0
-                            width: 8
-                            height: 8
-                            radius: filterButton.modelData.key === "gog" ? 2 : 4
+                            width: 16
+                            height: 16
                             anchors.verticalCenter: parent.verticalCenter
-                            color: filterButton.modelData.key === "gog" ? "#8D52FF" : "transparent"
-                            border.width: filterButton.modelData.key === "gog" ? 0 : 1
-                            border.color: "#52FFFFFF"
+                            source: visible ? DesktopTokens.storeIconUrl(filterButton.modelData.key) : ""
+                            sourceSize: Qt.size(32, 32)
+                            fillMode: Image.PreserveAspectFit
                         }
                         Text {
                             text: filterButton.modelData.label
+                            anchors.verticalCenter: parent.verticalCenter
                             color: root.activeFilter === filterButton.modelData.key ? DesktopTokens.text : DesktopTokens.textMuted
                             font.family: DesktopTokens.bodyFont
                             font.pixelSize: 14
@@ -161,6 +161,7 @@ FocusScope {
                         }
                         Text {
                             text: filterButton.modelData.count
+                            anchors.verticalCenter: parent.verticalCenter
                             color: DesktopTokens.textFaint
                             font.family: DesktopTokens.monoFont
                             font.pixelSize: 12
@@ -178,7 +179,7 @@ FocusScope {
         anchors.right: parent.right
         anchors.rightMargin: 24
         anchors.verticalCenter: filterRow.verticalCenter
-        visible: root.width - 24 - libraryHint.implicitWidth > 40 + filterRow.width
+        visible: filterRow.height <= 40 && root.width - 24 - libraryHint.implicitWidth > 40 + filterRow.childrenRect.width
         text: qsTr("RIGHT-CLICK A GAME FOR ACTIONS")
         color: DesktopTokens.textFaint
         font.family: DesktopTokens.monoFont
@@ -192,9 +193,9 @@ FocusScope {
         // The delegate keeps a six-pixel focus/scale gutter. Offset the view by
         // that gutter so the artwork remains on Paper's 24/64 alignment lane.
         x: 18
-        y: 70
+        y: filterRow.y + filterRow.height + 14
         width: parent.width - 36
-        height: parent.height - 70
+        height: parent.height - y
         clip: true
         cellWidth: root.libraryCellW
         cellHeight: root.libraryCellH

@@ -117,3 +117,64 @@ After deploying both binaries, the reopened desktop completed 60 Store pages
 and all three presentation requests with zero Store errors, one core handshake,
 no QML warnings and a responsive window. The full 111-test Qt suite also passed
 against that exact deployed build.
+
+## Store artwork and layout follow-up
+
+Before this follow-up, existing work was checkpointed in three grouped commits:
+`2642b1e4` (catalog protocol), `a6c893c9` (Desktop Renew integration), and
+`3c985411` (poster motion/artwork retention).
+
+Main storefront shelves now execute the explicit GraphQL document requesting
+`GAME_BOX_ART`. The successful persisted MainV2 query previously returned only
+landscape hero artwork, bypassing the richer fallback document. A live comparison
+of NBA 2K27, The Blood of Dawnwalker and Onimusha confirmed the old shelf URLs
+were `HERO_IMAGE` and the updated URLs exactly match the catalog's `GAME_BOX_ART`.
+`verify_store_artwork.ps1 -CorePath <executable>` checks this without modifying
+the account or library. The full catalog still loads 5,967 games across 60 pages;
+the largest response including the richer shelves was 592,582 bytes, below 1 MiB.
+
+Store chips center an intrinsic-size row inside their control content item.
+Store and Library filters wrap, provider logos share one mapping with Settings,
+and the Store menus show readable labels in a bounded scrollable list without
+discarding choices after the seventh entry. Game titles allow two lines and
+expose the full title on hover. Unpriced games no longer show “Available”; real
+ownership, free-to-play and price information remains supported.
+
+The sidebar is opaque to prevent underlying page text showing through. Expanded
+labels stay hidden while its width animates, account labels reserve room for
+controls, and a pinned sidebar reserves page space (hover expansion remains an
+overlay). Use `--smoke-store-paging --smoke-store-appearance` with the desktop
+Store smoke route to inspect long names, all provider icons and an expanded
+sidebar. Add `--smoke-store-genres` for the genre menu.
+
+Store retains its catalog in memory without a timer. Route re-entry reuses
+the current results; clearing a search restores one bounded browse snapshot,
+including its cursor when pagination was interrupted. Account changes discard
+the in-memory cache and cancel outstanding requests. The core also persists
+successful Store pages and presentation documents in an account-scoped disk
+cache, reused after app/core restarts. Refresh (or F5 on Store) explicitly
+invalidates this context's disk cache; existing games remain visible while new
+pages load. The disk cache is bounded to 64 MiB / 512 entries, with no automatic
+ten-minute expiry. Cache hits yield briefly between pages without network pacing.
+
+The cache regression covers route re-entry, search restoration, explicit refresh, partial
+pagination resume, stale replies and account invalidation. The live desktop
+loaded all 5,967 games, navigated to Library and back, and issued zero additional
+catalog requests. All 115 Qt tests, 93 Rust core/workspace tests and the
+891-key localization check passed. Compact appearance fixtures should include
+`--allow-multiple-instances` when another OpenNOW window is running.
+
+At narrow widths, footer shortcuts use their compact style and secondary status
+text hides when it would collide with them.
+
+`verify_store_cache.ps1 -CorePath <executable>` populates the full catalog and
+presentation cache, exits that core, then starts another and requires every
+response to be a disk-cache hit with the same game count.
+
+On September 5, 2026 this loaded 5,970 games / 60 pages plus all three
+presentation documents in 52.30 seconds on the cold pass. A newly started core
+returned the same catalog with 63/63 disk-cache hits in 2.21 seconds. The six
+disk-cache regression tests also pass (restart, scope isolation, invalidation,
+corruption/size limits, in-flight invalidation and bounded entry count).
+The persistent-cache build passed all 115 Qt tests, all 99 Rust core/workspace
+tests, localization validation, and the native 960×640 Store appearance fixture.

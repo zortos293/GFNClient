@@ -362,6 +362,7 @@ pub struct GfnService {
     cloudmatch: CloudMatchService,
     account_connections: AccountConnectionsService,
     persistent_storage: PersistentStorageService,
+    store_cache: crate::store_cache::StoreCache,
     state: Mutex<ServiceState>,
 }
 
@@ -396,6 +397,7 @@ impl GfnService {
             device_id: stable_device_id(),
             vault,
             profiles: ConsoleProfiles::load(&data_dir),
+            store_cache: crate::store_cache::StoreCache::new(data_dir),
             state: Mutex::new(ServiceState::default()),
         }
     }
@@ -1193,50 +1195,77 @@ impl GfnService {
             .id_token
             .as_deref()
             .unwrap_or(&session.tokens.access_token);
-        let vpc_id = self.vpc_id(&session, token);
-        // Each retry starts at the SAME cursor. Never truncate a fetched page:
-        // doing so would skip games when returning NVIDIA's end cursor.
-        crate::store_catalog_page::fetch_bounded_page(page.limit, |fetch_count| {
-            let searching = !page.search.is_empty();
-            let query = if searching {
-                STORE_SEARCH_QUERY
-            } else {
-                STORE_BROWSE_QUERY
-            };
-            let mut variables = json!({
-                "vpcId":vpc_id, "locale":"en_US",
-                "sortString":"itemMetadata.relevance:DESC,sortName:ASC",
-                "fetchCount":fetch_count, "cursor":page.cursor, "filters":{}
-            });
-            if searching {
-                variables["searchString"] = Value::String(page.search.clone());
-            }
-            let response = client
-                .post(GRAPHQL_URL)
-                .headers(graphql_headers(token)?)
-                .json(&json!({"query":query,"variables":variables}))
-                .send()
-                .map_err(|error| ServiceError::network("GFN store query failed", error))?;
-            if !response.status().is_success() {
-                return Err(ServiceError::response("GFN store query failed", response));
-            }
-            let payload = response
-                .json::<Value>()
-                .map_err(|error| ServiceError::network("Invalid GFN store response", error))?;
-            if let Some(message) = graphql_error_message(&payload) {
-                return Err(ServiceError {
-                    code: "graphql_error",
-                    message,
+        let scope = self.store_cache_scope(&session, settings)?;
+        let key = json!(["page", page.limit, page.cursor, page.search]);
+        let refresh = params["refresh"].as_bool() == Some(true) && page.cursor.is_empty();
+        self.store_cache.load_or_fetch(&scope, &key, refresh, || {
+            let vpc_id = self.vpc_id(&session, token);
+            // Each retry starts at the SAME cursor. Never truncate a fetched page:
+            // doing so would skip games when returning NVIDIA's end cursor.
+            crate::store_catalog_page::fetch_bounded_page(page.limit, |fetch_count| {
+                let searching = !page.search.is_empty();
+                let query = if searching {
+                    STORE_SEARCH_QUERY
+                } else {
+                    STORE_BROWSE_QUERY
+                };
+                let mut variables = json!({
+                    "vpcId":vpc_id, "locale":"en_US",
+                    "sortString":"itemMetadata.relevance:DESC,sortName:ASC",
+                    "fetchCount":fetch_count, "cursor":page.cursor, "filters":{}
                 });
-            }
-            let apps = &payload["data"]["apps"];
-            let items = apps["items"].as_array().ok_or_else(|| ServiceError {
-                code: "invalid_upstream_response",
-                message: "Store response has no games array".to_owned(),
-            })?;
-            let games: Vec<Value> = items.iter().filter_map(app_to_game).collect();
-            crate::store_catalog_page::page_result(&page.cursor, games, &apps["pageInfo"], now_ms())
+                if searching {
+                    variables["searchString"] = Value::String(page.search.clone());
+                }
+                let response = client
+                    .post(GRAPHQL_URL)
+                    .headers(graphql_headers(token)?)
+                    .json(&json!({"query":query,"variables":variables}))
+                    .send()
+                    .map_err(|error| ServiceError::network("GFN store query failed", error))?;
+                if !response.status().is_success() {
+                    return Err(ServiceError::response("GFN store query failed", response));
+                }
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|error| ServiceError::network("Invalid GFN store response", error))?;
+                if let Some(message) = graphql_error_message(&payload) {
+                    return Err(ServiceError {
+                        code: "graphql_error",
+                        message,
+                    });
+                }
+                let apps = &payload["data"]["apps"];
+                let items = apps["items"].as_array().ok_or_else(|| ServiceError {
+                    code: "invalid_upstream_response",
+                    message: "Store response has no games array".to_owned(),
+                })?;
+                let games: Vec<Value> = items.iter().filter_map(app_to_game).collect();
+                crate::store_catalog_page::page_result(
+                    &page.cursor,
+                    games,
+                    &apps["pageInfo"],
+                    now_ms(),
+                )
+            })
         })
+    }
+
+    fn store_cache_scope(
+        &self,
+        session: &AuthSession,
+        settings: &Value,
+    ) -> Result<Value, ServiceError> {
+        let proxy = config_from_settings(settings).map_err(ServiceError::invalid)?;
+        Ok(json!([
+            session.user.user_id,
+            session.provider,
+            session.user.membership_tier,
+            proxy
+                .map(|config| config.cache_scope)
+                .unwrap_or_else(|| "direct".into()),
+            "en_US"
+        ]))
     }
 
     pub fn store_presentation(
@@ -1252,50 +1281,84 @@ impl GfnService {
         }
         let client = client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
         let session = self.authenticated_session("Sign in to load the storefront")?;
-        let token = session
-            .tokens
-            .id_token
-            .as_deref()
-            .unwrap_or(&session.tokens.access_token);
-        let vpc_id = self.vpc_id(&session, token);
-        let (variables, request_type, sha, query) = match section {
-            "panels" => (
-                json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MAIN"]}),
-                "panels/MainV2",
-                STORE_PANELS_SHA,
-                STORE_PANELS_QUERY,
-            ),
-            "marquee" => (
-                json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MARQUEE"]}),
-                "panels/Marquee",
-                STORE_MARQUEE_SHA,
-                STORE_MARQUEE_QUERY,
-            ),
-            _ => (
-                json!({"locale":"en_US"}),
-                "filterGroupAndSortOrderDefinitions",
-                "ef725de5e93b093de1ac7418fed0ffb4f6ae2b9c14f743ab274a791521488eb9",
-                STORE_DEFINITIONS_QUERY,
-            ),
-        };
-        let payload = fetch_panels_document(
-            &client,
-            token,
-            variables,
-            request_type,
-            sha,
-            query,
-            "GFN storefront query",
-        )?;
-        let empty_index = HashMap::new();
-        let items = match section {
-            "panels" => parse_store_panels(&payload, &empty_index),
-            "marquee" => parse_store_marquee(&payload, &empty_index),
-            _ => parse_store_definitions(&payload),
-        };
-        // Optional chrome must not enlarge the games response or restart the core.
-        // An oversized/failed section is reported independently by the shell.
-        crate::store_catalog_page::bounded_result(json!({"section":section,"items":items}))
+        let scope = self.store_cache_scope(&session, settings)?;
+        self.store_cache
+            .load_or_fetch(&scope, &json!(["presentation", section]), false, || {
+                let token = session
+                    .tokens
+                    .id_token
+                    .as_deref()
+                    .unwrap_or(&session.tokens.access_token);
+                let vpc_id = self.vpc_id(&session, token);
+                let (variables, request_type, sha, query) = match section {
+                    "panels" => (
+                        json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MAIN"]}),
+                        "panels/MainV2",
+                        STORE_PANELS_SHA,
+                        STORE_PANELS_QUERY,
+                    ),
+                    "marquee" => (
+                        json!({"vpcId":vpc_id,"locale":"en_US","panelNames":["MARQUEE"]}),
+                        "panels/Marquee",
+                        STORE_MARQUEE_SHA,
+                        STORE_MARQUEE_QUERY,
+                    ),
+                    _ => (
+                        json!({"locale":"en_US"}),
+                        "filterGroupAndSortOrderDefinitions",
+                        "ef725de5e93b093de1ac7418fed0ffb4f6ae2b9c14f743ab274a791521488eb9",
+                        STORE_DEFINITIONS_QUERY,
+                    ),
+                };
+                let payload = if section == "panels" {
+                    // The persisted MainV2 document only supplies landscape hero art.
+                    // Execute our document so GAME_BOX_ART is actually requested, just
+                    // like Library/browse, rather than silently ignoring these fields.
+                    let response = client
+                        .post(GRAPHQL_URL)
+                        .headers(graphql_headers(token)?)
+                        .json(&json!({"query":query,"variables":variables}))
+                        .send()
+                        .map_err(|error| {
+                            ServiceError::network("GFN storefront query failed", error)
+                        })?;
+                    if !response.status().is_success() {
+                        return Err(ServiceError::response(
+                            "GFN storefront query failed",
+                            response,
+                        ));
+                    }
+                    let payload = response.json::<Value>().map_err(|error| {
+                        ServiceError::network("Invalid GFN storefront response", error)
+                    })?;
+                    if let Some(message) = graphql_error_message(&payload) {
+                        return Err(ServiceError {
+                            code: "graphql_error",
+                            message,
+                        });
+                    }
+                    payload
+                } else {
+                    fetch_panels_document(
+                        &client,
+                        token,
+                        variables,
+                        request_type,
+                        sha,
+                        query,
+                        "GFN storefront query",
+                    )?
+                };
+                let empty_index = HashMap::new();
+                let items = match section {
+                    "panels" => parse_store_panels(&payload, &empty_index),
+                    "marquee" => parse_store_marquee(&payload, &empty_index),
+                    _ => parse_store_definitions(&payload),
+                };
+                // Optional chrome must not enlarge the games response or restart the core.
+                // An oversized/failed section is reported independently by the shell.
+                crate::store_catalog_page::bounded_result(json!({"section":section,"items":items}))
+            })
     }
 
     pub fn regions(&self) -> Result<Value, ServiceError> {
@@ -2563,6 +2626,21 @@ mod tests {
         let games = panels[0]["sections"][0]["games"].as_array().unwrap();
         assert_eq!(games.len(), 1);
         assert_eq!(games[0]["title"], "Hades");
+    }
+
+    #[test]
+    fn store_shelves_prefer_posters_without_changing_hero_art() {
+        let payload = json!({"data":{"panels":[{"id":"main","name":"Main","sections":[{
+            "id":"featured","title":"Featured","items":[{"__typename":"GameItem","app":{
+                "id":"7","title":"Game","variants":[{"id":"7","appStore":"STEAM"}],
+                "images":{"GAME_BOX_ART":"https://img.example/poster.jpg","HERO_IMAGE":"https://img.example/hero.jpg"}
+            }}]
+        }]}]}});
+        let panels = parse_store_panels(&payload, &HashMap::new());
+        let game = &panels[0]["sections"][0]["games"][0];
+        assert_eq!(game["imageUrl"], "https://img.example/poster.jpg");
+        assert_eq!(game["heroImageUrl"], "https://img.example/hero.jpg");
+        assert!(STORE_PANELS_QUERY.contains("GAME_BOX_ART"));
     }
 
     #[test]

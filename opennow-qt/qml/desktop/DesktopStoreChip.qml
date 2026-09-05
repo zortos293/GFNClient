@@ -34,7 +34,8 @@ Button {
         }
     }
 
-    contentItem: Row {
+    contentItem: Item {
+      Row {
         id: contentRow
         anchors.centerIn: parent
         spacing: root.hasMenu ? 7 : 0
@@ -55,5 +56,6 @@ Button {
             height: 6
             icon: "desktop-chevron-down.svg"
         }
+    }
     }
 }

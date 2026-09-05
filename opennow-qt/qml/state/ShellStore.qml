@@ -36,9 +36,14 @@ QtObject {
     property var storeSeenCursors: ({})
     property string storePresentationRequestId: ""
     property int storePresentationIndex: 0
+    // One account-scoped browse snapshot, not an unbounded cache of searches.
+    // Arrays are shared until the next page replaces them; no deep catalog copy.
+    property var storeBrowseCache: null
+    property bool storeForceRefresh: false
+    property bool storeLastPageCached: false
     readonly property bool storeLoading: storeRequestId !== "" || storePageTimer.running
     property Timer storePageTimer: Timer {
-        interval: 75
+        interval: root.storeLastPageCached ? 1 : 75
         onTriggered: root.requestStorePage()
     }
     // Storefront chrome from the CMS panels documents: marquee hero slides,
@@ -623,14 +628,55 @@ QtObject {
         reloadStoreForSession()
     }
 
-    function refreshStore(searchQuery) {
+    function ensureStore(searchQuery) {
+        const query = String(searchQuery || "").trim()
+        if (query === storeSearchQuery && (storeLoading || storeState !== "idle")) return
+        const cached = storeBrowseCache
+        if (query === "" && cached) {
+            cancelStoreRequests()
+            storeBrowseCache = null
+            storeSearchQuery = ""
+            storeGames = cached.games
+            storeTotalCount = cached.totalCount
+            storeState = cached.state
+            storeError = cached.error
+            storeNextCursor = cached.nextCursor
+            storeHasMore = cached.hasMore
+            storeReplacePage = false
+            storePageCount = cached.pageCount
+            storeSeenCursors = cached.seenCursors
+            storeForceRefresh = false
+            storeLastPageCached = cached.lastPageCached
+            if (cached.resume && storeHasMore) storePageTimer.restart()
+            requestStorePresentation()
+            return
+        }
+        refreshStore(query)
+    }
+
+    function refreshStore(searchQuery, forceRefresh) {
         if (!ready)
             return
         const query = String(searchQuery || "").trim()
-        if (storeLoading && storeSearchQuery === query) return
+        if (storeLoading && storeSearchQuery === query && !forceRefresh) return
+        if (!forceRefresh && storeSearchQuery === "" && query !== "" && storePageCount > 0) {
+            storeBrowseCache = {games: storeGames, totalCount: storeTotalCount,
+                state: storeState, error: storeError, nextCursor: storeNextCursor,
+                hasMore: storeHasMore, pageCount: storePageCount,
+                seenCursors: storeSeenCursors, lastPageCached: storeLastPageCached, resume: storeLoading}
+        }
         cancelStoreRequests()
-        if (query !== storeSearchQuery) storeGames = []
+        if (query !== storeSearchQuery) {
+            storeGames = []
+            storeTotalCount = 0
+        }
+        if (query === "" || forceRefresh) {
+            storeBrowseCache = null
+            storePresentationIndex = 0
+        }
         storeSearchQuery = query
+        storeForceRefresh = forceRefresh === true
+        storeLastPageCached = false
         storeNextCursor = ""
         storeHasMore = true
         storeReplacePage = true
@@ -638,7 +684,6 @@ QtObject {
         storeSeenCursors = Object.create(null)
         storeError = ""
         storeWarning = ""
-        storePresentationIndex = 0
         storeSource = signedIn ? "store-browse" : "public"
         requestStorePage()
     }
@@ -661,7 +706,8 @@ QtObject {
         storeState = storeGames.length > 0 ? "refreshing" : "loading"
         storeRequestId = CoreClient.request(storeSource === "store-browse" ? "catalog.store.list" : "catalog.public.list", {
             limit: storeSource === "store-browse" ? 100 : 360,
-            cursor: storeNextCursor, searchQuery: storeSearchQuery
+            cursor: storeNextCursor, searchQuery: storeSearchQuery,
+            refresh: storeForceRefresh && storeNextCursor === ""
         }, 60000)
         if (storeRequestId === "") {
             storeState = "error"
@@ -706,6 +752,8 @@ QtObject {
         }
         storeGames = merged
         storeReplacePage = false
+        storeForceRefresh = false
+        storeLastPageCached = result.cacheHit === true
         storePageCount += 1
         storeTotalCount = Math.max(merged.length, Number(result.totalCount || 0))
         storeHasMore = more
@@ -720,6 +768,11 @@ QtObject {
 
     function reloadStoreForSession() {
         cancelStoreRequests()
+        storeBrowseCache = null
+        storeForceRefresh = false
+        storeLastPageCached = false
+        storeSearchQuery = ""
+        storePageCount = 0
         storeGames = []
         storeTotalCount = 0
         storeMarquee = []

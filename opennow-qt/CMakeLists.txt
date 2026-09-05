@@ -214,6 +214,9 @@ qt_add_qml_module(opennow-qt
         res/icons/store-xbox.svg
         res/icons/store-gog.svg
         res/icons/store-gaijin.svg
+        res/icons/store-ea.svg
+        res/icons/store-nvidia.svg
+        res/icons/store-nvidia.svg
         res/icons/store-epic.svg
         res/icons/store-ubisoft.svg
         res/icons/store-battlenet.svg

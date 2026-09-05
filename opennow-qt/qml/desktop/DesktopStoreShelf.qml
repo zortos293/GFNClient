@@ -19,7 +19,7 @@ Item {
     readonly property int railGap: 14
     readonly property int tileCount: Math.max(1, Math.min(root.games.length || 1, Math.floor((width + railGap) / (132 + railGap))))
     readonly property int tileWidth: Math.max(132, Math.floor((width - railGap * (Math.max(1, tileCount) - 1)) / Math.max(1, tileCount)))
-    readonly property int tileHeight: Math.round(tileWidth * 250 / 132)
+    readonly property int tileHeight: Math.round(tileWidth * 198 / 132) + 74
 
     height: 31 + tileHeight
 
@@ -94,7 +94,7 @@ Item {
                 tileHeight: root.tileHeight
                 game: itemGame
                 selected: root.active && root.selectedIndex === index
-                price: String(itemGame && itemGame.storePrice || qsTr("Available"))
+                price: String(itemGame && itemGame.storePrice || "")
                 discount: String(itemGame && itemGame.storeDiscount || "")
                 owned: Boolean(itemGame && itemGame.storeOwned)
                 freeToPlay: Boolean(itemGame && itemGame.storeFree)

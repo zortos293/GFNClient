@@ -48,7 +48,7 @@ FocusScope {
     Timer {
         id: storeSearchDelay
         interval: 300
-        onTriggered: ShellStore.refreshStore(root.searchText)
+        onTriggered: ShellStore.ensureStore(root.searchText)
     }
 
     function catalogList() {
@@ -125,7 +125,7 @@ FocusScope {
             return String(game.storePrice)
         if (game && game.price !== undefined && game.price !== null && String(game.price).length)
             return String(game.price)
-        return qsTr("Available")
+        return ""
     }
 
     function catalogDiscount(game) {
@@ -405,7 +405,7 @@ FocusScope {
                     values.push(value)
             }
         }
-        return values.slice(0, 7)
+        return values
     }
 
     function pointZone(zone, index) {
@@ -464,7 +464,9 @@ FocusScope {
                 activeCategoryId = categories[focusIndex].id
                 activeCategory = categories[focusIndex].label
             }
-            else {
+            else if (focusIndex === categories.length + 2) {
+                ShellStore.refreshStore(root.searchText, true)
+            } else {
                 openMenu = focusIndex === categories.length ? (openMenu === "genre" ? "" : "genre")
                                                             : (openMenu === "store" ? "" : "store")
                 menuIndex = 0
@@ -484,7 +486,9 @@ FocusScope {
     }
 
     Keys.onPressed: event => {
-        if (root.openMenu.length && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
+        if (event.key === Qt.Key_F5) {
+            ShellStore.refreshStore(root.searchText, true)
+        } else if (root.openMenu.length && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
             const option = root.currentMenuOptions[Math.min(root.menuIndex, Math.max(0, root.currentMenuOptions.length - 1))]
             if (root.openMenu === "genre") root.activeGenre = option
             else root.activeStore = option
@@ -502,7 +506,7 @@ FocusScope {
         } else if (event.key === Qt.Key_Right) {
             let count = 2
             if (focusZone === "chips")
-                count = root.categories.length + 2
+                count = root.categories.length + 3
             else {
                 const shelf = root.shelfModelFor(focusZone)
                 if (shelf)
@@ -519,7 +523,7 @@ FocusScope {
             let count = 2
             const target = order[next]
             if (target === "chips")
-                count = root.categories.length + 2
+                count = root.categories.length + 3
             else {
                 const shelf = root.shelfModelFor(target)
                 if (shelf)
@@ -560,12 +564,11 @@ FocusScope {
             onDetailsRequested: game => root.gameSelected(game)
         }
 
-        Row {
+        Flow {
             id: chips
             x: 24
             y: hero.visible ? 292 : 18
             width: root.railInnerWidth
-            height: 30
             spacing: 8
 
             Repeater {
@@ -585,16 +588,9 @@ FocusScope {
                 }
             }
 
-            Rectangle {
-                anchors.verticalCenter: parent.verticalCenter
-                width: 1
-                height: 20
-                color: Qt.rgba(1, 1, 1, 0.09)
-            }
-
             DesktopStoreChip {
                 id: genreChip
-                text: root.activeGenre === qsTr("All") ? qsTr("Genres") : root.activeGenre
+                text: root.activeGenre === qsTr("All") ? qsTr("Genres") : DesktopTokens.genreLabel(root.activeGenre)
                 hasMenu: true
                 selected: root.openMenu === "genre"
                           || (root.focusZone === "chips" && root.focusIndex === root.categories.length)
@@ -607,7 +603,7 @@ FocusScope {
 
             DesktopStoreChip {
                 id: storeChip
-                text: root.activeStore === qsTr("All") ? qsTr("Stores") : root.activeStore
+                text: root.activeStore === qsTr("All") ? qsTr("Stores") : DesktopTokens.storeLabel(root.activeStore)
                 hasMenu: true
                 selected: root.openMenu === "store"
                           || (root.focusZone === "chips" && root.focusIndex === root.categories.length + 1)
@@ -617,18 +613,13 @@ FocusScope {
                     root.menuIndex = 0
                 }
             }
-        }
-
-        Text {
-            anchors.right: parent.right
-            anchors.rightMargin: 24
-            y: 301
-            text: root.catalogCount > 0 ? qsTr("%1 games in catalog").arg(root.catalogCount) : ""
-            color: Qt.rgba(1, 1, 1, 0.32)
-            font.family: Theme.monoFont
-            font.pixelSize: 10
-            font.weight: Font.DemiBold
-            font.letterSpacing: 0.4
+            DesktopStoreChip {
+                objectName: "storeRefreshButton"
+                text: qsTr("Refresh")
+                selected: root.focusZone === "chips" && root.focusIndex === root.categories.length + 2
+                onHoveredChanged: if (hovered) root.pointZone("chips", root.categories.length + 2)
+                onClicked: ShellStore.refreshStore(root.searchText, true)
+            }
         }
 
         Rectangle {
@@ -692,13 +683,15 @@ FocusScope {
 
     Rectangle {
         id: filterMenu
+        objectName: "storeFilterMenu"
         z: 400
         visible: filterMotion.present
         enabled: root.openMenu.length > 0
-        x: chips.x + (root.presentedMenu === "genre" ? genreChip.x : storeChip.x)
-        y: chips.y + chips.height + 6 - content.contentY
-        width: 178
-        height: menuColumn.height + 12
+        readonly property var anchorChip: root.presentedMenu === "genre" ? genreChip : storeChip
+        x: Math.max(12, Math.min(chips.x + anchorChip.x, root.width - width - 12))
+        y: Math.max(12, Math.min(chips.y + anchorChip.y + anchorChip.height + 6 - content.contentY, root.height - height - 12))
+        width: Math.min(284, root.width - 24)
+        height: Math.min(menuColumn.contentHeight + 12, 332, root.height - 24)
         radius: 11
         color: Qt.rgba(0.043, 0.059, 0.102, 0.98)
         border.width: 1
@@ -707,21 +700,22 @@ FocusScope {
         scale: filterMotion.zoom
         transformOrigin: Item.TopLeft
 
-        Column {
+        ListView {
             id: menuColumn
-            x: 6
-            y: 6
-            width: parent.width - 12
-
-            Repeater {
-                model: root.presentedMenu === "genre" ? root.genreOptions : root.storeOptions
-
-                Button {
+            anchors.fill: parent
+            anchors.margins: 6
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            currentIndex: root.menuIndex
+            onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            model: root.presentedMenu === "genre" ? root.genreOptions : root.storeOptions
+            delegate: Button {
                     id: menuButton
                     required property string modelData
                     required property int index
                     width: menuColumn.width
-                    height: 32
+                    height: Math.max(36, menuLabel.implicitHeight + 16)
                     padding: 0
                     focusPolicy: Qt.NoFocus
                     hoverEnabled: true
@@ -730,15 +724,28 @@ FocusScope {
                         color: menuButton.hovered || root.menuIndex === menuButton.index
                                ? Qt.rgba(1, 1, 1, 0.10) : "transparent"
                     }
-                    contentItem: Text {
-                        leftPadding: 9
-                        text: modelData
+                    contentItem: Item {
+                      Image {
+                        id: storeLogo
+                        x: 9; anchors.verticalCenter: parent.verticalCenter
+                        width: 20; height: 20
+                        source: root.presentedMenu === "store" ? DesktopTokens.storeIconUrl(menuButton.modelData) : ""
+                        visible: source.toString() !== ""
+                        sourceSize: Qt.size(40,40); fillMode: Image.PreserveAspectFit
+                      }
+                      Text {
+                        id: menuLabel
+                        x: storeLogo.visible ? 39 : 9
+                        width: parent.width - x - 14
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.presentedMenu === "store" ? DesktopTokens.storeLabel(menuButton.modelData) : DesktopTokens.genreLabel(menuButton.modelData)
                         color: "#FFFFFF"
                         font.family: Theme.bodyFont
                         font.pixelSize: 12
                         font.weight: Font.DemiBold
                         verticalAlignment: Text.AlignVCenter
-                        elide: Text.ElideRight
+                        wrapMode: Text.Wrap
+                      }
                     }
                     onClicked: {
                         if (root.openMenu === "genre") root.activeGenre = modelData
@@ -748,7 +755,6 @@ FocusScope {
                     }
                     onHoveredChanged: if (hovered) root.menuIndex = index
                 }
-            }
         }
     }
 
@@ -806,7 +812,7 @@ FocusScope {
 
     onStoreGamesChanged: root.syncFreeCategory()
     Component.onCompleted: {
-        ShellStore.refreshStore(root.searchText)
+        ShellStore.ensureStore(root.searchText)
         root.syncFreeCategory()
         root.forceActiveFocus()
     }

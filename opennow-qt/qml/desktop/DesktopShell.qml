@@ -14,7 +14,8 @@ FocusScope {
     property bool searchVisible: route !== "settings" && route.indexOf("settings-") !== 0 && route !== "friends"
     property string searchText: ""
     readonly property bool railCollapsed: ShellStore.settings.desktopRailCollapsed !== false
-    readonly property int contentInset: DesktopTokens.railCollapsedWidth
+    // A pinned sidebar reserves space; only transient hover expansion overlays.
+    readonly property int contentInset: railCollapsed ? DesktopTokens.railCollapsedWidth : DesktopTokens.railWidth
     signal routeRequested(string route)
     signal consoleModeRequested()
     signal commandPaletteRequested()
@@ -115,19 +116,23 @@ FocusScope {
         }
 
         Rectangle {
+            id: footer
             anchors.bottom: parent.bottom
             width: parent.width
             height: root.footerHeight
             color: DesktopTokens.statusBar
+            clip: true
+            readonly property bool compactHints: root.settingsPage || width < 900
             Rectangle { width: parent.width; height: 1; color: DesktopTokens.seam }
-            Row { x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(16)
-                DesktopKeyHint { compact: root.settingsPage; keyText: qsTr("Arrows"); label: qsTr("Move") }
-                DesktopKeyHint { compact: root.settingsPage; keyText: qsTr("Enter"); label: qsTr("Play") }
-                DesktopKeyHint { compact: root.settingsPage; keyText: "/"; label: qsTr("Search") }
-                DesktopKeyHint { compact: root.settingsPage; keyText: qsTr("Ctrl K"); label: qsTr("Commands") }
-                DesktopKeyHint { compact: root.settingsPage; keyText: "?"; label: qsTr("All shortcuts") }
+            Row { id: shortcutHints; x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(footer.compactHints ? 8 : 16)
+                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Arrows"); label: qsTr("Move") }
+                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Enter"); label: qsTr("Play") }
+                DesktopKeyHint { compact: footer.compactHints; keyText: "/"; label: qsTr("Search") }
+                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Ctrl K"); label: qsTr("Commands") }
+                DesktopKeyHint { compact: footer.compactHints; keyText: "?"; label: qsTr("All shortcuts") }
             }
             Row { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(10)
+                visible: x >= shortcutHints.x + shortcutHints.width + DesktopTokens.px(16)
                 Rectangle { width: 8; height: 8; radius: 4; color: DesktopTokens.green }
                 Text { text: root.regionStatusText(); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: root.settingsPage ? DesktopTokens.px(10) : DesktopTokens.monoSize; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
                 Rectangle { width: 1; height: DesktopTokens.px(16); color: DesktopTokens.seam }

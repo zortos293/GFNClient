@@ -66,6 +66,32 @@ QtObject {
         return Math.max(0.95, Math.min(1.15, Math.min(width / 1440, height / 900)))
     }
 
+    function storeKey(value) {
+        const key = String(value || "").toLowerCase()
+        if (key.indexOf("steam") >= 0) return "steam"
+        if (key.indexOf("epic") >= 0) return "epic"
+        if (key.indexOf("ubisoft") >= 0 || key.indexOf("uplay") >= 0) return "ubisoft"
+        if (key.indexOf("battle") >= 0) return "battlenet"
+        if (key.indexOf("xbox") >= 0) return "xbox"
+        if (key.indexOf("gog") >= 0) return "gog"
+        if (key.indexOf("gaijin") >= 0) return "gaijin"
+        if (key === "nvidia") return "nvidia"
+        if (key === "ea" || key === "ea_app" || key === "origin") return "ea"
+        return ""
+    }
+    function storeIconUrl(value) {
+        const key = storeKey(value)
+        return key ? "qrc:/qt/qml/OpenNOW/res/icons/store-" + key + ".svg" : ""
+    }
+    function storeLabel(value) {
+        const labels = {steam:"Steam", epic:"Epic Games", ubisoft:"Ubisoft Connect", battlenet:"Battle.net",
+            xbox:"Xbox", gog:"GOG", gaijin:"Gaijin", ea:"EA app", nvidia:"NVIDIA"}
+        return labels[storeKey(value)] || (String(value).toUpperCase() === "NONE" ? qsTr("Direct launch") : String(value))
+    }
+    function genreLabel(value) {
+        return String(value).toLowerCase().replace(/_/g, " ").replace(/\b\w/g, letter => letter.toUpperCase())
+    }
+
     function artworkUrl(game, preferHero) {
         if (!game)
             return ""

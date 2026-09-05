@@ -14,6 +14,7 @@ mod network;
 mod persistent_storage;
 mod proxy;
 mod settings;
+mod store_cache;
 mod store_catalog_page;
 mod streamer;
 mod telemetry;

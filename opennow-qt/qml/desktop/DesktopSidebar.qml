@@ -9,7 +9,7 @@ FocusScope {
     property bool collapsed: true
     property bool hoverExpanded: false
     readonly property bool overlayOpen: !collapsed || hoverExpanded
-    readonly property bool compact: !overlayOpen
+    readonly property bool compact: !overlayOpen || width < DesktopTokens.railWidth - 1
     readonly property bool consoleModeOn: DesktopTokens.consoleModeOn(Window.window)
     readonly property bool consoleModePending: DesktopTokens.consoleModePending(Window.window)
     readonly property bool friendsAvailable: Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
@@ -18,7 +18,7 @@ FocusScope {
     signal collapseRequested(bool collapsed)
 
     x: 0
-    width: compact ? DesktopTokens.railCollapsedWidth : DesktopTokens.railWidth
+    width: overlayOpen ? DesktopTokens.railWidth : DesktopTokens.railCollapsedWidth
     height: parent ? parent.height : 900
     z: overlayOpen ? 40 : 3
 
@@ -107,7 +107,7 @@ FocusScope {
 
     Rectangle {
         anchors.fill: parent
-        color: DesktopTokens.rail
+        color: DesktopTokens.shell
         Rectangle {
             anchors.right: parent.right
             width: 1
@@ -136,6 +136,7 @@ FocusScope {
 
     Item {
         anchors.fill: parent
+        clip: true
         anchors.topMargin: root.compact ? 16 : 20
         anchors.leftMargin: root.compact ? 14 : 12
         anchors.rightMargin: root.compact ? 14 : 12
@@ -482,10 +483,13 @@ FocusScope {
                     }
                     Column {
                         x: 37
+                        width: Math.max(0, parent.width - x - 52)
                         anchors.verticalCenter: parent.verticalCenter
                         visible: !root.compact
                         spacing: 2
                         Text {
+                            width: parent.width
+                            elide: Text.ElideRight
                             text: root.consoleModePending ? qsTr("Console mode…") : qsTr("Console mode")
                             color: DesktopTokens.textHigh
                             font.family: DesktopTokens.bodyFont
@@ -586,10 +590,13 @@ FocusScope {
                     }
                     Column {
                         x: 48
+                        width: Math.max(0, parent.width - x - 28)
                         anchors.verticalCenter: parent.verticalCenter
                         visible: !root.compact
                         spacing: 2
                         Text {
+                            width: parent.width
+                            elide: Text.ElideRight
                             text: ShellStore.signedIn && ShellStore.authSession.user
                                 ? ShellStore.authSession.user.displayName
                                 : qsTr("Guest")
@@ -600,6 +607,8 @@ FocusScope {
                         }
                         Text {
                             text: root.liveMembershipTier()
+                            width: parent.width
+                            elide: Text.ElideRight
                             color: DesktopTokens.textFaint
                             font.family: DesktopTokens.monoFont
                             font.pixelSize: DesktopTokens.tinySize

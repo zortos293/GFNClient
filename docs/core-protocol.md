@@ -60,6 +60,15 @@ returns `catalog_response_too_large` without disrupting the core connection.
 or `filters`) and returns `{ "section":"marquee", "items":[] }`, independently
 bounded to 768 KiB. Failed/oversized optional sections do not fail game pages.
 
+Store pages and presentation results include `cacheHit` (boolean). Successful
+responses are persisted under the core data directory in `store-cache-v1`, with
+hashed account/provider/membership/proxy/locale and request keys. Credentials
+are not stored. Reads remain bounded to 768 KiB; the cache is limited to 64 MiB
+and 512 entries. Missing or corrupt entries refetch normally. There is no timed
+catalog invalidation: an optional `refresh:true` on a first-page request clears
+that account/context's pages and presentation before fetching. Continuations
+must omit it or send false. Other accounts' entries are unaffected.
+
 The shell serializes game requests, merges by stable game identity, and retains
 loaded games and the failed cursor on error. Retries resume that page. Automatic
 loading yields between pages and stops after 100 pages or 10,000 games; further

@@ -2888,6 +2888,7 @@
     "s_qt_store_page_03": "Some storefront sections could not load: %1",
     "s_qt_store_page_04": "Loaded %1 games. %2",
     "s_qt_store_page_05": "Loaded %1 of %2 games",
-    "s_qt_store_page_06": "Load more"
+    "s_qt_store_page_06": "Load more",
+    "s_qt_store_direct_launch": "Direct launch"
   }
 }

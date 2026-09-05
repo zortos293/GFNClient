@@ -24,6 +24,9 @@ Item {
     z: selected || visual.scale !== 1 ? 20 : 0
     Accessible.role: Accessible.Button
     Accessible.name: String(game && game.title || qsTr("Game"))
+    ToolTip.visible: pointer.containsMouse
+    ToolTip.delay: 700
+    ToolTip.text: root.Accessible.name
 
     Item {
         id: visual
@@ -59,22 +62,26 @@ Item {
     }
 
     Text {
+        objectName: "storeCardTitle"
         x: 0
         y: root.artHeight + 8
         width: root.tileWidth
-        height: 15
+        height: 40
         text: root.game ? String(root.game.title || qsTr("Untitled game")) : qsTr("Untitled game")
         color: Qt.rgba(1, 1, 1, 0.88)
         font.family: Theme.bodyFont
         font.pixelSize: 12
         font.weight: Font.Bold
         elide: Text.ElideRight
-        verticalAlignment: Text.AlignVCenter
+        wrapMode: Text.Wrap
+        maximumLineCount: 2
+        verticalAlignment: Text.AlignTop
     }
 
     Row {
         x: 0
-        y: root.artHeight + 31
+        y: root.artHeight + 52
+        visible: root.owned || root.freeToPlay || root.price !== "" || root.discount !== ""
         width: root.tileWidth
         height: 17
         spacing: 7

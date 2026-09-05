@@ -347,16 +347,8 @@ FocusScope {
     }
 
     function storeIcon(account) {
-        const provider = String(account.provider || account.label || "").toLowerCase()
-        const base = "qrc:/qt/qml/OpenNOW/res/icons/"
-        if (provider.indexOf("steam") >= 0) return base + "store-steam.svg"
-        if (provider.indexOf("epic") >= 0) return base + "store-epic.svg"
-        if (provider.indexOf("ubisoft") >= 0 || provider.indexOf("uplay") >= 0) return base + "store-ubisoft.svg"
-        if (provider.indexOf("battle") >= 0) return base + "store-battlenet.svg"
-        if (provider.indexOf("xbox") >= 0) return base + "store-xbox.svg"
-        if (provider.indexOf("gog") >= 0) return base + "store-gog.svg"
-        if (provider.indexOf("gaijin") >= 0) return base + "store-gaijin.svg"
-        return base + "desktop-nav-store.svg"
+        return DesktopTokens.storeIconUrl(account.provider || account.label)
+            || "qrc:/qt/qml/OpenNOW/res/icons/desktop-nav-store.svg"
     }
 
     function storeAccent(account) {

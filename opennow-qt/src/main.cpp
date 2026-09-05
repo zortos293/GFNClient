@@ -490,6 +490,15 @@ int main(int argc, char *argv[])
                     startStoreNavigationAcceptance(window, &qmlWarningOccurred);
                     return;
                 }
+                if (storePaging && arguments.contains(u"--smoke-store-appearance"_s)) {
+                    QVariant prepared;
+                    if (!QMetaObject::invokeMethod(fixture, "prepareAppearance", Q_RETURN_ARG(QVariant, prepared),
+                            Q_ARG(QVariant, QVariant::fromValue(screen)),
+                            Q_ARG(QVariant, QVariant(arguments.contains(u"--smoke-store-genres"_s)))) || !prepared.toBool()) {
+                        application.exit(EXIT_FAILURE);
+                        return;
+                    }
+                }
                 QTimer::singleShot(250, &application, [&, window] {
                     bool passed = !qmlWarningOccurred;
                     const auto shot = arguments.indexOf(u"--screenshot"_s);

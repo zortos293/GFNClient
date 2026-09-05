@@ -26,6 +26,11 @@ QtObject {
         return {games:games, totalCount:2500, nextCursor:cursor, hasNextPage:more}
     }
     function run(screen, status, retry, emptyStatus) {
+        check(screen.catalogPrice(game("unpriced")) === "", "invented Available price label")
+        for (const store of ["STEAM", "EPIC", "XBOX", "UPLAY", "EA_APP", "GOG", "BATTLENET", "GAIJIN", "NVIDIA"])
+            check(DesktopTokens.storeIconUrl(store).endsWith(".svg"), "missing store icon " + store)
+        check(DesktopTokens.storeLabel("UPLAY") === "Ubisoft Connect", "raw provider label")
+        check(DesktopTokens.genreLabel("MASSIVELY_MULTIPLAYER") === "Massively Multiplayer", "raw genre label")
         ShellStore.authSession = {user:{userId:"store-fixture", displayName:"Store Test"}}
         ShellStore.reloadStoreForSession()
         const first = ShellStore.storeRequestId
@@ -53,6 +58,31 @@ QtObject {
         client.requestFailed(presentation, "upstream_error", "Banner unavailable")
         check(ShellStore.storeGames.length === 3 && ShellStore.storeWarning.indexOf("Banner unavailable") >= 0, "chrome failure broke games")
 
+        const cachedCount = client.requests.length
+        ShellStore.ensureStore("")
+        check(client.requests.length === cachedCount && ShellStore.storeGames.length === 3, "route re-entry reloaded the catalog")
+        ShellStore.ensureStore("cached search")
+        client.responseReceived(ShellStore.storeRequestId, page([game("search-only")], "", false))
+        ShellStore.ensureStore("")
+        check(ShellStore.storeGames.length === 3 && ShellStore.storeGames[0].id === "a"
+            && !ShellStore.storeLoading, "clearing search did not restore browse cache")
+        ShellStore.refreshStore("", true)
+        check(ShellStore.storeLoading && ShellStore.storeGames.length === 3, "manual refresh did not retain artwork")
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.refresh === true, "manual refresh did not bypass disk cache")
+        client.responseReceived(ShellStore.storeRequestId, page([game("resume")], "resume-next", true))
+        const inFlightCount = client.requests.length
+        ShellStore.ensureStore("")
+        check(client.requests.length === inFlightCount, "route re-entry restarted pagination")
+        ShellStore.ensureStore("interrupt browse")
+        const cancelledSearch = ShellStore.storeRequestId
+        ShellStore.ensureStore("")
+        client.responseReceived(cancelledSearch, page([game("late-search")], "", false))
+        ShellStore.requestStorePage()
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.cursor === "resume-next"
+            && ShellStore.storeGames[0].id === "resume", "cached partial browse did not resume at its cursor")
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.refresh === false, "continuation invalidated disk cache")
+        client.responseReceived(ShellStore.storeRequestId, page([], "", false))
+
         ShellStore.refreshStore("first search")
         const stale = ShellStore.storeRequestId
         const stalePresentation = ShellStore.storePresentationRequestId
@@ -79,6 +109,7 @@ QtObject {
         client.responseReceived(oldAccount, page([game("private")], "", false))
         if (oldChrome) client.responseReceived(oldChrome, {section:"marquee", items:[{title:"private"}]})
         check(ShellStore.storeGames.length === 0 && ShellStore.storeMarquee.length === 0, "old account results leaked")
+        check(ShellStore.storeBrowseCache === null, "browse cache survived account change")
         check(client.requests.find(r => r.id === ShellStore.storeRequestId).method === "catalog.public.list", "signed-out path changed")
         client.responseReceived(ShellStore.storeRequestId, {games:[], totalCount:0})
         check(ShellStore.storeState === "ready" && !ShellStore.storeLoading, "empty catalog never settled")
@@ -94,6 +125,28 @@ QtObject {
         client.requestFailed(ShellStore.storeRequestId, "upstream_error", "Store HTTP 503 — the next catalog page is temporarily unavailable.")
         ShellStore.cancelStoreRequests()
         check(status.text.indexOf("24") >= 0 && retry.visible, "partial-error feedback is not actionable")
+        return true
+    }
+
+    function prepareAppearance(screen, genreMenu) {
+        const stores = ["STEAM","EPIC","XBOX","NONE","UPLAY","EA_APP","GOG","BATTLENET","GAIJIN"]
+        const preview = []
+        for (let i = 0; i < 24; ++i) {
+            const entry = game(String(i))
+            entry.title = "A longer game title: Definitive Edition " + i
+            entry.availableStores = [stores[i % stores.length]]
+            entry.variants[0].store = stores[i % stores.length]
+            entry.genres = ["ACTION", "MASSIVELY_MULTIPLAYER", "ROLE_PLAYING", "ADVENTURE", "SIMULATION", "STRATEGY", "INDIE", "SPORTS"]
+            preview.push(entry)
+        }
+        ShellStore.storeGames = preview
+        ShellStore.storeHasMore = false
+        ShellStore.storeError = ""
+        ShellStore.storeWarning = ""
+        ShellStore.applySetting("desktopRailCollapsed", false)
+        ShellStore.authSession = {user:{userId:"store-fixture", displayName:"A very long account display name"}}
+        check(screen.storeOptions.length === 10, "store choices were truncated")
+        screen.openMenu = genreMenu ? "genre" : "store"
         return true
     }
 }

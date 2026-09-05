@@ -183,5 +183,5 @@ FocusScope {
         onRouteRequested: route => AppController.navigate(route)
     }
 
-    Component.onCompleted: ShellStore.refreshStore("")
+    Component.onCompleted: ShellStore.ensureStore("")
 }

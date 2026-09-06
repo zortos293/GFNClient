@@ -86,6 +86,10 @@ int main(int argc, char **argv)
             std::cout << "{\"type\":\"event\",\"name\":\"catalog.changed\",\"payload\":{\"revision\":2}}\n";
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{}}\n" << std::flush;
+        } else if (method == "test.malformed-event-batch") {
+            std::cout << "{invalid json}\n"
+                      << "{\"type\":\"event\",\"name\":\"session.changed\",\"payload\":{\"status\":\"streaming\"}}\n"
+                      << std::flush;
         } else if (method == "test.error") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":false,\"error\":{\"code\":\"expected\",\"message\":\"Expected failure\"}}\n" << std::flush;

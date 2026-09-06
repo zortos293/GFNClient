@@ -185,6 +185,7 @@ impl LinuxGpuFrame {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         if state.render != Some(render) {
+            state.render = None;
             state.producer = None;
             state.producer = Some(unsafe {
                 LinuxFrameProducer::new_with_slots(render, self.producer.slot_count)?
@@ -1805,6 +1806,46 @@ fn decode_readiness(result: std::result::Result<(), vk::Result>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_device_recreation_clears_the_cached_device_identity() {
+        let producer = LinuxGpuFrameProducer::new(3).unwrap();
+        let previous = VulkanRenderDevice {
+            instance: 0,
+            physical_device: 0,
+            device: 0,
+            queue_family: 0,
+        };
+        producer.state.lock().unwrap().render = Some(previous);
+        let frame = LinuxGpuFrame {
+            frame: DecodedVideoFrame {
+                format: crate::StreamFormat::video_default(2, 2).unwrap(),
+                planes: Vec::new(),
+                dmabuf: None,
+                vulkan: None,
+                timestamp_us: 0,
+            },
+            producer: producer.clone(),
+            sequence: 0,
+        };
+        let replacement = VulkanRenderDevice {
+            queue_family: 1,
+            ..previous
+        };
+        assert!(matches!(
+            unsafe { frame.record(replacement, 0, 0) },
+            Err(Error::InvalidFormat(_))
+        ));
+        let state = producer.state.lock().unwrap();
+        assert_eq!(state.render, None);
+        assert!(state.producer.is_none());
+        drop(state);
+        assert!(matches!(
+            unsafe { frame.record(previous, 0, 0) },
+            Err(Error::InvalidFormat(_))
+        ));
+    }
+
     #[test]
     fn readiness_is_not_a_render_failure_and_device_loss_is_not_hidden() {
         assert!(decode_readiness(Ok(())).is_ok());

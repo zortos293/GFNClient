@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -324,23 +325,32 @@ pub struct ServiceError {
 }
 
 impl ServiceError {
-    fn network(context: &str, error: impl std::fmt::Display) -> Self {
+    fn network(context: &str, error: reqwest::Error) -> Self {
         Self {
             code: "network_error",
-            message: format!("{context}: {error}"),
+            message: format!("{context}: {}", error.without_url()),
         }
     }
 
     fn response(context: &str, response: Response) -> Self {
         let status = response.status();
-        let detail = response.text().unwrap_or_default();
-        let detail = detail.chars().take(400).collect::<String>();
+        let mut body = Vec::new();
+        let payload = response
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut body)
+            .ok()
+            .filter(|_| body.len() <= 16 * 1024)
+            .and_then(|_| serde_json::from_slice::<Value>(&body).ok());
+        let detail = payload
+            .as_ref()
+            .and_then(|payload| payload["error"].as_str())
+            .filter(|_| matches!(status.as_u16(), 400 | 401))
+            .filter(|error| matches!(*error, "invalid_grant" | "invalid_token" | "token_revoked"));
         Self {
             code: "upstream_error",
-            message: if detail.is_empty() {
-                format!("{context} ({status})")
-            } else {
-                format!("{context} ({status}): {detail}")
+            message: match detail {
+                Some(detail) => format!("{context} ({status}): {detail}"),
+                None => format!("{context} ({status})"),
             },
         }
     }
@@ -363,6 +373,7 @@ pub struct GfnService {
     account_connections: AccountConnectionsService,
     persistent_storage: PersistentStorageService,
     store_cache: crate::store_cache::StoreCache,
+    auth_operation: Mutex<()>,
     state: Mutex<ServiceState>,
 }
 
@@ -398,6 +409,7 @@ impl GfnService {
             vault,
             profiles: ConsoleProfiles::load(&data_dir),
             store_cache: crate::store_cache::StoreCache::new(data_dir),
+            auth_operation: Mutex::new(()),
             state: Mutex::new(ServiceState::default()),
         }
     }
@@ -634,6 +646,11 @@ impl GfnService {
     }
 
     pub fn complete_device_login(&self, params: &Value) -> Result<Value, ServiceError> {
+        let _operation = self
+            .auth_operation
+            .lock()
+            .expect("GFN auth operation poisoned");
+        crate::requests::check()?;
         let attempt_id = required_param(params, "attemptId")?;
         let mut state = self.state.lock().expect("GFN state poisoned");
         let attempt = state
@@ -678,6 +695,15 @@ impl GfnService {
     }
 
     pub fn session(&self) -> Result<Value, ServiceError> {
+        let _operation = self
+            .auth_operation
+            .lock()
+            .expect("GFN auth operation poisoned");
+        crate::requests::check()?;
+        self.session_locked()
+    }
+
+    fn session_locked(&self) -> Result<Value, ServiceError> {
         {
             let mut state = self.state.lock().expect("GFN state poisoned");
             if state.session.is_none() && !state.restore_attempted {
@@ -798,6 +824,11 @@ impl GfnService {
     }
 
     pub fn logout(&self) -> Result<Value, ServiceError> {
+        let _operation = self
+            .auth_operation
+            .lock()
+            .expect("GFN auth operation poisoned");
+        crate::requests::check()?;
         let user_id = self
             .state
             .lock()
@@ -835,6 +866,11 @@ impl GfnService {
     }
 
     pub fn logout_all(&self) -> Result<Value, ServiceError> {
+        let _operation = self
+            .auth_operation
+            .lock()
+            .expect("GFN auth operation poisoned");
+        crate::requests::check()?;
         self.vault.remove_all().map_err(|message| ServiceError {
             code: "credential_store_error",
             message,
@@ -882,6 +918,11 @@ impl GfnService {
     }
 
     pub fn switch_account(&self, params: &Value) -> Result<Value, ServiceError> {
+        let _operation = self
+            .auth_operation
+            .lock()
+            .expect("GFN auth operation poisoned");
+        crate::requests::check()?;
         let user_id = required_param(params, "userId")?;
         if self.profiles.has_pin(user_id) {
             let verification = self
@@ -934,13 +975,18 @@ impl GfnService {
             state.session = Some(session);
             state.persistence_state = "local-store".to_owned();
         }
-        let result = self.session()?;
+        let result = self.session_locked()?;
         Ok(
             json!({"session":result["session"],"persistence":result["persistence"],"refresh":result["refresh"]}),
         )
     }
 
     pub fn remove_account(&self, params: &Value) -> Result<Value, ServiceError> {
+        let _operation = self
+            .auth_operation
+            .lock()
+            .expect("GFN auth operation poisoned");
+        crate::requests::check()?;
         let user_id = required_param(params, "userId")?;
         let was_active = self
             .state
@@ -1749,7 +1795,7 @@ impl GfnService {
             ];
             match self.token_refresh_request(&form, "Client-token refresh failed") {
                 Ok(payload) => return self.finish_token_refresh(session, &payload),
-                Err(error) => errors.push(error.message),
+                Err(error) => errors.push(error),
             }
         }
         if let Some(refresh_token) = session.tokens.refresh_token.as_deref() {
@@ -1760,15 +1806,23 @@ impl GfnService {
             ];
             match self.token_refresh_request(&form, "Refresh-token exchange failed") {
                 Ok(payload) => return self.finish_token_refresh(session, &payload),
-                Err(error) => errors.push(error.message),
+                Err(error) => errors.push(error),
             }
         }
         Err(ServiceError {
-            code: "session_refresh_failed",
+            code: if !errors.is_empty() && errors.iter().all(is_definitive_auth_revocation) {
+                "session_revoked"
+            } else {
+                "session_refresh_failed"
+            },
             message: if errors.is_empty() {
                 "Session has no refresh mechanism".to_owned()
             } else {
-                errors.join(" | ")
+                errors
+                    .into_iter()
+                    .map(|error| error.message)
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             },
         })
     }
@@ -1892,6 +1946,12 @@ impl GfnService {
 }
 
 fn is_definitive_auth_revocation(error: &ServiceError) -> bool {
+    if error.code == "session_revoked" {
+        return true;
+    }
+    if error.code != "upstream_error" {
+        return false;
+    }
     let message = error.message.to_ascii_lowercase();
     message.contains("invalid_grant")
         || message.contains("invalid_token")
@@ -2601,6 +2661,279 @@ fn required_string(payload: &Value, key: &str) -> Result<String, ServiceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mock_responses(
+        responses: Vec<(u16, Value)>,
+        before_response: impl Fn(usize) + Send + 'static,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            for (index, (status, body)) in responses.into_iter().enumerate() {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline, "missing HTTP request");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                before_response(index);
+                let body = body.to_string();
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (url, worker)
+    }
+
+    fn auth_fixture(user: &str) -> AuthSession {
+        serde_json::from_value(json!({
+            "provider": LoginProvider::default_nvidia(),
+            "tokens": {"accessToken":"test-access", "refreshToken":"test-refresh",
+                "clientToken":"test-client", "expiresAt":now_ms() + 3_600_000,
+                "clientTokenExpiresAt":now_ms() + 3_600_000, "authClientId":"test-client-id"},
+            "user":{"userId":user,"displayName":"Test","membershipTier":"FREE"}
+        }))
+        .unwrap()
+    }
+
+    fn test_service(url: &str) -> (GfnService, PathBuf) {
+        let path =
+            std::env::temp_dir().join(format!("opennow-auth-test-{}", rand::random::<u64>()));
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let service = GfnService::with_client(
+            client,
+            Endpoints {
+                token: url.to_owned(),
+                client_token: url.to_owned(),
+                ..Endpoints::default()
+            },
+            path.clone(),
+        );
+        (service, path)
+    }
+
+    #[test]
+    fn refresh_cannot_overwrite_a_new_login() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (url, server) = mock_responses(
+            vec![(200, json!({"client_token":"updated", "expires_in":3600}))],
+            move |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            },
+        );
+        let (service, path) = test_service(&url);
+        let service = std::sync::Arc::new(service);
+        {
+            let mut state = service.state.lock().unwrap();
+            let mut old = auth_fixture("old-account");
+            old.tokens.client_token_expires_at = None;
+            state.session = Some(old);
+            state.persistence_state = "none".into();
+            state.attempts.insert(
+                "new-login".into(),
+                DeviceAttempt {
+                    provider: LoginProvider::default_nvidia(),
+                    device_code: "test-device".into(),
+                    expires_at: now_ms() + 60_000,
+                    pending_session: Some(auth_fixture("new-account")),
+                },
+            );
+        }
+        let refreshing = service.clone();
+        let refresh = std::thread::spawn(move || refreshing.session().unwrap());
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let signing_in = service.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let login = std::thread::spawn(move || {
+            let result = signing_in
+                .complete_device_login(&json!({"attemptId":"new-login", "staySignedIn":false}));
+            done_tx.send(()).unwrap();
+            result.unwrap()
+        });
+        let completed_during_refresh = done_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        release_tx.send(()).unwrap();
+        refresh.join().unwrap();
+        login.join().unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            service
+                .state
+                .lock()
+                .unwrap()
+                .session
+                .as_ref()
+                .unwrap()
+                .user
+                .user_id,
+            "new-account"
+        );
+        assert!(!completed_during_refresh);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn cancelled_auth_mutations_do_not_run_after_waiting_for_refresh() {
+        type Mutation = fn(&GfnService) -> Result<Value, ServiceError>;
+        let mutations: [Mutation; 5] = [
+            |service| {
+                service.complete_device_login(&json!({"attemptId":"pending", "staySignedIn":false}))
+            },
+            GfnService::logout,
+            GfnService::logout_all,
+            |service| service.switch_account(&json!({"userId":"new-account"})),
+            |service| service.remove_account(&json!({"userId":"old-account"})),
+        ];
+        let (service, path) = test_service("http://127.0.0.1:1");
+        {
+            let mut state = service.state.lock().unwrap();
+            state.session = Some(auth_fixture("old-account"));
+            state.persistence_state = "none".into();
+            state.attempts.insert(
+                "pending".into(),
+                DeviceAttempt {
+                    provider: LoginProvider::default_nvidia(),
+                    device_code: "test-device".into(),
+                    expires_at: now_ms() + 60_000,
+                    pending_session: Some(auth_fixture("new-account")),
+                },
+            );
+        }
+        let requests = std::sync::Arc::new(crate::requests::Requests::default());
+        for mutation in mutations {
+            let operation = service.auth_operation.lock().unwrap();
+            let permit = requests.admit("mutation", "auth.mutation").unwrap();
+            let token = permit.token.clone();
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                let worker = scope.spawn(|| {
+                    crate::requests::scope(token, || {
+                        crate::requests::check().unwrap();
+                        started_tx.send(()).unwrap();
+                        mutation(&service)
+                    })
+                });
+                started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                requests.cancel("mutation");
+                drop(operation);
+                assert_eq!(worker.join().unwrap().unwrap_err().code, "cancelled");
+            });
+            let state = service.state.lock().unwrap();
+            assert_eq!(state.session.as_ref().unwrap().user.user_id, "old-account");
+            assert!(state.attempts.contains_key("pending"));
+            assert!(!path.join("accounts.json").exists());
+            drop(permit);
+        }
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn transient_fallback_failure_does_not_revoke_saved_session() {
+        let (url, server) = mock_responses(
+            vec![
+                (400, json!({"error":"invalid_grant"})),
+                (503, json!({"error":"temporarily_unavailable"})),
+            ],
+            |_| {},
+        );
+        let (service, path) = test_service(&url);
+        let error = service
+            .refresh_session(&auth_fixture("test-account"))
+            .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.code, "session_refresh_failed");
+        assert!(!is_definitive_auth_revocation(&error));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn all_revoked_refresh_mechanisms_are_definitive() {
+        let (url, server) = mock_responses(
+            vec![
+                (400, json!({"error":"invalid_grant"})),
+                (401, json!({"error":"invalid_token"})),
+            ],
+            |_| {},
+        );
+        let (service, path) = test_service(&url);
+        let error = service
+            .refresh_session(&auth_fixture("test-account"))
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(is_definitive_auth_revocation(&error));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn upstream_errors_do_not_echo_credentials_or_trust_server_error_revocation() {
+        let (url, server) = mock_responses(
+            vec![
+                (
+                    400,
+                    json!({"error":"invalid_grant", "error_description":"test-secret-token"}),
+                ),
+                (
+                    503,
+                    json!({"error":"invalid_grant", "access_token":"test-secret-token"}),
+                ),
+            ],
+            |_| {},
+        );
+        let client = Client::builder().no_proxy().build().unwrap();
+        let error = ServiceError::response("Test", client.get(&url).send().unwrap());
+        assert!(!error.message.contains("test-secret-token"));
+        assert!(is_definitive_auth_revocation(&error));
+        let error = ServiceError::response("Test", client.get(&url).send().unwrap());
+        assert!(!error.message.contains("test-secret-token"));
+        assert!(!is_definitive_auth_revocation(&error));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn network_errors_do_not_include_request_urls() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/?access_token=test-secret-token"))
+            .send()
+            .unwrap_err();
+        let error = ServiceError::network("Test request", error);
+        assert_eq!(error.code, "network_error");
+        assert!(!error.message.contains("test-secret-token"));
+        assert!(!error.message.contains(&address.to_string()));
+    }
 
     #[test]
     fn browser_service_identity_keeps_nvidia_required_webrtc_label() {

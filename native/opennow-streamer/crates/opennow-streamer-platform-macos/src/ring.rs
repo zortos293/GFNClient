@@ -5,6 +5,7 @@ pub(crate) struct PcmRing {
     samples: Box<[UnsafeCell<f32>]>,
     read: AtomicUsize,
     write: AtomicUsize,
+    discard_before: AtomicUsize,
 }
 
 // Exactly one Opus worker calls push and exactly one CoreAudio callback calls pop_into. Acquire and
@@ -19,6 +20,7 @@ impl PcmRing {
             samples: (0..capacity).map(|_| UnsafeCell::new(0.0)).collect(),
             read: AtomicUsize::new(0),
             write: AtomicUsize::new(0),
+            discard_before: AtomicUsize::new(0),
         }
     }
 
@@ -37,8 +39,12 @@ impl PcmRing {
     }
 
     pub(crate) fn pop_into(&self, output: &mut [f32]) -> usize {
-        let read = self.read.load(Ordering::Relaxed);
+        let mut read = self.read.load(Ordering::Relaxed);
+        let discard_before = self.discard_before.load(Ordering::Acquire);
         let write = self.write.load(Ordering::Acquire);
+        if discard_before.wrapping_sub(read) <= write.wrapping_sub(read) {
+            read = discard_before;
+        }
         let count = output.len().min(write.wrapping_sub(read));
         for (offset, sample) in output[..count].iter_mut().enumerate() {
             let index = read.wrapping_add(offset) % self.samples.len();
@@ -50,7 +56,7 @@ impl PcmRing {
 
     pub(crate) fn clear(&self) {
         let write = self.write.load(Ordering::Acquire);
-        self.read.store(write, Ordering::Release);
+        self.discard_before.store(write, Ordering::Release);
     }
 }
 
@@ -99,5 +105,33 @@ mod tests {
             expected += 1;
         }
         producer.join().unwrap();
+    }
+
+    #[test]
+    fn clear_defers_slot_reuse_until_the_consumer_releases_samples() {
+        let ring = PcmRing::new(4);
+        assert_eq!(ring.push(&[1.0, 2.0, 3.0, 4.0]), 4);
+        ring.clear();
+        assert_eq!(ring.read.load(Ordering::Relaxed), 0);
+        assert_eq!(ring.push(&[5.0, 6.0]), 0);
+        assert_eq!(ring.pop_into(&mut [0.0; 4]), 0);
+        assert_eq!(ring.push(&[5.0, 6.0]), 2);
+        let mut output = [0.0; 2];
+        assert_eq!(ring.pop_into(&mut output), 2);
+        assert_eq!(output, [5.0, 6.0]);
+    }
+
+    #[test]
+    fn clear_keeps_samples_published_after_the_request() {
+        let ring = PcmRing::new(4);
+        assert_eq!(ring.push(&[1.0, 2.0]), 2);
+        ring.clear();
+        assert_eq!(ring.push(&[3.0, 4.0]), 2);
+        let mut output = [0.0; 4];
+        assert_eq!(ring.pop_into(&mut output), 2);
+        assert_eq!(&output[..2], &[3.0, 4.0]);
+        assert_eq!(ring.push(&[5.0, 6.0]), 2);
+        assert_eq!(ring.pop_into(&mut output), 2);
+        assert_eq!(&output[..2], &[5.0, 6.0]);
     }
 }

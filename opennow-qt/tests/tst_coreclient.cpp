@@ -98,6 +98,38 @@ private slots:
                  QStringLiteral("native-streamer: decoder diagnostic"));
     }
 
+    void rejectsMessagesFollowingFatalProtocolError()
+    {
+        CoreClient client;
+        QSignalSpy failures(&client, &CoreClient::requestFailed);
+        QSignalSpy events(&client, &CoreClient::eventReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const auto requestId = client.request(QStringLiteral("test.malformed-event-batch"));
+        QTRY_VERIFY_WITH_TIMEOUT(!failures.isEmpty(), 2'000);
+        QCOMPARE(failures.first().at(0).toString(), requestId);
+        QCOMPARE(failures.first().at(1).toString(), QStringLiteral("protocol_error"));
+        client.stop();
+        QCoreApplication::processEvents();
+        QCOMPARE(events.size(), 0);
+    }
+
+    void stopDiscardsAlreadyQueuedEvents()
+    {
+        CoreClient client;
+        QSignalSpy events(&client, &CoreClient::eventReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const auto requestId = client.request(QStringLiteral("test.event"));
+        connect(&client, &CoreClient::responseReceived, &client,
+                [&client, requestId](const QString &id, const QJsonObject &) {
+                    if (id == requestId) client.stop();
+                });
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("stopped"), 2'000);
+        QCoreApplication::processEvents();
+        QCOMPARE(events.size(), 0);
+    }
+
     void restartsAfterUnexpectedExit()
     {
         CoreClient client;

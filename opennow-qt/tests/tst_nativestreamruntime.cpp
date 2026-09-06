@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 namespace {
 struct FakeRuntime {
@@ -20,6 +21,7 @@ struct FakeRuntime {
 };
 
 int nextDestroyDelayMs = 0;
+OpenNowStreamerStatus sendStatus = OPENNOW_STREAMER_OK;
 std::mutex graphicsCallMutex;
 std::condition_variable graphicsCallChanged;
 bool recordCallEntered = false;
@@ -39,6 +41,7 @@ OpenNowStreamerStatus fakeSend(const OpenNowStreamer *handle, const std::uint8_t
                                std::size_t length)
 {
     if (!handle || (!bytes && length)) return OPENNOW_STREAMER_NULL_POINTER;
+    if (sendStatus != OPENNOW_STREAMER_OK) return sendStatus;
     const auto *runtime = reinterpret_cast<const FakeRuntime *>(handle);
     const QByteArray command(reinterpret_cast<const char *>(bytes),
                              static_cast<qsizetype>(length));
@@ -140,6 +143,7 @@ private slots:
     void init()
     {
         nextDestroyDelayMs = 0;
+        sendStatus = OPENNOW_STREAMER_OK;
         const std::lock_guard lock(graphicsCallMutex);
         recordCallEntered = false;
         allowRecordCallToFinish = false;
@@ -203,6 +207,88 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(cursors.size(), 1, 1'000);
         QCOMPARE(cursors.first().first().toByteArray(), QByteArray::fromHex("000c0000000000"));
         QVERIFY(runtime.shutdown());
+    }
+
+    void discardsPresentationErrorsFromAnEarlierSession()
+    {
+        NativeStreamRuntime runtime(fakeApi());
+        QSignalSpy errors(&runtime, &NativeStreamRuntime::presentationError);
+        QVERIFY(runtime.start());
+        runtime.reportPresentationError(QStringLiteral("old device lost"));
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("new-session")}}));
+        QTRY_VERIFY(runtime.presentationAllowed());
+        QCOMPARE(errors.size(), 0);
+        QVERIFY(runtime.lastError().isEmpty());
+        QVERIFY(runtime.shutdown());
+    }
+
+    void rejectedSessionCommandsPreservePresentation()
+    {
+        NativeStreamRuntime runtime(fakeApi());
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("active-session")}}));
+        QTRY_VERIFY(runtime.presentationAllowed());
+        const auto generation = runtime.presentationGeneration();
+        sendStatus = OPENNOW_STREAMER_QUEUE_FULL;
+        for (const auto &type : {QStringLiteral("stop"), QStringLiteral("start")}) {
+            QVERIFY(!runtime.send({{QStringLiteral("type"), type},
+                                   {QStringLiteral("id"), QStringLiteral("rejected")}}));
+            QVERIFY(runtime.presentationAllowed());
+            QCOMPARE(runtime.presentationGeneration(), generation);
+        }
+        const auto oversized = QJsonDocument(QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("stop")},
+            {QStringLiteral("padding"), QString(NativeStreamRuntime::MaximumCallbackBytes, 'x')}
+        }).toJson(QJsonDocument::Compact);
+        QVERIFY(!runtime.sendBytes(oversized));
+        QVERIFY(runtime.presentationAllowed());
+        QCOMPARE(runtime.presentationGeneration(), generation);
+        QVERIFY(runtime.shutdown());
+    }
+
+    void discardsDrainedCallbacksWhenASignalRestartsTheRuntime()
+    {
+        NativeStreamRuntime runtime(fakeApi());
+        QSignalSpy responses(&runtime, &NativeStreamRuntime::responseReceived);
+        QSignalSpy cursors(&runtime, &NativeStreamRuntime::cursorUpdated);
+        QVERIFY(runtime.start());
+        bool restarted = false;
+        connect(&runtime, &NativeStreamRuntime::frameAvailable, &runtime, [&] {
+            if (restarted) return;
+            restarted = true;
+            QVERIFY(runtime.shutdown());
+            QVERIFY(runtime.start());
+        });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("hello")},
+                              {QStringLiteral("id"), QStringLiteral("old-runtime")}}));
+        QTRY_VERIFY(restarted);
+        QCOMPARE(responses.size(), 0);
+        QCOMPARE(cursors.size(), 0);
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("hello")},
+                              {QStringLiteral("id"), QStringLiteral("new-runtime")}}));
+        QTRY_COMPARE(responses.size(), 1);
+        QCOMPARE(responses.first().first().toJsonObject().value(QStringLiteral("id")).toString(),
+                 QStringLiteral("new-runtime"));
+        QTRY_COMPARE(cursors.size(), 1);
+        QVERIFY(runtime.shutdown());
+    }
+
+    void callbackHandlerCanDeleteTheRuntime()
+    {
+        auto *runtime = new NativeStreamRuntime(fakeApi());
+        QSignalSpy responses(runtime, &NativeStreamRuntime::responseReceived);
+        QSignalSpy cursors(runtime, &NativeStreamRuntime::cursorUpdated);
+        QVERIFY(runtime->start());
+        connect(runtime, &NativeStreamRuntime::responseReceived, this, [&] {
+            delete std::exchange(runtime, nullptr);
+        });
+        QVERIFY(runtime->send({{QStringLiteral("type"), QStringLiteral("hello")},
+                               {QStringLiteral("id"), QStringLiteral("delete-runtime")}}));
+        QTRY_VERIFY(!runtime);
+        QCOMPARE(responses.size(), 1);
+        QCOMPARE(cursors.size(), 0);
     }
 
     void boundsShutdownWhenTheFfiDestroyCallStalls()

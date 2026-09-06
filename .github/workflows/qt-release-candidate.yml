@@ -149,13 +149,10 @@ jobs:
           cpack --config build/qt-release/CPackConfig.cmake -C Release -G DEB -B build/release-artifacts
           cmake --install build/qt-release --config Release --prefix "$PWD/build/AppDir/usr"
           test -f build/AppDir/usr/bin/libopennow_streamer_ffi.so
-          test ! -e build/AppDir/usr/bin/opennow-streamer
+          test -x build/AppDir/usr/bin/opennow-streamer
           deb=$(find build/release-artifacts -maxdepth 1 -type f -name '*.deb' -print -quit)
-          dpkg-deb --fsys-tarfile "$deb" | tar -tf - | grep -qx './usr/bin/libopennow_streamer_ffi.so'
-          if dpkg-deb --fsys-tarfile "$deb" | tar -tf - | grep -qx './usr/bin/opennow-streamer'; then
-            echo 'Standalone streamer must not be packaged' >&2
-            exit 1
-          fi
+          dpkg-deb --fsys-tarfile "$deb" | tar -tf - | grep -Fx './usr/bin/libopennow_streamer_ffi.so'
+          dpkg-deb --fsys-tarfile "$deb" | tar -tf - | grep -Fx './usr/bin/opennow-streamer'
           curl --fail --location --retry 3 \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
             --output "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage"
@@ -364,14 +361,14 @@ jobs:
           $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/a `"$($msi.FullName)`" /qn TARGETDIR=`"$msiExpanded`""
           if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed" }
           if (-not (Get-ChildItem $msiExpanded -Recurse -Filter opennow_streamer_ffi.dll)) { throw "MSI is missing the embedded streamer runtime" }
-          if (Get-ChildItem $msiExpanded -Recurse -Filter opennow-streamer.exe) { throw "MSI contains the obsolete standalone streamer" }
+          if (-not (Get-ChildItem $msiExpanded -Recurse -File -Filter opennow-streamer.exe)) { throw "MSI is missing the streamer capability probe" }
           Get-ChildItem $msiExpanded -Recurse -Filter *.exe | ForEach-Object { signtool verify /pa /all $_.FullName }
           $zip = Get-ChildItem build/release-artifacts -Filter *.zip
           if ($zip.Count -ne 1) { throw "Expected one portable ZIP" }
           $expanded = Join-Path $env:RUNNER_TEMP "portable"
           Expand-Archive $zip.FullName $expanded
           if (-not (Get-ChildItem $expanded -Recurse -Filter opennow_streamer_ffi.dll)) { throw "Portable ZIP is missing the embedded streamer runtime" }
-          if (Get-ChildItem $expanded -Recurse -Filter opennow-streamer.exe) { throw "Portable ZIP contains the obsolete standalone streamer" }
+          if (-not (Get-ChildItem $expanded -Recurse -File -Filter opennow-streamer.exe)) { throw "Portable ZIP is missing the streamer capability probe" }
           Get-ChildItem $expanded -Recurse -Filter *.exe | ForEach-Object { signtool verify /pa /all $_.FullName }
 
       - name: Record artifact checksums
@@ -489,7 +486,7 @@ jobs:
           app="$RUNNER_TEMP/stage/OpenNOW.app"
           test -d "$app"
           test -f "$app/Contents/MacOS/libopennow_streamer_ffi.dylib"
-          test ! -e "$app/Contents/MacOS/opennow-streamer"
+          test -x "$app/Contents/MacOS/opennow-streamer"
           while IFS= read -r -d '' item; do
             codesign --force --options runtime --timestamp --keychain "$OPENNOW_SIGNING_KEYCHAIN" \
               --sign "$SIGN_IDENTITY" "$item"

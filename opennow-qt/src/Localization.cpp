@@ -123,10 +123,13 @@ QString Localization::interpolate(QString value, const QVariantMap &values)
     while (match.hasMatch()) {
         const auto token = match.captured(1);
         const auto replacement = values.value(token);
+        auto nextOffset = match.capturedEnd();
         if (replacement.isValid()) {
-            value.replace(match.capturedStart(), match.capturedLength(), replacement.toString());
+            const auto text = replacement.toString();
+            value.replace(match.capturedStart(), match.capturedLength(), text);
+            nextOffset = match.capturedStart() + text.size();
         }
-        match = placeholder.match(value, match.capturedStart() + 1);
+        match = placeholder.match(value, nextOffset);
     }
     return value;
 }

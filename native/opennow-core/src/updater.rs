@@ -80,6 +80,7 @@ struct UpdateManifest {
 pub struct UpdaterService {
     client: Client,
     staging_dir: PathBuf,
+    operation: Mutex<()>,
     state: Mutex<State>,
 }
 
@@ -96,6 +97,7 @@ impl UpdaterService {
         Ok(Self {
             client,
             staging_dir,
+            operation: Mutex::new(()),
             state: Mutex::new(State {
                 status: "idle",
                 available_version: None,
@@ -115,6 +117,7 @@ impl UpdaterService {
     }
 
     pub fn check(&self, params: &Value) -> Result<Value, String> {
+        let _operation = self.begin_operation()?;
         let channel = params["channel"].as_str().unwrap_or("stable");
         if !matches!(channel, "stable" | "nightly") {
             return Err("Unsupported update channel".to_owned());
@@ -205,6 +208,7 @@ impl UpdaterService {
     }
 
     pub fn download(&self) -> Result<Value, String> {
+        let _operation = self.begin_operation()?;
         let available = {
             let mut state = self.state.lock().expect("updater state poisoned");
             let available = state
@@ -238,6 +242,7 @@ impl UpdaterService {
     }
 
     pub fn install(&self, params: &Value) -> Result<Value, String> {
+        let _operation = self.begin_operation()?;
         if params["confirmed"].as_bool() != Some(true) {
             return Err("Update installation requires explicit confirmation".to_owned());
         }
@@ -264,6 +269,17 @@ impl UpdaterService {
             "bodyMarkdown": state.notes,
             "releaseUrl": state.release_url
         })
+    }
+
+    fn begin_operation(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        let operation = self
+            .operation
+            .try_lock()
+            .map_err(|_| "An update operation is already in progress".to_owned())?;
+        if self.state.lock().expect("updater state poisoned").status == "installing" {
+            return Err("Update installation is already in progress".to_owned());
+        }
+        Ok(operation)
     }
 
     fn download_verified(&self, available: &AvailableUpdate) -> Result<DownloadedUpdate, String> {
@@ -702,6 +718,40 @@ fn now_ms() -> u128 {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer as _, SigningKey};
+
+    #[test]
+    fn overlapping_update_operations_are_rejected_without_mutating_state() {
+        let path =
+            std::env::temp_dir().join(format!("opennow-update-busy-{}", rand::random::<u64>()));
+        let updater = UpdaterService::new(&path).unwrap();
+        let operation = updater.begin_operation().unwrap();
+        let before = updater.state();
+        for result in [
+            updater.check(&json!({"channel":"invalid"})),
+            updater.download(),
+            updater.install(&json!({"confirmed":true})),
+        ] {
+            assert_eq!(
+                result.unwrap_err(),
+                "An update operation is already in progress"
+            );
+            assert_eq!(updater.state(), before);
+        }
+        drop(operation);
+        assert!(updater.begin_operation().is_ok());
+        updater.state.lock().unwrap().status = "installing";
+        for result in [
+            updater.check(&json!({"channel":"invalid"})),
+            updater.download(),
+            updater.install(&json!({"confirmed":true})),
+        ] {
+            assert_eq!(
+                result.unwrap_err(),
+                "Update installation is already in progress"
+            );
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     fn release(version: &str, prerelease: bool) -> Release {
         Release {

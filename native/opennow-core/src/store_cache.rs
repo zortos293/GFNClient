@@ -39,6 +39,7 @@ impl StoreCache {
         refresh: bool,
         fetch: impl FnOnce() -> Result<Value, ServiceError>,
     ) -> Result<Value, ServiceError> {
+        crate::requests::check()?;
         let prefix = format!("{}-", digest(scope));
         let path = self.root.join(format!("{prefix}{}.json", digest(key)));
         let epoch = {
@@ -62,6 +63,7 @@ impl StoreCache {
             *epoch
         };
         let mut value = fetch()?;
+        crate::requests::check()?;
         value["cacheHit"] = Value::Bool(false);
         let value = crate::store_catalog_page::bounded_result(value)?;
         let current = self.epoch.lock().expect("Store cache poisoned");
@@ -77,6 +79,7 @@ impl StoreCache {
     }
 
     pub fn local_query(&self, scope: &Value, params: &Value) -> Result<Value, ServiceError> {
+        crate::requests::check()?;
         let scope_key = digest(scope);
         let read_key =
             |key: &Value| self.read(&self.root.join(format!("{scope_key}-{}.json", digest(key))));
@@ -86,6 +89,7 @@ impl StoreCache {
             let mut cursor = String::new();
             let mut seen = std::collections::HashSet::new();
             for _ in 0..100 {
+                crate::requests::check()?;
                 let key = serde_json::json!(["page", 100, cursor, ""]);
                 let Some(page) = read_key(&key) else {
                     break;

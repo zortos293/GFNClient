@@ -34,6 +34,16 @@ deadline (100 ms to five minutes). The shell sends cancellation after a timeout
 or explicit cancellation. Events are delivered in batches through a queue of at
 most 512 items; overflow drops the oldest event and emits a diagnostic counter.
 
+The core admits at most eight RPC workers, with at most four background workers
+(`catalog.*`, `artwork.*`, and `network.regions.ping`). The remaining capacity
+is reserved for other methods, including session/control operations. Excess
+requests receive `busy`; duplicate active IDs are also rejected. Cancellation
+only tracks active IDs and never frees a worker slot before that worker exits.
+Cancelled requests suppress their response. Store page retries/cache traversal
+and region measurement loops stop at cooperative checkpoints. An already-running
+blocking HTTP, DNS, or TCP operation is not forcibly interrupted; its existing
+timeout still applies. Mutating operations already dispatched are not rolled back.
+
 ## Implemented core methods
 
 ### Store pagination (`catalog.storePages.v1`)

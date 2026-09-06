@@ -1121,6 +1121,7 @@ impl GfnService {
         let mut total_count = 0_u64;
 
         for _ in 0..25 {
+            crate::requests::check()?;
             let variables = json!({
                 "vpcId":vpc_id,
                 "locale":"en_US",
@@ -1218,6 +1219,7 @@ impl GfnService {
     }
 
     pub fn store_catalog(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
+        crate::requests::check()?;
         let page = crate::store_catalog_page::PageRequest::parse(params)?;
         let client = client_for_settings(&self.client, settings).map_err(ServiceError::invalid)?;
         let session =
@@ -1349,6 +1351,7 @@ impl GfnService {
                     // The persisted MainV2 document only supplies landscape hero art.
                     // Execute our document so GAME_BOX_ART is actually requested, just
                     // like Library/browse, rather than silently ignoring these fields.
+                    crate::requests::check()?;
                     let response = client
                         .post(GRAPHQL_URL)
                         .headers(graphql_headers(token)?)
@@ -1384,6 +1387,7 @@ impl GfnService {
                         "GFN storefront query",
                     )?
                 };
+                crate::requests::check()?;
                 let empty_index = HashMap::new();
                 let items = match section {
                     "panels" => parse_store_panels(&payload, &empty_index),
@@ -2188,6 +2192,7 @@ fn fetch_panels_document(
     fallback_query: &str,
     context: &str,
 ) -> Result<Value, ServiceError> {
+    crate::requests::check()?;
     let extensions = json!({"persistedQuery":{"sha256Hash":sha}}).to_string();
     let variables_text = variables.to_string();
     let hu_id = random_attempt_id();
@@ -2208,6 +2213,7 @@ fn fetch_panels_document(
         .send()
         .map_err(|error| ServiceError::network(&format!("{context} failed"), error))?;
     let payload = if response.status().as_u16() == 400 {
+        crate::requests::check()?;
         url.query_pairs_mut().append_pair("query", fallback_query);
         let mut retry_headers = graphql_headers(token)?;
         retry_headers.insert(

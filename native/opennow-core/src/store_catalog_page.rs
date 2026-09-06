@@ -75,7 +75,9 @@ pub fn fetch_bounded_page(
 ) -> Result<Value, ServiceError> {
     let mut count = limit.clamp(1, 100);
     loop {
+        crate::requests::check()?;
         let page = fetch(count)?;
+        crate::requests::check()?;
         if encoded_size(&page)? <= RESULT_BUDGET {
             return Ok(page);
         }
@@ -118,6 +120,22 @@ pub fn page_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_fetch_does_not_retry_an_oversized_page() {
+        let requests = std::sync::Arc::new(crate::requests::Requests::default());
+        let permit = requests.admit("page", "catalog.store.browse").unwrap();
+        let mut calls = 0;
+        let result = crate::requests::scope(permit.token.clone(), || {
+            fetch_bounded_page(100, |_| {
+                calls += 1;
+                requests.cancel("page");
+                Ok(json!({"items":["x".repeat(RESULT_BUDGET)]}))
+            })
+        });
+        assert_eq!(result.unwrap_err().code, "cancelled");
+        assert_eq!(calls, 1);
+    }
 
     #[test]
     fn page_requests_are_bounded_and_preserve_opaque_cursors() {

@@ -13,6 +13,7 @@ mod media;
 mod network;
 mod persistent_storage;
 mod proxy;
+mod requests;
 mod settings;
 mod store_cache;
 mod store_catalog_page;
@@ -27,11 +28,9 @@ use gfn::GfnService;
 use rand::RngCore;
 use serde_json::{Value, json};
 use settings::{SettingsStore, resolve_data_dir};
-use std::collections::HashSet;
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -39,7 +38,6 @@ use streamer::StreamerService;
 
 const PROTOCOL_VERSION: i64 = 1;
 const MAXIMUM_LINE_BYTES: usize = 1024 * 1024;
-const MAXIMUM_CONCURRENT_REQUESTS: usize = 8;
 
 struct AppCore {
     artwork: artwork_cache::ArtworkCache,
@@ -99,8 +97,7 @@ fn run() -> Result<(), String> {
         telemetry: telemetry::TelemetryService::new()
             .map_err(|error| format!("Could not initialize reporting services: {error}"))?,
     });
-    let cancelled = Arc::new(Mutex::new(HashSet::<String>::new()));
-    let active = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(requests::Requests::default());
     let stdin = io::stdin();
 
     for line in stdin.lock().lines() {
@@ -114,10 +111,7 @@ fn run() -> Result<(), String> {
         };
         if message["type"] == "cancel" {
             if let Some(id) = message["id"].as_str() {
-                cancelled
-                    .lock()
-                    .expect("cancellation state poisoned")
-                    .insert(id.to_owned());
+                requests.cancel(id);
             }
             continue;
         }
@@ -132,20 +126,20 @@ fn run() -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             continue;
         }
-        if active.fetch_add(1, Ordering::AcqRel) >= MAXIMUM_CONCURRENT_REQUESTS {
-            active.fetch_sub(1, Ordering::AcqRel);
+        let Some(permit) = requests.admit(&id, &method) else {
             output_tx.send(json!({"type":"response", "id":id, "ok":false, "error":{"code":"busy", "message":"Core request limit reached"}}))
                 .map_err(|error| error.to_string())?;
             continue;
-        }
+        };
 
         let worker_core = Arc::clone(&core);
-        let worker_cancelled = Arc::clone(&cancelled);
-        let worker_active = Arc::clone(&active);
         let worker_output = output_tx.clone();
         thread::Builder::new().name(format!("opennow-rpc-{id}")).spawn(move || {
             let started = Instant::now();
-            let result = dispatch(&method, &params, &worker_core);
+            let result = requests::scope(permit.token.clone(), || {
+                requests::check().map_err(|error| (error.code.to_owned(), error.message))?;
+                dispatch(&method, &params, &worker_core)
+            });
             let outcome = match &result {
                 Ok(_) => "ok",
                 Err((code, _)) => code.as_str(),
@@ -155,7 +149,7 @@ fn run() -> Result<(), String> {
                 &method,
                 format!("outcome={outcome} durationMs={}", started.elapsed().as_millis()),
             );
-            let was_cancelled = worker_cancelled.lock().expect("cancellation state poisoned").remove(&id);
+            let was_cancelled = permit.token.cancelled();
             if !was_cancelled {
                 match result {
                     Ok((value, event)) => {
@@ -169,7 +163,7 @@ fn run() -> Result<(), String> {
                     }
                 }
             }
-            worker_active.fetch_sub(1, Ordering::AcqRel);
+            drop(permit);
         }).map_err(|error| error.to_string())?;
     }
     Ok(())

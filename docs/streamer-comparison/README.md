@@ -19,7 +19,6 @@ Each category file is one explanation. They do not mix how-to steps with referen
 - [Mouse input](mouse-input.md). Why look and aim feel different.
 - [Controller input](controller-input.md). SDL pads, the 38-byte type-12 packet, rumble.
 - [Features and binaries](features.md). NVB types and byte-exact control frames. Type 10 is named in logs. The payload is not dumped.
-- [HTML comparison](compare.html). Same facts, laid out for scanning.
 
 ## The short answer on mouse
 

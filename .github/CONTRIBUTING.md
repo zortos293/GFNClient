@@ -54,3 +54,6 @@ there is no replacement Nix package in this tree.
 2. Keep commits focused and clear
 3. Run the affected Qt/Rust tests and relevant formatting/lint checks; follow `AGENTS.md`
 4. Open a PR with a concise summary
+
+Attach one-off verification screenshots and recordings to the PR instead of committing
+them. Keep images in the repository only when documentation or the application uses them.

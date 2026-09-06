@@ -175,6 +175,7 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2022_64
+          modules: qtshadertools
           dir: ${{ runner.temp }}/qt-host
           cache: true
           cache-key-prefix: qt-host-windows-x64

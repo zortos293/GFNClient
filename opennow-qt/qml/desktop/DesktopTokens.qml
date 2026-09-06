@@ -3,6 +3,7 @@ import QtQuick
 import OpenNOW
 
 QtObject {
+    id: tokens
     readonly property color shell: Theme.shell
     readonly property color rail: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.90)
     readonly property color topBar: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.66)
@@ -49,12 +50,18 @@ QtObject {
     readonly property int libraryCellHeight: px(214)
     readonly property int libraryArtWidth: px(132)
     readonly property int libraryArtHeight: px(198)
+    property FontMetrics storeTitleMetrics: FontMetrics {
+        font.family: Theme.bodyFont
+        font.pixelSize: tokens.monoSize
+        font.weight: Font.Bold
+    }
+    readonly property int storeCardInfoHeight: px(8) + Math.ceil(storeTitleMetrics.height) * 2 + px(4) + px(17) + px(4)
     readonly property int quickDuration: AppController.reducedMotion ? 0 : 120
     readonly property int motionDuration: AppController.reducedMotion ? 0 : 220
     readonly property int revealDuration: AppController.reducedMotion ? 0 : 320
     readonly property real cardHoverScale: 1.025
     readonly property int cardOutlinePad: 2
-    readonly property color cardOutlineIdle: Qt.rgba(1, 1, 1, 0.16)
+    readonly property color cardOutlineIdle: Theme.seam
 
     function px(value) {
         return Math.max(1, Math.round(Number(value) * uiScale))

@@ -32,7 +32,7 @@ FocusScope {
     signal messageRequested(string message)
 
     readonly property int railInnerWidth: Math.max(200, content.width - 48)
-    readonly property int railCount: Math.max(1, Math.floor((root.railInnerWidth + 14) / (132 + 14)))
+    readonly property int railCount: Math.max(1, Math.floor((root.railInnerWidth + DesktopTokens.px(14)) / (DesktopTokens.libraryArtWidth + DesktopTokens.px(14))))
     readonly property var filteredCatalog: ShellStore.storeUsesLocalIndex ? root.storeGames : root.buildFiltered(root.storeGames, root.searchText, root.activeGenre, root.activeStore, root.activeCategoryId)
     readonly property var heroGames: root.buildHero(root.filteredCatalog)
     readonly property var newGames: root.buildNew(root.filteredCatalog, root.heroGames)
@@ -775,12 +775,12 @@ FocusScope {
         readonly property var anchorChip: root.presentedMenu === "category" ? categoryChip : root.presentedMenu === "genre" ? genreChip : storeChip
         x: Math.max(12, Math.min(chips.x + anchorChip.x, root.width - width - 12))
         y: Math.max(12, Math.min(chips.y + anchorChip.y + anchorChip.height + 6 - content.contentY, root.height - height - 12))
-        width: Math.min(284, root.width - 24)
-        height: Math.min(menuColumn.contentHeight + 12, 332, root.height - 24)
-        radius: 11
-        color: Qt.rgba(0.043, 0.059, 0.102, 0.98)
+        width: Math.min(DesktopTokens.px(284), root.width - 24)
+        height: Math.min(menuColumn.contentHeight + 12, DesktopTokens.px(332), root.height - 24)
+        radius: DesktopTokens.px(11)
+        color: Theme.lightMode ? "#F7F9FC" : "#0B0F1A"
         border.width: 1
-        border.color: Qt.rgba(1, 1, 1, 0.18)
+        border.color: DesktopTokens.seam
         opacity: filterMotion.progress
         scale: filterMotion.zoom
         transformOrigin: Item.TopLeft
@@ -800,33 +800,40 @@ FocusScope {
                     required property string modelData
                     required property int index
                     width: menuColumn.width
-                    height: Math.max(36, menuLabel.implicitHeight + 16)
+                    height: Math.max(DesktopTokens.px(36), menuLabel.implicitHeight + DesktopTokens.px(16))
                     padding: 0
                     focusPolicy: Qt.NoFocus
                     hoverEnabled: true
                     background: Rectangle {
                         radius: 7
                         color: menuButton.hovered || root.menuIndex === menuButton.index
-                               ? Qt.rgba(1, 1, 1, 0.10) : "transparent"
+                               ? DesktopTokens.raisedStrong : "transparent"
                     }
                     contentItem: Item {
+                      Rectangle {
+                        visible: storeLogo.visible && Theme.lightMode
+                        x: storeLogo.x - DesktopTokens.px(3)
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: storeLogo.width + DesktopTokens.px(6); height: width
+                        radius: DesktopTokens.px(5); color: "#202634"
+                      }
                       Image {
                         id: storeLogo
-                        x: 9; anchors.verticalCenter: parent.verticalCenter
-                        width: 20; height: 20
+                        x: DesktopTokens.px(9); anchors.verticalCenter: parent.verticalCenter
+                        width: DesktopTokens.px(20); height: width
                         source: root.presentedMenu === "store" ? DesktopTokens.storeIconUrl(menuButton.modelData) : ""
                         visible: source.toString() !== ""
                         sourceSize: Qt.size(40,40); fillMode: Image.PreserveAspectFit
                       }
                       Text {
                         id: menuLabel
-                        x: storeLogo.visible ? 39 : 9
-                        width: parent.width - x - 14
+                        x: DesktopTokens.px(storeLogo.visible ? 39 : 9)
+                        width: parent.width - x - DesktopTokens.px(14)
                         anchors.verticalCenter: parent.verticalCenter
                         text: root.presentedMenu === "category" ? root.categoryLabel(menuButton.modelData) : root.presentedMenu === "store" ? DesktopTokens.storeLabel(menuButton.modelData) : DesktopTokens.genreLabel(menuButton.modelData)
-                        color: "#FFFFFF"
+                        color: DesktopTokens.text
                         font.family: Theme.bodyFont
-                        font.pixelSize: 12
+                        font.pixelSize: DesktopTokens.monoSize
                         font.weight: Font.DemiBold
                         verticalAlignment: Text.AlignVCenter
                         wrapMode: Text.Wrap
@@ -860,9 +867,9 @@ FocusScope {
             text: root.catalogList().length === 0
                   ? (root.catalogState === "error" ? qsTr("Store unavailable") : root.catalogState === "ready" ? qsTr("No games match these filters") : qsTr("Loading the store…"))
                   : qsTr("No games match these filters")
-            color: "#FFFFFF"
+            color: DesktopTokens.text
             font.family: Theme.displayFont
-            font.pixelSize: 22
+            font.pixelSize: DesktopTokens.px(22)
             font.weight: Font.Black
         }
         Text {
@@ -875,9 +882,9 @@ FocusScope {
             text: root.catalogList().length === 0
                   ? (root.catalogState === "error" ? root.catalogError : root.catalogState === "ready" ? qsTr("No games match these filters") : qsTr("Browsing the GeForce NOW catalog."))
                   : qsTr("Try another category, genre, store, or search.")
-            color: Qt.rgba(1, 1, 1, 0.58)
+            color: DesktopTokens.textMuted
             font.family: Theme.bodyFont
-            font.pixelSize: 13
+            font.pixelSize: DesktopTokens.captionSize
         }
         DesktopSettingsButton {
             anchors.horizontalCenter: parent.horizontalCenter

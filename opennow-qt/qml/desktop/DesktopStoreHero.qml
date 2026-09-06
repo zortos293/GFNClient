@@ -37,6 +37,14 @@ Item {
         onTriggered: root.nextSlide()
     }
 
+    // Keep the text's contrast backing outside the effect layer. Qt's software
+    // renderer cannot draw MultiEffect masks, but must still show a readable hero.
+    Rectangle {
+        anchors.fill: parent
+        radius: 16
+        color: "#0B0F1A"
+    }
+
     Rectangle {
         id: heroMask
         anchors.fill: parent
@@ -55,11 +63,6 @@ Item {
             maskSource: heroMask
             maskThresholdMin: 0.25
             maskSpreadAtMin: 0.2
-        }
-
-        Rectangle {
-            anchors.fill: parent
-            color: Qt.rgba(0.043, 0.059, 0.102, 0.72)
         }
 
         Repeater {

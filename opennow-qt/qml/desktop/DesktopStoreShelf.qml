@@ -76,27 +76,30 @@ Item {
     signal gamePointed(int index)
     signal seeAllRequested()
 
-    readonly property int railGap: 14
-    readonly property int columnCount: Math.max(1, Math.floor((width + railGap) / (132 + railGap)))
+    readonly property int railGap: DesktopTokens.px(14)
+    readonly property int columnCount: Math.max(1, Math.floor((width + railGap) / (DesktopTokens.libraryArtWidth + railGap)))
     readonly property int tileCount: Math.max(1, Math.min(60, (root.categoryId ? root.totalCount : root.games.length) || 1, columnCount))
     // A short final page keeps the same poster size as a full row.
-    readonly property int tileWidth: Math.max(132, Math.floor((width - railGap * (columnCount - 1)) / columnCount))
-    readonly property int tileHeight: Math.round(tileWidth * 198 / 132) + 56
+    readonly property int tileWidth: Math.max(DesktopTokens.libraryArtWidth, Math.floor((width - railGap * (columnCount - 1)) / columnCount))
+    readonly property int tileHeight: Math.round(tileWidth * 198 / 132) + DesktopTokens.storeCardInfoHeight
 
-    height: 31 + tileHeight
+    height: DesktopTokens.px(31) + tileHeight
 
     Row {
         x: 0
         y: 0
-        height: 20
-        spacing: 9
+        width: Math.max(0, headerActions.visible ? headerActions.x - DesktopTokens.px(12) : parent.width)
+        height: DesktopTokens.px(20)
+        spacing: DesktopTokens.px(9)
 
         Text {
+            width: Math.max(0, parent.width - (sectionEyebrow.visible ? sectionEyebrow.implicitWidth + parent.spacing : 0))
+            elide: Text.ElideRight
             anchors.baseline: sectionEyebrow.baseline
             text: root.title
-            color: "#FFFFFF"
+            color: DesktopTokens.text
             font.family: Theme.displayFont
-            font.pixelSize: 16
+            font.pixelSize: DesktopTokens.px(16)
             font.weight: Font.Black
             font.letterSpacing: -0.16
         }
@@ -105,35 +108,36 @@ Item {
             id: sectionEyebrow
             visible: root.eyebrow.length > 0
             text: root.eyebrow
-            color: Qt.rgba(1, 1, 1, 0.40)
+            color: DesktopTokens.textMuted
             font.family: Theme.monoFont
-            font.pixelSize: 10
+            font.pixelSize: DesktopTokens.microSize
             font.weight: Font.DemiBold
             font.letterSpacing: 0.4
         }
     }
 
     Row {
+        id: headerActions
         visible: root.showSeeAll
         anchors.right: parent.right
         y: 1
-        height: 18
-        spacing: 5
+        height: DesktopTokens.px(18)
+        spacing: DesktopTokens.px(5)
 
         Text {
             anchors.verticalCenter: parent.verticalCenter
             text: root.seeAllText
-            color: Qt.rgba(1, 1, 1, 0.50)
+            color: DesktopTokens.textMuted
             font.family: Theme.bodyFont
-            font.pixelSize: 11
+            font.pixelSize: DesktopTokens.smallSize
             font.weight: Font.Bold
         }
         Text {
             anchors.verticalCenter: parent.verticalCenter
             text: "›"
-            color: Qt.rgba(1, 1, 1, 0.50)
+            color: DesktopTokens.textMuted
             font.family: Theme.bodyFont
-            font.pixelSize: 15
+            font.pixelSize: DesktopTokens.bodySize
             font.weight: Font.Bold
         }
 
@@ -141,7 +145,7 @@ Item {
     }
 
     Row {
-        y: 31
+        y: DesktopTokens.px(31)
         width: parent.width
         spacing: root.railGap
 
@@ -168,10 +172,10 @@ Item {
     }
 
     Text {
-        x: 0; y: 45; width: parent.width
+        x: 0; y: DesktopTokens.px(45); width: parent.width
         visible: root.materialized && root.loadError !== ""
         text: root.loadError; textFormat: Text.PlainText; wrapMode: Text.Wrap
-        color: DesktopTokens.textMuted; font.family: Theme.bodyFont; font.pixelSize: 12
+        color: DesktopTokens.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.monoSize
     }
 
     function fallbackFor(game, index) {

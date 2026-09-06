@@ -5,6 +5,7 @@ QtObject {
     property Component paletteComponent: Component { DesktopCommandPalette {} }
     property Component hostComponent: Component { Item {} }
     property Component shellComponent: Component { DesktopShell {} }
+    property Component cardComponent: Component { DesktopStoreCard {} }
     property Component shelfComponent: Component { DesktopStoreShelf {} }
     property QtObject client: QtObject {
         property string state: "ready"
@@ -209,6 +210,25 @@ QtObject {
         headerHost.destroy()
         ShellStore.settings = originalSettings
         ShellStore.remoteSessions = originalRemotes
+        DesktopTokens.uiScale = originalScale
+
+        for (const mode of ["light", "dark"]) {
+            ShellStore.applySetting("appTheme", mode)
+            for (const scale of [0.9, 1.4]) {
+                DesktopTokens.uiScale = scale
+                const longGame = game("layout")
+                longGame.title = "A much longer game title: Complete Ultimate Edition"
+                const card = cardComponent.createObject(screen, {game:longGame, owned:true})
+                const title = namedChild(card, "storeCardTitle")
+                const metadata = namedChild(card, "storeCardMetadata")
+                check(title.color.toString() === Theme.label.toString(), "Store caption ignores theme")
+                check(title.y >= card.artHeight && metadata.y >= title.y + title.height
+                    && metadata.y + metadata.height <= card.height,
+                    "scaled Store metadata extends outside its card")
+                card.destroy()
+            }
+        }
+        ShellStore.settings = originalSettings
         DesktopTokens.uiScale = originalScale
 
         const shelf = shelfComponent.createObject(screen, {width:600,materialized:false,categoryId:"shelf:0:0",totalCount:90})

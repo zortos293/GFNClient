@@ -8,8 +8,8 @@ Button {
     property bool selected: false
     property bool hasMenu: false
 
-    implicitWidth: contentRow.implicitWidth + 26
-    implicitHeight: 30
+    implicitWidth: contentRow.implicitWidth + DesktopTokens.px(26)
+    implicitHeight: DesktopTokens.px(30)
     padding: 0
     focusPolicy: Qt.NoFocus
     hoverEnabled: true
@@ -17,14 +17,11 @@ Button {
     Accessible.name: text
 
     background: Rectangle {
-        radius: 9
-        color: root.selected || root.down ? Qt.rgba(1, 1, 1, 0.12)
-                                          : root.hovered ? Qt.rgba(1, 1, 1, 0.07)
-                                                         : Qt.rgba(1, 1, 1, 0.04)
+        radius: DesktopTokens.px(9)
+        color: root.selected || root.down ? DesktopTokens.raisedStrong
+                                          : root.hovered ? DesktopTokens.raised : DesktopTokens.seamSoft
         border.width: 1
-        border.color: root.selected ? Qt.rgba(1, 1, 1, 0.18)
-                                    : root.hovered ? Qt.rgba(1, 1, 1, 0.13)
-                                                   : Qt.rgba(1, 1, 1, 0.08)
+        border.color: root.selected || root.hovered ? DesktopTokens.seam : DesktopTokens.seamSoft
 
         Behavior on color {
             ColorAnimation { duration: Theme.focusDuration }
@@ -38,23 +35,25 @@ Button {
       Row {
         id: contentRow
         anchors.centerIn: parent
-        spacing: root.hasMenu ? 7 : 0
+        spacing: root.hasMenu ? DesktopTokens.px(7) : 0
 
         Text {
             anchors.verticalCenter: parent.verticalCenter
             text: root.text
-            color: root.selected ? "#FFFFFF" : Qt.rgba(1, 1, 1, 0.64)
+            color: root.selected ? DesktopTokens.text : DesktopTokens.textMuted
             font.family: Theme.bodyFont
-            font.pixelSize: 12
+            font.pixelSize: DesktopTokens.monoSize
             font.weight: root.selected ? Font.ExtraBold : Font.DemiBold
         }
 
-        DesktopGlyph {
+        DesktopSettingsIcon {
             anchors.verticalCenter: parent.verticalCenter
             visible: root.hasMenu
-            width: 10
-            height: 6
-            icon: "desktop-chevron-down.svg"
+            width: DesktopTokens.px(10)
+            height: width
+            glyph: "chevron"
+            rotation: 90
+            ink: DesktopTokens.textMuted
         }
     }
     }

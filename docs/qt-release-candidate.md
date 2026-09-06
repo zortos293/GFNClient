@@ -1,7 +1,7 @@
 # Qt production release candidates
 
 The `qt-release-candidate` workflow builds one immutable Qt/Rust source commit for all seven
-release architectures/window families. It does not publish a GitHub release or replace Electron;
+release architectures/window families. It does not publish a GitHub release;
 it produces protected candidate artifacts that must still pass the live matrix and staged rollout.
 
 ## Protected environment
@@ -53,4 +53,5 @@ key. The workflow rejects mutable branch names and confirms checkout identity be
 Download the complete
 candidate artifact, retain it under the release-candidate identifier, and execute
 [`qt-acceptance.md`](qt-acceptance.md). Only a verifier pass for every required hardware row plus the
-defined staged-rollout observation window authorizes promotion and subsequent Electron removal.
+defined staged-rollout observation window authorizes promotion. The Electron source and legacy
+release workflows have already been removed; this does not waive candidate acceptance.

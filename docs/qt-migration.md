@@ -1,8 +1,10 @@
 # OpenNOW Qt migration
 
-This document is the durable implementation checklist for replacing the Electron
-application shell with Qt Quick/QML. Electron remains the reference and fallback
-until every removal gate at the end of this document passes.
+This document records the migration from Electron to Qt Quick/QML. The Electron
+application and its build/package tooling have been removed at the maintainer's
+request. Qt/native is the only supported desktop entry point. The unchecked
+hardware, signing and rollout gates below remain required for release acceptance;
+source removal does not establish that they passed.
 
 ## Target architecture
 
@@ -177,7 +179,7 @@ stream without creating another application window or presenter process.
 - [x] Package required dynamic Qt libraries and all third-party notices through Qt deployment scripts, generated exact Rust license notices and the Linux AppImage deployment path.
 - [x] Run localization extraction and validate every supported locale. The runtime loads every catalog, reacts to language changes, and falls back to English for untranslated new copy; translated-copy review remains a Crowdin/release QA task.
 
-### 9. Acceptance and Electron removal gates
+### 9. Release acceptance and Electron removal status
 
 - [x] Every Paper V3 state is reachable through the production router and has controller focus; warning-fatal route/overlay smoke coverage renders all 28 Paper compositions and the additional functional routes.
 - [x] No focus loss across route, modal, reconnect, async refresh or error states in the automated shell suite; every smoke state must retain a visible, enabled active focus item.
@@ -188,15 +190,17 @@ stream without creating another application window or presenter process.
 - [ ] Authorized live sessions pass on every supported OS/window-system pair.
 - [x] Upgrade, downgrade and rollback fixtures preserve user data: unknown Electron fields survive Qt saves, imported credentials leave the Electron source untouched, and failed AppImage replacement restores the previous executable.
 - [ ] Qt release has completed a staged rollout with diagnostics monitored.
-- [ ] Delete Electron main, preload and renderer code.
-- [ ] Delete Electron dependencies, builder configuration and CI jobs.
-- [ ] Make the Qt shell the only supported desktop entry point.
+- [x] Delete Electron main, preload and renderer code.
+- [x] Delete Electron dependencies, builder configuration and CI jobs.
+- [x] Make the Qt shell the only supported desktop entry point.
 
-## Non-negotiable removal rule
+## Release acceptance remains required
 
-Electron is removed only after every acceptance item above passes. A visually
-complete shell is not parity: auth, networking, streaming, recovery, updates,
-storage migration and controller-only operation are all removal gates.
+The earlier plan gated source removal on every acceptance item above. The
+maintainer requested removal before the remaining external evidence was recorded.
+A visually complete shell is not parity: auth, networking, streaming, recovery,
+updates, storage migration and controller-only operation still require release
+acceptance. Legacy data migration and its regression fixtures remain in the core.
 
 ## Current measured checkpoint
 
@@ -227,8 +231,8 @@ reports them.
 These are development-host checkpoints, not live-account or representative-GPU
 acceptance results. Production update keys/assets, signed/notarized multi-arch
 packages, authorized multi-OS streams, representative hardware frame timing and
-a monitored staged rollout remain external removal gates. Electron therefore
-remains intact.
+a monitored staged rollout remain external release gates. Electron source removal
+does not change these measured checkpoints or satisfy the remaining gates.
 
 The Diagnostics screen now exports both a human-readable redacted report and a direct
 machine-readable live-acceptance manifest. The latter hashes the screenshot, recording and

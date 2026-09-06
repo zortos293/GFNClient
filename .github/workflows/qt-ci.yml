@@ -14,6 +14,9 @@ on:
       - "opennow-qt/**"
       - "native/opennow-core/**"
       - "native/opennow-streamer/**"
+      - "locales/**"
+      - "scripts/**"
+      - "package.json"
   push:
     paths:
       - ".github/workflows/qt-ci.yml"
@@ -23,6 +26,9 @@ on:
       - "opennow-qt/**"
       - "native/opennow-core/**"
       - "native/opennow-streamer/**"
+      - "locales/**"
+      - "scripts/**"
+      - "package.json"
 
 concurrency:
   group: qt-ci-${{ github.ref }}
@@ -32,6 +38,16 @@ permissions:
   contents: read
 
 jobs:
+  localization:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm run locales:check
+      - run: node --test scripts/check-translations.test.mjs
+
   validate:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}

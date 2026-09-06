@@ -1,9 +1,9 @@
 # OpenNOW Qt shell
 
-The Qt Quick/QML replacement for the Electron desktop shell. It targets Qt 6.8
+The supported OpenNOW Qt Quick/QML desktop application. It targets Qt 6.8
 or newer and uses SDL3 for controller input. A bundled Rust process owns settings
 and is the start of the shell-neutral application core. See
-`docs/qt-migration.md` for the full parity and removal checklist.
+`docs/qt-migration.md` for the migration history and remaining release checklist.
 
 ## Remote streaming diagnostics
 
@@ -85,8 +85,8 @@ The screenshot shortcut captures the exact stream region, and F12 records the
 negotiated H.264/H.265/AV1 source stream plus Opus audio atomically into Matroska
 before generating a media thumbnail. Microphone capture is not part of the
 native NVST runtime. Live multi-OS streaming, GPU interop and
-hardware validation plus production signing/notarization remain removal gates,
-so Electron is still retained as the shipping fallback.
+hardware validation plus production signing/notarization remain release gates.
+The legacy Electron application has been removed; it is not a fallback in this tree.
 
 The current presenter is a Qt scene-graph item. Platform decoders retain native
 textures, record any required conversion and synchronization into the active

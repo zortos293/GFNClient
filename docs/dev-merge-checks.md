@@ -1,5 +1,8 @@
 # PR 776: merge-check compatibility fixes
 
+This is a historical record. The referenced Electron source has since been removed;
+the Rust transport and Qt build/test guidance below remain relevant.
+
 ## Security alert 55: no crypto change
 
 The reported `js/weak-cryptographic-algorithm` sink is

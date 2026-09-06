@@ -37,12 +37,14 @@ namespace OpenNow.Playnite
                 return;
             }
 
-            Process.Start(new ProcessStartInfo
+            using (Process.Start(new ProcessStartInfo
             {
                 FileName = path,
                 UseShellExecute = true,
                 WorkingDirectory = Path.GetDirectoryName(path),
-            });
+            }))
+            {
+            }
         }
     }
 }

@@ -40,6 +40,35 @@ dotnet build -c Release
 
 Output: `playnite/OpenNow.Playnite/bin/Release/`
 
+## Focused regression tests
+
+With the .NET 8 SDK, run from the repository root on Linux or Windows:
+
+```sh
+dotnet run --project playnite/OpenNow.Playnite.Tests -c Release
+dotnet build playnite/OpenNow.Playnite/OpenNow.Playnite.csproj -c Release
+```
+
+The regression harness links the production C# matching, catalog, launcher, and controller sources
+and references the real Playnite SDK 6.13.0. It exits nonzero on any failed assertion. It covers
+edition collisions, EA/Origin detection, store IDs, Windows argument quoting, 64-bit launch IDs,
+catalog pagination/failure bounds, cancellation, HTTP content disposal, and the 30-second startup
+watcher deadline. Close OpenNOW before running the harness; the timeout test requires no OpenNOW
+process to be running and takes about 30 seconds.
+
+Serialization and logging are **test adapters**, not the Playnite host.
+The serializer adapter uses System.Text.Json with the SDK's property-name attributes and string
+enums; HTTP responses are local fixtures, with no NVIDIA requests. NuGet emits NU1701 because the
+SDK targets .NET Framework rather than .NET 8. This harness exercises only its compatible APIs.
+
+The net462 production plugin also compiles with the .NET 8 SDK on Linux, including XAML resources.
+Neither a successful build nor the harness validates **Windows Playnite-host behavior**: extension
+loading, WPF rendering, Windows shell argument parsing, process launch/single-instance handoff,
+library synchronization, and real account/gameplay flows still need Windows acceptance testing.
+The startup test bypasses the WPF-dependent controller constructor and invokes the watcher directly,
+using reflection to attach the SDK's internal event hooks and a test synchronization context. It does
+not launch OpenNOW or validate Playnite's UI.
+
 ## Install for development
 
 1. Playnite → **Settings → For developers → External extensions**
@@ -81,7 +110,14 @@ Install the generated `.pext` by opening it or dragging it onto Playnite.
 
 - **Steam / GOG / Ubisoft / Battle.net / Bethesda / Rockstar**: matched by store/game ID.
 - **Epic / EA app / Xbox**: matched by normalized game title (store IDs often differ from Playnite).
+- Legacy **Origin** and **EA app** catalog entries share title matching.
 - Name normalization removes punctuation/edition noise similar to the reference plugin.
+- Exact normalized titles take priority over edition-stripped matches. Ambiguous keys with distinct
+  launch IDs are not matched automatically; all Windows game variants remain visible in the browser.
+
+Catalog refreshes only replace the cache after complete pagination. HTTP/GraphQL errors, missing or
+repeated cursors, and non-progressing pages fail the refresh rather than saving a partial catalog.
+Requests are bounded to two minutes total, 100 pages, 50,000 items, and an 8 MiB response per page.
 
 If a game is on GeForce NOW but not detected, use **Open GeForce NOW database browser** to verify the catalog title/store ID, then adjust the Playnite game name if needed.
 

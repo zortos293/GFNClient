@@ -194,7 +194,7 @@ namespace OpenNow.Playnite
 
         private OpenNowPlayController CreateController(Game game, string cmsId, string title, string executablePath)
         {
-            int? appId = int.TryParse(cmsId, out var parsed) ? parsed : (int?)null;
+            long? appId = long.TryParse(cmsId, out var parsed) ? parsed : (long?)null;
             return new OpenNowPlayController(game, title, appId, executablePath);
         }
 
@@ -204,7 +204,12 @@ namespace OpenNow.Playnite
                 "opennow-exe-not-found",
                 string.Format(ResourceProvider.GetString("LOCOpenNow_NotificationMessage"), executablePath ?? "(auto-detect failed)"),
                 NotificationType.Error,
-                () => Process.Start(new ProcessStartInfo("https://github.com/OpenCloudGaming/OpenNOW/releases") { UseShellExecute = true }));
+                () =>
+                {
+                    using (Process.Start(new ProcessStartInfo("https://github.com/OpenCloudGaming/OpenNOW/releases") { UseShellExecute = true }))
+                    {
+                    }
+                }));
         }
 
         public bool DownloadAndRefreshGameList(bool showDialogs)

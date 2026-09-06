@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 
 namespace OpenNow.Playnite.Services
 {
@@ -16,7 +17,7 @@ namespace OpenNow.Playnite.Services
         private static string BuildQuery(string after, string country = "US", string language = "en_US")
         {
             return $@"{{
-  apps(country:""{country}"", language:""{language}"", after: ""{after}"") {{
+  apps(country:{Serialization.ToJson(country)}, language:{Serialization.ToJson(language)}, after: {Serialization.ToJson(after)}) {{
     numberReturned,
     pageInfo {{
       hasNextPage,
@@ -44,57 +45,66 @@ namespace OpenNow.Playnite.Services
 
         public static List<GeforceNowItem> GetGeforceNowDatabase()
         {
+            using (var client = new HttpClient { MaxResponseContentBufferSize = 8 * 1024 * 1024 })
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2)))
+            {
+                return GetGeforceNowDatabase(client, timeout.Token);
+            }
+        }
+
+        internal static List<GeforceNowItem> GetGeforceNowDatabase(HttpClient client, CancellationToken cancellationToken)
+        {
             var afterValue = string.Empty;
             var items = new List<GeforceNowItem>();
             var pageCount = 0;
+            var cursors = new HashSet<string>(StringComparer.Ordinal);
 
             Logger.Info("Fetching GeForce NOW database for OpenNOW Library...");
-            using (var client = new HttpClient())
+            while (pageCount < 100)
             {
-                while (true)
+                cancellationToken.ThrowIfCancellationRequested();
+                pageCount++;
+                var requestBody = Serialization.ToJson(new GraphQlRequest
                 {
-                    pageCount++;
-                    var requestBody = Serialization.ToJson(new GraphQlRequest
-                    {
-                        Query = BuildQuery(afterValue),
-                    });
+                    Query = BuildQuery(afterValue),
+                });
 
-                    var response = client.PostAsync(
-                        GraphQlEndpoint,
-                        new StringContent(requestBody, Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
-
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        Logger.Warn($"GeForce NOW request failed on page {pageCount}: {(int)response.StatusCode}");
-                        break;
-                    }
+                using (var requestContent = new StringContent(requestBody, Encoding.UTF8, "application/json"))
+                using (var response = client.PostAsync(GraphQlEndpoint, requestContent, cancellationToken).GetAwaiter().GetResult())
+                {
+                    response.EnsureSuccessStatusCode();
 
                     var content = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
                     var parsed = Serialization.FromJson<GfnGraphQlResponse>(content);
-                    var pageItems = parsed?.Data?.Apps?.Items;
-                    if (pageItems == null || pageItems.Count == 0)
+                    var apps = parsed?.Data?.Apps;
+                    var pageItems = apps?.Items;
+                    if (parsed?.Errors?.Count > 0 || pageItems == null || apps.PageInfo == null)
                     {
-                        break;
+                        throw new InvalidOperationException("GeForce NOW returned an incomplete catalog page.");
                     }
 
+                    if (items.Count + pageItems.Count > 50000)
+                    {
+                        throw new InvalidOperationException("GeForce NOW catalog exceeded the item limit.");
+                    }
                     items.AddRange(pageItems);
                     Logger.Debug($"Fetched GeForce NOW page {pageCount}: {pageItems.Count} items");
 
-                    if (parsed.Data.Apps.PageInfo?.HasNextPage != true)
+                    if (!apps.PageInfo.HasNextPage)
                     {
-                        break;
+                        Logger.Info($"Finished fetching GeForce NOW database. Pages: {pageCount}, items: {items.Count}");
+                        return items;
                     }
 
-                    afterValue = parsed.Data.Apps.PageInfo.EndCursor ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(afterValue))
+                    afterValue = apps.PageInfo.EndCursor;
+                    if (pageItems.Count == 0 || string.IsNullOrWhiteSpace(afterValue) || !cursors.Add(afterValue))
                     {
-                        break;
+                        throw new InvalidOperationException("GeForce NOW catalog pagination did not advance.");
                     }
                 }
             }
 
-            Logger.Info($"Finished fetching GeForce NOW database. Pages: {pageCount}, items: {items.Count}");
-            return items;
+            throw new InvalidOperationException("GeForce NOW catalog exceeded the page limit.");
         }
 
         private sealed class GraphQlRequest

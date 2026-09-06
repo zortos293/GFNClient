@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="PlayniteSDK" Version="6.13.0" />
+    <Compile Include="Program.cs" />
+    <Compile Include="../OpenNow.Playnite/OpenNowPlayController.cs" Link="OpenNowPlayController.cs" />
+    <Compile Include="../OpenNow.Playnite/Common/GameNameMatcher.cs" Link="GameNameMatcher.cs" />
+    <Compile Include="../OpenNow.Playnite/Models/GfnGraphQlResponse.cs" Link="GfnGraphQlResponse.cs" />
+    <Compile Include="../OpenNow.Playnite/Services/GameDetectionService.cs" Link="GameDetectionService.cs" />
+    <Compile Include="../OpenNow.Playnite/Services/GeforceNowService.cs" Link="GeforceNowService.cs" />
+    <Compile Include="../OpenNow.Playnite/Services/OpenNowLauncher.cs" Link="OpenNowLauncher.cs" />
+  </ItemGroup>
+</Project>

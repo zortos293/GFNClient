@@ -6,6 +6,9 @@ namespace OpenNow.Playnite.Models
 {
     public class GfnGraphQlResponse
     {
+        [SerializationPropertyName("errors")]
+        public List<object> Errors { get; set; }
+
         [SerializationPropertyName("data")]
         public GfnGraphQlData Data { get; set; }
     }

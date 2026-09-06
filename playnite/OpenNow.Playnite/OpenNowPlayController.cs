@@ -12,11 +12,11 @@ namespace OpenNow.Playnite
     {
         private static readonly ILogger Logger = LogManager.GetLogger();
         private readonly string launchTitle;
-        private readonly int? launchAppId;
+        private readonly long? launchAppId;
         private readonly string openNowExecutablePath;
         private Stopwatch stopWatch;
 
-        public OpenNowPlayController(Game game, string launchTitle, int? launchAppId, string openNowExecutablePath)
+        public OpenNowPlayController(Game game, string launchTitle, long? launchAppId, string openNowExecutablePath)
             : base(game)
         {
             Name = ResourceProvider.GetString("LOCOpenNow_ControllerLaunchInOpenNow");
@@ -39,22 +39,40 @@ namespace OpenNow.Playnite
 
         private static bool IsOpenNowRunning()
         {
-            return Process.GetProcessesByName("OpenNOW").Length > 0;
+            var processes = Process.GetProcessesByName("OpenNOW");
+            try
+            {
+                return processes.Length > 0;
+            }
+            finally
+            {
+                foreach (var process in processes)
+                {
+                    process.Dispose();
+                }
+            }
         }
 
         private async void StartWatching()
         {
-            while (true)
+            while (stopWatch.Elapsed < TimeSpan.FromSeconds(30))
             {
                 if (IsOpenNowRunning())
                 {
                     InvokeOnStarted(new GameStartedEventArgs());
-                    break;
+                    await WatchUntilStopped();
+                    return;
                 }
 
                 await Task.Delay(2000);
             }
 
+            Logger.Warn("OpenNOW did not appear within 30 seconds of launch.");
+            InvokeOnStopped(new GameStoppedEventArgs(0));
+        }
+
+        private async Task WatchUntilStopped()
+        {
             while (true)
             {
                 if (!IsOpenNowRunning())

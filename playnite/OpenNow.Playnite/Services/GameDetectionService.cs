@@ -12,6 +12,9 @@ namespace OpenNow.Playnite.Services
     {
         private readonly Dictionary<Tuple<AppStore, string>, GeforceNowItemVariant> detectionDictionary
             = new Dictionary<Tuple<AppStore, string>, GeforceNowItemVariant>();
+        private readonly Dictionary<Tuple<AppStore, string>, GeforceNowItemVariant> exactNameDictionary
+            = new Dictionary<Tuple<AppStore, string>, GeforceNowItemVariant>();
+        private readonly List<GeforceNowItemVariant> allVariants = new List<GeforceNowItemVariant>();
 
         private readonly Dictionary<Guid, AppStore> pluginIdToAppStoreMapper;
         private readonly HashSet<AppStore> appStoresToMatchByName;
@@ -49,37 +52,66 @@ namespace OpenNow.Playnite.Services
 
         public bool HasEntries => detectionDictionary.Count > 0;
 
-        public IReadOnlyCollection<GeforceNowItemVariant> AllVariants => detectionDictionary.Values;
+        public IReadOnlyCollection<GeforceNowItemVariant> AllVariants => allVariants;
 
         public void SetDatabase(IEnumerable<GeforceNowItem> items)
         {
             detectionDictionary.Clear();
+            exactNameDictionary.Clear();
+            allVariants.Clear();
             foreach (var item in items ?? Enumerable.Empty<GeforceNowItem>())
             {
-                if (item.Type != AppType.Game || item.Variants == null)
+                if (item == null || item.Type != AppType.Game || item.Variants == null)
                 {
                     continue;
                 }
 
                 foreach (var variant in item.Variants)
                 {
-                    if (variant.OsType != OsType.Windows)
+                    if (variant == null || variant.OsType != OsType.Windows)
                     {
                         continue;
                     }
 
-                    var key = appStoresToMatchByName.Contains(variant.AppStore)
-                        ? Tuple.Create(variant.AppStore, GameNameMatcher.SanitizeForMatching(variant.Title))
-                        : Tuple.Create(variant.AppStore, variant.StoreId ?? string.Empty);
+                    allVariants.Add(variant);
+                    var store = NormalizeStore(variant.AppStore);
+                    var matchByName = appStoresToMatchByName.Contains(store);
+                    var key = matchByName
+                        ? Tuple.Create(store, GameNameMatcher.SanitizeForMatching(variant.Title))
+                        : Tuple.Create(store, variant.StoreId ?? string.Empty);
 
                     if (string.IsNullOrWhiteSpace(key.Item2))
                     {
                         continue;
                     }
 
-                    detectionDictionary[key] = variant;
+                    AddUnambiguousMatch(detectionDictionary, key, variant);
+                    if (matchByName)
+                    {
+                        AddUnambiguousMatch(exactNameDictionary,
+                            Tuple.Create(store, GameNameMatcher.Satinize(variant.Title)), variant);
+                    }
                 }
             }
+        }
+
+        private static AppStore NormalizeStore(AppStore store)
+        {
+            return store == AppStore.Origin ? AppStore.EA_APP : store;
+        }
+
+        private static void AddUnambiguousMatch(
+            Dictionary<Tuple<AppStore, string>, GeforceNowItemVariant> dictionary,
+            Tuple<AppStore, string> key, GeforceNowItemVariant variant)
+        {
+            if (dictionary.TryGetValue(key, out var existing)
+                && (existing == null || existing.Id != variant.Id))
+            {
+                dictionary[key] = null;
+                return;
+            }
+
+            dictionary[key] = variant;
         }
 
         public GeforceNowItemVariant GetMatchingVariant(Game game)
@@ -89,8 +121,15 @@ namespace OpenNow.Playnite.Services
                 return null;
             }
 
+            appStore = NormalizeStore(appStore);
             if (appStoresToMatchByName.Contains(appStore))
             {
+                var exactKey = Tuple.Create(appStore, GameNameMatcher.Satinize(game.Name));
+                if (exactNameDictionary.TryGetValue(exactKey, out var exactMatch))
+                {
+                    return exactMatch;
+                }
+
                 var key = Tuple.Create(appStore, GameNameMatcher.SanitizeForMatching(game.Name));
                 return detectionDictionary.TryGetValue(key, out var byName) ? byName : null;
             }

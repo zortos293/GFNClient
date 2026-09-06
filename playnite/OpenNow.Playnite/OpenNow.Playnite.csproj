@@ -5,6 +5,7 @@
     <AssemblyName>OpenNow.Playnite</AssemblyName>
     <LangVersion>latest</LangVersion>
     <UseWPF>true</UseWPF>
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
@@ -18,6 +19,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="System.Net.Http" />
     <PackageReference Include="PlayniteSDK" Version="6.13.0" />
   </ItemGroup>
 

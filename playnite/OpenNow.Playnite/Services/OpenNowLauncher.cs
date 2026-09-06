@@ -13,7 +13,7 @@ namespace OpenNow.Playnite.Services
         public const string PlayActionName = "Play via OpenNOW";
         public const string FeatureName = "OpenNOW";
 
-        public static string BuildLaunchArguments(string title, int? appId)
+        public static string BuildLaunchArguments(string title, long? appId)
         {
             var builder = new StringBuilder();
             if (appId.HasValue && appId.Value > 0)
@@ -34,7 +34,7 @@ namespace OpenNow.Playnite.Services
                 && arguments.IndexOf("--launch-title", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        public static bool TryLaunch(string executablePath, string title, int? appId, out string errorMessage)
+        public static bool TryLaunch(string executablePath, string title, long? appId, out string errorMessage)
         {
             errorMessage = null;
             if (string.IsNullOrWhiteSpace(executablePath) || !System.IO.File.Exists(executablePath))
@@ -51,13 +51,15 @@ namespace OpenNow.Playnite.Services
 
             try
             {
-                Process.Start(new ProcessStartInfo
+                using (Process.Start(new ProcessStartInfo
                 {
                     FileName = executablePath,
                     Arguments = BuildLaunchArguments(title.Trim(), appId),
                     UseShellExecute = true,
                     WorkingDirectory = System.IO.Path.GetDirectoryName(executablePath),
-                });
+                }))
+                {
+                }
                 return true;
             }
             catch (Exception ex)
@@ -80,17 +82,24 @@ namespace OpenNow.Playnite.Services
 
         private static string EscapeArgument(string value)
         {
-            if (value.IndexOf('"') >= 0)
+            var escaped = new StringBuilder("\"");
+            var backslashes = 0;
+            foreach (var character in value ?? string.Empty)
             {
-                value = value.Replace("\"", "\\\"");
+                if (character == '\\')
+                {
+                    backslashes++;
+                    continue;
+                }
+
+                escaped.Append('\\', character == '"' ? backslashes * 2 + 1 : backslashes);
+                escaped.Append(character);
+                backslashes = 0;
             }
 
-            if (value.IndexOf(' ') >= 0 || value.IndexOf('"') >= 0)
-            {
-                return $"\"{value}\"";
-            }
-
-            return value;
+            escaped.Append('\\', backslashes * 2);
+            escaped.Append('"');
+            return escaped.ToString();
         }
     }
 }

@@ -203,6 +203,11 @@ bool CoreClient::cancel(const QString &requestId)
 
 void CoreClient::processStdout()
 {
+    if (m_state != u"ready"_s && m_state != u"handshaking"_s) {
+        m_process.readAllStandardOutput();
+        m_stdoutBuffer.clear();
+        return;
+    }
     m_stdoutBuffer += m_process.readAllStandardOutput();
     if (m_stdoutBuffer.size() > MaximumLineBytes && !m_stdoutBuffer.contains('\n')) {
         protocolFailure(u"Core sent an oversized protocol line"_s);
@@ -219,6 +224,10 @@ void CoreClient::processStdout()
         }
         if (!line.isEmpty()) {
             processLine(line);
+            if (m_state != u"ready"_s && m_state != u"handshaking"_s) {
+                m_stdoutBuffer.clear();
+                return;
+            }
         }
     }
 }
@@ -289,6 +298,10 @@ void CoreClient::setState(const QString &state)
 {
     if (m_state == state) return;
     m_state = state;
+    if (state == u"failed"_s || state == u"stopping"_s || state == u"stopped"_s) {
+        m_events.clear();
+        m_droppedEvents = 0;
+    }
     emit stateChanged();
 }
 

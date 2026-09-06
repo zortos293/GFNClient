@@ -218,7 +218,9 @@ void NativeStreamRuntime::invalidatePresentation()
 
 void NativeStreamRuntime::reportPresentationError(const QString &message)
 {
-    QMetaObject::invokeMethod(this, [this, message] {
+    const auto generation = presentationGeneration();
+    QMetaObject::invokeMethod(this, [this, message, generation] {
+        if (generation != presentationGeneration()) return;
         invalidatePresentation();
         setLastError(message);
         qWarning("Stream presentation: %s", qUtf8Printable(message));
@@ -298,19 +300,12 @@ bool NativeStreamRuntime::send(const QJsonObject &command)
 
 bool NativeStreamRuntime::sendBytes(const QByteArray &command)
 {
-    const auto object = QJsonDocument::fromJson(command).object();
-    const auto type = object.value(u"type"_s).toString();
-    if (type == u"start"_s || type == u"stop"_s) {
-        invalidatePresentation();
-        if (type == u"start"_s) {
-            d->firstNotification = false;
-            d->presentationStartId = object.value(u"id"_s).toString();
-        }
-    }
     if (command.size() > MaximumCallbackBytes) {
         setLastError(statusText(OPENNOW_STREAMER_MESSAGE_TOO_LARGE));
         return false;
     }
+    const auto object = QJsonDocument::fromJson(command).object();
+    const auto type = object.value(u"type"_s).toString();
 
     OpenNowStreamerStatus status = OPENNOW_STREAMER_CLOSED;
     {
@@ -326,6 +321,13 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
     if (status != OPENNOW_STREAMER_OK) {
         setLastError(statusText(status));
         return false;
+    }
+    if (type == u"start"_s || type == u"stop"_s) {
+        invalidatePresentation();
+        if (type == u"start"_s) {
+            d->firstNotification = false;
+            d->presentationStartId = object.value(u"id"_s).toString();
+        }
     }
     setLastError({});
     return true;
@@ -642,6 +644,11 @@ void NativeStreamRuntime::scheduleDrain(const std::shared_ptr<CallbackState> &st
 
 void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &state)
 {
+    const QPointer<NativeStreamRuntime> guard(this);
+    const auto current = [&] {
+        return guard && state->target == this && d->callbackState == state;
+    };
+    if (!current()) return;
     QQueue<CallbackState::Message> messages;
     int dropped = 0;
     bool framePending = false;
@@ -660,6 +667,7 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
     if (dropped > 0) {
         handshakeLog(u"callback_queue dropped=%1"_s.arg(dropped));
         emit callbacksDropped(dropped);
+        if (!current()) return;
     }
     if (framePending) {
         if (!d->firstNotification) {
@@ -667,8 +675,10 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
             d->firstNotification = true;
         }
         emit frameAvailable();
+        if (!current()) return;
     }
     while (!messages.isEmpty()) {
+        if (!current()) return;
         const auto message = messages.dequeue();
         if (message.cursor) {
             emit cursorUpdated(message.bytes);
@@ -686,11 +696,13 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         if (message.event && (kind == u"error"_s
                 || (kind == u"status"_s && (status == u"stopped"_s || status == u"error"_s)))) {
             invalidatePresentation();
+            if (!current()) return;
         } else if (!message.event && !d->presentationStartId.isEmpty()
                 && document.object().value(u"id"_s).toString() == d->presentationStartId) {
             d->presentationStartId.clear();
             d->presentationAllowed.store(kind == u"ok"_s, std::memory_order_release);
             emit frameAvailable();
+            if (!current()) return;
         }
         if (kind != u"telemetry"_s && kind != u"stats"_s && kind != u"log"_s)
             handshakeLog(u"delivered %1 bytes=%2"_s.arg(handshakeSummary(document.object()))
@@ -700,7 +712,7 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         else
             emit responseReceived(document.object());
     }
-    if (reschedule) scheduleDrain(state);
+    if (current() && reschedule) scheduleDrain(state);
 }
 
 void NativeStreamRuntime::setLastError(const QString &error)

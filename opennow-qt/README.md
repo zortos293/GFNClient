@@ -78,9 +78,10 @@ chrome. The shell sends one complete CloudMatch session context and never
 proxies RTSPS, ICE, SRTP or encoded media. Decoders publish native GPU frames
 through the C FFI; `StreamVideoItem` imports and samples them on Qt's QRhi
 render command stream without a child streamer process or native presenter
-window. CPack installs the Qt executable, `opennow-core` and the runtime library;
-there is no separate streamer application. CI produces the platform packages
-from that layout.
+window. CPack installs the Qt executable, `opennow-core`, the runtime library
+and `opennow-streamer` for the core's capability probe. Qt streaming still runs
+in process through the runtime library, not in the probe executable. CI produces
+the platform packages from that layout.
 The screenshot shortcut captures the exact stream region, and F12 records the
 negotiated H.264/H.265/AV1 source stream plus Opus audio atomically into Matroska
 before generating a media thumbnail. Microphone capture is not part of the

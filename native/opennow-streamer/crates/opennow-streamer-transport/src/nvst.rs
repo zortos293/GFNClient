@@ -2354,7 +2354,7 @@ fn strip_trailing_access_unit_delimiter(codec: NvstVideoCodec, bytes: &mut Vec<u
         let start = offset + start;
         let nal_start = start + prefix_len;
         last_nal = Some((start, nal_start));
-        offset = nal_start + 1;
+        offset = nal_start;
     }
     if let Some((start, nal_start)) = last_nal
         && bytes.get(nal_start).is_some_and(|header| match codec {
@@ -2412,14 +2412,15 @@ fn video_access_unit_is_keyframe(
 }
 
 fn find_annex_b_start_code(bytes: &[u8]) -> Option<(usize, usize)> {
-    let four_byte = bytes.windows(4).position(|window| window == [0, 0, 0, 1]);
-    let three_byte = bytes.windows(3).position(|window| window == [0, 0, 1]);
-    match (four_byte, three_byte) {
-        (Some(four_byte), Some(three_byte)) if four_byte <= three_byte => Some((four_byte, 4)),
-        (_, Some(three_byte)) => Some((three_byte, 3)),
-        (Some(four_byte), None) => Some((four_byte, 4)),
-        (None, None) => None,
+    for (offset, prefix) in bytes.windows(3).enumerate() {
+        if prefix == [0, 0, 1] {
+            return Some((offset, 3));
+        }
+        if prefix == [0, 0, 0] && bytes.get(offset + 3) == Some(&1) {
+            return Some((offset, 4));
+        }
     }
+    None
 }
 
 struct RtpReorderBuffer {
@@ -3359,6 +3360,7 @@ impl NvstVideoReceiver {
             return None;
         }
         self.reset_media_state();
+        self.last_authenticated_packet = None;
         self.timeout_origin = Instant::now();
         self.state = NvstReceiverState::Running;
         Some(NvstReceiveEvent::Lifecycle(self.state))
@@ -3369,6 +3371,7 @@ impl NvstVideoReceiver {
             return None;
         }
         self.reset_media_state();
+        self.last_authenticated_packet = None;
         self.timeout_origin = Instant::now();
         self.state = NvstReceiverState::Running;
         Some(NvstReceiveEvent::Lifecycle(self.state))
@@ -7215,6 +7218,20 @@ mod tests {
     }
 
     #[test]
+    fn annex_b_terminal_start_code_does_not_panic() {
+        for codec in [NvstVideoCodec::H264, NvstVideoCodec::H265] {
+            for suffix in [&[0, 0, 1][..], &[0, 0, 0, 1][..]] {
+                let mut bytes = vec![0, 0, 1, 0x61, 0xaa];
+                bytes.extend_from_slice(suffix);
+                let expected = bytes.clone();
+                strip_trailing_access_unit_delimiter(codec, &mut bytes);
+                assert_eq!(bytes, expected);
+                assert!(!video_access_unit_is_keyframe(codec, &bytes, false));
+            }
+        }
+    }
+
+    #[test]
     fn assembles_a_single_packet_frame_without_the_picture_data_flag() {
         let header = NvVideoPacket {
             stream_packet_index: 25,
@@ -8295,6 +8312,30 @@ mod tests {
             ))
         ));
         assert_eq!(receiver.state(), NvstReceiverState::RecoveryRequired);
+    }
+
+    #[test]
+    fn recovery_and_resume_start_a_fresh_media_timeout() {
+        for paused in [false, true] {
+            let mut receiver = NvstVideoReceiver::new(config());
+            receiver.last_authenticated_packet = Some(Instant::now() - Duration::from_secs(1));
+            if paused {
+                receiver.pause().expect("pause running receiver");
+                receiver.resume().expect("resume paused receiver");
+            } else {
+                receiver
+                    .poll_timeout(Instant::now())
+                    .expect("initial timeout");
+                receiver.recover().expect("recover timed out receiver");
+            }
+            assert_eq!(receiver.poll_timeout(Instant::now()), None);
+            assert!(matches!(
+                receiver.poll_timeout(receiver.timeout_origin + receiver.config.timeout),
+                Some(NvstReceiveEvent::RecoveryNeeded(
+                    NvstRecovery::Timeout { .. }
+                ))
+            ));
+        }
     }
 
     #[test]

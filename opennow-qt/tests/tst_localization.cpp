@@ -38,6 +38,32 @@ private slots:
                  QStringLiteral("2 games"));
     }
 
+    void interpolationTreatsReplacementTextLiterally()
+    {
+        Localization localization;
+        localization.setLocale(QStringLiteral("en"));
+        QCOMPARE(localization.text(QStringLiteral("library.filteredGameCount"),
+                     {{QStringLiteral("shown"), QStringLiteral("game {{total}}")},
+                      {QStringLiteral("total"), 8}}),
+                 QStringLiteral("game {{total}} of 8 games"));
+        QCOMPARE(localization.text(QStringLiteral("library.filteredGameCount"),
+                     {{QStringLiteral("shown"), QStringLiteral("game {{shown}}")}}),
+                 QStringLiteral("game {{shown}} of {{total}} games"));
+    }
+
+    void interpolationHandlesEmptyAdjacentValues()
+    {
+        Localization localization;
+        localization.setLocale(QStringLiteral("en"));
+        QCOMPARE(localization.text(QStringLiteral("stream.stats.advancedNativeTransition"),
+                     {{QStringLiteral("transition"), QStringLiteral("ready")},
+                      {QStringLiteral("queue"), 0}, {QStringLiteral("caps"), QString()},
+                      {QStringLiteral("requested"), QStringLiteral("requested")},
+                      {QStringLiteral("pending"), QString()},
+                      {QStringLiteral("flush"), QStringLiteral("flush")}}),
+                 QStringLiteral("Native transition ready · queue 0 · caps requestedflush"));
+    }
+
     void everySupportedLocaleLoadsWithFallback()
     {
         Localization localization;

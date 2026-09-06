@@ -14,6 +14,8 @@ pub enum Subsystem {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("decoded GPU frame is not ready")]
+    FrameNotReady,
     #[error("{subsystem:?} is unavailable: {reason}")]
     Unavailable {
         subsystem: Subsystem,

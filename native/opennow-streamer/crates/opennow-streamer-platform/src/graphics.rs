@@ -136,7 +136,10 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
                 command.frame_slot,
             )
         }
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| match error {
+            opennow_streamer_platform_linux::Error::FrameNotReady => GraphicsFrameError::NotReady,
+            error => GraphicsFrameError::from(error.to_string()),
+        })?;
         Ok(GraphicsRecordedFrame {
             resource: frame.image,
             resource_view: frame.image_view,

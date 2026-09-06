@@ -22,6 +22,14 @@ pub enum DecoderBackend {
     Ffmpeg,
 }
 
+impl DecoderBackend {
+    pub fn embedded_presentation_error(self) -> Option<&'static str> {
+        (self == Self::Vulkan).then_some(
+            "FFmpeg Vulkan uses an independent device without compatible Qt DMA-BUF export; choose a configured fallback decoder",
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecoderPreference {
     Automatic,
@@ -69,6 +77,7 @@ pub struct SessionConfig {
     pub codec: VideoCodec,
     pub stream_format: StreamFormat,
     pub decoder_preference: DecoderPreference,
+    pub embedded_presentation: bool,
     pub v4l2_device: Option<PathBuf>,
     pub encoded_queue_depth: usize,
     pub decoded_queue_depth: usize,
@@ -81,6 +90,7 @@ impl SessionConfig {
             codec: VideoCodec::H264,
             stream_format,
             decoder_preference: DecoderPreference::Automatic,
+            embedded_presentation: false,
             v4l2_device: None,
             // Hardware decoders can briefly stop consuming while the driver
             // retires a large frame or reallocates surfaces. Four frames is
@@ -815,6 +825,9 @@ fn open_decoder(
     format: StreamFormat,
     backend: DecoderBackend,
 ) -> Result<Box<dyn VideoDecoder>> {
+    if config.embedded_presentation {
+        validate_decoder_presentation(backend)?;
+    }
     match backend {
         DecoderBackend::Vulkan => open_ffmpeg_decoder(config.codec, format, backend),
         DecoderBackend::Cuda => open_ffmpeg_decoder(config.codec, format, backend),
@@ -853,6 +866,13 @@ fn open_decoder(
             }
         }
     }
+}
+
+fn validate_decoder_presentation(backend: DecoderBackend) -> Result<()> {
+    if let Some(reason) = backend.embedded_presentation_error() {
+        return Err(Error::unavailable(Subsystem::Vulkan, reason));
+    }
+    Ok(())
 }
 
 fn open_ffmpeg_decoder(
@@ -962,6 +982,35 @@ fn emit(events: &EventQueue, event: BackendEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_vulkan_rejection_preserves_configured_fallback_policy() {
+        let format = StreamFormat::video_default(2, 2).unwrap();
+        let mut config = SessionConfig::new(format);
+        assert!(!config.embedded_presentation);
+        config.embedded_presentation = true;
+        config.decoder_preference = DecoderPreference::VulkanOnly;
+        let error = open_preferred_decoder(&config, format)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("independent device"));
+        assert!(open_fallback_decoder(&config, format, DecoderBackend::Vulkan).is_err());
+        assert!(validate_decoder_presentation(DecoderBackend::Cuda).is_ok());
+        assert!(validate_decoder_presentation(DecoderBackend::VaApi).is_ok());
+        assert!(validate_decoder_presentation(DecoderBackend::Ffmpeg).is_ok());
+        assert!(!decoder_order(DecoderPreference::HardwareOnly).contains(&DecoderBackend::Ffmpeg));
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn embedded_automatic_selection_can_open_software_after_incompatible_vulkan() {
+        let format = StreamFormat::video_default(2, 2).unwrap();
+        let mut config = SessionConfig::new(format);
+        config.embedded_presentation = true;
+        let (backend, _) = open_preferred_decoder(&config, format).unwrap();
+        assert_ne!(backend, DecoderBackend::Vulkan);
+    }
 
     #[test]
     fn lifecycle_allows_reconfigure_and_orderly_stop() {

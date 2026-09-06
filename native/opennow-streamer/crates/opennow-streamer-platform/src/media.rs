@@ -1013,6 +1013,13 @@ impl MediaSession {
             MediaVideoCodec::Av1 => opennow_streamer_platform_linux::VideoCodec::Av1,
         };
         config.decoder_preference = decoder_preference;
+        config.embedded_presentation = true;
+        if decoder_preference == opennow_streamer_platform_linux::DecoderPreference::VulkanOnly {
+            return Err(opennow_streamer_platform_linux::DecoderBackend::Vulkan
+                .embedded_presentation_error()
+                .expect("incompatible embedded Vulkan decoder")
+                .to_owned());
+        }
         let session = opennow_streamer_platform_linux::LinuxSession::start(config)
             .map_err(|error| error.to_string())?;
         let shared = Arc::new(SharedPipeline {
@@ -2924,7 +2931,7 @@ const fn linux_decoder_name(
 ) -> &'static str {
     match backend {
         opennow_streamer_platform_linux::DecoderBackend::Vulkan => "Vulkan Video/Vulkan",
-        opennow_streamer_platform_linux::DecoderBackend::Cuda => "CUDA/NVDEC/Vulkan",
+        opennow_streamer_platform_linux::DecoderBackend::Cuda => "CUDA/NVDEC (CPU transfer)/Vulkan",
         opennow_streamer_platform_linux::DecoderBackend::VaApi => "VA-API/Vulkan",
         opennow_streamer_platform_linux::DecoderBackend::V4l2 => "V4L2/Vulkan",
         opennow_streamer_platform_linux::DecoderBackend::Ffmpeg => "FFmpeg software/Vulkan",

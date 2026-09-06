@@ -9,13 +9,14 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 3u
-#define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 1u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 4u
+#define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 2u
 #define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 1u
 
 #define OPENNOW_STREAMER_GRAPHICS_API_D3D11 1u
 #define OPENNOW_STREAMER_GRAPHICS_API_VULKAN 2u
 #define OPENNOW_STREAMER_GRAPHICS_API_METAL 3u
+#define OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT 1u
 
 #define OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8 1u
 #define OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2 2u
@@ -53,6 +54,9 @@ typedef struct OpenNowStreamerConfig {
  *
  * D3D11: device is ID3D11Device and queue is its immediate ID3D11DeviceContext.
  * Vulkan: instance, physical_device, device, queue, and queue_family_index are required.
+ * enabled_capabilities describes support enabled on this logical device, not advertised by its
+ * physical device. DMA-BUF import requires Vulkan 1.1 and enabled external-memory/fd/dma_buf/
+ * drm_format_modifier extensions with their prerequisites. Unknown bits are rejected.
  * Metal: device is id<MTLDevice> and queue is id<MTLCommandQueue>.
  */
 typedef struct OpenNowStreamerGraphicsContext {
@@ -64,6 +68,7 @@ typedef struct OpenNowStreamerGraphicsContext {
     void *device;
     void *queue;
     uint32_t queue_family_index;
+    uint32_t enabled_capabilities;
 } OpenNowStreamerGraphicsContext;
 
 /*
@@ -210,8 +215,10 @@ OpenNowStreamerStatus opennow_streamer_record_frame(
 OpenNowStreamerStatus opennow_streamer_release_frame(OpenNowStreamerFrame *frame);
 
 /*
- * Call from the render thread during sceneGraphInvalidated/releaseResources, after releasing all
- * frame tokens and before QRhi destroys the native objects from the graphics context.
+ * Call from the render thread on session-generation changes and sceneGraphInvalidated/
+ * releaseResources, after submitting/draining native commands and releasing frame tokens and Qt
+ * imported wrappers. The borrowed device must still be live. RENDER_FAILED still invalidates the
+ * context; WRONG_THREAD does not. Retained decoder/publisher references may outlive this call.
  */
 OpenNowStreamerStatus opennow_streamer_scene_graph_shutdown(
     const OpenNowStreamer *handle);

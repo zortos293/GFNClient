@@ -163,6 +163,25 @@ private slots:
         QCOMPARE(runtime.lastError(), QStringLiteral("Texture import failed"));
     }
 
+    void failedGraphicsRetirementStillAllowsRuntimeShutdown()
+    {
+        auto api = fakeApi();
+        api.setGraphicsContext = [](const OpenNowStreamer *, const OpenNowStreamerGraphicsContext *) {
+            return OPENNOW_STREAMER_OK;
+        };
+        api.sceneGraphShutdown = [](const OpenNowStreamer *) {
+            return OPENNOW_STREAMER_RENDER_FAILED;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        OpenNowStreamerGraphicsContext context{};
+        context.version = OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION;
+        context.struct_size = sizeof(context);
+        QCOMPARE(runtime.setGraphicsContext(context), OPENNOW_STREAMER_OK);
+        QCOMPARE(runtime.sceneGraphShutdown(), OPENNOW_STREAMER_RENDER_FAILED);
+        QVERIFY(runtime.shutdown());
+    }
+
     void presentationIsInvalidatedBetweenNativeSessions()
     {
         NativeStreamRuntime runtime(fakeApi());
@@ -219,6 +238,23 @@ private slots:
                               {QStringLiteral("id"), QStringLiteral("new-session")}}));
         QTRY_VERIFY(runtime.presentationAllowed());
         QCOMPARE(errors.size(), 0);
+        QVERIFY(runtime.lastError().isEmpty());
+        QVERIFY(runtime.shutdown());
+    }
+
+    void lateRenderFailureKeepsItsOriginalSessionGeneration()
+    {
+        NativeStreamRuntime runtime(fakeApi());
+        QSignalSpy errors(&runtime, &NativeStreamRuntime::presentationError);
+        QVERIFY(runtime.start());
+        const auto oldGeneration = runtime.presentationGeneration();
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("replacement-session")}}));
+        QTRY_VERIFY(runtime.presentationAllowed());
+        runtime.reportPresentationError(QStringLiteral("retired renderer"), oldGeneration);
+        QCoreApplication::processEvents();
+        QCOMPARE(errors.size(), 0);
+        QVERIFY(runtime.presentationAllowed());
         QVERIFY(runtime.lastError().isEmpty());
         QVERIFY(runtime.shutdown());
     }

@@ -87,6 +87,7 @@ public:
     [[nodiscard]] bool presentationAllowed() const;
     // Called at most once per presentation failure from the scene-graph thread.
     void reportPresentationError(const QString &message);
+    void reportPresentationError(const QString &message, quint64 generation);
 
     Q_INVOKABLE bool start();
     Q_INVOKABLE bool send(const QJsonObject &command);

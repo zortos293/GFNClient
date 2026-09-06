@@ -19,7 +19,7 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 3;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 4;
 const DEFAULT_MAX_COMMAND_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_CAPACITY: usize = 4096;
 const MAX_COMMAND_BYTES: usize = 16 * 1024 * 1024;
@@ -66,7 +66,8 @@ pub enum OpenNowStreamerStatus {
     Panic = 255,
 }
 
-pub const OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION: u32 = 1;
+pub const OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION: u32 = 2;
+pub const OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT: u32 = 1;
 pub const OPENNOW_STREAMER_RENDER_COMMAND_VERSION: u32 = 1;
 pub const OPENNOW_STREAMER_GRAPHICS_API_D3D11: u32 = 1;
 pub const OPENNOW_STREAMER_GRAPHICS_API_VULKAN: u32 = 2;
@@ -88,6 +89,7 @@ pub struct OpenNowStreamerGraphicsContext {
     pub device: *mut c_void,
     pub queue: *mut c_void,
     pub queue_family_index: u32,
+    pub enabled_capabilities: u32,
 }
 
 #[repr(C)]
@@ -434,6 +436,11 @@ fn graphics_context(
         OPENNOW_STREAMER_GRAPHICS_API_METAL => GraphicsApi::Metal,
         _ => return Err(OpenNowStreamerStatus::InvalidConfig),
     };
+    if context.enabled_capabilities & !OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT != 0
+        || (api != GraphicsApi::Vulkan && context.enabled_capabilities != 0)
+    {
+        return Err(OpenNowStreamerStatus::InvalidConfig);
+    }
     Ok(GraphicsContext {
         api,
         instance: context.instance as usize,
@@ -441,6 +448,9 @@ fn graphics_context(
         device: context.device as usize,
         queue: context.queue as usize,
         queue_family_index: context.queue_family_index,
+        vulkan_dmabuf_import_enabled: context.enabled_capabilities
+            & OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT
+            != 0,
     })
 }
 
@@ -1085,7 +1095,9 @@ pub unsafe extern "C" fn opennow_streamer_release_frame(
 /// # Safety
 ///
 /// `handle` must be live and the call must run on the currently bound render thread. It must not
-/// race with another graphics operation or destroy.
+/// race with another graphics operation or destroy. Submit and drain commands and release host
+/// texture wrappers first, while the borrowed device is still live. RenderFailed still invalidates
+/// the graphics context; WrongThread does not.
 pub unsafe extern "C" fn opennow_streamer_scene_graph_shutdown(
     handle: *const OpenNowStreamer,
 ) -> OpenNowStreamerStatus {
@@ -1330,7 +1342,47 @@ mod tests {
             device: ptr::dangling_mut(),
             queue: ptr::dangling_mut(),
             queue_family_index: 5,
+            enabled_capabilities: 0,
         }
+    }
+
+    #[test]
+    fn graphics_capabilities_are_explicit_versioned_and_vulkan_only() {
+        let mut context = ffi_graphics_context();
+        assert!(
+            !graphics_context(context)
+                .unwrap()
+                .vulkan_dmabuf_import_enabled
+        );
+        context.enabled_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT;
+        assert!(
+            graphics_context(context)
+                .unwrap()
+                .vulkan_dmabuf_import_enabled
+        );
+        context.enabled_capabilities = 2;
+        assert_eq!(
+            graphics_context(context),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        context.enabled_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT;
+        context.graphics_api = OPENNOW_STREAMER_GRAPHICS_API_D3D11;
+        assert_eq!(
+            graphics_context(context),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        context = ffi_graphics_context();
+        context.version = 1;
+        assert_eq!(
+            graphics_context(context),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        context = ffi_graphics_context();
+        context.struct_size -= 1;
+        assert_eq!(
+            graphics_context(context),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
     }
 
     fn ffi_render_command() -> OpenNowStreamerRecordCommand {

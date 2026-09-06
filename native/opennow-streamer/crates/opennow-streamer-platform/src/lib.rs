@@ -25,8 +25,8 @@ pub use embedded_input::{EmbeddedInputCapture, EmbeddedLocalAction};
 pub use graphics::{
     GraphicsApi, GraphicsContext, GraphicsContextLease, GraphicsFrame, GraphicsFrameError,
     GraphicsFrameInfo, GraphicsFramePublisher, GraphicsFrameToken, GraphicsPublishOutcome,
-    GraphicsRecordCommand, GraphicsRecordedFrame, GraphicsRuntimeError, GraphicsTextureFormat,
-    RenderThreadGraphics,
+    GraphicsRecordCommand, GraphicsRecordedFrame, GraphicsRenderResources, GraphicsRuntimeError,
+    GraphicsTextureFormat, RenderThreadGraphics,
 };
 pub use media::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedRecordingReceiver,
@@ -85,6 +85,20 @@ pub fn video_backends() -> Vec<VideoBackendCapability> {
 pub fn embedded_video_backends() -> Vec<VideoBackendCapability> {
     #[cfg(target_os = "linux")]
     let mut backends = linux_backend::video_backends();
+    #[cfg(target_os = "linux")]
+    for backend in &mut backends {
+        if backend.backend == "vulkan" {
+            let reason = opennow_streamer_platform_linux::DecoderBackend::Vulkan
+                .embedded_presentation_error();
+            backend.available = false;
+            backend.reason = reason;
+            backend.zero_copy_modes.clear();
+            for codec in &mut backend.codecs {
+                codec.available = false;
+                codec.reason = reason;
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     let mut backends = {
         use opennow_streamer_platform_windows::WindowsGraphicsApi;
@@ -485,6 +499,16 @@ mod tests {
     fn embedded_capabilities_exclude_standalone_only_backends() {
         let backends = embedded_video_backends();
         assert!(backends.iter().all(|backend| backend.backend != "software"));
+        #[cfg(target_os = "linux")]
+        {
+            let vulkan = backends
+                .iter()
+                .find(|backend| backend.backend == "vulkan")
+                .unwrap();
+            assert!(!vulkan.available);
+            assert!(vulkan.codecs.iter().all(|codec| !codec.available));
+            assert!(vulkan.zero_copy_modes.is_empty());
+        }
         #[cfg(target_os = "windows")]
         assert_eq!(
             backends

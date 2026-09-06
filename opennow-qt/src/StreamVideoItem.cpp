@@ -1,6 +1,7 @@
 #include "StreamVideoItem.h"
 
 #include "NativeStreamRuntime.h"
+#include "LinuxVulkanGraphics.h"
 #include "StreamVideoTextureRenderer.h"
 
 #include <QColor>
@@ -74,9 +75,7 @@ public:
     {
         if (m_rhi != rhi) releaseResources();
         if (m_runtime && m_presentationGeneration != m_runtime->presentationGeneration()) {
-            finishFrame();
-            m_textures.clearFrames();
-            m_reportedFailure = false;
+            releaseResources();
             m_presentationGeneration = m_runtime->presentationGeneration();
         }
         m_textures.initialize(rhi, renderTarget);
@@ -116,6 +115,10 @@ public:
                 context.device = reinterpret_cast<void *>(handles->dev);
                 context.queue = reinterpret_cast<void *>(handles->gfxQueue);
                 context.queue_family_index = handles->gfxQueueFamilyIdx;
+#if defined(Q_OS_LINUX)
+                if (LinuxVulkanGraphics::dmabufImportEnabled(handles->inst, handles->physDev))
+                    context.enabled_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT;
+#endif
                 break;
             }
 #endif
@@ -144,7 +147,8 @@ public:
 
     void prepareFrame(QRhiCommandBuffer *commandBuffer) override
     {
-        if (!m_runtime || !m_runtime->presentationAllowed()) return;
+        if (!m_runtime || !m_runtime->presentationAllowed()
+                || m_presentationGeneration != m_runtime->presentationGeneration()) return;
         if (!m_graphicsReady || !m_rhi || !commandBuffer) return;
         if (!m_textures.prepare(commandBuffer)) {
             reportFailure(QStringLiteral("Could not create the video shaders or GPU resources. Check the packaged shaders and GPU driver."));
@@ -197,6 +201,12 @@ public:
             status = m_runtime->recordLatestFrame(command, &info, &recorded, &frame);
         }
 
+        if (m_presentationGeneration != m_runtime->presentationGeneration()
+                || !m_runtime->presentationAllowed()) {
+            if (frame) m_runtime->releaseFrame(frame);
+            m_textures.clearFrames();
+            return;
+        }
         if (status == OPENNOW_STREAMER_NO_FRAME) return;
         if (status == OPENNOW_STREAMER_STALE_FRAME) return;
         if (status != OPENNOW_STREAMER_OK || !frame || recorded.resource == 0
@@ -205,12 +215,6 @@ public:
                 && recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2)) {
             if (frame) m_runtime->releaseFrame(frame);
             reportFailure(QStringLiteral("Could not present the decoded GPU frame (status %1). Check native-streamer.log for decoder or device errors.").arg(int(status)));
-            return;
-        }
-        if (m_presentationGeneration != m_runtime->presentationGeneration()
-                || !m_runtime->presentationAllowed()) {
-            m_runtime->releaseFrame(frame);
-            m_textures.clearFrames();
             return;
         }
         m_preparedFrame = frame;
@@ -256,8 +260,10 @@ public:
 
     void releaseResources() override
     {
+        if (m_rhi && m_graphicsReady) m_rhi->finish();
         finishFrame();
         m_textures.release();
+        if (m_rhi && m_graphicsReady) m_rhi->finish();
         if (m_graphicsReady && m_runtime) m_runtime->sceneGraphShutdown();
         m_graphicsReady = false;
         m_reportedFailure = false;
@@ -278,7 +284,7 @@ private:
     {
         if (m_reportedFailure || !m_runtime) return;
         m_reportedFailure = true;
-        m_runtime->reportPresentationError(message);
+        m_runtime->reportPresentationError(message, m_presentationGeneration);
     }
 };
 

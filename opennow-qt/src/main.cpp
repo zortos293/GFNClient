@@ -4,6 +4,7 @@
 #include "CoreClient.h"
 #include "InputModeTracker.h"
 #include "Localization.h"
+#include "LinuxVulkanGraphics.h"
 #include "MotionAcceptance.h"
 #ifdef OPENNOW_EMBEDDED_STREAMER
 #include "NativeStreamRuntime.h"
@@ -86,6 +87,9 @@ int main(int argc, char *argv[])
     QQuickStyle::setStyle(u"Basic"_s);
 
     QGuiApplication application(argc, argv);
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+    LinuxVulkanGraphics::requestDeviceExtensions();
+#endif
     registerStreamVideoItemQmlType();
     qSetMessagePattern(u"%{time yyyy-MM-ddTHH:mm:ss.zzz} %{type} %{category}: %{message}"_s);
     const QStringList bundledFonts = {

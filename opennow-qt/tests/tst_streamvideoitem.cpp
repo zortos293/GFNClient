@@ -1,4 +1,5 @@
 #include "StreamVideoItem.h"
+#include "LinuxVulkanGraphics.h"
 #include "NativeStreamRuntime.h"
 #include "StreamVideoTextureRenderer.h"
 
@@ -157,6 +158,41 @@ private slots:
     void initTestCase()
     {
         registerStreamVideoItemQmlType();
+    }
+
+    void linuxDmabufRequiresEnabledExtensionsAndVulkanPrerequisites()
+    {
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+        using namespace LinuxVulkanGraphics;
+        const auto required = deviceExtensions();
+        QVERIFY(hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                        required, required));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                         {}, required));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 0), VK_API_VERSION_1_1,
+                                         required, required));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_0,
+                                         required, required));
+        const QByteArrayList mandatory = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
+                                         "VK_EXT_image_drm_format_modifier", "VK_KHR_image_format_list"};
+        for (const auto &extension : mandatory) {
+            auto missing = required;
+            missing.removeAll(extension);
+            QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                             missing, required));
+            QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                             required, missing));
+        }
+        auto promoted = mandatory;
+        promoted.removeAll("VK_KHR_image_format_list");
+        QVERIFY(hasDmabufImportContract(QVersionNumber(1, 2), VK_API_VERSION_1_2,
+                                        promoted, promoted));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_2,
+                                         promoted, promoted));
+        QVERIFY(!dmabufImportEnabled(nullptr, VK_NULL_HANDLE));
+#else
+        QSKIP("Linux Vulkan capability contract");
+#endif
     }
 
     void calculatesCenteredAspectFitViewport()

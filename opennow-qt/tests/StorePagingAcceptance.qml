@@ -173,7 +173,28 @@ QtObject {
         shelf.materialized = false
         client.responseReceived(shelfPending, {games:[ranked]})
         check(shelf.localGames.length === 0, "hidden shelf retained a cancelled response")
+        shelf.materialized = true
+        shelf.requestVisible()
+        client.responseReceived(shelf.requestId, {games:[ranked]})
+        const loadedShelfRequests = client.requests.length
+        shelf.materialized = false
+        check(shelf.localGames.length === 0, "hidden shelf retained visual model")
+        shelf.materialized = true
+        shelf.requestVisible()
+        check(client.requests.length === loadedShelfRequests && shelf.localGames[0].id === ranked.id,
+            "returning to a shelf repeated the core request")
+        shelf.width = 400
+        shelf.requestVisible()
+        check(client.requests.length === loadedShelfRequests, "shrinking a shelf fetched again")
+        ShellStore.resetStoreShelves()
+        check(shelf.localGames.length === 0 && ShellStore.storeShelfCache.length === 0,
+            "refresh retained stale shelf data")
+        for (let i = 0; i < 30; ++i) ShellStore.cacheStoreShelf("test" + i, 1, [ranked])
+        check(ShellStore.storeShelfCache.length === 24 && ShellStore.cachedStoreShelf("test0", 1) === null,
+            "shelf cache was not bounded")
+        ShellStore.resetStoreShelves()
         shelf.categoryId = ""
+        shelf.width = 600
         shelf.games = [ranked]
         check(shelf.tileWidth < 160, "short final row stretched its posters")
         shelf.destroy()

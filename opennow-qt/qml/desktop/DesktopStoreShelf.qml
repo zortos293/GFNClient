@@ -17,6 +17,8 @@ Item {
     property var localGames: []
     property string requestId: ""
     property string loadError: ""
+    property int loadedLimit: 0
+    property int requestedLimit: 0
     readonly property var displayGames: categoryId ? localGames : games
     function cancelRequest() {
         loadDelay.stop()
@@ -29,24 +31,39 @@ Item {
     }
     Timer { id: loadDelay; interval: 16; onTriggered: root.requestVisible() }
     function requestVisible() {
-        if (!materialized || !categoryId || requestId || localGames.length || !ShellStore.ready) return
+        if (!materialized || !categoryId || requestId || loadedLimit >= tileCount || !ShellStore.ready) return
+        const cached = ShellStore.cachedStoreShelf(categoryId, tileCount)
+        if (cached !== null) {
+            localGames = cached
+            loadedLimit = tileCount
+            loadError = ""
+            return
+        }
         loadError = ""
+        requestedLimit = tileCount
         requestId = CoreClient.request("catalog.store.local", {categoryId:categoryId,searchQuery:"",cursor:"",limit:tileCount}, 30000)
     }
     onMaterializedChanged: {
         if (materialized) loadVisible()
-        else { cancelRequest(); localGames = [] }
+        else { cancelRequest(); localGames = []; loadedLimit = 0 }
     }
-    onTileCountChanged: if (categoryId && materialized) { cancelRequest(); localGames = []; loadVisible() }
-    onCategoryIdChanged: { cancelRequest(); localGames = []; loadVisible() }
+    onTileCountChanged: if (categoryId && materialized && tileCount > loadedLimit) { cancelRequest(); loadVisible() }
+    function invalidate() { cancelRequest(); localGames = []; loadedLimit = 0; loadVisible() }
+    onCategoryIdChanged: invalidate()
     Component.onCompleted: loadVisible()
     Component.onDestruction: cancelRequest()
+    Connections {
+        target: ShellStore
+        function onStoreShelfEpochChanged() { root.invalidate() }
+    }
     Connections {
         target: CoreClient
         function onResponseReceived(id,result) {
             if (!root.requestId || id !== root.requestId) return
             root.requestId = ""
-            root.localGames = result.games || []
+            root.localGames = (result.games || []).slice(0, root.requestedLimit)
+            root.loadedLimit = root.requestedLimit
+            ShellStore.cacheStoreShelf(root.categoryId, root.loadedLimit, root.localGames)
         }
         function onRequestFailed(id,code,message) {
             if (!root.requestId || id !== root.requestId) return
@@ -61,7 +78,7 @@ Item {
 
     readonly property int railGap: 14
     readonly property int columnCount: Math.max(1, Math.floor((width + railGap) / (132 + railGap)))
-    readonly property int tileCount: Math.max(1, Math.min((root.categoryId ? root.totalCount : root.games.length) || 1, columnCount))
+    readonly property int tileCount: Math.max(1, Math.min(60, (root.categoryId ? root.totalCount : root.games.length) || 1, columnCount))
     // A short final page keeps the same poster size as a full row.
     readonly property int tileWidth: Math.max(132, Math.floor((width - railGap * (columnCount - 1)) / columnCount))
     readonly property int tileHeight: Math.round(tileWidth * 198 / 132) + 56

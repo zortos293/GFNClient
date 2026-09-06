@@ -143,6 +143,29 @@ QtObject {
     property var artworkRequestSources: ({})
     property var artworkRetrySources: ({})
     property var artworkInterests: ({})
+    property var storeShelfCache: []
+    property int storeShelfEpoch: 0
+
+    function cachedStoreShelf(category, limit) {
+        const entries = storeShelfCache.slice()
+        const index = entries.findIndex(entry => entry.category === category && entry.limit >= limit)
+        if (index < 0) return null
+        const entry = entries.splice(index, 1)[0]
+        entries.push(entry)
+        storeShelfCache = entries
+        return entry.games
+    }
+
+    function cacheStoreShelf(category, limit, games) {
+        const entries = storeShelfCache.filter(entry => entry.category !== category)
+        entries.push({category:category, limit:Math.min(60, limit), games:games.slice(0, 60)})
+        storeShelfCache = entries.slice(-24)
+    }
+
+    function resetStoreShelves() {
+        storeShelfCache = []
+        storeShelfEpoch++
+    }
     property string catalogRequestId: ""
     property string storeRequestId: ""
     property string deviceStartRequestId: ""
@@ -724,6 +747,7 @@ QtObject {
             storeTotalCount = 0
         }
         if (forceRefresh) {
+            resetStoreShelves()
             storeBrowseCache = null
             storePresentationIndex = 0
         }
@@ -823,6 +847,7 @@ QtObject {
     }
 
     function reloadStoreForSession() {
+        resetStoreShelves()
         cancelStoreRequests()
         storeBrowseCache = null
         storeForceRefresh = false

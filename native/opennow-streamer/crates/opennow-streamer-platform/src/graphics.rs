@@ -24,6 +24,7 @@ pub struct GraphicsContext {
     pub device: usize,
     pub queue: usize,
     pub queue_family_index: u32,
+    pub vulkan_dmabuf_import_enabled: bool,
 }
 
 impl GraphicsContext {
@@ -93,8 +94,18 @@ impl From<String> for GraphicsFrameError {
     }
 }
 
+pub trait GraphicsRenderResources: Send + Sync + 'static {
+    /// Releases borrowed-device state on the render thread after host submission
+    /// has drained. Even on error, no subsequent drop may use the retired device.
+    fn retire(&self) -> Result<(), String>;
+}
+
 pub trait GraphicsFrame: Send + Sync + 'static {
     fn info(&self) -> GraphicsFrameInfo;
+
+    fn render_resources(&self) -> Option<Arc<dyn GraphicsRenderResources>> {
+        None
+    }
 
     fn record(
         &self,
@@ -104,7 +115,18 @@ pub trait GraphicsFrame: Send + Sync + 'static {
 }
 
 #[cfg(target_os = "linux")]
+impl GraphicsRenderResources for opennow_streamer_platform_linux::LinuxGpuRenderResources {
+    fn retire(&self) -> Result<(), String> {
+        self.retire().map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
 impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
+    fn render_resources(&self) -> Option<Arc<dyn GraphicsRenderResources>> {
+        Some(self.render_resources())
+    }
+
     fn info(&self) -> GraphicsFrameInfo {
         GraphicsFrameInfo {
             width: self.width(),
@@ -131,6 +153,7 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
                     physical_device: context.physical_device,
                     device: context.device,
                     queue_family: context.queue_family_index,
+                    dmabuf_import_enabled: context.vulkan_dmabuf_import_enabled,
                 },
                 command.command_buffer,
                 command.frame_slot,
@@ -346,6 +369,9 @@ impl RenderThreadGraphics {
             if scene.context == Some(context) {
                 return Ok(());
             }
+            return Err(GraphicsRuntimeError::InvalidContext(
+                "shut down the previous scene graph before replacing its device",
+            ));
         }
         scene.latest = None;
         scene.epoch = scene.epoch.wrapping_add(1);
@@ -379,18 +405,31 @@ impl RenderThreadGraphics {
             return Err(GraphicsRuntimeError::StaleFrame);
         }
         let context = {
-            let scene = lock_scene(&self.inner.scene);
+            let mut scene = lock_scene(&self.inner.scene);
             require_render_thread(&scene)?;
             if frame.epoch != scene.epoch {
                 return Err(GraphicsRuntimeError::StaleFrame);
+            }
+            if frame.recorded.swap(true, Ordering::AcqRel) {
+                return Err(GraphicsRuntimeError::FrameAlreadyRecorded);
+            }
+            if let Some(resources) = frame.frame.render_resources() {
+                if scene
+                    .resources
+                    .as_ref()
+                    .is_some_and(|active| !Arc::ptr_eq(active, &resources))
+                {
+                    return Err(GraphicsRuntimeError::RecordFailed(
+                        "retire the previous session renderer before recording a new session"
+                            .to_owned(),
+                    ));
+                }
+                scene.resources = Some(resources);
             }
             scene
                 .context
                 .ok_or(GraphicsRuntimeError::SceneGraphInactive)?
         };
-        if frame.recorded.swap(true, Ordering::AcqRel) {
-            return Err(GraphicsRuntimeError::FrameAlreadyRecorded);
-        }
         frame
             .frame
             .record(context, command)
@@ -400,17 +439,20 @@ impl RenderThreadGraphics {
             })
     }
 
+    /// The host must submit and drain all commands and release its imported
+    /// texture wrappers before shutdown, while the borrowed device is still live.
     pub fn shutdown(&self) -> Result<(), GraphicsRuntimeError> {
         let mut scene = lock_scene(&self.inner.scene);
         if scene.context.is_none() {
             return Ok(());
         }
         require_render_thread(&scene)?;
+        let retirement = scene.retire_resources();
         scene.latest = None;
         scene.context = None;
         scene.render_thread = None;
         scene.epoch = scene.epoch.wrapping_add(1);
-        Ok(())
+        retirement
     }
 
     pub fn is_active(&self) -> bool {
@@ -429,6 +471,18 @@ struct SceneGraphState {
     render_thread: Option<ThreadId>,
     epoch: u64,
     latest: Option<FrameSlot>,
+    resources: Option<Arc<dyn GraphicsRenderResources>>,
+}
+
+impl SceneGraphState {
+    fn retire_resources(&mut self) -> Result<(), GraphicsRuntimeError> {
+        if let Some(resources) = self.resources.take() {
+            resources
+                .retire()
+                .map_err(GraphicsRuntimeError::RecordFailed)?;
+        }
+        Ok(())
+    }
 }
 
 struct FrameSlot {
@@ -457,6 +511,127 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    struct RetainedResources(Arc<Mutex<Vec<ThreadId>>>);
+
+    impl GraphicsRenderResources for RetainedResources {
+        fn retire(&self) -> Result<(), String> {
+            self.0.lock().unwrap().push(thread::current().id());
+            Ok(())
+        }
+    }
+
+    struct ResourceFrame(Arc<dyn GraphicsRenderResources>);
+
+    struct FailedRetirement;
+
+    impl GraphicsRenderResources for FailedRetirement {
+        fn retire(&self) -> Result<(), String> {
+            Err("device retirement failed".to_owned())
+        }
+    }
+
+    impl GraphicsFrame for ResourceFrame {
+        fn info(&self) -> GraphicsFrameInfo {
+            GraphicsFrameInfo {
+                width: 2,
+                height: 2,
+                sequence: 1,
+                presentation_time_ns: 1,
+            }
+        }
+
+        fn render_resources(&self) -> Option<Arc<dyn GraphicsRenderResources>> {
+            Some(self.0.clone())
+        }
+
+        fn record(
+            &self,
+            _: GraphicsContext,
+            _: GraphicsRecordCommand,
+        ) -> Result<GraphicsRecordedFrame, GraphicsFrameError> {
+            Err(GraphicsFrameError::NotReady)
+        }
+    }
+
+    #[test]
+    fn session_stop_keeps_render_resources_until_render_thread_retirement() {
+        let (graphics, publisher) = RenderThreadGraphics::new(|| {});
+        let retired = Arc::new(Mutex::new(Vec::new()));
+        for _ in 0..3 {
+            graphics.initialize(context()).unwrap();
+            let resources = Arc::new(RetainedResources(retired.clone()));
+            let weak = Arc::downgrade(&resources);
+            publisher
+                .publish(
+                    publisher.context().unwrap(),
+                    Arc::new(ResourceFrame(resources.clone())),
+                )
+                .unwrap();
+            let token = graphics.acquire_latest().unwrap();
+            assert_eq!(
+                graphics.record(&token, command()),
+                Err(GraphicsRuntimeError::NoFrame)
+            );
+            drop(token);
+            let worker_publisher = publisher.clone();
+            thread::spawn(move || {
+                worker_publisher.clear();
+                drop(resources);
+            })
+            .join()
+            .unwrap();
+            assert!(weak.upgrade().is_some());
+            graphics.shutdown().unwrap();
+            assert!(weak.upgrade().is_none());
+        }
+        assert_eq!(*retired.lock().unwrap(), vec![thread::current().id(); 3]);
+    }
+
+    #[test]
+    fn replacing_a_live_device_requires_explicit_shutdown() {
+        let (graphics, _) = RenderThreadGraphics::new(|| {});
+        graphics.initialize(context()).unwrap();
+        let replacement = GraphicsContext {
+            device: 9,
+            ..context()
+        };
+        assert!(matches!(
+            graphics.initialize(replacement),
+            Err(GraphicsRuntimeError::InvalidContext(_))
+        ));
+        graphics.shutdown().unwrap();
+        graphics.initialize(replacement).unwrap();
+        graphics.shutdown().unwrap();
+    }
+
+    #[test]
+    fn failed_retirement_still_invalidates_the_borrowed_context() {
+        let (graphics, publisher) = RenderThreadGraphics::new(|| {});
+        graphics.initialize(context()).unwrap();
+        publisher
+            .publish(
+                publisher.context().unwrap(),
+                Arc::new(ResourceFrame(Arc::new(FailedRetirement))),
+            )
+            .unwrap();
+        let token = graphics.acquire_latest().unwrap();
+        assert_eq!(
+            graphics.record(&token, command()),
+            Err(GraphicsRuntimeError::NoFrame)
+        );
+        assert!(matches!(
+            graphics.shutdown(),
+            Err(GraphicsRuntimeError::RecordFailed(_))
+        ));
+        assert!(!graphics.is_active());
+        assert!(publisher.context().is_none());
+        assert_eq!(
+            graphics.record(&token, command()),
+            Err(GraphicsRuntimeError::SceneGraphInactive)
+        );
+        graphics.shutdown().unwrap();
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -517,6 +692,7 @@ mod tests {
             device: 3,
             queue: 4,
             queue_family_index: 5,
+            vulkan_dmabuf_import_enabled: false,
         }
     }
 

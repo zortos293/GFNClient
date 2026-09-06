@@ -1,4 +1,5 @@
 #include "StreamVideoItem.h"
+#include "LinuxVulkanGraphics.h"
 #include "NativeStreamRuntime.h"
 #include "StreamVideoTextureRenderer.h"
 
@@ -13,6 +14,10 @@
 
 #include <atomic>
 #include <memory>
+
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+#include <vulkan/vulkan.h>
+#endif
 
 #if defined(Q_OS_WIN)
 #ifndef NOMINMAX
@@ -102,6 +107,10 @@ public:
             updates->uploadTexture(texture.get(), image);
             cb->resourceUpdate(updates);
         }
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+        if (textureWasSampled && m_rhi->backend() == QRhi::Vulkan)
+            texture->setNativeLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+#endif
         imported.store(renderer.importFrame(m_rhi->currentFrameSlot(), texture->nativeTexture(),
                                             QRhiTexture::RGBA8, QSize(4, 4)));
         importedSlots.store(int(renderer.importedSlotCount()));
@@ -110,6 +119,7 @@ public:
     void recordFrame(QRhiCommandBuffer *cb, const QRect &) override
     {
         renderer.render(cb, stencil, stencilReference);
+        if (imported.load()) textureWasSampled = true;
         ++frames;
     }
     void finishFrame() override {}
@@ -117,6 +127,7 @@ public:
     {
         renderer.release();
         texture.reset();
+        textureWasSampled = false;
         m_rhi = nullptr;
         ++releases;
     }
@@ -130,6 +141,7 @@ private:
     QRhi *m_rhi = nullptr;
     StreamVideoTextureRenderer renderer;
     std::unique_ptr<QRhiTexture> texture;
+    bool textureWasSampled = false;
     bool stencil = false;
     int stencilReference = 0;
 };
@@ -157,6 +169,41 @@ private slots:
     void initTestCase()
     {
         registerStreamVideoItemQmlType();
+    }
+
+    void linuxDmabufRequiresEnabledExtensionsAndVulkanPrerequisites()
+    {
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+        using namespace LinuxVulkanGraphics;
+        const auto required = deviceExtensions();
+        QVERIFY(hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                        required, required));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                         {}, required));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 0), VK_API_VERSION_1_1,
+                                         required, required));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_0,
+                                         required, required));
+        const QByteArrayList mandatory = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
+                                         "VK_EXT_image_drm_format_modifier", "VK_KHR_image_format_list"};
+        for (const auto &extension : mandatory) {
+            auto missing = required;
+            missing.removeAll(extension);
+            QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                             missing, required));
+            QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_1,
+                                             required, missing));
+        }
+        auto promoted = mandatory;
+        promoted.removeAll("VK_KHR_image_format_list");
+        QVERIFY(hasDmabufImportContract(QVersionNumber(1, 2), VK_API_VERSION_1_2,
+                                        promoted, promoted));
+        QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_2,
+                                         promoted, promoted));
+        QVERIFY(!dmabufImportEnabled(nullptr, VK_NULL_HANDLE));
+#else
+        QSKIP("Linux Vulkan capability contract");
+#endif
     }
 
     void calculatesCenteredAspectFitViewport()

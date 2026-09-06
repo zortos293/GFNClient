@@ -210,14 +210,13 @@ impl FfmpegDecoder {
     }
 
     fn convert_frame(&mut self, decoded: &frame::Video) -> Result<DecodedVideoFrame> {
-        let mut direct_vulkan = None;
         if self.mode == FfmpegMode::Vulkan
             && self
                 .wanted_hw_format
                 .as_deref()
                 .is_some_and(|selection| Pixel::from(selection.pixel_format) == decoded.format())
         {
-            direct_vulkan = map_vulkan_frame_direct(decoded, self.last_timestamp_us)
+            let direct_vulkan = map_vulkan_frame_direct(decoded, self.last_timestamp_us)
                 .ok()
                 .and_then(|frame| frame.vulkan);
             match map_vulkan_frame_to_dmabuf(decoded, self.last_timestamp_us) {
@@ -346,7 +345,7 @@ impl FfmpegDecoder {
                 },
             ],
             dmabuf: None,
-            vulkan: direct_vulkan,
+            vulkan: None,
             timestamp_us,
         })
     }
@@ -849,6 +848,19 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+
+    #[test]
+    fn cpu_output_has_no_foreign_gpu_metadata() {
+        let format = StreamFormat::video_default(2, 2).unwrap();
+        let mut decoder =
+            FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        let decoded = frame::Video::new(Pixel::NV12, 2, 2);
+        let output = decoder.convert_frame(&decoded).unwrap();
+        assert_eq!(output.planes.len(), 2);
+        assert!(output.dmabuf.is_none());
+        assert!(output.vulkan.is_none());
+        output.validate().unwrap();
+    }
 
     #[test]
     fn all_required_software_decoders_are_linked() {

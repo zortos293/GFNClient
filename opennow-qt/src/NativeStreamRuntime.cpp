@@ -218,7 +218,11 @@ void NativeStreamRuntime::invalidatePresentation()
 
 void NativeStreamRuntime::reportPresentationError(const QString &message)
 {
-    const auto generation = presentationGeneration();
+    reportPresentationError(message, presentationGeneration());
+}
+
+void NativeStreamRuntime::reportPresentationError(const QString &message, quint64 generation)
+{
     QMetaObject::invokeMethod(this, [this, message, generation] {
         if (generation != presentationGeneration()) return;
         invalidatePresentation();
@@ -453,7 +457,8 @@ OpenNowStreamerStatus NativeStreamRuntime::sceneGraphShutdown()
     const std::unique_lock lock(d->handleMutex);
     if (!d->handle || !d->api.sceneGraphShutdown) return OPENNOW_STREAMER_CLOSED;
     const auto status = d->api.sceneGraphShutdown(d->handle);
-    if (status == OPENNOW_STREAMER_OK) d->graphicsActive = false;
+    if (status == OPENNOW_STREAMER_OK || status == OPENNOW_STREAMER_RENDER_FAILED)
+        d->graphicsActive = false;
     return status;
 }
 

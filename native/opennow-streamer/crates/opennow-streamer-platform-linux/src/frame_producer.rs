@@ -27,6 +27,7 @@ pub struct VulkanRenderDevice {
     pub physical_device: usize,
     pub device: usize,
     pub queue_family: u32,
+    pub dmabuf_import_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,10 +43,41 @@ pub struct RecordedGpuFrame {
 
 #[derive(Clone)]
 pub struct LinuxGpuFrameProducer {
-    state: Arc<Mutex<SharedProducerState>>,
+    render_resources: Arc<LinuxGpuRenderResources>,
     decode_sync: Arc<Mutex<Option<DecodeSync>>>,
     sequence: Arc<AtomicU64>,
     slot_count: u32,
+}
+
+pub struct LinuxGpuRenderResources {
+    state: Mutex<SharedProducerState>,
+}
+
+impl LinuxGpuRenderResources {
+    /// Retires borrowed-device resources on the render thread after the host has
+    /// submitted all command buffers referencing them, before destroying its device.
+    pub fn retire(&self) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut retirement_error = None;
+        if let Some(producer) = state.producer.as_ref() {
+            let result = unsafe { producer.device.device_wait_idle() };
+            if let Err(error) = result {
+                if error != vk::Result::ERROR_DEVICE_LOST {
+                    retirement_error = Some(vk_error("retire Qt Vulkan resources", error));
+                }
+            }
+        }
+        if let Some(error) = retirement_error {
+            if let Some(producer) = state.producer.take() {
+                std::mem::forget(producer);
+            }
+            state.render = None;
+            return Err(error);
+        }
+        state.producer = None;
+        state.render = None;
+        Ok(())
+    }
 }
 
 struct SharedProducerState {
@@ -115,10 +147,12 @@ impl LinuxGpuFrameProducer {
             ));
         }
         Ok(Self {
-            state: Arc::new(Mutex::new(SharedProducerState {
-                render: None,
-                producer: None,
-            })),
+            render_resources: Arc::new(LinuxGpuRenderResources {
+                state: Mutex::new(SharedProducerState {
+                    render: None,
+                    producer: None,
+                }),
+            }),
             sequence: Arc::new(AtomicU64::new(0)),
             decode_sync: Arc::new(Mutex::new(None)),
             slot_count,
@@ -150,6 +184,10 @@ impl LinuxGpuFrameProducer {
 }
 
 impl LinuxGpuFrame {
+    pub fn render_resources(&self) -> Arc<LinuxGpuRenderResources> {
+        Arc::clone(&self.producer.render_resources)
+    }
+
     pub fn width(&self) -> u32 {
         self.frame.format.width
     }
@@ -172,7 +210,9 @@ impl LinuxGpuFrame {
     ///
     /// `render` and `command_buffer` have the requirements documented by
     /// [`LinuxFrameProducer::new_with_slots`] and
-    /// [`LinuxFrameProducer::record_frame`].
+    /// [`LinuxFrameProducer::record_frame`]. The host must retain
+    /// [`Self::render_resources`] and retire it on the render thread after
+    /// submission drains and before destroying the borrowed device.
     pub unsafe fn record(
         &self,
         render: VulkanRenderDevice,
@@ -181,10 +221,17 @@ impl LinuxGpuFrame {
     ) -> Result<RecordedGpuFrame> {
         let mut state = self
             .producer
+            .render_resources
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         if state.render != Some(render) {
+            if state.producer.is_some() {
+                return Err(Error::InvalidFormat(
+                    "previous Qt device must be retired before recording on a new device"
+                        .to_owned(),
+                ));
+            }
             state.render = None;
             state.producer = None;
             state.producer = Some(unsafe {
@@ -414,20 +461,7 @@ impl LinuxFrameProducer {
                 vk::Device::from_raw(render.device as u64),
             )
         };
-        let required = [
-            ash::khr::external_memory::NAME,
-            ash::khr::external_memory_fd::NAME,
-            ash::ext::external_memory_dma_buf::NAME,
-            ash::ext::image_drm_format_modifier::NAME,
-        ];
-        let available = unsafe { instance.enumerate_device_extension_properties(physical_device) }
-            .map_err(|error| vk_error("enumerate Qt Vulkan device extensions", error))?;
-        let dmabuf_import_supported = required.iter().all(|required| {
-            available.iter().any(|extension| {
-                let name = unsafe { std::ffi::CStr::from_ptr(extension.extension_name.as_ptr()) };
-                name == *required
-            })
-        });
+        let dmabuf_import_supported = render.dmabuf_import_enabled;
         Ok(Self {
             _entry: entry,
             instance,
@@ -1808,6 +1842,119 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires a Vulkan implementation; runs with Mesa lavapipe without /dev/dri"]
+    fn retired_render_resources_survive_session_drop_and_borrowed_device_destruction() {
+        unsafe {
+            let entry = ash::Entry::load().unwrap();
+            let application = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
+            let instance = entry
+                .create_instance(
+                    &vk::InstanceCreateInfo::default().application_info(&application),
+                    None,
+                )
+                .unwrap();
+            let physical = instance.enumerate_physical_devices().unwrap()[0];
+            let family = instance
+                .get_physical_device_queue_family_properties(physical)
+                .iter()
+                .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+                .unwrap() as u32;
+            let priorities = [1.0];
+            let queues = [vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(family)
+                .queue_priorities(&priorities)];
+            let device = instance
+                .create_device(
+                    physical,
+                    &vk::DeviceCreateInfo::default().queue_create_infos(&queues),
+                    None,
+                )
+                .unwrap();
+            let queue = device.get_device_queue(family, 0);
+            let pool = device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default().queue_family_index(family),
+                    None,
+                )
+                .unwrap();
+            let commands = device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .command_pool(pool)
+                        .level(vk::CommandBufferLevel::PRIMARY)
+                        .command_buffer_count(1),
+                )
+                .unwrap();
+            device
+                .begin_command_buffer(commands[0], &vk::CommandBufferBeginInfo::default())
+                .unwrap();
+            let producer = LinuxGpuFrameProducer::new(3).unwrap();
+            let frame = producer
+                .frame(DecodedVideoFrame {
+                    format: crate::StreamFormat::video_default(2, 2).unwrap(),
+                    planes: vec![
+                        FramePlane {
+                            data: vec![16; 4].into(),
+                            stride: 2,
+                            rows: 2,
+                        },
+                        FramePlane {
+                            data: vec![128; 2].into(),
+                            stride: 2,
+                            rows: 1,
+                        },
+                    ],
+                    dmabuf: None,
+                    vulkan: None,
+                    timestamp_us: 1,
+                })
+                .unwrap();
+            frame
+                .record(
+                    VulkanRenderDevice {
+                        instance: instance.handle().as_raw() as usize,
+                        physical_device: physical.as_raw() as usize,
+                        device: device.handle().as_raw() as usize,
+                        queue_family: family,
+                        dmabuf_import_enabled: false,
+                    },
+                    commands[0].as_raw() as usize,
+                    0,
+                )
+                .unwrap();
+            device.end_command_buffer(commands[0]).unwrap();
+            device
+                .queue_submit(
+                    queue,
+                    &[vk::SubmitInfo::default().command_buffers(&commands)],
+                    vk::Fence::null(),
+                )
+                .unwrap();
+            let resources = frame.render_resources();
+            std::thread::spawn(move || drop(producer)).join().unwrap();
+            assert!(resources.state.lock().unwrap().producer.is_some());
+            assert!(
+                !resources
+                    .state
+                    .lock()
+                    .unwrap()
+                    .producer
+                    .as_ref()
+                    .unwrap()
+                    .dmabuf_import_supported
+            );
+            resources.retire().unwrap();
+            resources.retire().unwrap();
+            assert!(resources.state.lock().unwrap().producer.is_none());
+            device.destroy_command_pool(pool, None);
+            device.destroy_device(None);
+            instance.destroy_instance(None);
+            drop(frame);
+            drop(resources);
+        }
+    }
+
+    #[test]
     fn failed_device_recreation_clears_the_cached_device_identity() {
         let producer = LinuxGpuFrameProducer::new(3).unwrap();
         let previous = VulkanRenderDevice {
@@ -1815,8 +1962,9 @@ mod tests {
             physical_device: 0,
             device: 0,
             queue_family: 0,
+            dmabuf_import_enabled: false,
         };
-        producer.state.lock().unwrap().render = Some(previous);
+        producer.render_resources.state.lock().unwrap().render = Some(previous);
         let frame = LinuxGpuFrame {
             frame: DecodedVideoFrame {
                 format: crate::StreamFormat::video_default(2, 2).unwrap(),
@@ -1836,7 +1984,7 @@ mod tests {
             unsafe { frame.record(replacement, 0, 0) },
             Err(Error::InvalidFormat(_))
         ));
-        let state = producer.state.lock().unwrap();
+        let state = producer.render_resources.state.lock().unwrap();
         assert_eq!(state.render, None);
         assert!(state.producer.is_none());
         drop(state);

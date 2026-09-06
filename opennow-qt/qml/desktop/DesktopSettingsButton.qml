@@ -1,0 +1,82 @@
+import QtQuick
+import QtQuick.Controls
+import OpenNOW
+
+Button {
+    id: control
+    property bool primary: false
+    property bool danger: false
+    property bool compact: false
+    property bool menu: false
+    property string suffix: ""
+
+    implicitHeight: menu ? DesktopTokens.px(40) : compact ? DesktopTokens.px(30) : DesktopTokens.controlHeight
+    implicitWidth: Math.max(compact ? 68 : 84, label.implicitWidth + 28
+        + (menu ? 22 : 0) + (suffix !== "" ? suffixText.implicitWidth + 18 : 0))
+    hoverEnabled: true
+    padding: 0
+    leftPadding: 14
+    rightPadding: 14
+    topPadding: 0
+    bottomPadding: 0
+
+    background: Rectangle {
+        radius: control.menu ? height / 2 : compact ? 9 : 10
+        color: control.primary ? Theme.face
+             : control.danger ? Qt.rgba(1, 0.32, 0.32, control.down ? 0.18 : 0.09)
+             : control.menu ? (Theme.lightMode ? Qt.rgba(0,0,0,0.04) : Qt.rgba(0,0,0,0.35))
+             : control.down || control.hovered ? DesktopTokens.raisedStrong : DesktopTokens.raised
+        border.width: control.activeFocus ? 2 : 1
+        border.color: control.activeFocus ? DesktopTokens.focus
+                    : control.danger ? Qt.rgba(1, 0.48, 0.48, 0.28)
+                    : Theme.seam
+        Behavior on color { ColorAnimation { duration: Theme.focusDuration } }
+    }
+
+    contentItem: Item {
+        implicitWidth: contentRow.implicitWidth
+        implicitHeight: contentRow.implicitHeight
+        Row {
+            id: contentRow
+            anchors.centerIn: parent
+            spacing: 8
+            Text {
+                id: label
+                text: control.text
+                width: Math.max(0, Math.min(implicitWidth, control.availableWidth
+                    - (control.menu ? 22 : 0) - (control.suffix !== "" ? suffixText.implicitWidth + 18 : 0)))
+                elide: Text.ElideRight
+                color: control.primary ? Theme.faceText : control.danger ? (Theme.lightMode ? "#9F1239" : "#FFC2C2") : Theme.label
+                font.family: Theme.bodyFont
+                font.pixelSize: DesktopTokens.px(13)
+                font.weight: Font.Bold
+                anchors.verticalCenter: parent.verticalCenter
+            }
+            Rectangle {
+                visible: control.suffix !== ""
+                width: suffixText.implicitWidth + 10
+                height: 18
+                radius: 5
+                color: control.primary ? Qt.rgba(0.05, 0.07, 0.11, 0.08) : Qt.rgba(1, 1, 1, 0.07)
+                anchors.verticalCenter: parent.verticalCenter
+                Text {
+                    id: suffixText
+                    anchors.centerIn: parent
+                    text: control.suffix
+                    color: control.primary ? Qt.rgba(0.05, 0.07, 0.11, 0.52) : Theme.textMuted
+                    font.family: Theme.monoFont
+                    font.pixelSize: 9
+                    font.weight: Font.Bold
+                }
+            }
+            DesktopSettingsIcon {
+                visible: control.menu
+                width: 10
+                height: 10
+                glyph: "chevron"; rotation: 90
+                ink: control.primary ? Theme.faceText : Theme.textMuted
+                anchors.verticalCenter: parent.verticalCenter
+            }
+        }
+    }
+}

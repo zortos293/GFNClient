@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
-#[cfg(test)]
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,14 +56,24 @@ impl<T> BoundedQueue<T> {
     /// chain. Once full, every pending access unit and the incoming unit are
     /// stale; retaining any of them after dropping an older reference frame can
     /// make the hardware decoder reject the stream. The caller requests a new
-    /// keyframe after receiving `DroppedOldest`.
-    pub(crate) fn push_or_clear_on_overflow(&self, value: T) -> Result<PushOutcome, T> {
+    /// keyframe after receiving `DroppedOldest`. When the incoming value is already that recovery
+    /// keyframe, `retain_incoming` keeps it after clearing the stale reference chain so recovery
+    /// does not require a second round trip.
+    pub(crate) fn push_or_clear_on_overflow(
+        &self,
+        value: T,
+        retain_incoming: bool,
+    ) -> Result<PushOutcome, T> {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         if inner.closed {
             return Err(value);
         }
         if inner.values.len() == self.capacity {
             inner.values.clear();
+            if retain_incoming {
+                inner.values.push_back(value);
+                self.ready.notify_one();
+            }
             return Ok(PushOutcome::DroppedOldest);
         }
         inner.values.push_back(value);
@@ -80,7 +89,6 @@ impl<T> BoundedQueue<T> {
             .pop_front()
     }
 
-    #[cfg(test)]
     pub(crate) fn pop_timeout(&self, timeout: Duration) -> Option<T> {
         let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let mut inner = self
@@ -93,12 +101,36 @@ impl<T> BoundedQueue<T> {
         inner.values.pop_front()
     }
 
+    /// Waits for actionable input, shutdown, or the next decoder-output poll.
+    /// Queued input cannot wake a decoder that has no input credits. In that
+    /// case even producer notifications must leave it asleep until the bounded
+    /// poll deadline (or shutdown), instead of spinning on a nonempty queue.
+    pub(crate) fn wait_for_decoder(&self, timeout: Duration, accepts_input: bool) -> bool {
+        let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let inner = self
+            .ready
+            .wait_timeout_while(inner, timeout, |inner| {
+                (!accepts_input || inner.values.is_empty()) && !inner.closed
+            })
+            .unwrap_or_else(|error| error.into_inner())
+            .0;
+        !inner.values.is_empty()
+    }
+
     pub(crate) fn clear(&self) {
         self.inner
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .values
             .clear();
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values
+            .len()
     }
 
     pub(crate) fn close(&self) {
@@ -134,12 +166,37 @@ mod tests {
     #[test]
     fn video_overflow_discards_the_pending_reference_chain() {
         let queue = BoundedQueue::new(2);
-        assert_eq!(queue.push_or_clear_on_overflow(1), Ok(PushOutcome::Queued));
-        assert_eq!(queue.push_or_clear_on_overflow(2), Ok(PushOutcome::Queued));
         assert_eq!(
-            queue.push_or_clear_on_overflow(3),
+            queue.push_or_clear_on_overflow(1, false),
+            Ok(PushOutcome::Queued)
+        );
+        assert_eq!(
+            queue.push_or_clear_on_overflow(2, false),
+            Ok(PushOutcome::Queued)
+        );
+        assert_eq!(
+            queue.push_or_clear_on_overflow(3, false),
             Ok(PushOutcome::DroppedOldest)
         );
+        assert_eq!(queue.try_pop(), None);
+    }
+
+    #[test]
+    fn video_overflow_retains_an_incoming_recovery_keyframe() {
+        let queue = BoundedQueue::new(2);
+        assert_eq!(
+            queue.push_or_clear_on_overflow(1, false),
+            Ok(PushOutcome::Queued)
+        );
+        assert_eq!(
+            queue.push_or_clear_on_overflow(2, false),
+            Ok(PushOutcome::Queued)
+        );
+        assert_eq!(
+            queue.push_or_clear_on_overflow(3, true),
+            Ok(PushOutcome::DroppedOldest)
+        );
+        assert_eq!(queue.try_pop(), Some(3));
         assert_eq!(queue.try_pop(), None);
     }
 
@@ -157,5 +214,39 @@ mod tests {
     fn timeout_returns_without_a_value() {
         let queue = BoundedQueue::<u8>::new(1);
         assert_eq!(queue.pop_timeout(Duration::from_millis(1)), None);
+    }
+
+    #[test]
+    fn decoder_wait_does_not_consume_actionable_input() {
+        let queue = BoundedQueue::new(1);
+        queue.push(7).unwrap();
+        assert!(queue.wait_for_decoder(Duration::from_secs(1), true));
+        assert_eq!(queue.try_pop(), Some(7));
+    }
+
+    #[test]
+    fn decoder_backpressure_waits_even_with_queued_input() {
+        let queue = BoundedQueue::new(1);
+        queue.push(7).unwrap();
+        let started = std::time::Instant::now();
+        let interval = Duration::from_millis(20);
+        assert!(queue.wait_for_decoder(interval, false));
+        assert!(started.elapsed() >= interval);
+        assert_eq!(queue.try_pop(), Some(7));
+    }
+
+    #[test]
+    fn closing_queue_interrupts_decoder_backpressure_wait() {
+        let queue = std::sync::Arc::new(BoundedQueue::new(1));
+        queue.push(7).unwrap();
+        let worker_queue = std::sync::Arc::clone(&queue);
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            worker_queue.wait_for_decoder(Duration::from_secs(30), false);
+            sent.send(()).unwrap();
+        });
+        queue.close();
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
     }
 }

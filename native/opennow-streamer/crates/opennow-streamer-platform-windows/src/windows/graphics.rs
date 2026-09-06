@@ -1249,6 +1249,33 @@ mod tests {
 
     #[test]
     fn p010_presentation_executes_a_video_processor_blit() {
+        // Probe only the device interface. Do not turn later swap-chain,
+        // processor, texture, or presentation failures into capability skips.
+        let mut device = None;
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+            .expect("D3D11 capability probe device");
+        }
+        let device = device.expect("D3D11 returned a device");
+        if let Err(error) = device.cast::<ID3D11VideoDevice>() {
+            assert_eq!(
+                error.code().0 as u32,
+                0x80004002,
+                "unexpected video probe error: {error}"
+            );
+            eprintln!("SKIP P010 GPU blit: D3D11 video interface unavailable ({error})");
+            return;
+        }
         let mut graphics = Graphics::new(
             WindowsGraphicsApi::D3d11,
             SurfaceTarget::Owned(OwnedWindow {

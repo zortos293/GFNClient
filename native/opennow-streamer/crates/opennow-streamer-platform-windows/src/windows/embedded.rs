@@ -1538,6 +1538,18 @@ mod tests {
         }
         let device = device.unwrap();
         let context = context.unwrap();
+        // Headless Windows CI may expose D3D11 without its video interfaces.
+        // Only that capability absence is a skip; conversion errors on capable
+        // hardware must continue to fail this test.
+        if let Err(error) = device.cast::<ID3D11VideoDevice>() {
+            assert_eq!(
+                error.code().0 as u32,
+                0x80004002,
+                "unexpected video probe error: {error}"
+            );
+            eprintln!("SKIP GPU conversion: D3D11 video interface unavailable ({error})");
+            return;
+        }
         let format = VideoFormat {
             codec: crate::VideoCodec::H264,
             width: 64,

@@ -3105,7 +3105,10 @@ impl FecReorderBuffer {
                     .expect("head FEC block is present");
                 let completed_through =
                     base + (completed.layout.data_shards + completed.layout.parity_shards) as u64;
-                match completed.clone().finish(self.shard_len) {
+                // Only reconstruction can fail. Healthy blocks move their RTP
+                // buffers straight to assembly without copying the video payload.
+                let repair_backup = completed.missing_data_range().map(|_| completed.clone());
+                match completed.finish(self.shard_len) {
                     Ok((mut ready, repaired)) => {
                         result.ready.append(&mut ready);
                         result.fec_repaired += repaired;
@@ -3114,7 +3117,7 @@ impl FecReorderBuffer {
                         continue;
                     }
                     Err(reason) => {
-                        let mut pending = completed;
+                        let mut pending = repair_backup.expect("failed repair has missing data");
                         pending.repair_failed = true;
                         let (first_missing, last_missing) = pending
                             .first_missing_data_run()
@@ -7780,12 +7783,9 @@ mod tests {
 
         let started = Instant::now();
         let mut reorder = FecReorderBuffer::new(48);
-        assert!(
-            reorder
-                .push(packet(100), layout(0, 0), started)
-                .ready
-                .is_empty()
-        );
+        let first = packet(100);
+        let first_buffer = first.plaintext.as_ptr();
+        assert!(reorder.push(first, layout(0, 0), started).ready.is_empty());
 
         let successor = reorder.push(
             packet(103),
@@ -7810,6 +7810,11 @@ mod tests {
             [100, 101]
         );
         assert!(retransmitted.recovery.is_none());
+        assert_eq!(
+            retransmitted.ready[0].plaintext.as_ptr(),
+            first_buffer,
+            "a healthy completed block must retain the original packet allocation"
+        );
         assert_eq!(reorder.blocks.len(), 1, "the successor stays buffered");
     }
 

@@ -2914,6 +2914,8 @@
     "s_qt_resume_wait_session": "The previous session is not available yet. Retrying…",
     "s_qt_resume_wait_claim": "Waiting to resume the session…",
     "s_qt_resume_ready_timeout": "The resumed session did not become ready. Retrying…",
-    "s_qt_resume_wait_ready": "Waiting for the resumed session…"
+    "s_qt_resume_wait_ready": "Waiting for the resumed session…",
+    "s_qt_relative_input_unavailable": "Relative mouse input unavailable",
+    "s_qt_input_media_continues": "Video and audio are still running."
   }
 }

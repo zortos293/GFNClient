@@ -142,6 +142,7 @@ QtObject {
     property var artworkPending: ({})
     property var artworkRequestSources: ({})
     property var artworkRetrySources: ({})
+    property var artworkInterests: ({})
     property string catalogRequestId: ""
     property string storeRequestId: ""
     property string deviceStartRequestId: ""
@@ -278,14 +279,10 @@ QtObject {
     }
 
     property Timer artworkRetryTimer: Timer {
-        interval: 30000
+        interval: 1000
         repeat: true
-        running: Object.keys(root.artworkRetrySources).length > 0
-        onTriggered: {
-            const sources = Object.keys(root.artworkRetrySources)
-            for (let index = 0; index < sources.length; ++index)
-                root.requestArtwork(sources[index])
-        }
+        running: root.ready && Object.keys(root.artworkRetrySources).length > 0
+        onTriggered: root.retryVisibleArtwork(Date.now())
     }
 
     property Timer streamRecordingTimer: Timer {
@@ -1744,10 +1741,53 @@ QtObject {
         return ""
     }
 
-    function requestArtwork(sourceUrl) {
+    function retainArtwork(source) {
+        if (!/^https?:\/\//i.test(source)) return
+        const interests = Object.assign({}, artworkInterests)
+        interests[source] = (interests[source] || 0) + 1
+        artworkInterests = interests
+    }
+
+    function releaseArtwork(source) {
+        const interests = Object.assign({}, artworkInterests)
+        if ((interests[source] || 0) > 1) interests[source]--
+        else {
+            delete interests[source]
+            const retries = Object.assign({}, artworkRetrySources)
+            delete retries[source]
+            artworkRetrySources = retries
+        }
+        artworkInterests = interests
+    }
+
+    function scheduleArtworkRetry(source) {
+        if (!artworkInterests[source]) return
+        const retries = Object.assign({}, artworkRetrySources)
+        const failures = Math.min(7, (retries[source] ? retries[source].failures : 0) + 1)
+        retries[source] = {failures: failures, nextAt: Date.now() + Math.min(1800000, 30000 * Math.pow(2, failures - 1))}
+        artworkRetrySources = retries
+    }
+
+    function retryVisibleArtwork(now) {
+        // Pace retries independently of the number of failed posters on screen.
+        let budget = 2
+        for (const source of Object.keys(artworkRetrySources)) {
+            if (!budget) break
+            const retry = artworkRetrySources[source]
+            if (!artworkInterests[source] || retry.nextAt > now || artworkPending[source]) continue
+            // A pending cache job completes via artwork.resolved; don't repeatedly
+            // query it while waiting. A missed event can be retried after backoff.
+            retry.nextAt = now + Math.min(1800000, 30000 * Math.pow(2, retry.failures - 1))
+            requestArtwork(source, true)
+            budget--
+        }
+    }
+
+    function requestArtwork(sourceUrl, retryDue) {
         const source = String(sourceUrl || "")
         const resolved = artworkUrls[source]
         if (!ready || !/^https?:\/\//i.test(source) || artworkPending[source]
+                || (!retryDue && artworkRetrySources[source])
                 || (resolved !== undefined && String(resolved) !== source))
             return ""
         const requestId = CoreClient.request("artwork.resolve", { sourceUrl: source }, 2000)
@@ -1778,11 +1818,12 @@ QtObject {
             const urls = Object.assign({}, artworkUrls)
             urls[source] = resolved
             artworkUrls = urls
+            const retries = Object.assign({}, artworkRetrySources)
+            delete retries[source]
+            artworkRetrySources = retries
         }
         if (failed || (result && result.cached === false)) {
-            const retries = Object.assign({}, artworkRetrySources)
-            retries[source] = true
-            artworkRetrySources = retries
+            scheduleArtworkRetry(source)
         }
         return true
     }
@@ -1802,11 +1843,12 @@ QtObject {
             artworkUrls = urls
         }
         const retries = Object.assign({}, artworkRetrySources)
-        if (payload.cached === false)
-            retries[source] = true
-        else
+        if (payload.cached === false) {
+            scheduleArtworkRetry(source)
+        } else {
             delete retries[source]
-        artworkRetrySources = retries
+            artworkRetrySources = retries
+        }
     }
 
     function stopNativeStreamer(reason) {

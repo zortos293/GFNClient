@@ -29,6 +29,29 @@ QtObject {
         return {games:games, totalCount:2500, nextCursor:cursor, hasNextPage:more}
     }
     function run(screen, status, retry, emptyStatus) {
+        const artworkSources = []
+        for (let i = 0; i < 6; ++i) {
+            const source = "https://artwork.test/" + i
+            artworkSources.push(source)
+            ShellStore.retainArtwork(source)
+            ShellStore.scheduleArtworkRetry(source)
+            ShellStore.artworkRetrySources[source].nextAt = 0
+        }
+        const beforeArtwork = client.requests.length
+        ShellStore.retryVisibleArtwork(Date.now())
+        check(client.requests.length === beforeArtwork + 2, "artwork retries were not paced")
+        const failedArtwork = client.requests[beforeArtwork]
+        client.requestFailed(failedArtwork.id, "network", "Offline")
+        check(ShellStore.artworkRetrySources[artworkSources[0]].failures === 2,
+            "artwork failure did not increase backoff")
+        ShellStore.retainArtwork(artworkSources[0])
+        ShellStore.releaseArtwork(artworkSources[0])
+        check(ShellStore.artworkInterests[artworkSources[0]] === 1, "shared artwork interest lost")
+        for (const source of artworkSources) ShellStore.releaseArtwork(source)
+        const afterArtwork = client.requests.length
+        ShellStore.retryVisibleArtwork(Date.now() + 3600000)
+        check(client.requests.length === afterArtwork && Object.keys(ShellStore.artworkRetrySources).length === 0,
+            "hidden artwork kept retrying")
         check(screen.catalogPrice(game("unpriced")) === "", "invented Available price label")
         for (const store of ["STEAM", "EPIC", "XBOX", "UPLAY", "EA_APP", "GOG", "BATTLENET", "GAIJIN", "NVIDIA"])
             check(DesktopTokens.storeIconUrl(store).endsWith(".svg"), "missing store icon " + store)

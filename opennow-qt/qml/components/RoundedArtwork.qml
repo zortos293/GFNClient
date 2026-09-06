@@ -22,6 +22,7 @@ Item {
         id: artworkSource
         sourceUrl: root.normalizedArtwork
         active: root.loadStarted
+        requestActive: root.visible
     }
 
     Rectangle {

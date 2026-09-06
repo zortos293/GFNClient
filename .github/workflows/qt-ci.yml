@@ -93,22 +93,6 @@ jobs:
             package-generator: ZIP
             rust-target: aarch64-pc-windows-msvc
             cmake-arch: ARM64
-          - label: macos-arm64
-            os: blacksmith-6vcpu-macos-15
-            build-parallel: 6
-            qt-host: mac
-            qt-arch: clang_64
-            package-generator: "DragNDrop;ZIP"
-            rust-target: aarch64-apple-darwin
-            cmake-arch: arm64
-          - label: macos-x64
-            os: blacksmith-6vcpu-macos-15
-            build-parallel: 6
-            qt-host: mac
-            qt-arch: clang_64
-            package-generator: "DragNDrop;ZIP"
-            rust-target: x86_64-apple-darwin
-            cmake-arch: x86_64
 
     env:
       CARGO_TERM_COLOR: always

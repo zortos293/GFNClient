@@ -4,6 +4,9 @@ The `qt-ci` and `qt-release-candidate` workflows use upstream cache actions.
 [Blacksmith automatically routes these actions to its colocated cache](https://docs.blacksmith.sh/blacksmith-caching/dependencies-actions);
 its old `useblacksmith/cache` and language-specific cache forks are archived.
 
+Actions currently builds Windows and Linux only, each on x64 and ARM64. The macOS
+CI matrix entries and release-candidate job are removed for now.
+
 ## Cached build inputs
 
 - **Qt SDK:** `install-qt-action` already caches the downloaded SDK and Windows
@@ -18,7 +21,7 @@ its old `useblacksmith/cache` and language-specific cache forks are archived.
   and update-public-key changes; final executables and signing material are not
   cache inputs.
 - **Qt C++:** `ccache-action` persists a compressed compiler cache capped at 500 MB
-  per Linux/macOS matrix entry. CMake explicitly uses `ccache` as its C/C++ compiler
+  per Linux matrix entry. CMake explicitly uses `ccache` as its C/C++ compiler
   launcher. Windows keeps its existing Visual Studio generator: CMake compiler
   launchers do not support that generator, so enabling one would not cache MSVC
   compilation. Windows still benefits from Rust and SDL caching.

@@ -44,7 +44,7 @@ use ::windows::core::{IUnknown, Interface};
 use crate::queue::BoundedQueue;
 use crate::{
     ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendError, BackendEvent, EncodedVideoFrame, PushOutcome,
-    Subsystem, VideoChromaFormat, VideoFormat, VideoPixelFormat, WindowsDecoderMode,
+    Subsystem, VideoFormat, VideoPixelFormat, WindowsDecoderMode,
 };
 
 use super::decoder::{DecodedVideoFrame, Decoder, DecoderDevice};
@@ -354,19 +354,16 @@ impl AdoptedResources {
                 input_description.Format.0
             )
         })?;
-        if pixel_format != self.format.pixel_format
-            || input_description.Width != self.format.width
-            || input_description.Height != self.format.height
-        {
-            self.format = VideoFormat {
-                width: input_description.Width,
-                height: input_description.Height,
-                pixel_format,
-                chroma_format: chroma_format(pixel_format),
-                ..self.format
-            };
-            self.processor = None;
+        if pixel_format != frame.format.pixel_format {
+            return Err(format!(
+                "decoder texture format {pixel_format:?} does not match media format {:?}",
+                frame.format.pixel_format
+            ));
         }
+        frame
+            .aperture
+            .validate_extent(input_description.Width, input_description.Height)?;
+        self.reconfigure(frame.format);
         let array_slice = decoder_array_slice(
             frame.subresource,
             input_description.MipLevels,
@@ -376,8 +373,8 @@ impl AdoptedResources {
             input_description.Width,
             input_description.Height,
             input_description.Format,
-            input_description.Width,
-            input_description.Height,
+            frame.aperture.width,
+            frame.aperture.height,
         )?;
         let processor = self
             .processor
@@ -413,10 +410,10 @@ impl AdoptedResources {
             view
         };
         let source = RECT {
-            left: 0,
-            top: 0,
-            right: processor.input_width as i32,
-            bottom: processor.input_height as i32,
+            left: frame.aperture.x as i32,
+            top: frame.aperture.y as i32,
+            right: (frame.aperture.x + frame.aperture.width) as i32,
+            bottom: (frame.aperture.y + frame.aperture.height) as i32,
         };
         let destination = RECT {
             left: 0,
@@ -666,7 +663,6 @@ impl DecoderDevice for DecoderDeviceSnapshot {
 
 struct ReadyDecodedFrame {
     frame: DecodedVideoFrame,
-    format: VideoFormat,
     decoder_generation: u64,
 }
 
@@ -701,19 +697,11 @@ unsafe impl Sync for D3d11Frame {}
 
 impl D3d11Frame {
     pub fn width(&self) -> u32 {
-        let mut description = D3D11_TEXTURE2D_DESC::default();
-        unsafe {
-            self.frame.texture.GetDesc(&mut description);
-        }
-        description.Width
+        self.frame.aperture.width
     }
 
     pub fn height(&self) -> u32 {
-        let mut description = D3D11_TEXTURE2D_DESC::default();
-        unsafe {
-            self.frame.texture.GetDesc(&mut description);
-        }
-        description.Height
+        self.frame.aperture.height
     }
 
     pub const fn sequence(&self) -> u64 {
@@ -900,7 +888,6 @@ impl D3d11Pipeline {
             self.resources.reset_decoder_views();
             self.presented_decoder_generation = ready.decoder_generation;
         }
-        self.resources.reconfigure(ready.format);
         Ok(Some(ready.frame))
     }
 
@@ -1010,7 +997,6 @@ fn run_decoder_worker(
                 made_progress |= produced > 0;
                 produced_frames = produced_frames.saturating_add(produced as u64);
                 if produced > 0 {
-                    let output_format = decoder.format();
                     let generation = decoder_generation.load(Ordering::Acquire);
                     let mut ready = decoded
                         .lock()
@@ -1023,7 +1009,6 @@ fn run_decoder_worker(
                         }
                         ready.push_back(ReadyDecodedFrame {
                             frame,
-                            format: output_format,
                             decoder_generation: generation,
                         });
                     }
@@ -1365,7 +1350,9 @@ fn pixel_format_from_dxgi(format: DXGI_FORMAT) -> Option<VideoPixelFormat> {
     }
 }
 
-fn chroma_format(format: VideoPixelFormat) -> VideoChromaFormat {
+#[cfg(test)]
+fn chroma_format(format: VideoPixelFormat) -> crate::VideoChromaFormat {
+    use crate::VideoChromaFormat;
     match format {
         VideoPixelFormat::Nv12 | VideoPixelFormat::P010 => VideoChromaFormat::Cs420,
         VideoPixelFormat::Ayuv | VideoPixelFormat::Y410 => VideoChromaFormat::Cs444,
@@ -1375,6 +1362,132 @@ fn chroma_format(format: VideoPixelFormat) -> VideoChromaFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::VideoChromaFormat;
+
+    #[test]
+    fn padded_decoder_frames_crop_and_reuse_processor_views_and_slots() {
+        let _runtime = EmbeddedMediaRuntime::initialize().expect("Media Foundation");
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .expect("D3D11 test device");
+        }
+        let device = device.unwrap();
+        let context = context.unwrap();
+        if let Err(error) = device.cast::<ID3D11VideoDevice>() {
+            assert_eq!(
+                error.code().0 as u32,
+                0x80004002,
+                "unexpected video probe error: {error}"
+            );
+            eprintln!("SKIP GPU conversion: D3D11 video interface unavailable ({error})");
+            return;
+        }
+        let format = VideoFormat {
+            codec: crate::VideoCodec::H264,
+            width: 1920,
+            height: 1080,
+            frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
+            frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
+            average_bitrate: 10_000_000,
+            pixel_format: VideoPixelFormat::Nv12,
+            chroma_format: VideoChromaFormat::Cs420,
+            full_range: true,
+        };
+        for (allocation_width, aperture) in [
+            (
+                1920,
+                crate::aperture::VideoAperture::new(1920, 1080, None).unwrap(),
+            ),
+            (
+                1936,
+                crate::aperture::VideoAperture::new(1936, 1088, Some((8, 4, 1920, 1080))).unwrap(),
+            ),
+        ] {
+            let mut resources = unsafe {
+                AdoptedResources::new(
+                    AdoptedD3d11Context {
+                        device: device.as_raw(),
+                        immediate_context: context.as_raw(),
+                    },
+                    format,
+                )
+            }
+            .unwrap();
+            let mut description = frame_slot_description(allocation_width, 1088, DXGI_FORMAT_NV12);
+            description.BindFlags =
+                ::windows::Win32::Graphics::Direct3D11::D3D11_BIND_DECODER.0 as u32;
+            description.ArraySize = 2;
+            let mut texture = None;
+            let sample = unsafe {
+                device
+                    .CreateTexture2D(&description, None, Some(&mut texture))
+                    .unwrap();
+                let buffer =
+                    MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &texture.unwrap(), 1, false)
+                        .unwrap();
+                let sample = MFCreateSample().unwrap();
+                sample.AddBuffer(&buffer).unwrap();
+                sample.SetSampleTime(1_234_567).unwrap();
+                sample.SetSampleDuration(166_667).unwrap();
+                sample
+            };
+            let frame = DecodedVideoFrame::from_sample(sample, format, aperture).unwrap();
+            let first = resources.record(0, &frame).unwrap();
+            let processor = resources.processor.as_ref().unwrap().processor.clone();
+            for _ in 0..3 {
+                resources.reconfigure(format);
+                let recorded = resources.record(0, &frame).unwrap();
+                assert_eq!(resources.format, format);
+                assert_eq!((recorded.width, recorded.height), (1920, 1080));
+                assert_eq!(recorded.texture, first.texture);
+                assert_eq!(recorded.presentation_time_ns, 123_456_700);
+                assert_eq!(frame.subresource, 1);
+                assert_eq!(frame.duration_100ns, 166_667);
+                let active = resources.processor.as_ref().unwrap();
+                assert_eq!(active.processor.as_raw(), processor.as_raw());
+                assert_eq!(
+                    (active.input_width, active.input_height),
+                    (allocation_width, 1088)
+                );
+                assert_eq!(active.input_views.len(), 1);
+                let mut enabled = Default::default();
+                let mut source = RECT::default();
+                unsafe {
+                    resources.video_context.VideoProcessorGetStreamSourceRect(
+                        &processor,
+                        0,
+                        &mut enabled,
+                        &mut source,
+                    );
+                }
+                assert!(enabled.as_bool());
+                assert_eq!(
+                    (source.left, source.top, source.right, source.bottom),
+                    (
+                        aperture.x as i32,
+                        aperture.y as i32,
+                        (aperture.x + 1920) as i32,
+                        (aperture.y + 1080) as i32
+                    )
+                );
+            }
+            resources.reset_decoder_views();
+            assert!(resources.processor.as_ref().unwrap().input_views.is_empty());
+            assert_eq!(resources.record(0, &frame).unwrap().texture, first.texture);
+        }
+    }
     #[test]
     fn decoder_worker_retries_are_bounded_until_old_workers_exit() {
         let mut leases: Vec<_> = (0..4)
@@ -1600,7 +1713,12 @@ mod tests {
             sample
         };
         let baseline_refs = sample_ref_count(&sample);
-        let frame = DecodedVideoFrame::from_sample(sample.clone(), 166_667).unwrap();
+        let frame = DecodedVideoFrame::from_sample(
+            sample.clone(),
+            format,
+            crate::aperture::VideoAperture::new(format.width, format.height, None).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             sample_ref_count(&sample),
             baseline_refs + 1,

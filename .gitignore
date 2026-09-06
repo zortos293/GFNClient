@@ -7,6 +7,8 @@ pnpm-lock.yaml
 package-lock.json
 
 # Build outputs
+__pycache__/
+*.py[cod]
 dist/
 /build/
 target/

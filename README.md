@@ -103,7 +103,9 @@ Canonical documentation lives at [opennow.zortos.me](https://opennow.zortos.me):
 - [Native Streamer](https://opennow.zortos.me/reference/native-streamer/)
 - [Project Website](https://opennow.zortos.me/)
 
-This repository intentionally does not carry duplicate long-form product, setup, development, native streamer, GStreamer packaging, or release workflow documentation.
+Repository-specific protocol contracts, build and release procedures, acceptance checks,
+and native streamer research live in [`docs/`](docs) and the component READMEs.
+Keep general product documentation on the website rather than duplicating it here.
 
 ## Repository Layout
 

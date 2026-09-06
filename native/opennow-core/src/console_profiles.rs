@@ -385,9 +385,10 @@ mod tests {
 
     fn temporary_store() -> (ConsoleProfiles, PathBuf) {
         let path = std::env::temp_dir().join(format!(
-            "opennow-profiles-{}-{}",
+            "opennow-profiles-{}-{}-{}",
             std::process::id(),
-            now_ms()
+            now_ms(),
+            rand::random::<u64>()
         ));
         (ConsoleProfiles::load(&path), path)
     }

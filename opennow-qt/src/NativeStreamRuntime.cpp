@@ -137,6 +137,8 @@ struct NativeStreamRuntime::Private {
     bool firstNotification = false;
     std::atomic<quint64> presentationGeneration{0};
     std::atomic_bool presentationAllowed{false};
+    std::atomic_bool inputAllowed{false};
+    bool inputAuthorizationPending = false;
     QString presentationStartId;
 };
 
@@ -208,6 +210,11 @@ bool NativeStreamRuntime::presentationAllowed() const
     return d->presentationAllowed.load(std::memory_order_acquire);
 }
 
+bool NativeStreamRuntime::inputAllowed() const
+{
+    return d->inputAllowed.load(std::memory_order_acquire);
+}
+
 void NativeStreamRuntime::invalidatePresentation()
 {
     d->presentationAllowed.store(false, std::memory_order_release);
@@ -221,6 +228,7 @@ void NativeStreamRuntime::reportPresentationError(const QString &message)
     const auto generation = presentationGeneration();
     QMetaObject::invokeMethod(this, [this, message, generation] {
         if (generation != presentationGeneration()) return;
+        resetInputCapture();
         invalidatePresentation();
         setLastError(message);
         qWarning("Stream presentation: %s", qUtf8Printable(message));
@@ -306,6 +314,10 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
     }
     const auto object = QJsonDocument::fromJson(command).object();
     const auto type = object.value(u"type"_s).toString();
+    const bool changesSession = type == u"start"_s || type == u"stop"_s;
+    const bool previousInputAllowed = inputAllowed();
+    const bool previousInputPending = d->inputAuthorizationPending;
+    if (changesSession) resetInputCapture();
 
     OpenNowStreamerStatus status = OPENNOW_STREAMER_CLOSED;
     {
@@ -319,6 +331,12 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
     handshakeLog(u"send %1 bytes=%2 queue_result=%3"_s
         .arg(handshakeSummary(object)).arg(command.size()).arg(int(status)));
     if (status != OPENNOW_STREAMER_OK) {
+        if (changesSession) {
+            d->inputAuthorizationPending = previousInputPending;
+            if (d->inputAllowed.exchange(previousInputAllowed, std::memory_order_acq_rel)
+                    != previousInputAllowed)
+                emit inputAllowedChanged();
+        }
         setLastError(statusText(status));
         return false;
     }
@@ -327,6 +345,7 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
         if (type == u"start"_s) {
             d->firstNotification = false;
             d->presentationStartId = object.value(u"id"_s).toString();
+            d->inputAuthorizationPending = true;
         }
     }
     setLastError({});
@@ -335,6 +354,7 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
 
 bool NativeStreamRuntime::shutdown(int timeoutMs)
 {
+    resetInputCapture();
     invalidatePresentation();
     OpenNowStreamer *handle = nullptr;
     std::shared_ptr<CallbackState> callbacks;
@@ -695,12 +715,18 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         const auto status = document.object().value(u"status"_s).toString();
         if (message.event && (kind == u"error"_s
                 || (kind == u"status"_s && (status == u"stopped"_s || status == u"error"_s)))) {
+            resetInputCapture();
             invalidatePresentation();
             if (!current()) return;
         } else if (!message.event && !d->presentationStartId.isEmpty()
                 && document.object().value(u"id"_s).toString() == d->presentationStartId) {
             d->presentationStartId.clear();
             d->presentationAllowed.store(kind == u"ok"_s, std::memory_order_release);
+            const bool allowed = std::exchange(d->inputAuthorizationPending, false) && kind == u"ok"_s;
+            if (d->inputAllowed.exchange(allowed, std::memory_order_acq_rel) != allowed) {
+                emit inputAllowedChanged();
+                if (!current()) return;
+            }
             emit frameAvailable();
             if (!current()) return;
         }
@@ -713,6 +739,16 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
             emit responseReceived(document.object());
     }
     if (current() && reschedule) scheduleDrain(state);
+}
+
+void NativeStreamRuntime::resetInputCapture()
+{
+    const bool wasAllowed = d->inputAllowed.exchange(false, std::memory_order_acq_rel);
+    d->inputAuthorizationPending = false;
+    emit inputCaptureReset();
+    bool rawInput = false;
+    setCaptureActive(false, false, 0, &rawInput);
+    if (wasAllowed) emit inputAllowedChanged();
 }
 
 void NativeStreamRuntime::setLastError(const QString &error)

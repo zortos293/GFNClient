@@ -16,6 +16,7 @@ class ControllerInput final : public QObject
     Q_PROPERTY(int controllerCount READ controllerCount NOTIFY controllerCountChanged)
     Q_PROPERTY(QVariantList controllers READ controllers NOTIFY controllersChanged)
     Q_PROPERTY(bool shellCaptureEnabled READ shellCaptureEnabled WRITE setShellCaptureEnabled NOTIFY shellCaptureEnabledChanged)
+    Q_PROPERTY(bool inputSuspended READ inputSuspended WRITE setInputSuspended NOTIFY inputSuspendedChanged)
 
 public:
     static constexpr quint32 syntheticControllerScanCode = 0x4f504e57;
@@ -27,11 +28,14 @@ public:
     [[nodiscard]] QVariantList controllers() const;
     [[nodiscard]] bool shellCaptureEnabled() const;
     void setShellCaptureEnabled(bool enabled);
+    [[nodiscard]] bool inputSuspended() const;
+    void setInputSuspended(bool suspended);
 
 signals:
     void controllerCountChanged(int count);
     void controllersChanged();
     void shellCaptureEnabledChanged();
+    void inputSuspendedChanged();
     void controllerActivity();
     void controllerActivityDetailed(const QString &device, const QString &control, int value);
     void gamepadSnapshot(quint8 controllerId, quint16 bitmap, quint16 buttons,
@@ -89,6 +93,7 @@ private:
     std::array<GamepadSlot, 4> m_slots;
     bool m_sdlReady = false;
     bool m_shellCaptureEnabled = true;
+    bool m_inputSuspended = false;
     qint64 m_lastControllerMetadataAt = 0;
     qint64 m_lastGamepadSnapshotAt = 0;
     RepeatingDirection m_left{false, 0, 0, Qt::Key_Left};

@@ -49,6 +49,7 @@ set(OPENNOW_RUST_TARGET "" CACHE STRING
     "Optional Rust target triple for cross-architecture desktop packages")
 
 qt_standard_project_setup(REQUIRES 6.8)
+include(cmake/PlatformInput.cmake)
 
 set_source_files_properties(qml/theme/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/state/ShellStore.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
@@ -166,6 +167,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/DesktopStoreShelf.qml
         qml/desktop/DesktopApp.qml
         qml/components/AppChrome.qml
+        qml/components/StreamInputNotice.qml
         qml/components/ReleaseNotes.qml
         qml/components/ArtworkSource.qml
         qml/components/ControllerGlyph.qml
@@ -307,6 +309,7 @@ qt_add_qml_module(opennow-qt
 
 target_include_directories(opennow-qt PRIVATE src)
 target_link_libraries(opennow-qt PRIVATE
+    opennow-platform-input
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::GuiPrivate
@@ -764,6 +767,7 @@ if(BUILD_TESTING)
         FILES shaders/streamvideo.vert shaders/streamvideo.frag
     )
     target_link_libraries(opennow-streamvideo-tests PRIVATE
+        opennow-platform-input
         Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Qml Qt6::Quick
         opennow-streamer-ffi)
     if(WIN32)
@@ -777,6 +781,11 @@ if(BUILD_TESTING)
              COMMAND opennow-streamvideo-tests -o -,txt)
     set_tests_properties(opennow-streamvideo-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    qt_add_executable(opennow-waylandpointer-tests tests/tst_waylandpointercapture.cpp)
+    target_link_libraries(opennow-waylandpointer-tests PRIVATE opennow-platform-input Qt6::Test)
+    add_test(NAME opennow-waylandpointer-tests COMMAND opennow-waylandpointer-tests -o -,txt)
+    set_tests_properties(opennow-waylandpointer-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     qt_add_executable(opennow-nativestreamruntime-tests
         tests/tst_nativestreamruntime.cpp
@@ -867,6 +876,7 @@ if(BUILD_TESTING)
             opennow-qt-tests
             opennow-coreclient-tests
             opennow-streamvideo-tests
+            opennow-waylandpointer-tests
             opennow-nativestreamruntime-tests
             opennow-embedded-orchestration-tests
             opennow-singleinstance-tests
@@ -908,6 +918,7 @@ if(BUILD_TESTING)
                 opennow-qt-tests
                 opennow-coreclient-tests
                 opennow-streamvideo-tests
+                opennow-waylandpointer-tests
                 opennow-nativestreamruntime-tests
                 opennow-embedded-orchestration-tests
                 opennow-singleinstance-tests
@@ -1025,6 +1036,17 @@ if(BUILD_TESTING)
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT}
         )
+    endforeach()
+    foreach(surface desktop console)
+        set(input_notice_mode --console)
+        if(surface STREQUAL "desktop")
+            set(input_notice_mode --desktop)
+        endif()
+        add_test(NAME "qml-${surface}-input-capture-error"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances ${input_notice_mode}
+                --route stream --smoke-input-capture-error --reduced-motion)
+        set_tests_properties("qml-${surface}-input-capture-error" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
     endforeach()
     add_test(NAME qml-fullscreen-stream-stats-shortcut
              COMMAND opennow-qt --smoke-test --allow-multiple-instances

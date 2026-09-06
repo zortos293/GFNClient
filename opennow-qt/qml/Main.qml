@@ -113,6 +113,7 @@ ApplicationWindow {
             fullscreenInputSync.restart()
     }
     onVisibilityChanged: if (activeRoute === "stream") fullscreenInputSync.restart()
+    onActiveChanged: syncInputOwnership()
     onDesktopSurfaceActiveChanged: ShellStore.desktopUiActive = desktopSurfaceActive
 
     Connections {
@@ -124,7 +125,8 @@ ApplicationWindow {
     }
 
     function syncInputOwnership() {
-        const shellOwnsInput = AppController.route !== "stream"
+        ControllerInput.inputSuspended = !window.active
+        const shellOwnsInput = !window.active || AppController.route !== "stream"
             || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         ControllerInput.shellCaptureEnabled = shellOwnsInput
             && ShellStore.settings.controllerMode !== false

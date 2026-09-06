@@ -45,6 +45,7 @@ class StreamVideoItem : public QQuickItem
     Q_PROPERTY(bool inputEnabled READ inputEnabled WRITE setInputEnabled
                    NOTIFY inputEnabledChanged)
     Q_PROPERTY(bool captureActive READ captureActive NOTIFY captureActiveChanged)
+    Q_PROPERTY(QString inputCaptureError READ inputCaptureError NOTIFY inputCaptureErrorChanged)
     Q_PROPERTY(bool relativeMouse READ relativeMouse WRITE setRelativeMouse
                    NOTIFY relativeMouseChanged)
     Q_PROPERTY(QVariantMap shortcutBindings READ shortcutBindings WRITE setShortcutBindings
@@ -69,6 +70,7 @@ public:
     [[nodiscard]] bool inputEnabled() const;
     void setInputEnabled(bool enabled);
     [[nodiscard]] bool captureActive() const;
+    [[nodiscard]] QString inputCaptureError() const;
     [[nodiscard]] bool relativeMouse() const;
     void setRelativeMouse(bool relative);
     [[nodiscard]] QVariantMap shortcutBindings() const;
@@ -104,6 +106,7 @@ signals:
     void renderCallbackAvailableChanged();
     void inputEnabledChanged();
     void captureActiveChanged();
+    void inputCaptureErrorChanged();
     void relativeMouseChanged();
     void shortcutBindingsChanged();
     void localShortcutRequested(const QString &action);
@@ -148,6 +151,7 @@ private:
     QSet<quint32> m_pressedShortcuts;
     QSet<quint8> m_pressedMouseButtons;
     QPointF m_lastMousePosition;
+    std::unique_ptr<class WaylandPointerCapture> m_waylandPointer;
     bool m_inputEnabled = true;
     bool m_captureActive = false;
     bool m_relativeMouse = false;

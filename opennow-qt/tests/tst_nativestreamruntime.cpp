@@ -140,6 +140,79 @@ class NativeStreamRuntimeTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void rejectedSessionCommandsRestorePreviousInputAuthorization()
+    {
+        NativeStreamRuntime runtime(fakeApi());
+        QVERIFY(runtime.start());
+        sendStatus = OPENNOW_STREAMER_QUEUE_FULL;
+        QVERIFY(!runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                               {QStringLiteral("id"), QStringLiteral("rejected-initial")}}));
+        QVERIFY(!runtime.inputAllowed());
+        sendStatus = OPENNOW_STREAMER_OK;
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("authorized-session")}}));
+        QTRY_VERIFY(runtime.inputAllowed());
+        QSignalSpy resets(&runtime, &NativeStreamRuntime::inputCaptureReset);
+        QSignalSpy authorization(&runtime, &NativeStreamRuntime::inputAllowedChanged);
+        for (const auto status : {OPENNOW_STREAMER_QUEUE_FULL, OPENNOW_STREAMER_CLOSED}) {
+            for (const auto &type : {QStringLiteral("start"), QStringLiteral("stop")}) {
+                sendStatus = status;
+                QVERIFY(!runtime.send({{QStringLiteral("type"), type},
+                                       {QStringLiteral("id"), QStringLiteral("rejected-command")}}));
+                QVERIFY(runtime.presentationAllowed());
+                QVERIFY(runtime.inputAllowed());
+            }
+        }
+        QCOMPARE(resets.size(), 4);
+        QCOMPARE(authorization.size(), 8);
+    }
+
+    void sessionTransitionsCloseInputBeforeSendingOrDestroying()
+    {
+        static QStringList calls;
+        static OpenNowStreamerConfig callbackConfig;
+        calls.clear();
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbackConfig = *config;
+            return fakeCreate(config, output);
+        };
+        api.setCaptureActive = [](const OpenNowStreamer *, bool active, bool,
+                                  std::uintptr_t, bool *raw) {
+            calls.append(active ? QStringLiteral("open") : QStringLiteral("close"));
+            *raw = false;
+            return OPENNOW_STREAMER_OK;
+        };
+        api.send = [](const OpenNowStreamer *handle, const std::uint8_t *bytes, std::size_t size) {
+            calls.append(QStringLiteral("send"));
+            return fakeSend(handle, bytes, size);
+        };
+        api.destroy = [](OpenNowStreamer *handle) {
+            calls.append(QStringLiteral("destroy"));
+            return fakeDestroy(handle);
+        };
+        NativeStreamRuntime runtime(api);
+        connect(&runtime, &NativeStreamRuntime::inputCaptureReset, &runtime,
+                [] { calls.append(QStringLiteral("release")); });
+        QVERIFY(runtime.start());
+        bool raw = false;
+        for (const auto &type : {QStringLiteral("start"), QStringLiteral("stop")}) {
+            calls.clear();
+            QCOMPARE(runtime.setCaptureActive(true, false, 0, &raw), OPENNOW_STREAMER_OK);
+            QVERIFY(runtime.send({{QStringLiteral("type"), type}}));
+            QCOMPARE(calls, QStringList({QStringLiteral("open"), QStringLiteral("release"), QStringLiteral("close"),
+                                        QStringLiteral("send")}));
+        }
+        calls.clear();
+        const QByteArray terminal = R"({"type":"status","status":"error"})";
+        callbackConfig.event_callback(reinterpret_cast<const std::uint8_t *>(terminal.constData()),
+                                      terminal.size(), callbackConfig.user_data);
+        QTRY_COMPARE(calls, QStringList({QStringLiteral("release"), QStringLiteral("close")}));
+        calls.clear();
+        QVERIFY(runtime.shutdown());
+        QCOMPARE(calls, QStringList({QStringLiteral("release"), QStringLiteral("close"), QStringLiteral("destroy")}));
+    }
+
     void init()
     {
         nextDestroyDelayMs = 0;

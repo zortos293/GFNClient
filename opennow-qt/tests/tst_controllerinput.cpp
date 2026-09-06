@@ -32,6 +32,49 @@ class ControllerInputTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void suspendedInputNeutralizesAndStopsBackgroundGameplay()
+    {
+        ControllerInput input;
+        QSignalSpy snapshots(&input, &ControllerInput::gamepadSnapshot);
+        QSignalSpy activity(&input, &ControllerInput::controllerActivity);
+        SDL_VirtualJoystickDesc descriptor{};
+        SDL_INIT_INTERFACE(&descriptor);
+        descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        descriptor.button_mask = 1u << SDL_GAMEPAD_BUTTON_SOUTH;
+        descriptor.name = "OpenNOW focus-loss controller";
+        const auto id = SDL_AttachVirtualJoystick(&descriptor);
+        QVERIFY2(id != 0, SDL_GetError());
+        QTRY_COMPARE_WITH_TIMEOUT(input.controllerCount(), 1, 2000);
+        input.setShellCaptureEnabled(false);
+        auto *joystick = SDL_GetJoystickFromID(id);
+        QVERIFY(joystick);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_SOUTH, true));
+        SDL_UpdateJoysticks();
+        QTRY_VERIFY_WITH_TIMEOUT(snapshots.last().at(2).toUInt() == 0x1000, 1000);
+        input.setInputSuspended(true);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0u);
+        auto count = snapshots.size();
+        QTest::qWait(250);
+        QCOMPARE(snapshots.size(), count);
+        input.setShellCaptureEnabled(true);
+        count = snapshots.size();
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_SOUTH, false));
+        SDL_UpdateJoysticks();
+        QTest::qWait(150);
+        QCOMPARE(snapshots.size(), count);
+        QCOMPARE(activity.size(), 0);
+        input.setShellCaptureEnabled(false);
+        input.setInputSuspended(false);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0u);
+        input.setInputSuspended(true);
+        QVERIFY(SDL_DetachVirtualJoystick(id));
+        QTRY_COMPARE_WITH_TIMEOUT(input.controllerCount(), 0, 2000);
+        QCOMPARE(snapshots.last().at(1).toUInt(), 0u);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0u);
+    }
+
     void idleMetadataDoesNotInvalidateTheUi()
     {
         ControllerInput input;

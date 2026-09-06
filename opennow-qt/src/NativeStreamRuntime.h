@@ -85,6 +85,7 @@ public:
     [[nodiscard]] QString lastError() const;
     [[nodiscard]] quint64 presentationGeneration() const;
     [[nodiscard]] bool presentationAllowed() const;
+    [[nodiscard]] bool inputAllowed() const;
     // Called at most once per presentation failure from the scene-graph thread.
     void reportPresentationError(const QString &message);
 
@@ -120,6 +121,8 @@ public:
                                            bool *rawInputActive);
 
 signals:
+    void inputCaptureReset();
+    void inputAllowedChanged();
     void presentationError(const QString &message);
     void runningChanged();
     void lastErrorChanged();
@@ -147,6 +150,7 @@ private:
     void drainCallbacks(const std::shared_ptr<CallbackState> &state);
     void setLastError(const QString &error);
     void invalidatePresentation();
+    void resetInputCapture();
 
     std::unique_ptr<Private> d;
 };

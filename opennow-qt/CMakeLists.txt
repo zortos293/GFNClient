@@ -469,12 +469,14 @@ set(OPENNOW_STREAMER_PROFILE "release")
 set(OPENNOW_STREAMER_CARGO_FEATURE_ARGS)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Distributable Linux builds carry FFmpeg's H.264/HEVC/AV1 software
-    # fallback and dynamically load optional GPU driver interfaces. Every Qt
+    # fallback and native H.264 VAAPI with host-provided GPU drivers. Every Qt
     # configuration now shares one cargo profile directory, so this feature has
     # to stay unconditional: gating it on Release would make each Debug/Release
     # switch rebuild the vendored FFmpeg instead of paying for it once.
     list(APPEND OPENNOW_STREAMER_CARGO_FEATURE_ARGS
-        --features linux-ffmpeg-bundled)
+        --features linux-ffmpeg-bundled,linux-vaapi)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(OPENNOW_VAAPI REQUIRED libva libva-drm)
 endif()
 set(OPENNOW_RUST_EFFECTIVE_TARGET "${OPENNOW_RUST_TARGET}")
 if(WIN32 AND NOT OPENNOW_RUST_EFFECTIVE_TARGET)
@@ -1128,7 +1130,9 @@ elseif(APPLE)
     )
 endif()
 
-if(NOT APPLE)
+if(WIN32)
+    include(packaging/WindowsReleaseBinaries.cmake)
+elseif(NOT APPLE)
     install(PROGRAMS
         "$<TARGET_FILE_DIR:opennow-qt>/opennow-core${OPENNOW_CORE_SUFFIX}"
         "$<TARGET_FILE_DIR:opennow-qt>/opennow-acceptance-verify${OPENNOW_CORE_SUFFIX}"
@@ -1193,6 +1197,7 @@ list(GET OPENNOW_BUILD_VERSION_PARTS 2 CPACK_PACKAGE_VERSION_PATCH)
 set(CPACK_PACKAGE_FILE_NAME "OpenNOW-Qt-${OPENNOW_BUILD_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 set(CPACK_STRIP_FILES TRUE)
 if(WIN32)
+    set(CPACK_STRIP_FILES FALSE)
     set(CPACK_GENERATOR "WIX;ZIP")
     set(CPACK_WIX_UPGRADE_GUID "6E81F7AE-B19D-4E87-A94A-2B2F01EBF762")
 elseif(APPLE)
@@ -1218,7 +1223,7 @@ else()
             "${OPENNOW_SDL3_RUNTIME_DIRECTORY}")
     endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS
-        "libqt6core6 (>= 6.8) | libqt6core6t64 (>= 6.8), libqt6gui6 (>= 6.8), libqt6network6 (>= 6.8), libqt6qml6 (>= 6.8), libqt6quick6 (>= 6.8), libqt6quickcontrols2-6 (>= 6.8), libqt6multimedia6 (>= 6.8), qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-dialogs, qml6-module-qtquick-effects, qml6-module-qtmultimedia, libsdl3-0 | libsdl3-0.0")
+        "libqt6core6 (>= 6.8) | libqt6core6t64 (>= 6.8), libqt6gui6 (>= 6.8), libqt6network6 (>= 6.8), libqt6qml6 (>= 6.8), libqt6quick6 (>= 6.8), libqt6quickcontrols2-6 (>= 6.8), libqt6multimedia6 (>= 6.8), qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-dialogs, qml6-module-qtquick-effects, qml6-module-qtmultimedia, libsdl3-0 | libsdl3-0.0, libva2, libva-drm2")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
         set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")

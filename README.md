@@ -28,8 +28,8 @@
   <a href="https://opennow.zortos.me">
     <img src="https://img.shields.io/badge/Docs-opennow.zortos.me-blue?style=for-the-badge" alt="Documentation">
   </a>
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/actions/workflows/auto-build.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/OpenCloudGaming/OpenNOW/auto-build.yml?style=for-the-badge&label=Auto%20Build" alt="Auto Build">
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/actions/workflows/qt-ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/OpenCloudGaming/OpenNOW/qt-ci.yml?style=for-the-badge&label=Qt%20CI" alt="Qt CI">
   </a>
   <a href="https://discord.gg/8EJYaJcNfD">
     <img src="https://img.shields.io/badge/Discord-Join%20Us-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
@@ -55,41 +55,36 @@
 > [!WARNING]
 > OpenNOW is under active development. Expect occasional bugs, rough edges, and platform-specific issues while the client matures.
 >
-> Native streamer / native streaming is experimental. It defaults to the web streamer path unless enabled, issues can be platform-specific, and users may see fallback to Chromium/WebRTC. Report native-streamer problems on [GitHub Issues](https://github.com/OpenCloudGaming/OpenNOW/issues) or [Discord](https://discord.gg/8EJYaJcNfD).
+> The Qt desktop app uses the in-process native streamer. Streaming and GPU interoperability can have platform-specific issues; there is no Chromium/WebRTC desktop fallback. Report problems on [GitHub Issues](https://github.com/OpenCloudGaming/OpenNOW/issues) or [Discord](https://discord.gg/8EJYaJcNfD).
 
 > [!IMPORTANT]
 > OpenNOW is an independent community project and is not affiliated with, endorsed by, or sponsored by NVIDIA. NVIDIA and GeForce NOW are trademarks of NVIDIA Corporation. You must use your own GeForce NOW account.
 
 ## Overview
 
-OpenNOW is a community-built desktop client for playing GeForce NOW. The shipping
-Electron implementation remains in [`opennow-stable/`](opennow-stable) while its
-controller-first Qt Quick replacement is developed in [`opennow-qt/`](opennow-qt).
-The complete parity and safe-removal gates are tracked in
-[`docs/qt-migration.md`](docs/qt-migration.md); Electron stays supported until
-those gates pass.
+OpenNOW is a community-built desktop client for playing GeForce NOW. The supported
+desktop application is [`opennow-qt/`](opennow-qt), a Qt Quick/QML shell backed by
+the Rust application core and native streaming runtime. The legacy Electron app,
+its dependencies and packaging workflows have been removed. Existing account and
+settings migration remains supported by the Rust core.
+
+See [`opennow-qt/README.md`](opennow-qt/README.md) for build instructions and
+[`docs/qt-migration.md`](docs/qt-migration.md) for the remaining release-acceptance
+work. Removing the legacy app does not establish that those release gates have passed.
 
 ## Downloads
 
-Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
+Published desktop builds are available from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
+Historical releases may still contain the removed Electron client. Qt candidate packaging and
+release validation are documented in [`docs/qt-release-candidate.md`](docs/qt-release-candidate.md).
 
 ### Desktop updates
 
-Packaged desktop builds include update controls under **Settings → About**. Automatic checks are enabled by default and query the selected Stable or Nightly GitHub Releases channel after startup and periodically while OpenNOW is running. OpenNOW does not silently download or install an update: use **Download Update**, then **Restart to Install**, when a new version is available.
+The Qt Updates screen checks GitHub Releases and offers **Download verified update** and
+**Install and restart** when a compatible verified package is available. Signed update metadata
+and platform packages are part of the release-candidate process described above.
 
-Updates are disabled in development builds and secondary Windows instances. On Linux, in-app updates require either a writable AppImage location or a Debian-compatible system with `dpkg` or `apt`; other installations must update manually from GitHub Releases.
-
-### Run two instances on Windows
-
-OpenNOW remains single-instance by default. To open one additional, independent client, start the installed executable with the `--secondary` switch from PowerShell or a shortcut:
-
-```powershell
-& "C:\path\to\OpenNOW.exe" --secondary
-```
-
-The secondary window is titled **OpenNOW — Secondary** and uses a separate persistent profile ending in `-secondary`, including its own sign-in, settings, cookies, cache, device ID, and native-streamer runtime state. Launching the same command again focuses the existing secondary window, so at most one primary and one secondary profile run concurrently. Update OpenNOW from the primary instance; updates are disabled in the secondary instance to avoid competing over the installed application. Screenshots and recordings remain shared under `Pictures\OpenNOW` and use collision-resistant filenames.
-
-Each simultaneous cloud stream must be allowed by its GeForce NOW account. In practice, use separate accounts when running two sessions because GeForce NOW can reject or replace concurrent sessions from the same account. Only one window can be focused for keyboard and mouse input at a time; Discord Rich Presence can show only one activity when both profiles enable it.
+### Other platforms
 
 - iOS beta: [join TestFlight](https://testflight.apple.com/join/u1XPJKH2). The SwiftUI prototype currently lives on the [`kief5555/ios` branch](https://github.com/OpenCloudGaming/OpenNOW/tree/kief5555/ios/ios/OpenNOWiOS) under `ios/OpenNOWiOS/`; that folder is not present on this branch.
 - Android: download from [Google Play](https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow).
@@ -114,11 +109,11 @@ This repository intentionally does not carry duplicate long-form product, setup,
 
 ```text
 .
-├── opennow-stable/          Active Electron desktop client
-├── opennow-qt/              Qt Quick controller-first replacement shell
+├── opennow-qt/              Supported Qt Quick desktop application
 ├── native/opennow-core/     Shell-neutral Rust application core
 ├── native/opennow-streamer/ Native Rust streaming infrastructure
 ├── locales/                 Crowdin-managed localization files
+├── scripts/                 Repository-only localization tooling
 ├── .github/                 Workflows, templates, and contributor metadata
 ├── AGENTS.md                Repository instructions for AI agents and contributors
 ├── LICENSE                  Project license

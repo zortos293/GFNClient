@@ -1,8 +1,9 @@
 # OpenNOW Qt acceptance runbook
 
 This runbook turns the remaining migration gates into reproducible evidence. A development-host
-smoke test is not release acceptance. Keep Electron until every required row has been executed on
-the named hardware, the artifacts have been reviewed, and the staged rollout has completed.
+smoke test is not release acceptance. The legacy Electron source has been removed, but release
+acceptance still requires every row to be executed on the named hardware, the artifacts to be
+reviewed, and the staged rollout to complete.
 
 ## Required live matrix
 
@@ -201,14 +202,14 @@ between settings sections and desktop pages.
 - Verify the published SHA-256 hashes and production Ed25519 update manifest before exposing a
   release to any update channel. Keep the signing key outside CI build workers.
 
-## Staged rollout and Electron removal
+## Staged rollout after Electron removal
 
 Roll out the Qt build in explicit cohorts. Monitor crash-free launches, core/streamer restart rate,
 session-start success, first-frame failures, decoder fallback/error rates, queue drops, update
 rollback, and opt-in feedback. Define the observation window and rollback threshold before the
 first cohort.
 
-Only after every matrix row, signed artifact, update-manifest check, performance report, and rollout
-criterion passes may the Electron main/preload/renderer, dependencies, builder jobs, and root entry
-points be deleted. Run the full Qt/Rust/package suite again after that deletion before declaring
-the migration complete.
+The Electron main/preload/renderer, dependencies, builder jobs and root entry points have been
+removed. Every matrix row, signed artifact, update-manifest check, performance report and rollout
+criterion must still pass before declaring the migration release-ready. Run the full
+Qt/Rust/package suite against the Qt-only source tree; source deletion is not acceptance evidence.

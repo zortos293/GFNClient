@@ -18,7 +18,7 @@ constexpr quint32 guideLocalAction = 1;
 }
 
 ControllerInput::ControllerInput(QObject *parent)
-    : QObject(parent)
+    : QObject(parent), m_pollTimer(this)
 {
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     m_sdlReady = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
@@ -34,8 +34,8 @@ ControllerInput::ControllerInput(QObject *parent)
     }
 
     m_clock.start();
-    m_pollTimer.setTimerType(Qt::PreciseTimer);
-    m_pollTimer.setInterval(4);
+    m_pollTimer.setObjectName(QStringLiteral("controllerPollTimer"));
+    updatePollInterval();
     connect(&m_pollTimer, &QTimer::timeout, this, &ControllerInput::poll);
     m_pollTimer.start();
 }
@@ -58,6 +58,20 @@ int ControllerInput::controllerCount() const
 
 QVariantList ControllerInput::controllers() const
 {
+    return m_controllerMetadata;
+}
+
+void ControllerInput::updatePollInterval()
+{
+    // Keep hotplug discovery alive without waking the GUI 250 times/second
+    // when there is no controller. Gameplay retains its low-latency cadence.
+    const auto interval = m_gamepadSlots.isEmpty() ? 100 : m_shellCaptureEnabled ? 16 : 4;
+    m_pollTimer.setTimerType(interval == 4 ? Qt::PreciseTimer : Qt::CoarseTimer);
+    if (m_pollTimer.interval() != interval) m_pollTimer.setInterval(interval);
+}
+
+void ControllerInput::refreshControllerMetadata()
+{
     QVariantList result;
     result.reserve(m_gamepadSlots.size());
     for (qsizetype index = 0; index < static_cast<qsizetype>(m_slots.size()); ++index) {
@@ -75,7 +89,10 @@ QVariantList ControllerInput::controllers() const
             {QStringLiteral("charging"), power == SDL_POWERSTATE_CHARGING},
         });
     }
-    return result;
+    if (result != m_controllerMetadata) {
+        m_controllerMetadata = std::move(result);
+        emit controllersChanged();
+    }
 }
 
 bool ControllerInput::shellCaptureEnabled() const
@@ -100,6 +117,7 @@ void ControllerInput::setShellCaptureEnabled(bool enabled)
             direction->repeatedAt = 0;
         }
     }
+    updatePollInterval();
     emit shellCaptureEnabledChanged();
 }
 
@@ -136,7 +154,7 @@ void ControllerInput::poll()
     }
     if (now - m_lastControllerMetadataAt >= 2'000) {
         m_lastControllerMetadataAt = now;
-        emit controllersChanged();
+        refreshControllerMetadata();
     }
 }
 
@@ -157,7 +175,8 @@ void ControllerInput::openController(SDL_JoystickID id)
     updateSlotSnapshot(slot);
     if (!m_shellCaptureEnabled) publishGamepad(slot);
     emit controllerCountChanged(m_gamepadSlots.size());
-    emit controllersChanged();
+    updatePollInterval();
+    refreshControllerMetadata();
 }
 
 void ControllerInput::closeController(SDL_JoystickID id)
@@ -176,7 +195,8 @@ void ControllerInput::closeController(SDL_JoystickID id)
         direction->repeatedAt = 0;
     }
     emit controllerCountChanged(m_gamepadSlots.size());
-    emit controllersChanged();
+    updatePollInterval();
+    refreshControllerMetadata();
 }
 
 void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pressed)

@@ -32,10 +32,23 @@ class ControllerInputTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void idleMetadataDoesNotInvalidateTheUi()
+    {
+        ControllerInput input;
+        QSignalSpy changes(&input, &ControllerInput::controllersChanged);
+        const auto initial = input.controllers();
+        QTest::qWait(2150);
+        QCOMPARE(input.controllers(), initial);
+        QCOMPARE(changes.size(), 0);
+    }
+
     void virtualGamepadHotplugHysteresisAndRepeat()
     {
         ControllerInput input;
         const auto initialCount = input.controllerCount();
+        auto *pollTimer = input.findChild<QTimer *>(QStringLiteral("controllerPollTimer"));
+        QVERIFY(pollTimer);
+        QCOMPARE(pollTimer->interval(), initialCount ? 16 : 100);
         QSignalSpy activity(&input, &ControllerInput::controllerActivity);
         QSignalSpy detailedActivity(&input, &ControllerInput::controllerActivityDetailed);
         ControllerKeySink sink;
@@ -52,6 +65,12 @@ private slots:
         const auto id = SDL_AttachVirtualJoystick(&descriptor);
         QVERIFY2(id != 0, SDL_GetError());
         QTRY_COMPARE_WITH_TIMEOUT(input.controllerCount(), initialCount + 1, 2'000);
+        QCOMPARE(pollTimer->interval(), 16);
+        input.setShellCaptureEnabled(false);
+        QCOMPARE(pollTimer->interval(), 4);
+        QCOMPARE(pollTimer->timerType(), Qt::PreciseTimer);
+        input.setShellCaptureEnabled(true);
+        QCOMPARE(pollTimer->interval(), 16);
 
         auto *joystick = SDL_GetJoystickFromID(id);
         QVERIFY(joystick);

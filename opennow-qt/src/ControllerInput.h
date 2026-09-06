@@ -76,11 +76,14 @@ private:
     void publishGamepad(int slot, bool neutral = false);
     void publishConnectedGamepads(bool neutral = false);
     void updateSlotSnapshot(int slot);
+    void updatePollInterval();
+    void refreshControllerMetadata();
     static quint16 buttonMask(Uint8 button);
     static QPair<qint16, qint16> radialDeadzone(qint16 x, qint16 y);
     static quint8 triggerValue(qint16 value);
 
     QTimer m_pollTimer;
+    QVariantList m_controllerMetadata;
     QElapsedTimer m_clock;
     QHash<SDL_JoystickID, int> m_gamepadSlots;
     std::array<GamepadSlot, 4> m_slots;

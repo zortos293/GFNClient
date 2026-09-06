@@ -1785,9 +1785,8 @@ impl EmbeddedD3d11State {
 
 #[cfg(target_os = "windows")]
 fn detach_d3d11_producer<T>(submission: &Mutex<EmbeddedD3d11Submission>, producer: &mut Option<T>) {
-    // Drop closes the decoder queue and joins its worker. First remove the submitter
-    // under the submission lock, then release that lock before the potentially slow
-    // destructor. Concurrent compressed frames must use the bounded staging queue,
+    // Drop closes the decoder queue; its worker retains its resources until exit.
+    // First remove the submitter under the submission lock. Concurrent frames use the staging queue,
     // never a closed decoder queue (reported as "backend worker disconnected").
     submission
         .lock()

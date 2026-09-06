@@ -1,8 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::sync_channel;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
@@ -55,6 +55,53 @@ use super::decoder::{DecodedVideoFrame, Decoder, DecoderDevice};
 // stopped delivering compressed access units temporarily.
 const DECODER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const MAX_FRAME_SLOTS: usize = 8;
+// A broken driver may never return from codec work. Never join it on Qt's render
+// thread, but also never accumulate unbounded abandoned workers across retries.
+static LIVE_DECODER_WORKERS: AtomicUsize = AtomicUsize::new(0);
+struct DecoderWorkerLease;
+impl DecoderWorkerLease {
+    fn acquire() -> Result<Self, BackendError> {
+        LIVE_DECODER_WORKERS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < 4).then_some(count + 1)
+            })
+            .map(|_| Self)
+            .map_err(|_| {
+                BackendError::Startup(
+                    "Previous decoder workers are still stopping; restart OpenNOW before retrying"
+                        .into(),
+                )
+            })
+    }
+}
+impl Drop for DecoderWorkerLease {
+    fn drop(&mut self) {
+        LIVE_DECODER_WORKERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn poll_decoder_startup(
+    startup: &mut Option<Receiver<Result<(), String>>>,
+) -> Result<bool, BackendError> {
+    let Some(receiver) = startup.as_ref() else {
+        return Ok(true);
+    };
+    match receiver.try_recv() {
+        Err(TryRecvError::Empty) => Ok(false),
+        result => {
+            *startup = None;
+            match result {
+                Ok(Ok(())) => Ok(true),
+                Ok(Err(error)) => Err(BackendError::Startup(format!(
+                    "Media Foundation decoder: {error}"
+                ))),
+                _ => Err(BackendError::Startup(
+                    "Decoder worker exited during startup".into(),
+                )),
+            }
+        }
+    }
+}
 
 /// Borrowed Qt D3D11 objects used by the embedded frame producer.
 ///
@@ -637,7 +684,8 @@ struct D3d11Pipeline {
     presented_decoder_generation: u64,
     stopping: Arc<AtomicBool>,
     decoder_worker: Option<JoinHandle<()>>,
-    _runtime: EmbeddedMediaRuntime,
+    startup: Option<Receiver<Result<(), String>>>,
+    _runtime: Arc<EmbeddedMediaRuntime>,
 }
 
 unsafe impl Send for D3d11Pipeline {}
@@ -734,7 +782,8 @@ impl D3d11FrameProducer {
         frame_ready: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<(Self, D3d11FrameSubmitter), BackendError> {
         format.validate()?;
-        let runtime = EmbeddedMediaRuntime::initialize().map_err(BackendError::Startup)?;
+        let worker_lease = DecoderWorkerLease::acquire()?;
+        let runtime = Arc::new(EmbeddedMediaRuntime::initialize().map_err(BackendError::Startup)?);
         let resources =
             unsafe { AdoptedResources::new(adopted, format) }.map_err(BackendError::Startup)?;
         let decoder_device =
@@ -756,9 +805,14 @@ impl D3d11FrameProducer {
         let worker_events = Arc::clone(&events);
         let worker_generation = Arc::clone(&decoder_generation);
         let worker_stopping = Arc::clone(&stopping);
+        let worker_runtime = Arc::clone(&runtime);
         let decoder_worker = thread::Builder::new()
             .name("opennow-mf-video-decode".to_owned())
             .spawn(move || {
+                let _worker_lease = worker_lease;
+                let _runtime = worker_runtime;
+                let notify = Arc::clone(&frame_ready);
+                let stopping = Arc::clone(&worker_stopping);
                 run_decoder_worker(
                     decoder_device,
                     format,
@@ -771,29 +825,14 @@ impl D3d11FrameProducer {
                     frame_ready,
                     startup_sender,
                 );
+                // Startup failures must wake the presenter to consume the error.
+                if !stopping.load(Ordering::Acquire) {
+                    notify();
+                }
             })
             .map_err(|error| {
                 BackendError::Startup(format!("start embedded decoder worker: {error}"))
             })?;
-        match startup_receiver.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                stopping.store(true, Ordering::Release);
-                encoded.close();
-                let _ = decoder_worker.join();
-                return Err(BackendError::Startup(format!(
-                    "Media Foundation decoder: {error}"
-                )));
-            }
-            Err(error) => {
-                stopping.store(true, Ordering::Release);
-                encoded.close();
-                let _ = decoder_worker.join();
-                return Err(BackendError::Startup(format!(
-                    "embedded decoder worker exited during startup: {error}"
-                )));
-            }
-        }
         let state = Arc::new(Mutex::new(D3d11Pipeline {
             owner_thread: thread::current().id(),
             resources,
@@ -803,6 +842,7 @@ impl D3d11FrameProducer {
             presented_decoder_generation: 0,
             stopping,
             decoder_worker: Some(decoder_worker),
+            startup: Some(startup_receiver),
             _runtime: runtime,
         }));
         Ok((
@@ -839,6 +879,9 @@ impl D3d11FrameProducer {
 impl D3d11Pipeline {
     fn acquire_latest(&mut self) -> Result<Option<DecodedVideoFrame>, BackendError> {
         self.ensure_render_thread()?;
+        if !poll_decoder_startup(&mut self.startup)? {
+            return Ok(None);
+        }
         let mut decoded = self
             .decoded
             .lock()
@@ -876,9 +919,9 @@ impl Drop for D3d11Pipeline {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Release);
         self.encoded.close();
-        if let Some(worker) = self.decoder_worker.take() {
-            let _ = worker.join();
-        }
+        // The worker retains its device, queues, and MF runtime until it exits.
+        // Dropping a JoinHandle detaches, without waiting for driver shutdown.
+        drop(self.decoder_worker.take());
         self.decoded
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1308,6 +1351,41 @@ fn chroma_format(format: VideoPixelFormat) -> VideoChromaFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decoder_worker_retries_are_bounded_until_old_workers_exit() {
+        let mut leases: Vec<_> = (0..4)
+            .map(|_| DecoderWorkerLease::acquire().unwrap())
+            .collect();
+        assert!(DecoderWorkerLease::acquire().is_err());
+        leases.pop();
+        let replacement = DecoderWorkerLease::acquire().unwrap();
+        assert!(DecoderWorkerLease::acquire().is_err());
+        drop(replacement);
+        drop(leases);
+        assert!(DecoderWorkerLease::acquire().is_ok());
+    }
+    #[test]
+    fn decoder_startup_is_nonblocking_and_preserves_failures() {
+        let (sender, receiver) = sync_channel(1);
+        let mut startup = Some(receiver);
+        assert!(!poll_decoder_startup(&mut startup).unwrap());
+        sender.send(Ok(())).unwrap();
+        assert!(poll_decoder_startup(&mut startup).unwrap());
+        assert!(poll_decoder_startup(&mut startup).unwrap());
+
+        let (sender, receiver) = sync_channel(1);
+        let mut startup = Some(receiver);
+        sender.send(Err("driver refused codec".into())).unwrap();
+        assert!(
+            poll_decoder_startup(&mut startup)
+                .unwrap_err()
+                .to_string()
+                .contains("driver refused codec")
+        );
+        let (sender, receiver) = sync_channel(1);
+        drop(sender);
+        assert!(poll_decoder_startup(&mut Some(receiver)).is_err());
+    }
     use ::windows::Win32::Foundation::HMODULE;
     use ::windows::Win32::Graphics::Direct3D::{
         D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,

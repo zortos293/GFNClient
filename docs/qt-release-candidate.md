@@ -42,11 +42,21 @@ ephemeral or reset after each approved release operation.
 
 - A numeric version such as `0.6.0` is embedded consistently in Qt, Rust, package metadata,
   diagnostics, telemetry and updater selection.
-- Windows x64/ARM64 application executables and MSI installers are timestamped with Authenticode;
-  the portable ZIPs are unpacked and every executable is verified again.
+- Windows x64/ARM64 binaries listed in
+  `opennow-qt/packaging/windows-release-binaries.txt` and MSI installers are timestamped with
+  Authenticode. The list includes the core's required standalone capability probe and the embedded
+  streamer DLL. CPack installs the signed deployment copies; extracted MSI and ZIP payloads must
+  pass signature verification and match those copies byte-for-byte. Every nonzero `signtool` exit
+  fails the workflow.
 - Current candidates do not include macOS packages. Re-enabling macOS must restore its Developer
   ID signing, notarization, and stapling steps along with the build job.
-- Linux x64/ARM64 DEB and checksum-pinned AppImage builds use native runners.
+- Linux x64/ARM64 DEB and checksum-pinned AppImage builds use native runners. Both the probe and
+  embedded streamer enable `linux-vaapi` and `linux-ffmpeg-bundled`. Native VAAPI supports H.264
+  only; HEVC/AV1 remain available through other backends, including bundled FFmpeg software decode.
+  Builds require libva/libva-drm development headers and libclang for generated bindings. DEBs
+  require `libva2` and `libva-drm2`; usable GPU hardware and a host VAAPI driver are still required
+  for hardware decode. Package checks validate dependency resolution and capabilities without
+  requiring a GPU on the build runner.
 - Every installable artifact receives a sibling Ed25519 update manifest after platform signing.
 - The inventory job fails unless it finds both Windows MSI/ZIP pairs, both Linux AppImage/DEB pairs,
   no macOS DMGs, and exactly one manifest per artifact (eight artifacts total). It records the immutable commit and

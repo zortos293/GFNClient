@@ -112,6 +112,16 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Test Windows release package contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: opennow-qt/tests/test_windows_release.ps1
+
+      - name: Test Linux package capability checks
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 -m unittest discover -s opennow-qt/tests -p test_linux_package.py
+
       - name: Add package Rust target
         if: matrix.rust-target != ''
         shell: bash
@@ -202,6 +212,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            clang \
+            libclang-dev \
             libasound2-dev \
             libdbus-1-dev \
             libdrm-dev \
@@ -367,6 +379,8 @@ jobs:
           export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           cmake --install build/opennow-qt-release --config Release \
             --prefix "$PWD/build/AppDir/usr"
+          deb=$(find build/qt-packages -maxdepth 1 -type f -name '*.deb' -print -quit)
+          python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --deb "$deb"
           curl --fail --location --retry 3 \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
             --output "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage"
@@ -383,8 +397,14 @@ jobs:
               --appdir build/AppDir \
               --desktop-file build/AppDir/usr/share/applications/io.github.opencloudgaming.OpenNOW.desktop \
               --icon-file build/AppDir/usr/share/icons/hicolor/scalable/apps/io.github.opencloudgaming.OpenNOW.svg \
+              --library "$(pkg-config --variable=libdir libva)/libva.so.2" \
+              --library "$(pkg-config --variable=libdir libva-drm)/libva-drm.so.2" \
               --plugin qt \
               --output appimage
+          test -f build/AppDir/usr/lib/libva.so.2
+          test -f build/AppDir/usr/lib/libva-drm.so.2
+          LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
+            python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
           mv "OpenNOW-Qt-${{ matrix.label }}.AppImage" build/qt-packages/
 
       - name: Smoke-test Linux AppImage

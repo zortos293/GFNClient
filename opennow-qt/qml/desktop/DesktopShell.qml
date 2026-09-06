@@ -64,45 +64,89 @@ FocusScope {
         height: root.height
 
         Rectangle {
+            id: header
             width: parent.width; height: root.headerHeight
+            readonly property real availableWidth: Math.max(0, width - DesktopTokens.px(48))
             color: DesktopTokens.topBar
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: DesktopTokens.seam }
-            Row {
-                x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(10)
-                Text { text: root.title; color: DesktopTokens.text; font.family: DesktopTokens.displayFont; font.pixelSize: root.settingsPage ? DesktopTokens.px(22) : DesktopTokens.titleSize; font.weight: Font.Black; font.letterSpacing: -0.4 }
-                Text { anchors.baseline: parent.children[0].baseline; text: root.subtitle; color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.DemiBold; font.letterSpacing: 0.45 }
+            Item {
+                id: heading
+                objectName: "desktopHeaderHeading"
+                x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter
+                width: Math.max(0, (search.visible ? search.x : activeSessionButton.visible ? activeSessionButton.x : parent.width - DesktopTokens.px(14)) - x - DesktopTokens.px(10))
+                height: headerTitle.implicitHeight
+                Text {
+                    id: headerTitle
+                    width: Math.min(implicitWidth, parent.width)
+                    text: root.title; elide: Text.ElideRight
+                    color: DesktopTokens.text; font.family: DesktopTokens.displayFont
+                    font.pixelSize: root.settingsPage ? DesktopTokens.px(22) : DesktopTokens.titleSize
+                    font.weight: Font.Black; font.letterSpacing: -0.4
+                }
+                Text {
+                    x: headerTitle.width + DesktopTokens.px(10)
+                    width: Math.max(0, parent.width - x)
+                    visible: width >= DesktopTokens.px(90)
+                    anchors.baseline: headerTitle.baseline
+                    text: root.subtitle; elide: Text.ElideRight
+                    color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont
+                    font.pixelSize: DesktopTokens.captionSize; font.weight: Font.DemiBold; font.letterSpacing: 0.45
+                }
             }
             TextField {
                 id: search
+                objectName: "desktopHeaderSearch"
                 visible: root.searchVisible
                 anchors.right: activeSessionButton.visible ? activeSessionButton.left : parent.right
                 anchors.rightMargin: activeSessionButton.visible ? DesktopTokens.px(10) : DesktopTokens.px(24)
                 anchors.verticalCenter: parent.verticalCenter
-                width: DesktopTokens.px(300); height: DesktopTokens.controlHeight
+                width: Math.min(DesktopTokens.px(300), header.availableWidth * (activeSessionButton.visible ? 0.34 : 0.48))
+                height: DesktopTokens.controlHeight
                 leftPadding: DesktopTokens.px(34); rightPadding: DesktopTokens.px(34); topPadding: 0; bottomPadding: 0
                 color: DesktopTokens.textBody
                 placeholderText: root.route === "friends" ? qsTr("Search friends") : root.route === "store" ? qsTr("Search the store") : qsTr("Search your library")
-                placeholderTextColor: "#66FFFFFF"
+                placeholderTextColor: DesktopTokens.textMuted
                 font.family: DesktopTokens.bodyFont; font.pixelSize: DesktopTokens.bodySize; font.weight: Font.DemiBold
                 text: root.searchText
                 selectByMouse: true
-                background: Rectangle { radius: DesktopTokens.px(10); color: "#59000000"; border.width: 1; border.color: DesktopTokens.seam }
+                background: Rectangle { radius: DesktopTokens.px(10); color: Theme.lightMode ? DesktopTokens.raised : "#59000000"; border.width: 1; border.color: DesktopTokens.seam }
                 onTextChanged: root.searchText = text
                 DesktopGlyph { x: DesktopTokens.px(11); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(14); height: DesktopTokens.px(14); icon: "desktop-search.svg" }
                 Rectangle { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(8); anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(20); height: DesktopTokens.px(20); radius: DesktopTokens.px(6); color: "#1AFFFFFF"; border.width: 1; border.color: DesktopTokens.seam; Text { anchors.centerIn: parent; text: "/"; color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11) } }
             }
             DesktopButton {
                 id: activeSessionButton
+                objectName: "desktopHeaderResume"
                 visible: ShellStore.resumableSession !== null && root.route !== "stream"
                 anchors.right: parent.right
                 anchors.rightMargin: DesktopTokens.px(24)
                 anchors.verticalCenter: parent.verticalCenter
-                width: DesktopTokens.px(260)
+                width: Math.min(DesktopTokens.px(260), header.availableWidth * (search.visible ? 0.34 : 0.48))
                 height: DesktopTokens.controlHeight
                 primary: true
                 glyph: "desktop-play.svg"
                 glyphSize: DesktopTokens.px(11)
+                font.pixelSize: DesktopTokens.smallSize
                 text: root.activeSessionPrompt()
+                ToolTip.visible: hovered
+                ToolTip.text: text
+                ToolTip.delay: 700
+                contentItem: Item {
+                    DesktopGlyph {
+                        anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                        width: activeSessionButton.glyphSize; height: width
+                        icon: "desktop-play.svg"
+                    }
+                    Text {
+                        x: activeSessionButton.glyphSize + DesktopTokens.px(8)
+                        width: Math.max(0, parent.width - x)
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: activeSessionButton.text
+                        elide: Text.ElideRight
+                        color: "#0A0D14"
+                        font: activeSessionButton.font
+                    }
+                }
                 onClicked: ShellStore.resumeActiveSession()
             }
         }

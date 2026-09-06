@@ -4,6 +4,7 @@ import OpenNOW
 QtObject {
     property Component paletteComponent: Component { DesktopCommandPalette {} }
     property Component hostComponent: Component { Item {} }
+    property Component shellComponent: Component { DesktopShell {} }
     property Component shelfComponent: Component { DesktopStoreShelf {} }
     property QtObject client: QtObject {
         property string state: "ready"
@@ -184,6 +185,31 @@ QtObject {
         palette.opened = false
         palette.destroy()
         paletteHost.destroy()
+
+        const originalSettings = ShellStore.settings
+        const originalRemotes = ShellStore.remoteSessions
+        ShellStore.applySetting("desktopRailCollapsed", false)
+        ShellStore.remoteSessions = [{status:2, appName:"A very long game name: Complete Edition"}]
+        const originalScale = DesktopTokens.uiScale
+        DesktopTokens.uiScale = 1.4
+        const headerHost = hostComponent.createObject(screen, {width:960, height:540})
+        const shell = shellComponent.createObject(headerHost, {title:"A long translated library heading", subtitle:"A long translated subtitle"})
+        const heading = namedChild(shell, "desktopHeaderHeading")
+        const searchField = namedChild(shell, "desktopHeaderSearch")
+        const resumeButton = namedChild(shell, "desktopHeaderResume")
+        check(resumeButton.visible && heading.x + heading.width <= searchField.x
+            && searchField.x + searchField.width <= resumeButton.x
+            && resumeButton.x + resumeButton.width <= resumeButton.parent.width,
+            "header controls overlap with a pinned sidebar and resumable session")
+        headerHost.width = 800
+        check(heading.width > 0 && heading.x + heading.width <= searchField.x
+            && searchField.x + searchField.width <= resumeButton.x,
+            "header did not adapt to a narrower viewport")
+        shell.destroy()
+        headerHost.destroy()
+        ShellStore.settings = originalSettings
+        ShellStore.remoteSessions = originalRemotes
+        DesktopTokens.uiScale = originalScale
 
         const shelf = shelfComponent.createObject(screen, {width:600,materialized:false,categoryId:"shelf:0:0",totalCount:90})
         const hiddenRequestCount = client.requests.length

@@ -350,7 +350,20 @@ fn spawn_dispatcher(
     thread::Builder::new()
         .name(name.to_owned())
         .spawn(move || {
+            let mut last_telemetry = std::time::Instant::now();
             while let Ok(value) = receiver.recv() {
+                let kind = value["type"].as_str().unwrap_or("");
+                let periodic = matches!(kind, "telemetry" | "stats" | "log");
+                if !periodic || last_telemetry.elapsed() >= std::time::Duration::from_secs(2) {
+                    log::log_line(
+                        if kind == "error" { "ERROR" } else { "INFO" },
+                        "native-to-qt",
+                        &log::message_summary(&value),
+                    );
+                    if periodic {
+                        last_telemetry = std::time::Instant::now();
+                    }
+                }
                 callback.invoke(&value);
             }
         })
@@ -609,7 +622,11 @@ pub unsafe extern "C" fn opennow_streamer_create(
                 OpenNowStreamerStatus::Ok
             }
             Err(status) => {
-                log::log_line("WARN", "engine", &format!("engine create failed: {status:?}"));
+                log::log_line(
+                    "WARN",
+                    "engine",
+                    &format!("engine create failed: {status:?}"),
+                );
                 status
             }
         }
@@ -994,12 +1011,27 @@ pub unsafe extern "C" fn opennow_streamer_record_frame(
         let recorded = match handle.graphics.record(&unsafe { &*frame }.token, command) {
             Ok(recorded) => recorded,
             Err(error) => {
+                // Expected during asynchronous decoder bootstrap. Qt keeps the
+                // current surface and waits for the decoder's frame-ready event.
+                if error == GraphicsRuntimeError::NoFrame {
+                    log::log_throttled(
+                        "record-not-ready",
+                        "INFO",
+                        "present",
+                        "decoder output pending; waiting for frame-ready",
+                    );
+                    return OpenNowStreamerStatus::NoFrame;
+                }
+                // Preserve the platform failure before collapsing it to an ABI
+                // status. Graphics errors contain local stage/device details,
+                // not session context; bound the diagnostic on the render path.
+                let detail: String = error.to_string().chars().take(512).collect();
                 let status = graphics_status(error);
                 log::log_throttled(
                     "record-frame",
                     "WARN",
                     "present",
-                    &format!("record frame failed: {status:?}"),
+                    &format!("record frame failed: {status:?} detail={detail}"),
                 );
                 return status;
             }
@@ -1066,7 +1098,11 @@ pub unsafe extern "C" fn opennow_streamer_scene_graph_shutdown(
             .shutdown()
             .map_or_else(graphics_status, |()| OpenNowStreamerStatus::Ok);
         FIRST_FRAME_LOGGED.store(false, Ordering::Relaxed);
-        log::log_line("INFO", "graphics", &format!("scene graph shutdown: {status:?}"));
+        log::log_line(
+            "INFO",
+            "graphics",
+            &format!("scene graph shutdown: {status:?}"),
+        );
         status
     })) {
         Ok(status) => status,
@@ -1096,8 +1132,16 @@ pub unsafe extern "C" fn opennow_streamer_send(
         } else {
             unsafe { std::slice::from_raw_parts(bytes, length) }
         };
-        log::log_line("INFO", "command", &format!("send {}", command_kind_label(bytes)));
-        handle.send(bytes)
+        let summary = serde_json::from_slice::<Value>(bytes)
+            .map(|value| log::message_summary(&value))
+            .unwrap_or_else(|_| command_kind_label(bytes));
+        let status = handle.send(bytes);
+        log::log_line(
+            "INFO",
+            "qt-to-native",
+            &format!("{summary} bytes={length} queue_result={status:?}"),
+        );
+        status
     })) {
         Ok(status) => status,
         Err(_) => OpenNowStreamerStatus::Panic,
@@ -1230,6 +1274,7 @@ mod tests {
         sequence: u64,
         recorded: Arc<RecordedCommands>,
         panic_on_record: bool,
+        error: Option<opennow_streamer_platform::GraphicsFrameError>,
     }
 
     impl GraphicsFrame for TestGraphicsFrame {
@@ -1246,8 +1291,11 @@ mod tests {
             &self,
             context: GraphicsContext,
             command: GraphicsRecordCommand,
-        ) -> Result<GraphicsRecordedFrame, String> {
+        ) -> Result<GraphicsRecordedFrame, opennow_streamer_platform::GraphicsFrameError> {
             assert!(!self.panic_on_record, "injected render panic");
+            if let Some(error) = &self.error {
+                return Err(error.clone());
+            }
             self.recorded
                 .values
                 .lock()
@@ -1430,6 +1478,80 @@ mod tests {
     }
 
     #[test]
+    fn graphics_ffi_waits_for_decoder_without_losing_context_or_masking_errors() {
+        use opennow_streamer_platform::GraphicsFrameError;
+        let messages = Box::new(CallbackMessages::default());
+        let mut handle = graphics_test_handle(&messages);
+        let context = ffi_graphics_context();
+        assert_eq!(
+            unsafe { opennow_streamer_set_graphics_context(&handle, &context) },
+            OpenNowStreamerStatus::Ok
+        );
+        let publisher = handle.frame_publisher();
+        let lease = publisher.context().unwrap();
+        let recorded = Arc::new(RecordedCommands::default());
+        let cases = [
+            (
+                Some(GraphicsFrameError::NotReady),
+                OpenNowStreamerStatus::NoFrame,
+            ),
+            (
+                Some(GraphicsFrameError::NotReady),
+                OpenNowStreamerStatus::NoFrame,
+            ),
+            (None, OpenNowStreamerStatus::Ok),
+            (
+                Some(GraphicsFrameError::Failed("device removed".into())),
+                OpenNowStreamerStatus::RenderFailed,
+            ),
+        ];
+        for (index, (error, expected)) in cases.into_iter().enumerate() {
+            publisher
+                .publish(
+                    lease,
+                    Arc::new(TestGraphicsFrame {
+                        sequence: index as u64,
+                        recorded: Arc::clone(&recorded),
+                        panic_on_record: false,
+                        error,
+                    }),
+                )
+                .unwrap();
+            let mut token = ptr::null_mut();
+            let mut info = OpenNowStreamerFrameInfo::default();
+            assert_eq!(
+                unsafe { opennow_streamer_acquire_latest_frame(&handle, &mut token, &mut info) },
+                OpenNowStreamerStatus::Ok
+            );
+            let mut output = OpenNowStreamerRecordedFrame::default();
+            assert_eq!(
+                unsafe {
+                    opennow_streamer_record_frame(
+                        &handle,
+                        token,
+                        &ffi_render_command(),
+                        &mut output,
+                    )
+                },
+                expected
+            );
+            assert_eq!(output.resource != 0, expected == OpenNowStreamerStatus::Ok);
+            assert_eq!(
+                unsafe { opennow_streamer_release_frame(token) },
+                OpenNowStreamerStatus::Ok
+            );
+            assert_eq!(recorded.drops.load(Ordering::Relaxed), index + 1);
+        }
+        assert_eq!(messages.frames_available.load(Ordering::Relaxed), 4);
+        assert_eq!(recorded.values.lock().unwrap().len(), 1);
+        assert_eq!(
+            unsafe { opennow_streamer_scene_graph_shutdown(&handle) },
+            OpenNowStreamerStatus::Ok
+        );
+        handle.shutdown();
+    }
+
+    #[test]
     fn graphics_ffi_acquires_records_and_releases_the_latest_frame() {
         let messages = Box::new(CallbackMessages::default());
         let mut handle = graphics_test_handle(&messages);
@@ -1448,6 +1570,7 @@ mod tests {
                     sequence: 42,
                     recorded: Arc::clone(&recorded),
                     panic_on_record: false,
+                    error: None,
                 }),
             )
             .expect("publish frame");
@@ -1532,6 +1655,7 @@ mod tests {
                     sequence: 1,
                     recorded: Arc::clone(&recorded),
                     panic_on_record: false,
+                    error: None,
                 }),
             )
             .expect("publish frame");
@@ -1582,6 +1706,7 @@ mod tests {
                     sequence: 1,
                     recorded,
                     panic_on_record: true,
+                    error: None,
                 }),
             )
             .expect("publish frame");

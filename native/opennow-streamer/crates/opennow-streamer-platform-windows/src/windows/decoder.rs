@@ -5,7 +5,18 @@ use std::mem::size_of;
 use std::ptr;
 
 use ::windows::Win32::Foundation::{E_NOTIMPL, LUID};
-use ::windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+use ::windows::Win32::Graphics::Direct3D11::{
+    D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0, D3D11_DECODER_PROFILE_H264_VLD_FGT,
+    D3D11_DECODER_PROFILE_H264_VLD_NOFGT, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
+    D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10, D3D11_VIDEO_DECODER_DESC, ID3D11Texture2D,
+    ID3D11VideoDevice,
+};
+use ::windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_Y410,
+};
+use ::windows::Win32::Media::MediaFoundation::{
+    D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN_444, D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN10_444,
+};
 use ::windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFAttributes, IMFDXGIBuffer, IMFMediaEventGenerator, IMFSample, IMFTransform,
     METransformHaveOutput, METransformNeedInput, MF_E_NO_EVENTS_AVAILABLE,
@@ -45,6 +56,33 @@ pub(super) struct DecodedVideoFrame {
     pub(super) subresource: u32,
     pub(super) timestamp_100ns: i64,
     pub(super) duration_100ns: i64,
+    // The sample, not the texture's COM reference, leases the decoder's array
+    // slice. Releasing it early returns that slice to the MFT's surface pool.
+    // Keep it alive through the decoded queue and conversion to Qt's RGB target.
+    // See Microsoft's "Supporting Direct3D 11 Video Decoding in Media Foundation",
+    // Decoding: the tracked-sample release callback makes the surface reusable.
+    _sample: IMFSample,
+}
+
+impl DecodedVideoFrame {
+    pub(super) fn from_sample(sample: IMFSample, fallback_duration: i64) -> Result<Self, String> {
+        let (texture, subresource) = dxgi_surface(&sample)?;
+        let timestamp_100ns = unsafe { sample.GetSampleTime().unwrap_or(0) };
+        let duration_100ns = unsafe {
+            sample
+                .GetSampleDuration()
+                .ok()
+                .filter(|duration| *duration > 0)
+                .unwrap_or(fallback_duration)
+        };
+        Ok(Self {
+            texture,
+            subresource,
+            timestamp_100ns,
+            duration_100ns,
+            _sample: sample,
+        })
+    }
 }
 
 pub(super) struct Decoder {
@@ -83,6 +121,9 @@ impl Decoder {
         format: VideoFormat,
         mode: WindowsDecoderMode,
     ) -> Result<Self, String> {
+        if mode == WindowsDecoderMode::Hardware {
+            ensure_hardware_format(graphics, format)?;
+        }
         let activations = enumerate_decoders(graphics.adapter_luid()?, format.codec, mode)?;
         let mut failures = Vec::new();
         for activation in activations {
@@ -102,8 +143,8 @@ impl Decoder {
                             .unwrap_or_else(|| "unknown".to_owned());
                     let hardware_registered =
                         activation_string(&activation, &MFT_ENUM_HARDWARE_URL_Attribute).is_some();
-                    eprintln!(
-                        "Windows decoder configured codec={} mft={friendly_name:?} hardwareRegistered={hardware_registered} async={} output={pixel_format:?} bitDepth={} chroma={:?} range={}",
+                    video_log!(
+                        "Windows decoder configured codec={} mft={friendly_name:?} hardwareRegistered={hardware_registered} async={} output={pixel_format:?} bitDepth={} chroma={:?} range={} sampleLease=retained-through-video-blit",
                         format.codec.label(),
                         events.is_some(),
                         pixel_format.bit_depth(),
@@ -291,25 +332,12 @@ impl Decoder {
                 "hardware decoder requires caller-allocated output samples".to_owned()
             }
         })?;
-        let (texture, subresource) = dxgi_surface(&sample)?;
-        let timestamp_100ns = unsafe { sample.GetSampleTime().unwrap_or(0) };
-        let duration_100ns = unsafe {
-            sample
-                .GetSampleDuration()
-                .ok()
-                .filter(|duration| *duration > 0)
-                .unwrap_or_else(|| self.format.frame_duration_100ns())
-        };
+        let frame = DecodedVideoFrame::from_sample(sample, self.format.frame_duration_100ns())?;
         if decoded_frames.len() == ADAPTIVE_VIDEO_QUEUE_CAPACITY {
             decoded_frames.pop_front();
             let _ = event_queue.push(BackendEvent::QueueOverflow(Subsystem::VideoPresentation));
         }
-        decoded_frames.push_back(DecodedVideoFrame {
-            texture,
-            subresource,
-            timestamp_100ns,
-            duration_100ns,
-        });
+        decoded_frames.push_back(frame);
         Ok(OutputPoll::Produced)
     }
 
@@ -593,6 +621,90 @@ fn stream_ids(transform: &IMFTransform) -> Result<(u32, u32), String> {
     }
 }
 
+// MFT registration and D3D11 awareness do not prove hardware codec support. In particular,
+// an installed AV1 MFT can exist on a pre-AV1 GPU. Check the actual decoder device, including
+// the requested depth, chroma and dimensions, before configuring either probe or live decode.
+fn hardware_profiles(
+    codec: VideoCodec,
+    pixel: VideoPixelFormat,
+) -> &'static [::windows::core::GUID] {
+    match (codec, pixel) {
+        (VideoCodec::H264, VideoPixelFormat::Nv12) => &[
+            D3D11_DECODER_PROFILE_H264_VLD_NOFGT,
+            D3D11_DECODER_PROFILE_H264_VLD_FGT,
+        ],
+        (VideoCodec::H265, VideoPixelFormat::Nv12) => &[D3D11_DECODER_PROFILE_HEVC_VLD_MAIN],
+        (VideoCodec::H265, VideoPixelFormat::P010) => &[D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10],
+        // DXVA decode profile GUIDs are shared between the D3D11 and D3D12 APIs.
+        (VideoCodec::H265, VideoPixelFormat::Ayuv) => &[D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN_444],
+        (VideoCodec::H265, VideoPixelFormat::Y410) => &[D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN10_444],
+        (VideoCodec::Av1, VideoPixelFormat::Nv12 | VideoPixelFormat::P010) => {
+            &[D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0]
+        }
+        _ => &[],
+    }
+}
+
+fn ensure_hardware_format<G: DecoderDevice>(
+    graphics: &G,
+    format: VideoFormat,
+) -> Result<(), String> {
+    let manager = graphics.device_manager();
+    let device = unsafe {
+        let handle = manager
+            .OpenDeviceHandle()
+            .map_err(|error| error.to_string())?;
+        let mut service = ptr::null_mut();
+        let result = manager.GetVideoService(handle, &ID3D11VideoDevice::IID, &mut service);
+        let _ = manager.CloseDeviceHandle(handle);
+        result.map_err(|error| format!("D3D11 decoder device: {error}"))?;
+        if service.is_null() {
+            return Err("D3D11 decoder device is null".to_owned());
+        }
+        ID3D11VideoDevice::from_raw(service)
+    };
+    let output: DXGI_FORMAT = match format.pixel_format {
+        VideoPixelFormat::Nv12 => DXGI_FORMAT_NV12,
+        VideoPixelFormat::P010 => DXGI_FORMAT_P010,
+        VideoPixelFormat::Ayuv => DXGI_FORMAT_AYUV,
+        VideoPixelFormat::Y410 => DXGI_FORMAT_Y410,
+    };
+    let candidates = hardware_profiles(format.codec, format.pixel_format);
+    unsafe {
+        for index in 0..device.GetVideoDecoderProfileCount() {
+            let profile = device
+                .GetVideoDecoderProfile(index)
+                .map_err(|error| error.to_string())?;
+            if !candidates.contains(&profile)
+                || !device
+                    .CheckVideoDecoderFormat(&profile, output)
+                    .is_ok_and(|supported| supported.as_bool())
+            {
+                continue;
+            }
+            let description = D3D11_VIDEO_DECODER_DESC {
+                Guid: profile,
+                SampleWidth: format.width,
+                SampleHeight: format.height,
+                OutputFormat: output,
+            };
+            if device
+                .GetVideoDecoderConfigCount(&description)
+                .is_ok_and(|count| count > 0)
+            {
+                return Ok(());
+            }
+        }
+    }
+    Err(format!(
+        "The selected GPU does not support hardware {} {:?} decoding at {}x{}. Use Auto codec or a supported color depth/resolution.",
+        format.codec.label(),
+        format.pixel_format,
+        format.width,
+        format.height
+    ))
+}
+
 fn select_video_output_type(
     transform: &IMFTransform,
     output_stream: u32,
@@ -628,7 +740,7 @@ fn select_video_output_type(
             match unsafe { transform.SetOutputType(output_stream, media_type, 0) } {
                 Ok(()) => {
                     if *pixel_format != preferred {
-                        eprintln!(
+                        video_log!(
                             "Windows decoder requested {preferred:?}, temporarily using compatible {pixel_format:?} output"
                         );
                     }
@@ -734,6 +846,35 @@ fn pack_pair(high: u32, low: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardware_profiles_do_not_confuse_codec_depth_or_chroma() {
+        let legacy_gpu = [
+            D3D11_DECODER_PROFILE_H264_VLD_NOFGT,
+            D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
+        ];
+        assert!(
+            hardware_profiles(VideoCodec::H264, VideoPixelFormat::Nv12)
+                .iter()
+                .any(|p| legacy_gpu.contains(p))
+        );
+        assert!(
+            !hardware_profiles(VideoCodec::Av1, VideoPixelFormat::Nv12)
+                .iter()
+                .any(|p| legacy_gpu.contains(p))
+        );
+        assert!(
+            !hardware_profiles(VideoCodec::H265, VideoPixelFormat::P010)
+                .iter()
+                .any(|p| legacy_gpu.contains(p))
+        );
+        assert!(hardware_profiles(VideoCodec::H264, VideoPixelFormat::P010).is_empty());
+        assert!(hardware_profiles(VideoCodec::Av1, VideoPixelFormat::Y410).is_empty());
+        assert_ne!(
+            hardware_profiles(VideoCodec::H265, VideoPixelFormat::Y410),
+            hardware_profiles(VideoCodec::H265, VideoPixelFormat::P010)
+        );
+    }
 
     #[test]
     fn media_foundation_subtypes_preserve_depth_and_chroma() {

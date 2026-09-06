@@ -75,8 +75,7 @@ FocusScope {
                 GlassButton { width: 250; text: qsTr("Open diagnostics"); glyph: "X"; onClicked: { AppController.showOverlay(""); AppController.navigate("diagnostics") } }
             }
         }
-        scale: root.visible ? 1 : 0.94
-        Behavior on scale { NumberAnimation { duration: Theme.panelDuration; easing.type: Easing.OutBack } }
+        // OverlayHost owns the single reveal transform.
     }
     Component.onCompleted: doneButton.forceActiveFocus()
 }

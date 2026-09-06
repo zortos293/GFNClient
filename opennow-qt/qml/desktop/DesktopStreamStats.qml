@@ -1,301 +1,233 @@
 pragma ComponentBehavior: Bound
-
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Effects
+import QtQuick.Layouts
 import OpenNOW
 
-FocusScope {
+// UI only; never takes gameplay focus or owns media transport.
+Item {
     id: root
-    width: 1440
-    height: 900
-    focus: false
+    objectName: "desktopStreamStats"
     property bool expanded: false
-    property double nowMs: Date.now()
-    property var fpsSamples: []
-    property var bitrateSamples: []
+    property bool pointerLocked: false
+    // A HUD must never compete with gameplay for hover, taps or wheel input.
+    // Shortcut-driven cycling/copy remains available while pointer input is off.
+    enabled: !pointerLocked
     signal cycleRequested()
     signal copyRequested()
     signal closeRequested()
-
     readonly property var live: ShellStore.streamer || ({})
     readonly property var session: ShellStore.activeSession || ({})
-    readonly property var profile: session.negotiatedStreamProfile
-        || session.streamProfile || ShellStore.runtimeStreamProfile || ({})
-    readonly property bool liveTelemetryAvailable: ["starting", "negotiating", "connecting", "streaming", "error"]
-        .indexOf(String(live.status || "")) >= 0
-
-    function number(value) {
-        return value === undefined || value === null || isNaN(Number(value))
-            ? null : Number(value)
+    readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ShellStore.runtimeStreamProfile || ({})
+    readonly property real overlayScale: Math.max(0.85, Math.min(1.5, Number(ShellStore.settings.statsOverlayScale || 1)))
+    readonly property real inset: 24
+    readonly property string position: String(ShellStore.settings.statsOverlayPosition || "top-right")
+    readonly property bool rightAligned: position.endsWith("right")
+    readonly property bool bottomAligned: position.startsWith("bottom")
+    readonly property color surface: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b,
+        Math.max(0.4, Math.min(1, Number(ShellStore.settings.statsOverlayOpacity || 85) / 100)))
+    readonly property bool telemetryActive: live.status === "streaming"
+    readonly property var cards: metricCards()
+    readonly property var compactMetrics: compactItems()
+    property var history: ({})
+    property double nowMs: Date.now()
+    function shown(key) { return ShellStore.settings["statsShow" + key] !== false }
+    function numeric(value) {
+        return value === undefined || value === null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value)
     }
-    function first(primary, fallback) {
-        return root.number(primary) === null ? fallback : primary
-    }
-    function metric(value, decimals) {
-        const parsed = root.number(value)
-        return parsed === null ? qsTr("N/A")
-            : (decimals > 0 ? parsed.toFixed(decimals) : String(Math.round(parsed)))
-    }
-    function unit(value, suffix) {
-        return value === qsTr("N/A") ? value : value + suffix
-    }
+    function read(key) { return telemetryActive ? numeric(live[key]) : null }
+    function format(value, decimals) { return numeric(value) === null ? qsTr("N/A") : Number(value).toFixed(decimals || 0) }
     function elapsedText() {
-        if (ShellStore.streamStartedAtMs <= 0)
-            return "0:00:00"
-        const total = Math.floor(Math.max(0, nowMs - ShellStore.streamStartedAtMs) / 1000)
-        const hours = Math.floor(total / 3600)
-        const minutes = Math.floor((total % 3600) / 60)
-        const seconds = total % 60
-        return hours + ":" + String(minutes).padStart(2, "0")
-            + ":" + String(seconds).padStart(2, "0")
+        const start = Number(ShellStore.streamStartedAtMs || 0)
+        const total = start > 0 ? Math.floor(Math.max(0, nowMs - start) / 1000) : 0
+        return Math.floor(total / 3600) + ":" + String(Math.floor(total / 60) % 60).padStart(2, "0") + ":" + String(total % 60).padStart(2, "0")
     }
-    function appendSample(samples, value) {
-        const parsed = root.number(value)
-        if (parsed === null)
-            return samples
-        const next = samples.slice(Math.max(0, samples.length - 22))
-        next.push(parsed)
-        return next
+    readonly property string region: String(session.regionName || session.region || session.serverRegionId
+        || (typeof session.serverLocation === "string" ? session.serverLocation : "")
+        || session.zone || qsTr("Region unavailable"))
+    readonly property string rig: String(session.rigName || session.gpuName || session.gpuType || "")
+    readonly property string videoText: {
+        const parts = []
+        if (live.codec || profile.codec) parts.push(String(live.codec || profile.codec).toUpperCase())
+        const w = Number(profile.width || live.outputWidth || 0), h = Number(profile.height || live.outputHeight || 0)
+        if (w && h) parts.push(w + "×" + h)
+        if (profile.bitDepth) parts.push(profile.bitDepth + "-bit")
+        if (profile.chroma) parts.push(String(profile.chroma))
+        if (profile.hdr === true) parts.push("HDR")
+        return parts.length ? parts.join(" · ") : qsTr("Video format unavailable")
     }
-    function sampleAt(samples, index) {
-        const offset = 24 - samples.length
-        return index < offset ? null : samples[index - offset]
-    }
-    function sampleHeight(samples, index) {
-        const value = root.sampleAt(samples, index)
-        if (value === null)
-            return 3
-        let low = value
-        let high = value
-        for (let i = 0; i < samples.length; ++i) {
-            low = Math.min(low, samples[i])
-            high = Math.max(high, samples[i])
-        }
-        if (high <= low)
-            return 13
-        return 7 + Math.round((value - low) / (high - low) * 17)
-    }
-    function rangeText(samples, unitText) {
-        if (!samples.length)
-            return qsTr("waiting for samples")
-        let low = samples[0]
-        let high = samples[0]
-        for (let i = 1; i < samples.length; ++i) {
-            low = Math.min(low, samples[i])
-            high = Math.max(high, samples[i])
-        }
-        return qsTr("min %1 · max %2 %3")
-            .arg(low.toFixed(1)).arg(high.toFixed(1)).arg(unitText)
-    }
-
-    readonly property var streamFpsNumber: root.liveTelemetryAvailable
-        ? root.first(live.framesPerSecond, live.fps) : null
-    readonly property var bitrateNumber: root.liveTelemetryAvailable
-        ? root.first(live.bitrateMbps, live.receiveBitrateMbps) : null
-    readonly property string streamFps: root.metric(root.streamFpsNumber, 0)
-    readonly property string gameFps: root.metric(root.first(live.gameFramesPerSecond,
-        root.first(profile.fps, live.outputFps)), 0)
-    readonly property string latency: root.metric(root.first(live.latencyMs, live.roundTripLatencyMs), 0)
-    readonly property string ping: root.metric(root.first(live.pingMs, session.latencyMs), 0)
-    readonly property string bitrate: root.metric(root.bitrateNumber, 0)
-    readonly property string peakBitrate: root.metric(live.peakBitrateMbps, 0)
-    readonly property string queueDrops: root.metric(root.first(live.queueDropCount, 0), 0)
-    readonly property string region: String(session.regionName || session.region
-        || session.serverRegionId || "GFN").toUpperCase()
-    readonly property string rig: String(session.rigName || session.gpuName
-        || session.gpuType || "NVIDIA").toUpperCase()
-    readonly property string codec: String(live.codec || profile.codec
-        || ShellStore.runtimeStreamProfile.codec || ShellStore.settings.codec
-        || qsTr("Automatic")).toUpperCase()
-    readonly property string transport: String(live.transport || "NVST").toUpperCase()
-    readonly property string mediaBackend: String(live.mediaBackend || qsTr("Pending")).toUpperCase()
-    readonly property int outputHeight: Number(profile.height || live.outputHeight || 0)
-    readonly property int refreshRate: Number(profile.fps || profile.frameRate || live.outputFps || 0)
-    readonly property bool hdr: Boolean(profile.hdr)
-    readonly property string outputText: (root.outputHeight > 0
-        ? root.outputHeight + "p" : qsTr("Pending"))
-        + (root.refreshRate > 0 ? " · " + root.refreshRate + " Hz" : "")
-        + (root.hdr ? " · HDR" : "")
-
-    function metricRows() {
+    function metricCards() {
+        // A negotiated target is not measured FPS. Discovery ping is not
+        // stream RTT. Unsupported measurements are explicitly unavailable.
         return [
-            { label: "FPS", main: root.unit(root.streamFps, " fps"), secondary: root.unit(root.gameFps, " game") },
-            { label: qsTr("LATENCY"), main: root.unit(root.latency, " ms"), secondary: "" },
-            { label: qsTr("PING"), main: root.unit(root.ping, " ms"), secondary: "" },
-            { label: qsTr("BITRATE"), main: root.unit(root.bitrate, " Mbps"), secondary: root.unit(root.peakBitrate, " peak") },
-            { label: qsTr("DROPS"), main: root.queueDrops, secondary: qsTr("queue") }
-        ]
+            {key:"Ping", label:qsTr("PING"), value:read("pingMs"), unit:"ms", field:"pingMs"},
+            {key:"Fps", label:qsTr("STREAM FPS"), value:read("framesPerSecond"), unit:"fps", field:"framesPerSecond"},
+            {key:"Bitrate", label:qsTr("BITRATE"), value:read("bitrateMbps"), unit:"Mbps", field:"bitrateMbps", decimals:1},
+            {key:"Jitter", label:qsTr("JITTER"), value:read("jitterMs"), unit:"ms", field:"jitterMs", decimals:1},
+            {key:"Drops", label:qsTr("QUEUE DROPS"), value:read("queueDropCount"), unit:qsTr("total"), field:"queueDropCount"},
+            {key:"PacketLoss", label:qsTr("PACKET LOSS"), value:read("packetLossPercent"), unit:"%", field:"packetLossPercent", decimals:1},
+            {key:"Decode", label:qsTr("DECODE"), value:read("decodeTimeMs"), unit:"ms", field:"decodeTimeMs", decimals:1},
+            {key:"Latency", label:qsTr("LATENCY"), value:read("latencyMs"), unit:"ms", field:"latencyMs"}
+        ].filter(item => shown(item.key))
     }
-
-    Rectangle {
-        id: compactPill
-        anchors.top: parent.top
-        anchors.topMargin: 24
-        anchors.right: parent.right
-        anchors.rightMargin: 24
-        width: compactRow.implicitWidth + 24
-        height: 34
-        radius: 17
-        visible: !root.expanded
-        color: "#EB0E1018"
-        border.width: 1
-        border.color: DesktopTokens.seam
-
-        Row {
-            id: compactRow
-            anchors.centerIn: parent
-            spacing: 9
-            Rectangle { width: 6; height: 6; radius: 3; anchors.verticalCenter: parent.verticalCenter; color: DesktopTokens.green }
-            Text { anchors.verticalCenter: parent.verticalCenter; text: root.unit(root.streamFps, " fps"); color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
-            Rectangle { width: 1; height: 14; anchors.verticalCenter: parent.verticalCenter; color: DesktopTokens.seam }
-            Text { anchors.verticalCenter: parent.verticalCenter; text: root.transport; color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
-            Rectangle { width: 1; height: 14; anchors.verticalCenter: parent.verticalCenter; color: DesktopTokens.seam }
-            Text { anchors.verticalCenter: parent.verticalCenter; text: root.codec; color: DesktopTokens.focus; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
-            Rectangle { width: 1; height: 14; anchors.verticalCenter: parent.verticalCenter; color: DesktopTokens.seam }
-            Text { anchors.verticalCenter: parent.verticalCenter; text: root.unit(root.bitrate, " Mbps"); color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold }
-        }
-        HoverHandler { cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: root.cycleRequested() }
+    function compactItems() {
+        const items = cards.map(item => ({text:item.label + " " + format(item.value, item.decimals) + " " + item.unit}))
+        if (shown("Video")) items.push({text:videoText})
+        if (shown("Region")) items.push({text:region})
+        return items
     }
-
-    MultiEffect {
-        anchors.fill: expandedPanel
-        source: expandedPanel
-        visible: false
-        shadowEnabled: true
-        shadowColor: "#CC000000"
-        shadowOpacity: 0.8
-        shadowBlur: 1
-        shadowVerticalOffset: 12
+    function report() {
+        const lines = cards.map(item => item.label + ": " + format(item.value, item.decimals) + " " + item.unit)
+        if (shown("Region")) lines.unshift(region + (rig ? " · " + rig : ""))
+        if (shown("Video")) lines.push(videoText)
+        if (shown("Clock")) lines.push(qsTr("Session: ") + elapsedText())
+        return qsTr("Stream stats:") + "\n" + lines.join("\n")
     }
-
-    Rectangle {
-        id: expandedPanel
-        anchors.top: parent.top
-        anchors.topMargin: 24
-        anchors.right: parent.right
-        anchors.rightMargin: 24
-        width: 292
-        height: 358
-        radius: 18
-        visible: root.expanded
-        color: "#F20E1018"
-        border.width: 1
-        border.color: DesktopTokens.seam
-
-        Item {
-            x: 13; y: 10; width: parent.width - 26; height: 16
-            Rectangle { width: 6; height: 6; radius: 3; anchors.verticalCenter: parent.verticalCenter; color: DesktopTokens.green }
-            Text { x: 13; width: 170; anchors.verticalCenter: parent.verticalCenter; text: root.region + " · " + root.rig; color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.Bold; font.letterSpacing: 0.4; elide: Text.ElideRight }
-            Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: root.elapsedText(); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: 9; font.weight: Font.DemiBold }
-        }
-        Rectangle { x: 13; y: 34; width: parent.width - 26; height: 1; color: DesktopTokens.seam }
-
-        Column {
-            x: 13; y: 42; width: parent.width - 26; spacing: 0
-            Repeater {
-                model: root.metricRows()
-                delegate: Item {
-                    id: metricRow
-                    required property var modelData
-                    width: parent.width
-                    height: 21
-                    Text { width: 64; anchors.verticalCenter: parent.verticalCenter; text: metricRow.modelData.label; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 0.6 }
-                    Text { x: 66; width: 100; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: metricRow.modelData.main; color: DesktopTokens.textHigh; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold; elide: Text.ElideRight }
-                    Text { anchors.right: parent.right; width: 88; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: metricRow.modelData.secondary; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.DemiBold; elide: Text.ElideRight }
-                }
-            }
-        }
-
-        Rectangle { x: 13; y: 151; width: parent.width - 26; height: 1; color: DesktopTokens.seam }
-        Column {
-            x: 13; y: 157; width: parent.width - 26; spacing: 0
-            Repeater {
-                model: [
-                    { label: qsTr("CODEC"), main: root.codec, secondary: root.mediaBackend },
-                    { label: qsTr("OUTPUT"), main: root.outputText, secondary: root.hdr ? "HDR" : "SDR" }
-                ]
-                delegate: Item {
-                    id: videoRow
-                    required property var modelData
-                    width: parent.width; height: 21
-                    Text { width: 64; anchors.verticalCenter: parent.verticalCenter; text: videoRow.modelData.label; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 0.6 }
-                    Text { x: 66; width: 132; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: videoRow.modelData.main; color: DesktopTokens.focus; font.family: DesktopTokens.monoFont; font.pixelSize: 10; font.weight: Font.Bold; elide: Text.ElideRight }
-                    Text { anchors.right: parent.right; width: 62; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: videoRow.modelData.secondary; color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; elide: Text.ElideRight }
-                }
-            }
-        }
-
-        Rectangle { x: 13; y: 205; width: parent.width - 26; height: 1; color: DesktopTokens.seam }
-        Item {
-            x: 13; y: 212; width: parent.width - 26; height: 50
-            Text { text: qsTr("FRAMETIME"); color: DesktopTokens.green; font.family: DesktopTokens.monoFont; font.pixelSize: 7; font.weight: Font.Bold; font.letterSpacing: 0.55 }
-            Text { anchors.right: parent.right; text: root.rangeText(root.fpsSamples.map(value => 1000 / Math.max(1, value)), "ms"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 7; font.weight: Font.Bold }
-            Row {
-                anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 24; spacing: 2
-                Repeater {
-                    model: 24
-                    delegate: Rectangle {
-                        required property int index
-                        width: 9
-                        height: root.sampleHeight(root.fpsSamples.map(value => 1000 / Math.max(1, value)), index)
-                        anchors.bottom: parent.bottom
-                        radius: 1
-                        color: DesktopTokens.green
-                        opacity: root.sampleAt(root.fpsSamples, index) === null ? 0.2 : 0.72
-                    }
-                }
-            }
-        }
-        Item {
-            x: 13; y: 268; width: parent.width - 26; height: 50
-            Text { text: qsTr("BITRATE"); color: DesktopTokens.focus; font.family: DesktopTokens.monoFont; font.pixelSize: 7; font.weight: Font.Bold; font.letterSpacing: 0.55 }
-            Text { anchors.right: parent.right; text: root.rangeText(root.bitrateSamples, "Mbps"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 7; font.weight: Font.Bold }
-            Row {
-                anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 24; spacing: 2
-                Repeater {
-                    model: 24
-                    delegate: Rectangle {
-                        required property int index
-                        width: 9
-                        height: root.sampleHeight(root.bitrateSamples, index)
-                        anchors.bottom: parent.bottom
-                        radius: 1
-                        color: DesktopTokens.focus
-                        opacity: root.sampleAt(root.bitrateSamples, index) === null ? 0.2 : 0.72
-                    }
-                }
-            }
-        }
-
-        Rectangle { x: 13; y: 328; width: parent.width - 26; height: 1; color: DesktopTokens.seam }
-        Text { x: 13; y: 340; text: qsTr("F3 · PS · XB — CYCLE"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 7; font.weight: Font.Bold; font.letterSpacing: 0.35 }
-        Text { anchors.right: parent.right; anchors.rightMargin: 13; y: 340; text: qsTr("SHIFT+F3 COPY"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 7; font.weight: Font.Bold; font.letterSpacing: 0.35 }
-        HoverHandler { cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: root.cycleRequested() }
-    }
-
+    function resetHistory() { history = ({}) }
+    onTelemetryActiveChanged: resetHistory()
+    Connections { target: ShellStore; function onStreamStartedAtMsChanged() { root.resetHistory() } }
     Timer {
-        interval: 1000
-        repeat: true
-        running: root.visible
+        running: root.visible; repeat: true; interval: 1000
         onTriggered: {
             root.nowMs = Date.now()
-            root.fpsSamples = root.appendSample(root.fpsSamples, root.streamFpsNumber)
-            root.bitrateSamples = root.appendSample(root.bitrateSamples, root.bitrateNumber)
+            if (!root.expanded || !root.shown("Graphs") || !root.telemetryActive) return
+            const next = ({})
+            for (const card of root.cards) {
+                const values = (root.history[card.field] || []).slice(-59)
+                values.push(root.read(card.field)); next[card.field] = values
+            }
+            root.history = next
         }
     }
-    Keys.onPressed: event => {
-        if (event.key === Qt.Key_F3 && (event.modifiers & Qt.ShiftModifier)) {
-            root.copyRequested()
-            event.accepted = true
-        } else if (event.key === Qt.Key_F3) {
-            root.cycleRequested()
-            event.accepted = true
-        } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
-            root.closeRequested()
-            event.accepted = true
+    Rectangle {
+        id: compact
+        objectName: "compactStatsBar"
+        visible: !root.expanded
+        width: Math.min(root.width - root.inset * 2, Math.max(160,
+            (root.compactMetrics.reduce((sum, item) => sum + item.text.length * 7.4 + 12, 0)
+                + String(ShellStore.settings.shortcutToggleStats || "Ctrl+N").length * 7.4 + 62) * root.overlayScale + 24))
+        height: compactFlow.height + 16
+        x: root.rightAligned ? root.width - width - root.inset : root.inset
+        y: root.bottomAligned ? root.height - height - root.inset : root.inset
+        radius: Math.min(20, height / 2); color: root.surface
+        border.width: 1; border.color: Theme.seam
+        Flow {
+            id: compactFlow
+            x: 12; y: 8
+            width: compact.width - 24
+            spacing: 12 * root.overlayScale
+            Repeater {
+                model: root.compactMetrics
+                delegate: Text {
+                    required property var modelData
+                    text: modelData.text; color: Theme.label; font.family: Theme.monoFont
+                    font.pixelSize: 12 * root.overlayScale; font.weight: Font.DemiBold
+                }
+            }
+            Text {
+                text: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N") + " · " + qsTr("more")
+                color: Theme.focus; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale
+            }
         }
+        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: root.cycleRequested() }
+    }
+    Rectangle {
+        id: expandedPanel
+        objectName: "expandedStatsPanel"
+        visible: root.expanded
+        width: Math.min(460 * root.overlayScale, root.width - root.inset * 2)
+        height: Math.min(panelContents.implicitHeight + 20, root.height - root.inset * 2)
+        x: root.rightAligned ? root.width - width - root.inset : root.inset
+        y: root.bottomAligned ? root.height - height - root.inset : root.inset
+        radius: 22; color: root.surface; border.width: 1; border.color: Theme.seam
+        Flickable {
+            interactive: !root.pointerLocked
+            anchors.fill: parent; anchors.margins: 10
+            contentWidth: width; contentHeight: panelContents.implicitHeight
+            clip: true; boundsBehavior: Flickable.StopAtBounds
+            ColumnLayout {
+                id: panelContents
+                width: parent.width; spacing: 8
+                RowLayout {
+                    Layout.fillWidth: true; Layout.margins: 6
+                    Rectangle { implicitWidth: 8; implicitHeight: 8; radius: 4; color: root.telemetryActive ? DesktopTokens.green : DesktopTokens.ledAmber }
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 2
+                        Text { text: root.telemetryActive ? qsTr("Stream statistics") : qsTr("Waiting for stream"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14 * root.overlayScale; font.weight: Font.Bold }
+                        Text { visible: root.shown("Region"); Layout.fillWidth: true; text: root.region + (root.rig ? " · " + root.rig : ""); elide: Text.ElideRight; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 12 * root.overlayScale }
+                    }
+                    Text { visible: root.shown("Clock"); text: root.elapsedText(); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale }
+                }
+                GridLayout {
+                    Layout.fillWidth: true; columns: width < 360 ? 1 : 2; columnSpacing: 6; rowSpacing: 6
+                    Repeater {
+                        model: root.cards
+                        delegate: Rectangle {
+                            id: card
+                            required property var modelData
+                            Layout.fillWidth: true; Layout.preferredHeight: 82 * root.overlayScale
+                            color: DesktopTokens.raised; radius: 14
+                            Text { x: 12; y: 10; width: parent.width - 24; text: card.modelData.label; elide: Text.ElideRight; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 * root.overlayScale; font.weight: Font.Bold; font.letterSpacing: 0.5 }
+                            Row {
+                                x: 12; anchors.bottom: parent.bottom; anchors.bottomMargin: 12; spacing: 4
+                                Text { id: metricValue; text: root.format(card.modelData.value, card.modelData.decimals); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 22 * root.overlayScale; font.weight: Font.DemiBold }
+                                Text { anchors.baseline: metricValue.baseline; text: card.modelData.unit; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11 * root.overlayScale }
+                            }
+                            Canvas {
+                                id: graph
+                                visible: root.shown("Graphs") && card.modelData.value !== null
+                                width: parent.width * 0.32; height: 24
+                                anchors.right: parent.right; anchors.rightMargin: 12
+                                anchors.bottom: parent.bottom; anchors.bottomMargin: 12
+                                readonly property var samples: root.history[card.modelData.field] || []
+                                onSamplesChanged: requestPaint()
+                                onWidthChanged: requestPaint()
+                                Connections { target: Theme; function onFocusChanged() { graph.requestPaint() } }
+                                onPaint: {
+                                    const ctx = getContext("2d")
+                                    ctx.clearRect(0, 0, width, height)
+                                    const valid = samples.filter(v => v !== null)
+                                    if (valid.length < 2) return
+                                    const low = Math.min(...valid), high = Math.max(...valid)
+                                    ctx.strokeStyle = Theme.focus; ctx.lineWidth = 1.5; ctx.beginPath()
+                                    let started = false
+                                    for (let i = 0; i < samples.length; ++i) {
+                                        if (samples[i] === null) { started = false; continue }
+                                        const x = i * width / Math.max(1, samples.length - 1)
+                                        const y = high === low ? height / 2 : height - 3 - (samples[i] - low) / (high - low) * (height - 6)
+                                        if (started) ctx.lineTo(x, y); else ctx.moveTo(x, y)
+                                        started = true
+                                    }
+                                    ctx.stroke()
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    visible: root.shown("Video"); Layout.fillWidth: true; implicitHeight: videoLabel.implicitHeight + 24
+                    radius: 12; color: DesktopTokens.raised
+                    Text { id: videoLabel; x: 12; y: 12; width: parent.width - 24; text: root.videoText; wrapMode: Text.WordWrap; color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale }
+                }
+                Text {
+                    Layout.fillWidth: true; Layout.margins: 6
+                    text: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N") + " · " + qsTr("bar / panel / off") + "     Shift+F3 · " + qsTr("copy")
+                    wrapMode: Text.WordWrap; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 11 * root.overlayScale
+                }
+            }
+        }
+        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: root.cycleRequested() }
+    }
+    Rectangle {
+        id: clockPill
+        visible: !root.expanded && root.shown("Clock")
+        width: clock.implicitWidth + 28; height: clock.implicitHeight + 18; radius: height / 2
+        x: root.rightAligned ? root.inset : root.width - width - root.inset
+        y: (root.bottomAligned ? root.height - height - root.inset : root.inset)
+            + (root.width < compact.width + width + root.inset * 3 ? (root.bottomAligned ? -compact.height - 8 : compact.height + 8) : 0)
+        color: root.surface; border.width: 1; border.color: Theme.seam
+        Text { id: clock; anchors.centerIn: parent; text: root.elapsedText(); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale; font.weight: Font.DemiBold }
     }
 }

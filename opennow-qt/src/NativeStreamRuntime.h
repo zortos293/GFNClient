@@ -83,6 +83,10 @@ public:
 
     [[nodiscard]] bool running() const;
     [[nodiscard]] QString lastError() const;
+    [[nodiscard]] quint64 presentationGeneration() const;
+    [[nodiscard]] bool presentationAllowed() const;
+    // Called at most once per presentation failure from the scene-graph thread.
+    void reportPresentationError(const QString &message);
 
     Q_INVOKABLE bool start();
     Q_INVOKABLE bool send(const QJsonObject &command);
@@ -116,6 +120,7 @@ public:
                                            bool *rawInputActive);
 
 signals:
+    void presentationError(const QString &message);
     void runningChanged();
     void lastErrorChanged();
     void responseReceived(const QJsonObject &response);
@@ -141,6 +146,7 @@ private:
     static void scheduleDrain(const std::shared_ptr<CallbackState> &state);
     void drainCallbacks(const std::shared_ptr<CallbackState> &state);
     void setLastError(const QString &error);
+    void invalidatePresentation();
 
     std::unique_ptr<Private> d;
 };

@@ -4,21 +4,70 @@ import OpenNOW
 
 FocusScope {
     id: root
+    property bool opened: false
+    visible: reveal.present
+    enabled: opened
+    MotionProgress { id: reveal; shown: root.opened }
     property string query: ""
     property string scopeFilter: "all"
     property int currentIndex: 0
+    property string searchRequestId: ""
+    property var localGames: []
+    property string searchError: ""
+    property bool searching: false
+    function cancelSearch() {
+        searchDelay.stop()
+        const id = searchRequestId
+        searchRequestId = ""
+        searching = false
+        if (id !== "") CoreClient.cancel(id)
+    }
+    function requestGames() {
+        cancelSearch()
+        if (!opened || scopeFilter === "actions" || !query.trim() || !ShellStore.ready || !ShellStore.signedIn) return
+        searching = true
+        searchRequestId = CoreClient.request("catalog.store.local", {searchQuery:query.trim(),cursor:"",limit:6}, 30000)
+        if (!searchRequestId) searching = false
+    }
+    function scheduleSearch() {
+        cancelSearch()
+        searching = opened && scopeFilter !== "actions" && query.trim() !== "" && ShellStore.ready && ShellStore.signedIn
+        if (searching) searchDelay.restart()
+    }
+    Timer { id: searchDelay; interval: 180; onTriggered: root.requestGames() }
+    Connections {
+        target: CoreClient
+        function onResponseReceived(id, result) {
+            if (!root.searchRequestId || id !== root.searchRequestId) return
+            root.searchRequestId = ""
+            root.searching = false
+            root.localGames = result.games || []
+        }
+        function onRequestFailed(id, code, message) {
+            if (!root.searchRequestId || id !== root.searchRequestId) return
+            root.searchRequestId = ""
+            root.searching = false
+            root.searchError = message
+        }
+    }
+    Connections {
+        target: ShellStore
+        function onAuthSessionChanged() { root.localGames = []; root.searchError = ""; root.scheduleSearch() }
+    }
+    Component.onDestruction: root.cancelSearch()
     signal closeRequested()
     signal routeRequested(string route)
     signal gameRequested(var game)
     anchors.fill: parent
-    onVisibleChanged: {
-        if (visible) {
+    onOpenedChanged: {
+        if (opened) {
             root.query = ""
             root.scopeFilter = "all"
             root.currentIndex = 0
             field.text = ""
             field.forceActiveFocus()
-        }
+            root.scheduleCurrentVisibility()
+        } else root.cancelSearch()
     }
 
     readonly property var actions: [
@@ -40,6 +89,8 @@ FocusScope {
     }
 
     function matchedGames() {
+        if (root.query.trim() && ShellStore.signedIn)
+            return root.localGames.filter(game => !ShellStore.isHidden(game))
         const source = ShellStore.catalogGames || []
         const result = []
         for (let index = 0; index < source.length && result.length < 6; ++index) {
@@ -85,7 +136,33 @@ FocusScope {
         if (root.flatCount === 0)
             return
         root.currentIndex = (root.currentIndex + delta + root.flatCount) % root.flatCount
+        root.ensureCurrentVisible()
     }
+
+    function currentRow() {
+        return currentIndex < gameList.length ? gameRows.itemAt(currentIndex)
+            : actionRows.itemAt(currentIndex - gameList.length)
+    }
+
+    function ensureCurrentVisible() {
+        if (!opened || !results || !resultsColumn) return
+        resultsColumn.forceLayout()
+        const row = root.currentRow()
+        if (!row) { results.contentY = 0; return }
+        let position = results.contentY
+        if (row.y < position) position = row.y
+        else if (row.y + row.height > position + results.height)
+            position = row.y + row.height - results.height
+        results.contentY = Math.max(0, Math.min(position, results.contentHeight - results.height))
+    }
+    // An owned timer is cancelled with the palette when a surface switch
+    // destroys it; a queued JavaScript callback can outlive its methods.
+    Timer { id: visibilityTimer; interval: 0; onTriggered: root.ensureCurrentVisible() }
+    function scheduleCurrentVisibility() {
+        if (opened && visibilityTimer) visibilityTimer.restart()
+    }
+    onHeightChanged: root.scheduleCurrentVisibility()
+    onWidthChanged: root.scheduleCurrentVisibility()
 
     function cycleScope() {
         root.scopeFilter = root.scopeFilter === "all" ? "games"
@@ -107,19 +184,23 @@ FocusScope {
         root.closeRequested()
     }
 
-    onQueryChanged: root.currentIndex = 0
-    onScopeFilterChanged: root.currentIndex = 0
-    onFlatCountChanged: root.clampCurrent()
+    onQueryChanged: { root.currentIndex = 0; root.localGames = []; root.searchError = ""; root.scheduleSearch() }
+    onScopeFilterChanged: { root.currentIndex = 0; root.scheduleSearch() }
+    onFlatCountChanged: { root.clampCurrent(); root.scheduleCurrentVisibility() }
 
-    readonly property real contentHeight: (gameList.length > 0 ? 26 + gameList.length * 56 : 0)
-        + (actionList.length > 0 ? 26 + actionList.length * 40 : 0)
-    readonly property real panelHeight: 58 + Math.min(root.contentHeight, 428) + 42
+    readonly property real contentHeight: resultsColumn.implicitHeight
+    readonly property real panelHeight: Math.min(58 + Math.min(root.contentHeight, 428) + 42, Math.max(100, height - 32))
+    readonly property real panelWidth: Math.max(0, Math.min(640, width - 32))
+    readonly property real panelTop: Math.min(120, Math.max(16, (height - panelHeight) / 2))
 
-    Rectangle { anchors.fill: parent; color: "#A8000000"; TapHandler { onTapped: root.closeRequested() } }
+    Rectangle { anchors.fill: parent; color: "#A8000000"; opacity: reveal.progress; TapHandler { onTapped: root.closeRequested() } }
     Rectangle {
-        x: Math.round((parent.width - 640) / 2)
-        y: 120
-        width: 640
+        objectName: "commandPalettePanel"
+        opacity: reveal.progress; scale: reveal.zoom
+        transformOrigin: Item.Center
+        x: Math.round((parent.width - root.panelWidth) / 2)
+        y: root.panelTop
+        width: root.panelWidth
         height: root.panelHeight
         radius: 18
         color: "#FA0A0E15"
@@ -154,6 +235,8 @@ FocusScope {
         }
 
         Flickable {
+            id: results
+            objectName: "commandPaletteResults"
             x: 10; y: 58; width: parent.width - 20; height: root.panelHeight - 58 - 42
             contentWidth: width
             contentHeight: resultsColumn.implicitHeight
@@ -175,6 +258,7 @@ FocusScope {
                     verticalAlignment: Text.AlignVCenter
                 }
                 Repeater {
+                    id: gameRows
                     model: root.gameList
                     delegate: ItemDelegate {
                         id: gameRow
@@ -258,6 +342,7 @@ FocusScope {
                     verticalAlignment: Text.AlignVCenter
                 }
                 Repeater {
+                    id: actionRows
                     model: root.actionList
                     delegate: ItemDelegate {
                         id: command
@@ -313,7 +398,9 @@ FocusScope {
                     height: 56
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
-                    text: qsTr("No matches for “%1”").arg(root.query)
+                    text: root.searching ? qsTr("Searching…") : root.searchError || qsTr("No matches for “%1”").arg(root.query)
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
                     color: DesktopTokens.textMuted
                     font.family: DesktopTokens.bodyFont
                     font.pixelSize: DesktopTokens.captionSize

@@ -11,30 +11,95 @@ Item {
     property var games: []
     property int selectedIndex: -1
     property bool active: false
+    property bool materialized: true
+    property string categoryId: ""
+    property int totalCount: 0
+    property var localGames: []
+    property string requestId: ""
+    property string loadError: ""
+    property int loadedLimit: 0
+    property int requestedLimit: 0
+    readonly property var displayGames: categoryId ? localGames : games
+    function cancelRequest() {
+        loadDelay.stop()
+        const pending = requestId
+        requestId = ""
+        if (pending) CoreClient.cancel(pending)
+    }
+    function loadVisible() {
+        loadDelay.restart()
+    }
+    Timer { id: loadDelay; interval: 16; onTriggered: root.requestVisible() }
+    function requestVisible() {
+        if (!materialized || !categoryId || requestId || loadedLimit >= tileCount || !ShellStore.ready) return
+        const cached = ShellStore.cachedStoreShelf(categoryId, tileCount)
+        if (cached !== null) {
+            localGames = cached
+            loadedLimit = tileCount
+            loadError = ""
+            return
+        }
+        loadError = ""
+        requestedLimit = tileCount
+        requestId = CoreClient.request("catalog.store.local", {categoryId:categoryId,searchQuery:"",cursor:"",limit:tileCount}, 30000)
+    }
+    onMaterializedChanged: {
+        if (materialized) loadVisible()
+        else { cancelRequest(); localGames = []; loadedLimit = 0 }
+    }
+    onTileCountChanged: if (categoryId && materialized && tileCount > loadedLimit) { cancelRequest(); loadVisible() }
+    function invalidate() { cancelRequest(); localGames = []; loadedLimit = 0; loadVisible() }
+    onCategoryIdChanged: invalidate()
+    Component.onCompleted: loadVisible()
+    Component.onDestruction: cancelRequest()
+    Connections {
+        target: ShellStore
+        function onStoreShelfEpochChanged() { root.invalidate() }
+    }
+    Connections {
+        target: CoreClient
+        function onResponseReceived(id,result) {
+            if (!root.requestId || id !== root.requestId) return
+            root.requestId = ""
+            root.localGames = (result.games || []).slice(0, root.requestedLimit)
+            root.loadedLimit = root.requestedLimit
+            ShellStore.cacheStoreShelf(root.categoryId, root.loadedLimit, root.localGames)
+        }
+        function onRequestFailed(id,code,message) {
+            if (!root.requestId || id !== root.requestId) return
+            root.requestId = ""
+            root.loadError = message
+        }
+    }
 
     signal gameActivated(var game)
     signal gamePointed(int index)
     signal seeAllRequested()
 
-    readonly property int railGap: 14
-    readonly property int tileCount: Math.max(1, Math.min(root.games.length || 1, Math.floor((width + railGap) / (132 + railGap))))
-    readonly property int tileWidth: Math.max(132, Math.floor((width - railGap * (Math.max(1, tileCount) - 1)) / Math.max(1, tileCount)))
-    readonly property int tileHeight: Math.round(tileWidth * 250 / 132)
+    readonly property int railGap: DesktopTokens.px(14)
+    readonly property int columnCount: Math.max(1, Math.floor((width + railGap) / (DesktopTokens.libraryArtWidth + railGap)))
+    readonly property int tileCount: Math.max(1, Math.min(60, (root.categoryId ? root.totalCount : root.games.length) || 1, columnCount))
+    // A short final page keeps the same poster size as a full row.
+    readonly property int tileWidth: Math.max(DesktopTokens.libraryArtWidth, Math.floor((width - railGap * (columnCount - 1)) / columnCount))
+    readonly property int tileHeight: Math.round(tileWidth * 198 / 132) + DesktopTokens.storeCardInfoHeight
 
-    height: 31 + tileHeight
+    height: DesktopTokens.px(31) + tileHeight
 
     Row {
         x: 0
         y: 0
-        height: 20
-        spacing: 9
+        width: Math.max(0, headerActions.visible ? headerActions.x - DesktopTokens.px(12) : parent.width)
+        height: DesktopTokens.px(20)
+        spacing: DesktopTokens.px(9)
 
         Text {
+            width: Math.max(0, parent.width - (sectionEyebrow.visible ? sectionEyebrow.implicitWidth + parent.spacing : 0))
+            elide: Text.ElideRight
             anchors.baseline: sectionEyebrow.baseline
             text: root.title
-            color: "#FFFFFF"
+            color: DesktopTokens.text
             font.family: Theme.displayFont
-            font.pixelSize: 16
+            font.pixelSize: DesktopTokens.px(16)
             font.weight: Font.Black
             font.letterSpacing: -0.16
         }
@@ -43,35 +108,36 @@ Item {
             id: sectionEyebrow
             visible: root.eyebrow.length > 0
             text: root.eyebrow
-            color: Qt.rgba(1, 1, 1, 0.40)
+            color: DesktopTokens.textMuted
             font.family: Theme.monoFont
-            font.pixelSize: 10
+            font.pixelSize: DesktopTokens.microSize
             font.weight: Font.DemiBold
             font.letterSpacing: 0.4
         }
     }
 
     Row {
+        id: headerActions
         visible: root.showSeeAll
         anchors.right: parent.right
         y: 1
-        height: 18
-        spacing: 5
+        height: DesktopTokens.px(18)
+        spacing: DesktopTokens.px(5)
 
         Text {
             anchors.verticalCenter: parent.verticalCenter
             text: root.seeAllText
-            color: Qt.rgba(1, 1, 1, 0.50)
+            color: DesktopTokens.textMuted
             font.family: Theme.bodyFont
-            font.pixelSize: 11
+            font.pixelSize: DesktopTokens.smallSize
             font.weight: Font.Bold
         }
         Text {
             anchors.verticalCenter: parent.verticalCenter
             text: "›"
-            color: Qt.rgba(1, 1, 1, 0.50)
+            color: DesktopTokens.textMuted
             font.family: Theme.bodyFont
-            font.pixelSize: 15
+            font.pixelSize: DesktopTokens.bodySize
             font.weight: Font.Bold
         }
 
@@ -79,30 +145,37 @@ Item {
     }
 
     Row {
-        y: 31
+        y: DesktopTokens.px(31)
         width: parent.width
         spacing: root.railGap
 
         Repeater {
-            model: Math.min(root.games.length, root.tileCount)
+            model: root.materialized ? Math.min(root.displayGames.length, root.tileCount) : 0
 
             DesktopStoreCard {
                 required property int index
-                readonly property var itemGame: root.games[index]
+                readonly property var itemGame: root.displayGames[index]
 
                 tileWidth: root.tileWidth
                 tileHeight: root.tileHeight
                 game: itemGame
                 selected: root.active && root.selectedIndex === index
-                price: String(itemGame && itemGame.storePrice || qsTr("Available"))
+                price: String(itemGame && itemGame.storePrice || "")
                 discount: String(itemGame && itemGame.storeDiscount || "")
-                owned: Boolean(itemGame && itemGame.storeOwned)
+                owned: Boolean(itemGame && (itemGame.storeOwned || itemGame.isInLibrary))
                 freeToPlay: Boolean(itemGame && itemGame.storeFree)
                 fallbackColor: root.fallbackFor(itemGame, index)
                 onPointed: root.gamePointed(index)
                 onActivated: game => root.gameActivated(game)
             }
         }
+    }
+
+    Text {
+        x: 0; y: DesktopTokens.px(45); width: parent.width
+        visible: root.materialized && root.loadError !== ""
+        text: root.loadError; textFormat: Text.PlainText; wrapMode: Text.Wrap
+        color: DesktopTokens.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.monoSize
     }
 
     function fallbackFor(game, index) {

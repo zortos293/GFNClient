@@ -101,7 +101,7 @@ jobs:
           host: ${{ matrix.qt_host }}
           target: desktop
           arch: ${{ matrix.qt_arch }}
-          modules: qtmultimedia
+          modules: qtmultimedia qtshadertools
           cache: true
           cache-key-prefix: qt-release-linux-${{ matrix.arch }}
 
@@ -291,7 +291,7 @@ jobs:
           host: windows
           target: desktop
           arch: ${{ matrix.qt_arch }}
-          modules: qtmultimedia
+          modules: qtmultimedia qtshadertools
           cache: true
           cache-key-prefix: qt-release-windows-${{ matrix.arch }}
 
@@ -425,7 +425,7 @@ jobs:
           host: mac
           target: desktop
           arch: clang_64
-          modules: qtmultimedia
+          modules: qtmultimedia qtshadertools
           cache: true
           cache-key-prefix: qt-release-macos-${{ matrix.arch }}
 

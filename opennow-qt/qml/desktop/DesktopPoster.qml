@@ -22,14 +22,13 @@ ItemDelegate {
     padding: 0
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
-    scale: down ? 0.985 : (cardLifted ? DesktopTokens.cardHoverScale : 1)
-    transformOrigin: Item.Center
-    z: cardLifted ? 20 : 1
-    Behavior on scale {
-        NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic }
-    }
+    // Keep pointer/focus bounds stationary while only the artwork zooms.
+    z: cardLifted || contentItem.scale !== 1 ? 20 : 1
     background: Item {}
     contentItem: Item {
+        scale: AppController.reducedMotion ? 1 : root.down ? 0.985 : root.cardLifted ? DesktopTokens.cardHoverScale : 1
+        transformOrigin: Item.Center
+        Behavior on scale { NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic } }
         RoundedArtwork {
             id: art
             x: root.artGutter; y: root.artGutter; width: root.artWidth; height: root.artHeight

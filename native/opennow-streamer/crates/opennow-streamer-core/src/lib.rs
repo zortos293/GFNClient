@@ -77,6 +77,9 @@ const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
 const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
 
 trait NvstSessionResources {
+    fn network_metrics(&self) -> Option<(f64, f64)> {
+        None
+    }
     fn request_keyframe(&self);
     fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32);
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String>;
@@ -93,6 +96,9 @@ struct ActiveNvstResources {
 }
 
 impl NvstSessionResources for ActiveNvstResources {
+    fn network_metrics(&self) -> Option<(f64, f64)> {
+        self.feedback.network_metrics()
+    }
     fn request_keyframe(&self) {
         self.feedback.request_keyframe();
     }
@@ -258,6 +264,15 @@ impl Engine {
     }
 
     pub fn handle(&mut self, command: Command) -> (Vec<Value>, bool) {
+        let summary = opennow_streamer_protocol::log::message_summary(&json!({
+            "id": &command.id, "type": &command.kind
+        }));
+        opennow_streamer_protocol::log::log_line(
+            "INFO",
+            "engine-command",
+            &format!("begin {summary}"),
+        );
+        let mut stage = opennow_streamer_protocol::log::Stage::begin("engine.command");
         let id = command.id.clone();
         let result = match command.kind.as_str() {
             "hello" => self.hello(&command),
@@ -295,6 +310,7 @@ impl Engine {
             }
             "shutdown" => {
                 self.stop(command.reason.as_deref().unwrap_or("shutdown"));
+                stage.complete();
                 return (vec![response(id, "ok")], false);
             }
             other => Err(error(
@@ -304,6 +320,14 @@ impl Engine {
             )),
         };
 
+        if result.is_ok() {
+            stage.complete();
+        }
+        opennow_streamer_protocol::log::log_line(
+            "INFO",
+            "engine-command",
+            &format!("end {summary} success={}", result.is_ok()),
+        );
         match result {
             Ok(values) => (values, true),
             Err(value) => (vec![value], true),
@@ -329,6 +353,14 @@ impl Engine {
         };
         let media_ready = self.media_runtime.is_some();
         let video_ready = media_ready && backends.iter().any(|backend| backend.available);
+        opennow_streamer_protocol::log::log_line(
+            "INFO",
+            "handshake",
+            &format!(
+                "protocol={PROTOCOL_VERSION} media_runtime={media_ready} video_available={video_ready} backend_count={}",
+                backends.len()
+            ),
+        );
         let capabilities = Capabilities {
             protocol_version: PROTOCOL_VERSION,
             backend: "native",
@@ -473,6 +505,24 @@ impl Engine {
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
+        opennow_streamer_protocol::log::log_line(
+            "INFO",
+            "session",
+            "context validated; checking media backend",
+        );
+        if let Some(runtime) = &self.media_runtime {
+            runtime
+                .validate_backend(
+                    context
+                        .settings
+                        .get("nativeVideoBackend")
+                        .and_then(Value::as_str)
+                        .unwrap_or("auto"),
+                )
+                .map_err(|message| {
+                    error(Some(&command.id), "media-backend-unavailable", message)
+                })?;
+        }
         {
             let lifecycle = lock_lifecycle(&self.lifecycle);
             if lifecycle.state != State::Idle {
@@ -499,11 +549,16 @@ impl Engine {
                     })?);
             }
             let prepared_result = {
+                let mut stage = opennow_streamer_protocol::log::Stage::begin("nvst.negotiate");
                 let bundle = self
                     .reserved_nvst_bundle
                     .as_mut()
                     .expect("NVST reservation created above");
-                prepare_owned_nvst(&context, bundle)
+                let result = prepare_owned_nvst(&context, bundle);
+                if result.is_ok() {
+                    stage.complete();
+                }
+                result
             };
             let prepared = match prepared_result {
                 Ok(prepared) => prepared,
@@ -565,8 +620,31 @@ impl Engine {
         if let Some(runtime) = self.media_runtime.clone() {
             let (feedback_sender, feedback_receiver) = std::sync::mpsc::channel();
             let stream_config = media_stream_config(&context);
+            opennow_streamer_protocol::log::log_line(
+                "INFO",
+                "media-config",
+                &format!(
+                    "codec={:?} color={:?} width={} height={} fps={} bitrate_bps={} audio_negotiated={} dtls_bundle={}",
+                    stream_config.codec,
+                    stream_config.color_quality,
+                    stream_config.width,
+                    stream_config.height,
+                    stream_config.fps,
+                    stream_config.bitrate_bps,
+                    nvst_audio_negotiated,
+                    nvst_bundle_available
+                ),
+            );
             let session = runtime
-                .start(feedback_sender, stream_config)
+                .start_with_backend(
+                    feedback_sender,
+                    stream_config,
+                    context
+                        .settings
+                        .get("nativeVideoBackend")
+                        .and_then(Value::as_str)
+                        .unwrap_or("auto"),
+                )
                 .map_err(|message| error(Some(&command.id), "media-output-unavailable", message))?;
             let sink = session.sink();
             let (media_consumer, media_receiver) =
@@ -1582,12 +1660,15 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
                 let bitrate_mbps =
                     state.telemetry_bytes as f64 * 8.0 / elapsed_seconds / 1_000_000.0;
                 state.peak_bitrate_mbps = state.peak_bitrate_mbps.max(bitrate_mbps);
+                let network = resources.network_metrics();
                 let _ = output.send(event(
                     "telemetry",
                     json!({
                         "framesPerSecond": frames_per_second,
                         "bitrateMbps": bitrate_mbps,
                         "peakBitrateMbps": state.peak_bitrate_mbps,
+                        "jitterMs": network.map(|metrics| metrics.0),
+                        "packetLossPercent": network.map(|metrics| metrics.1),
                     }),
                 ));
                 state.telemetry_window_started = Instant::now();
@@ -1967,7 +2048,56 @@ fn consume_encoded_media(
     receiver: Receiver<EncodedMediaFrame>,
     sink: MediaSink,
 ) {
-    while let Ok(frame) = receiver.recv() {
+    let mut video = 0_u64;
+    let mut audio = 0_u64;
+    let mut keyframes = 0_u64;
+    let mut dropped = 0_u64;
+    let mut paused = 0_u64;
+    let origin = Instant::now();
+    let mut last_report = origin;
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "media-ingress",
+        "consumer started; awaiting assembled media",
+    );
+    loop {
+        if last_report.elapsed() >= Duration::from_secs(2) {
+            opennow_streamer_protocol::log::log_async(
+                "INFO",
+                "media-ingress",
+                &format!(
+                    "elapsed_ms={} video={video} audio={audio} keyframes={keyframes} dropped={dropped} paused={paused}",
+                    origin.elapsed().as_millis()
+                ),
+            );
+            last_report = Instant::now();
+        }
+        let frame = match receiver.recv_timeout(Duration::from_millis(250)) {
+            Ok(frame) => frame,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if frame.codec.eq_ignore_ascii_case("opus") {
+            audio += 1;
+        } else {
+            video += 1;
+        }
+        if frame.keyframe {
+            keyframes += 1;
+        }
+        if video == 1 && !frame.codec.eq_ignore_ascii_case("opus") {
+            opennow_streamer_protocol::log::log_line(
+                "INFO",
+                "media-ingress",
+                &format!(
+                    "first assembled video bytes={} keyframe={} contiguous={} elapsed_ms={}",
+                    frame.payload.len(),
+                    frame.keyframe,
+                    frame.contiguous,
+                    origin.elapsed().as_millis()
+                ),
+            );
+        }
         let codec = if frame.codec.eq_ignore_ascii_case("h264") {
             MediaCodec::H264
         } else if frame.codec.eq_ignore_ascii_case("h265")
@@ -1994,6 +2124,7 @@ fn consume_encoded_media(
             contiguous: frame.contiguous,
         }) {
             PushOutcome::Unsupported => {
+                dropped += 1;
                 let _ = output.send(event(
                     "log",
                     json!({
@@ -2003,9 +2134,19 @@ fn consume_encoded_media(
                 ));
             }
             PushOutcome::Closed => break,
-            PushOutcome::Queued | PushOutcome::DroppedOldest | PushOutcome::Paused => {}
+            PushOutcome::DroppedOldest => dropped += 1,
+            PushOutcome::Paused => paused += 1,
+            PushOutcome::Queued => {}
         }
     }
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "media-ingress",
+        &format!(
+            "consumer stopped elapsed_ms={} video={video} audio={audio} keyframes={keyframes} dropped={dropped} paused={paused}",
+            origin.elapsed().as_millis()
+        ),
+    );
 }
 
 struct QueueDropReport {

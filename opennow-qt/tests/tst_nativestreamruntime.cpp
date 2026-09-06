@@ -1,6 +1,9 @@
 #include "NativeStreamRuntime.h"
 
 #include <QElapsedTimer>
+#include <QFile>
+#include <QScopeGuard>
+#include <QTemporaryDir>
 #include <QJsonDocument>
 #include <QSignalSpy>
 #include <QTest>
@@ -143,6 +146,44 @@ private slots:
         inputCallFinished = false;
     }
 
+    void presentationFailuresAreMarshalledToTheQtThread()
+    {
+        NativeStreamRuntime runtime;
+        QSignalSpy errors(&runtime, &NativeStreamRuntime::presentationError);
+        std::thread render([&runtime] {
+            runtime.reportPresentationError(QStringLiteral("Texture import failed"));
+        });
+        render.join();
+        QCOMPARE(errors.size(), 0);
+        QTRY_COMPARE(errors.size(), 1);
+        QCOMPARE(runtime.lastError(), QStringLiteral("Texture import failed"));
+    }
+
+    void presentationIsInvalidatedBetweenNativeSessions()
+    {
+        NativeStreamRuntime runtime(fakeApi());
+        QVERIFY(runtime.start());
+        QVERIFY(!runtime.presentationAllowed());
+        const auto first = runtime.presentationGeneration();
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("start-1")}}));
+        QVERIFY(runtime.presentationGeneration() > first);
+        QVERIFY(!runtime.presentationAllowed());
+        QTRY_VERIFY(runtime.presentationAllowed());
+        const auto running = runtime.presentationGeneration();
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("stop")},
+                              {QStringLiteral("id"), QStringLiteral("stop-1")}}));
+        QVERIFY(!runtime.presentationAllowed());
+        QVERIFY(runtime.presentationGeneration() > running);
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("start-2")}}));
+        QVERIFY(!runtime.presentationAllowed());
+        QTRY_VERIFY(runtime.presentationAllowed());
+        runtime.reportPresentationError(QStringLiteral("device lost"));
+        QTRY_VERIFY(!runtime.presentationAllowed());
+        QVERIFY(runtime.shutdown());
+    }
+
     void copiesAndMarshalsWorkerCallbacksToTheQtThread()
     {
         NativeStreamRuntime runtime(fakeApi());
@@ -227,6 +268,15 @@ private slots:
 
     void roundTripsThroughTheLinkedRustFfi()
     {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        const bool hadOverride = qEnvironmentVariableIsSet("OPENNOW_DATA_DIR");
+        const auto oldOverride = qgetenv("OPENNOW_DATA_DIR");
+        const auto restore = qScopeGuard([&] {
+            if (hadOverride) qputenv("OPENNOW_DATA_DIR", oldOverride);
+            else qunsetenv("OPENNOW_DATA_DIR");
+        });
+        qputenv("OPENNOW_DATA_DIR", data.path().toUtf8());
         NativeStreamRuntime runtime;
         QSignalSpy responses(&runtime, &NativeStreamRuntime::responseReceived);
         QVERIFY2(runtime.start(), qPrintable(runtime.lastError()));
@@ -238,6 +288,18 @@ private slots:
         QCOMPARE(responses.first().first().toJsonObject().value(QStringLiteral("id")).toString(),
                  QStringLiteral("abi-hello"));
         QVERIFY2(runtime.shutdown(), qPrintable(runtime.lastError()));
+        QFile log(data.filePath(QStringLiteral("diagnostics/native-streamer.log")));
+        QVERIFY2(log.open(QIODevice::ReadOnly), "native log must share the core diagnostics directory");
+        const auto nativeText = log.readAll();
+        QVERIFY(nativeText.contains("file log configured"));
+        QVERIFY(nativeText.contains("qt-to-native id=abi-hello type=hello"));
+        QVERIFY(nativeText.contains("native-to-qt id=abi-hello"));
+        QFile qtLog(data.filePath(QStringLiteral("diagnostics/qt-native.log")));
+        QVERIFY(qtLog.open(QIODevice::ReadOnly));
+        const auto qtText = qtLog.readAll();
+        QVERIFY(qtText.contains("build=diagnostics-v2"));
+        QVERIFY(qtText.contains("send id=abi-hello type=hello"));
+        QVERIFY(qtText.contains("delivered id=abi-hello"));
     }
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
-#include <QQuickRhiItem>
+#include <QQuickItem>
+#include <QMatrix4x4>
 #include <QHash>
 #include <QPoint>
 #include <QSet>
@@ -26,13 +27,15 @@ public:
                             QRhiCommandBuffer *commandBuffer,
                             QRhiRenderTarget *renderTarget) = 0;
     virtual void prepareFrame(QRhiCommandBuffer *commandBuffer) = 0;
+    virtual void setComposition(const QMatrix4x4 &, const QRectF &, const QRectF &, float) {}
+    virtual void setClip(bool, int) {}
     virtual void recordFrame(QRhiCommandBuffer *commandBuffer,
                              const QRect &videoViewport) = 0;
     virtual void finishFrame() = 0;
     virtual void releaseResources() = 0;
 };
 
-class StreamVideoItem : public QQuickRhiItem
+class StreamVideoItem : public QQuickItem
 {
     Q_OBJECT
     Q_PROPERTY(QSize videoSize READ videoSize WRITE setVideoSize NOTIFY videoSizeChanged)
@@ -106,7 +109,7 @@ signals:
     void localShortcutRequested(const QString &action);
 
 protected:
-    QQuickRhiItemRenderer *createRenderer() override;
+    QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) override;
     void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
@@ -121,6 +124,7 @@ protected:
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
 
 private:
+    friend class StreamVideoItemTest;
     struct PressedKey {
         quint16 virtualKey = 0;
         quint16 modifiers = 0;
@@ -131,6 +135,7 @@ private:
     void releaseInput();
     void releaseQtMouseButtons();
     void updateCursorConfinement();
+    [[nodiscard]] static QRect cursorConfinementRect(const QRect &viewport, bool rawRelative);
     void releaseCursorConfinement();
     void submitAbsoluteMouse(const QPointF &position);
     [[nodiscard]] quint32 keyIdentity(const QKeyEvent *event) const;
@@ -150,6 +155,7 @@ private:
     bool m_cursorConfined = false;
     bool m_remoteCursorKnown = false;
     bool m_remoteCursorVisible = false;
+    std::optional<bool> m_pendingRelativeMouse;
 };
 
 void registerStreamVideoItemQmlType();

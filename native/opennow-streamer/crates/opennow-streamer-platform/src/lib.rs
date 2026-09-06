@@ -1,3 +1,4 @@
+mod audio_playout;
 mod embedded_input;
 mod graphics;
 #[cfg(target_os = "linux")]
@@ -14,6 +15,7 @@ mod output;
 mod queue;
 mod recording;
 mod runtime;
+mod video_queue;
 #[cfg(target_os = "windows")]
 mod windows_graphics;
 #[cfg(target_os = "windows")]
@@ -21,9 +23,10 @@ mod windows_raw_input;
 
 pub use embedded_input::{EmbeddedInputCapture, EmbeddedLocalAction};
 pub use graphics::{
-    GraphicsApi, GraphicsContext, GraphicsContextLease, GraphicsFrame, GraphicsFrameInfo,
-    GraphicsFramePublisher, GraphicsFrameToken, GraphicsPublishOutcome, GraphicsRecordCommand,
-    GraphicsRecordedFrame, GraphicsRuntimeError, GraphicsTextureFormat, RenderThreadGraphics,
+    GraphicsApi, GraphicsContext, GraphicsContextLease, GraphicsFrame, GraphicsFrameError,
+    GraphicsFrameInfo, GraphicsFramePublisher, GraphicsFrameToken, GraphicsPublishOutcome,
+    GraphicsRecordCommand, GraphicsRecordedFrame, GraphicsRuntimeError, GraphicsTextureFormat,
+    RenderThreadGraphics,
 };
 pub use media::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedRecordingReceiver,

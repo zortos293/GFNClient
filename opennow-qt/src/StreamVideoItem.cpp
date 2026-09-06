@@ -1,8 +1,10 @@
 #include "StreamVideoItem.h"
 
 #include "NativeStreamRuntime.h"
+#include "StreamVideoTextureRenderer.h"
 
 #include <QColor>
+#include <QSGRenderNode>
 #include <QCursor>
 #include <QFocusEvent>
 #include <QGuiApplication>
@@ -20,7 +22,6 @@
 #include <QWheelEvent>
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
-#include <rhi/qshader.h>
 
 #include <algorithm>
 #include <cmath>
@@ -38,11 +39,6 @@
 
 namespace {
 QPointer<NativeStreamRuntime> nativeRuntime;
-
-QShader streamShader(const char *encoded)
-{
-    return QShader::fromSerialized(QByteArray::fromBase64(encoded));
-}
 
 class ExternalCommandScope final
 {
@@ -76,10 +72,16 @@ public:
     void initialize(QRhi *rhi, QRhiCommandBuffer *commandBuffer,
                     QRhiRenderTarget *renderTarget) override
     {
-        if (m_rhi == rhi && m_renderTarget == renderTarget) return;
-        releaseResources();
+        if (m_rhi != rhi) releaseResources();
+        if (m_runtime && m_presentationGeneration != m_runtime->presentationGeneration()) {
+            finishFrame();
+            m_textures.clearFrames();
+            m_reportedFailure = false;
+            m_presentationGeneration = m_runtime->presentationGeneration();
+        }
+        m_textures.initialize(rhi, renderTarget);
+        if (m_rhi == rhi && m_graphicsReady) return;
         m_rhi = rhi;
-        m_renderTarget = renderTarget;
         if (!commandBuffer) return;
 
         OpenNowStreamerGraphicsContext context{};
@@ -129,17 +131,25 @@ public:
             }
 #endif
             default:
+                reportFailure(QStringLiteral("This graphics backend cannot present native video. Use Auto in Stream settings."));
                 return;
             }
             status = m_runtime ? m_runtime->setGraphicsContext(context)
                                : OPENNOW_STREAMER_CLOSED;
         }
         m_graphicsReady = status == OPENNOW_STREAMER_OK;
+        if (!m_graphicsReady)
+            reportFailure(QStringLiteral("Could not initialize native graphics (status %1). Update the GPU driver and use Auto in Stream settings.").arg(int(status)));
     }
 
     void prepareFrame(QRhiCommandBuffer *commandBuffer) override
     {
+        if (!m_runtime || !m_runtime->presentationAllowed()) return;
         if (!m_graphicsReady || !m_rhi || !commandBuffer) return;
+        if (!m_textures.prepare(commandBuffer)) {
+            reportFailure(QStringLiteral("Could not create the video shaders or GPU resources. Check the packaged shaders and GPU driver."));
+            return;
+        }
 
         OpenNowStreamerRecordCommand command{};
         command.version = OPENNOW_STREAMER_RENDER_COMMAND_VERSION;
@@ -188,88 +198,54 @@ public:
         }
 
         if (status == OPENNOW_STREAMER_NO_FRAME) return;
+        if (status == OPENNOW_STREAMER_STALE_FRAME) return;
         if (status != OPENNOW_STREAMER_OK || !frame || recorded.resource == 0
             || recorded.width == 0 || recorded.height == 0
             || (recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8
                 && recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2)) {
             if (frame) m_runtime->releaseFrame(frame);
+            reportFailure(QStringLiteral("Could not present the decoded GPU frame (status %1). Check native-streamer.log for decoder or device errors.").arg(int(status)));
+            return;
+        }
+        if (m_presentationGeneration != m_runtime->presentationGeneration()
+                || !m_runtime->presentationAllowed()) {
+            m_runtime->releaseFrame(frame);
+            m_textures.clearFrames();
             return;
         }
         m_preparedFrame = frame;
 
-        if (m_texture && m_textureObject == recorded.resource
-            && m_textureFormat == recorded.texture_format
-            && m_textureSize == QSize(static_cast<int>(recorded.width),
-                                      static_cast<int>(recorded.height))) {
-            m_frameReady = true;
-            return;
-        }
 
-        delete m_bindings;
-        m_bindings = nullptr;
-        delete m_texture;
-        const auto textureFormat = recorded.texture_format
-                == OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2
-            ? QRhiTexture::RGB10A2 : QRhiTexture::RGBA8;
-        m_texture = m_rhi->newTexture(
-            textureFormat,
-            QSize(static_cast<int>(recorded.width), static_cast<int>(recorded.height)), 1);
-        QRhiTexture::NativeTexture nativeTexture{};
-        nativeTexture.object = recorded.resource;
+        QRhiTexture::NativeTexture texture{};
+        texture.object = recorded.resource;
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
         if (recorded.graphics_api == OPENNOW_STREAMER_GRAPHICS_API_VULKAN)
-            nativeTexture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            texture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 #endif
-        if (!m_texture->createFrom(nativeTexture)) {
-            delete m_texture;
-            m_texture = nullptr;
-            return;
-        }
-        m_textureObject = recorded.resource;
-        m_textureFormat = recorded.texture_format;
-        m_textureSize = m_texture->pixelSize();
+        if (!m_textures.importFrame(command.frame_slot, texture,
+            recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2
+                ? QRhiTexture::RGB10A2 : QRhiTexture::RGBA8,
+            QSize(int(recorded.width), int(recorded.height))))
+            reportFailure(QStringLiteral("Could not import the decoded video texture into Qt. The decoder and graphics backend must use compatible GPU resources."));
+    }
 
-        if (!m_sampler) {
-            m_sampler = m_rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear,
-                                          QRhiSampler::None,
-                                          QRhiSampler::ClampToEdge,
-                                          QRhiSampler::ClampToEdge);
-            if (!m_sampler->create()) return;
-        }
-        m_bindings = m_rhi->newShaderResourceBindings();
-        m_bindings->setBindings({QRhiShaderResourceBinding::sampledTexture(
-            0, QRhiShaderResourceBinding::FragmentStage, m_texture, m_sampler)});
-        if (!m_bindings->create()) return;
+    void setComposition(const QMatrix4x4 &matrix, const QRectF &bounds,
+                        const QRectF &videoRect, float opacity) override
+    {
+        m_textures.setComposition(matrix, bounds, videoRect, opacity);
+    }
 
-        if (!m_pipeline) {
-            static const auto vertexShader = streamShader(
-                "AAASBHic7VZtT9tWFDav6UwZ7SgtG3S7vLRzWAgmUFQRoK3aiSJVgxXGJkVR5MY3qaXEtvwSwVCk/Yr9nf2tfZm2c+49Tq6T0AKbtH3YlWzfc+5zXn39XGuaNq51xxBco1qsteA5jIo/aWg3G4lvu6safT0yvJTBULp2S9sg7V0Ih8EnwASf+2+O3+TDyM5vPjFx/VNtpJPgFNgJT3A1LcfFOYNrGa41uF5rY9qX5HeCnoluiHRDim6YdBhhH+6Jbh8iLNPaCsnoP/E9DSjELYDNCNnch9k45fMA8BlqAq7NgHyL1nB8Q/InFHseZB2eGdIxkCdI1gmPviaF9S+/5SD/jOiN1E0qmCmBef48wdwhHWIS3V2Sp4RuXMT4jPzdofXE3z0l53FRi8jhWeLrPmFmFMwDadLJYZZ0M0oOn5PdpJLDF+Rvltaxj3PUx1Glb/P0HrFvD2l9Xrwf+V4Tm4fUy6+oz7hWJJmRDt/NAslDFAPlRaob7ZdobYHsUV4mHa4/pneVITlHvudIzpOcIXuU10i3BTkPU30a6X4HzRhhcR/cVmxRniZ5D9C36d3hfJp6uEs1PKI8X4A3zPFr8vWIMOjDIP33gMGeZUmnKboV0mG9R2A1J/oksSvK+8c4WPsq9XOR8lolfJKX2ZPXOtVkKnkVSI/2ayT/ARk8FVloo/T9o3CmdcbQ7FKLB6HjuWy9YOp61XPDiLV4tcAq609LG2W2K6RS2cCHsbqeN7M5oTI28maOqQqc5xios9liylNhq9+TiVjFuNAjmx3v4ExvWcG549alv7iFGs+xGRZlZPULncGoNypHXuhEWIyItWlgDaA+5UHEzw5elXOsE7YobOIWQDE/FVXU27qu9GyUtgGN8eUlP7DqTYtVGxbkZDtW3fXCyKkyByYBt9ni6o9NJwwh41U/8CIvOvd5uKhfx+5dYFXRRl9y3GojtjnbafLIalSA6xvOuz1FHzpNew1v+fd7uh6jOXOtJg99cMGEFTQs4k2/YUV8B5PBZXaSY6HzM69E7Lu4uaeHURBXIxb6rR/c0KrxF0FgnVNvTxhv8CZ3o7AEWPYMLdg2Wy/LNopb9D7gls1OHjPP54EVeQErlZlBIXwvzBJEoKVfHAGP4sDtBgAkuW2Lu9hJ/MwP5OwqcVTgNaOJm81bDrTuQyEk5G+WcoU4KvAmpfSGFHfLja4QNIHeJKzsfT3wYv8KO0Lg/pFt8fGIfehrxG0XiSKxgekPZafW8KyoAPy3h9QJtHLpunHBpJDQKUkqoSoASamsnZDqR2IXtq4WWyFg0hT6NF0SFuETikBeNCteHBE7SDSSaakUhzwwGl7VNbNl6ptY3kzxcwnbKqYIwra2BPt2XcuZETtQbZecXRswpZIEVxy7XE7Yv2uI1y67aMvgIOXTJ4NMR5wN4NxIO8/2nxHooXNODLKQMNo3gE7OjzGREx26Nj17Dl3z/0N38KGLvfpV+VG51+3Zk/9wz3Dz/Sv9GqZ/vuS3eA6IAn8tZHn0hXZadcFEE2rZ/NmZyj81WUotzUA10awakEBRH+g26ZtKLjVRQi1FL306UwmJ3hP3/ZTRidxPCMWUFbWeqOr46ODtaeVl4IVh5cD1O5Q1iFe22fFpp8GSlQZ4OYwjfwDzbbOTb396eXj49pV5KeuJAN2C2skOQTqrfGCbKIyVTlnulaSrl+4WARUbpr8QuT372sSgpXVecXCuJKW2axdfhaHg8j3EKPNRipOKATlIJ54QJEjV9PB3alP0YUX5uAMUTk67b/d+Nj3/92L0fE5y/AUa/w92");
-            static const auto fragmentShader = streamShader(
-                "AAAJEHicxVXdahNBFB6Ttmk31rYqahFktDcphBhDK9I0uWlUCoVKE6oQwrJuJtuF/Qm7s6FSeucz+BA+gE/jg3gjes7MbHY2idY7l0xm5pvzP+ecIYSsEEKWYNwSc0ImMBdgkF/qI/kP6Qxik5B4MCLF/SfqWc5HZAQ8FvEJIz0Yl4SDzghWhFRu4F/0rSi5lxr2eWfCotgNA/qiUTeMJHBHYeTT2PLHHosaHTqKLJ/12CVPItY0jIkVfXIDh06Y3aDJBJHQHVLfcoPKrnFlUPgcz3wTWU7H4la/PqAtyiV7o1PRpVWBf7dpXBsGxgUlqPjc1sLwdccNbC8ZMnroM255ZsyHnvuxbWR47PrD5/hXu2iDBzGaF4CaeGzZjAouMDPmUWJzYWjdDBOubB15ocX3qB16YUT7fTFX6ruDARg2y+UGOhO6DxxJzKKKF9pBxgROOj4LNGVyVUnFUPj1+zG3HAa7waA6jdDwUMhu58IOtOpcWFZNbydH1AUIPVBngjK9kMwOHC16BVYiDrua9LyVk1WTQipz8qtgeU3cGrJHDA4ClJLe4rLQpO5uqF3j92Jhp4TZZ5BVcl+hW1A7mI9lyEyc3550T2pwv7W9fSHjDilOa2GDlERu4FCpQtaEDEI2gQ7xEsqAFeJPlA7cr8P8bGb/VNtvafT3wKaCOC8K7bh+ACusHQrjIdCXSNYJKPyvwlxU+ptqv6awbVgZWu3pX7p/DJRlQgQdykvzv6zk4X5dYah/Q8krKPrNaYwk/aaKC2IvybKgW1L8aNMPQJZhbgFaFnGW8ltK9l3F/x6oSiImkgbxNkhYU9hP0PBKepGWL6pqZB4Wtntp6cvE3pvJ7ANIIseNOSQsr0NadWX2drnFGTV1UjNNeo0lRhaoUYu7dq6SmzlQNSpVy913x2fn5lEUxrF5HIzznUAU9QHtvf5wdHp61qnnuoDOeZrw8eImckC752bPihzGFbvokNgUzFybXFh5MgCVha5nDXPeEtmB53yjaZOBdaoXPGzpeA2jI9zITJTAAjWSLxQbSaQj026ibkHrEnnGa73nYwZ90epCe5P2/+VNwqYG79H07qG7/u15Sm1Me+qNbxLaN9Tq9VtmX71ujCNmu2J34ToXY5kMzTnYDQCc+iKx//bKph1Be2nnutNMKc+dk99YTBT/");
-            if (!vertexShader.isValid() || !fragmentShader.isValid()) return;
-            m_pipeline = m_rhi->newGraphicsPipeline();
-            m_pipeline->setTopology(QRhiGraphicsPipeline::Triangles);
-            m_pipeline->setShaderStages({
-                {QRhiShaderStage::Vertex, vertexShader},
-                {QRhiShaderStage::Fragment, fragmentShader},
-            });
-            m_pipeline->setShaderResourceBindings(m_bindings);
-            m_pipeline->setRenderPassDescriptor(m_renderTarget->renderPassDescriptor());
-            if (!m_pipeline->create()) {
-                delete m_pipeline;
-                m_pipeline = nullptr;
-                return;
-            }
-        }
-        m_frameReady = true;
+    void setClip(bool stencil, int reference) override
+    {
+        m_stencil = stencil;
+        m_stencilReference = reference;
     }
 
     void recordFrame(QRhiCommandBuffer *commandBuffer, const QRect &) override
     {
-        if (!m_frameReady || !m_pipeline || !m_bindings) return;
-        commandBuffer->setGraphicsPipeline(m_pipeline);
-        commandBuffer->setShaderResources(m_bindings);
-        commandBuffer->draw(3);
+        if (!m_runtime || !m_runtime->presentationAllowed()
+                || m_presentationGeneration != m_runtime->presentationGeneration()) return;
+        m_textures.render(commandBuffer, m_stencil, m_stencilReference);
     }
 
     void finishFrame() override
@@ -281,136 +257,114 @@ public:
     void releaseResources() override
     {
         finishFrame();
-        m_frameReady = false;
-        delete m_pipeline;
-        m_pipeline = nullptr;
-        delete m_bindings;
-        m_bindings = nullptr;
-        delete m_sampler;
-        m_sampler = nullptr;
-        delete m_texture;
-        m_texture = nullptr;
-        m_textureObject = 0;
-        m_textureFormat = 0;
-        m_textureSize = {};
-        if (m_graphicsReady && m_runtime)
-            m_runtime->sceneGraphShutdown();
+        m_textures.release();
+        if (m_graphicsReady && m_runtime) m_runtime->sceneGraphShutdown();
         m_graphicsReady = false;
+        m_reportedFailure = false;
         m_rhi = nullptr;
-        m_renderTarget = nullptr;
     }
 
 private:
     NativeStreamRuntime *m_runtime;
     QRhi *m_rhi = nullptr;
-    QRhiRenderTarget *m_renderTarget = nullptr;
-    QRhiTexture *m_texture = nullptr;
-    QRhiSampler *m_sampler = nullptr;
-    QRhiShaderResourceBindings *m_bindings = nullptr;
-    QRhiGraphicsPipeline *m_pipeline = nullptr;
-    QSize m_textureSize;
-    std::uint64_t m_textureObject = 0;
-    std::uint32_t m_textureFormat = 0;
+    StreamVideoTextureRenderer m_textures;
     OpenNowStreamerFrame *m_preparedFrame = nullptr;
+    int m_stencilReference = 0;
+    bool m_stencil = false;
     bool m_graphicsReady = false;
-    bool m_frameReady = false;
+    bool m_reportedFailure = false;
+    quint64 m_presentationGeneration = 0;
+    void reportFailure(const QString &message)
+    {
+        if (m_reportedFailure || !m_runtime) return;
+        m_reportedFailure = true;
+        m_runtime->reportPresentationError(message);
+    }
 };
 
-class StreamVideoItemRenderer final : public QQuickRhiItemRenderer
+// Native conversion is recorded in prepare(), before Qt begins its scene pass.
+// The converted surface is sampled directly in that pass: no item-sized color
+// target, extra blit, CPU readback, or second presentation window.
+class StreamVideoNode final : public QSGRenderNode
 {
 public:
-    ~StreamVideoItemRenderer() override
-    {
-        releaseCallbackResources();
-    }
+    explicit StreamVideoNode(QQuickWindow *window) : m_window(window) {}
+    ~StreamVideoNode() override { releaseResources(); }
 
-protected:
-    void initialize(QRhiCommandBuffer *commandBuffer) override
+    void synchronize(StreamVideoItem *item)
     {
-        initializeCallback(commandBuffer);
-    }
-
-    void synchronize(QQuickRhiItem *item) override
-    {
-        const auto *videoItem = static_cast<StreamVideoItem *>(item);
-        const auto callback = videoItem->renderCallback();
-        if (callback != m_callback) {
-            releaseCallbackResources();
+        const auto callback = item->renderCallback();
+        if (m_callback != callback) {
+            releaseResources();
             m_callback = callback;
         }
-        m_videoSize = videoItem->videoSize();
+        m_bounds = item->boundingRect();
+        m_viewport = StreamVideoItem::aspectFitRect(item->videoSize(), m_bounds.size().toSize());
+        markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
     }
 
-    void render(QRhiCommandBuffer *commandBuffer) override
+    void prepare() override
     {
-        initializeCallback(commandBuffer);
-
-        if (m_callback) m_callback->prepareFrame(commandBuffer);
-
-        auto *target = renderTarget();
-        if (!target) {
-            if (m_callback) m_callback->finishFrame();
-            return;
-        }
-
-        commandBuffer->beginPass(target, QColor(Qt::black), {1.0f, 0});
-        if (m_callback) {
-            const auto viewport = StreamVideoItem::aspectFitRect(m_videoSize,
-                                                                  target->pixelSize());
-            commandBuffer->setViewport(QRhiViewport(viewport.x(), viewport.y(),
-                                                     viewport.width(), viewport.height()));
-            m_callback->recordFrame(commandBuffer, viewport);
-        }
-        commandBuffer->endPass();
-        if (m_callback) m_callback->finishFrame();
+        auto *rhi = m_window->rhi();
+        if (!m_callback || !rhi || !renderTarget() || !commandBuffer()) return;
+        m_callback->initialize(rhi, commandBuffer(), renderTarget());
+        m_initialized = true;
+        m_callback->setComposition(*projectionMatrix() * *matrix(), m_bounds, m_viewport,
+                                   float(inheritedOpacity()));
+        m_callback->prepareFrame(commandBuffer());
     }
+
+    void render(const RenderState *state) override
+    {
+        if (!m_initialized || !commandBuffer() || !renderTarget()) return;
+        auto *cb = commandBuffer();
+        const auto size = renderTarget()->pixelSize();
+        cb->setViewport(QRhiViewport(0, 0, size.width(), size.height()));
+        const auto scissor = state->scissorEnabled()
+            ? state->scissorRect() : QRect(QPoint(), size);
+        cb->setScissor(QRhiScissor(scissor.x(), scissor.y(), scissor.width(), scissor.height()));
+        m_callback->setClip(state->stencilEnabled(), state->stencilValue());
+        m_callback->recordFrame(cb, m_viewport);
+        m_callback->finishFrame();
+    }
+
+    void releaseResources() override
+    {
+        if (m_initialized && m_callback) m_callback->releaseResources();
+        m_initialized = false;
+    }
+
+    RenderingFlags flags() const override
+    {
+        // Conversion brackets its own native commands in prepare(). render()
+        // is entirely QRhi: Qt must not open an external/native render section
+        // around these draw calls (especially with Vulkan secondary buffers).
+        return BoundedRectRendering | DepthAwareRendering | NoExternalRendering;
+    }
+    StateFlags changedStates() const override { return ViewportState | ScissorState; }
+    QRectF rect() const override { return m_bounds; }
 
 private:
-    void initializeCallback(QRhiCommandBuffer *commandBuffer)
-    {
-        if (!m_callback) return;
-        auto *currentRhi = rhi();
-        auto *currentTarget = renderTarget();
-        if (!currentRhi || !currentTarget) return;
-        if (m_initializedCallback == m_callback && m_initializedRhi == currentRhi
-            && m_initializedTarget == currentTarget) {
-            return;
-        }
-        releaseCallbackResources();
-        m_callback->initialize(currentRhi, commandBuffer, currentTarget);
-        m_initializedCallback = m_callback;
-        m_initializedRhi = currentRhi;
-        m_initializedTarget = currentTarget;
-    }
-
-    void releaseCallbackResources()
-    {
-        if (m_initializedCallback) m_initializedCallback->releaseResources();
-        m_initializedCallback.reset();
-        m_initializedRhi = nullptr;
-        m_initializedTarget = nullptr;
-    }
-
-    QSize m_videoSize;
+    QQuickWindow *m_window;
     std::shared_ptr<StreamVideoRenderCallback> m_callback;
-    std::shared_ptr<StreamVideoRenderCallback> m_initializedCallback;
-    QRhi *m_initializedRhi = nullptr;
-    QRhiRenderTarget *m_initializedTarget = nullptr;
+    QRectF m_bounds;
+    QRect m_viewport;
+    bool m_initialized = false;
 };
 }
 
 StreamVideoItem::StreamVideoItem(QQuickItem *parent)
-    : QQuickRhiItem(parent)
+    : QQuickItem(parent)
 {
-    setAlphaBlending(false);
-    setSampleCount(1);
+    setFlag(ItemHasContents, true);
     setActiveFocusOnTab(true);
     setAcceptedMouseButtons(Qt::AllButtons);
+    setKeepMouseGrab(true);
     setAcceptHoverEvents(true);
     if (nativeRuntime) {
         setRenderCallback(std::make_shared<NativeStreamRenderCallback>(nativeRuntime));
         connect(nativeRuntime, &NativeStreamRuntime::frameAvailable,
-                this, &StreamVideoItem::requestFrame, Qt::QueuedConnection);
+                this, &StreamVideoItem::requestFrame);
         connect(nativeRuntime, &NativeStreamRuntime::cursorUpdated,
                 this, &StreamVideoItem::applyRemoteCursor, Qt::QueuedConnection);
         connect(nativeRuntime, &NativeStreamRuntime::runningChanged, this, [this] {
@@ -646,7 +600,7 @@ QString StreamVideoItem::shortcutActionForInput(
 
 void StreamVideoItem::focusInEvent(QFocusEvent *event)
 {
-    QQuickRhiItem::focusInEvent(event);
+    QQuickItem::focusInEvent(event);
     syncCaptureState();
 }
 
@@ -654,7 +608,7 @@ void StreamVideoItem::focusOutEvent(QFocusEvent *event)
 {
     releaseInput();
     syncCaptureState();
-    QQuickRhiItem::focusOutEvent(event);
+    QQuickItem::focusOutEvent(event);
 }
 
 quint32 StreamVideoItem::keyIdentity(const QKeyEvent *event) const
@@ -735,13 +689,15 @@ void StreamVideoItem::mousePressEvent(QMouseEvent *event)
     syncCaptureState();
     const auto button = mouseButton(event->button());
     if (m_captureActive && button != 0) {
-        if (!m_rawInputActive && !m_pressedMouseButtons.contains(button)) {
+        if (!m_pressedMouseButtons.contains(button)) {
             // In absolute cursor mode position and button must have one owner and
             // preserve their queue order.  A move event is not guaranteed before
             // a click (notably after a fullscreen viewport change).
-            if (!m_relativeMouse) submitAbsoluteMouse(event->position());
             m_pressedMouseButtons.insert(button);
-            nativeRuntime->submitMouseButton(button, true);
+            if (!m_rawInputActive) {
+                if (!m_relativeMouse) submitAbsoluteMouse(event->position());
+                nativeRuntime->submitMouseButton(button, true);
+            }
         }
         m_lastMousePosition = event->position();
         event->accept();
@@ -754,9 +710,14 @@ void StreamVideoItem::mouseReleaseEvent(QMouseEvent *event)
 {
     const auto button = mouseButton(event->button());
     if (m_captureActive && button != 0) {
-        if (!m_rawInputActive && m_pressedMouseButtons.remove(button)) {
+        if (m_pressedMouseButtons.remove(button) && !m_rawInputActive) {
             if (!m_relativeMouse) submitAbsoluteMouse(event->position());
             nativeRuntime->submitMouseButton(button, false);
+        }
+        if (m_pressedMouseButtons.isEmpty() && m_pendingRelativeMouse) {
+            const auto relative = *m_pendingRelativeMouse;
+            m_pendingRelativeMouse.reset();
+            setRelativeMouse(relative);
         }
         event->accept();
         return;
@@ -836,7 +797,7 @@ void StreamVideoItem::wheelEvent(QWheelEvent *event)
 
 void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
 {
-    QQuickRhiItem::itemChange(change, data);
+    QQuickItem::itemChange(change, data);
     if (change == ItemVisibleHasChanged && !isVisible()) {
         m_remoteCursorKnown = false;
         m_remoteCursorVisible = false;
@@ -849,7 +810,7 @@ void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
 
 void StreamVideoItem::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry)
 {
-    QQuickRhiItem::geometryChange(newGeometry, oldGeometry);
+    QQuickItem::geometryChange(newGeometry, oldGeometry);
     updateCursorConfinement();
 }
 
@@ -998,6 +959,8 @@ void StreamVideoItem::syncCaptureState()
 
 void StreamVideoItem::releaseInput()
 {
+    const auto pendingRelativeMouse = m_pendingRelativeMouse;
+    m_pendingRelativeMouse.reset();
     if (nativeRuntime) {
         for (const auto &pressed : std::as_const(m_pressedKeys))
             nativeRuntime->submitKey(pressed.virtualKey, 0, false);
@@ -1008,6 +971,14 @@ void StreamVideoItem::releaseInput()
     else m_pressedMouseButtons.clear();
     ungrabMouse();
     releaseCursorConfinement();
+    // Remember the newest server mode across focus loss without re-entering
+    // syncCaptureState() or acquiring a new grab while releasing the old one.
+    if (pendingRelativeMouse && m_relativeMouse != *pendingRelativeMouse) {
+        m_relativeMouse = *pendingRelativeMouse;
+        if (m_relativeMouse) setCursor(Qt::BlankCursor);
+        else unsetCursor();
+        emit relativeMouseChanged();
+    }
 }
 
 void StreamVideoItem::releaseQtMouseButtons()
@@ -1017,6 +988,14 @@ void StreamVideoItem::releaseQtMouseButtons()
             nativeRuntime->submitMouseButton(button, false);
     }
     m_pressedMouseButtons.clear();
+}
+
+QRect StreamVideoItem::cursorConfinementRect(const QRect &viewport, bool rawRelative)
+{
+    // Raw Input supplies unaccelerated deltas independently of the OS cursor.
+    // Pin that hidden cursor so Qt cannot hover chrome as the player looks around.
+    // The non-raw relative fallback still needs room for its move/recenter events.
+    return rawRelative && !viewport.isEmpty() ? QRect(viewport.center(), QSize(1, 1)) : viewport;
 }
 
 void StreamVideoItem::updateCursorConfinement()
@@ -1058,9 +1037,10 @@ void StreamVideoItem::updateCursorConfinement()
         releaseCursorConfinement();
         return;
     }
-    const RECT screenRect{captureRect.left(), captureRect.top(),
-                          captureRect.left() + captureRect.width(),
-                          captureRect.top() + captureRect.height()};
+    const auto confinement = cursorConfinementRect(captureRect, m_relativeMouse && m_rawInputActive);
+    const RECT screenRect{confinement.left(), confinement.top(),
+                          confinement.left() + confinement.width(),
+                          confinement.top() + confinement.height()};
     m_cursorConfined = ClipCursor(&screenRect) != FALSE;
 #else
     m_cursorConfined = false;
@@ -1077,6 +1057,14 @@ void StreamVideoItem::releaseCursorConfinement()
 
 void StreamVideoItem::setRelativeMouse(bool relative)
 {
+    // Server cursor visibility can change during remote window dragging. Keep
+    // the button owner and pointer coordinates stable until the physical release.
+    // Focus loss/overlays still release everything through releaseInput().
+    if (!m_pressedMouseButtons.isEmpty()) {
+        m_pendingRelativeMouse = relative;
+        return;
+    }
+    m_pendingRelativeMouse.reset();
     if (m_relativeMouse == relative) return;
     // Qt owns buttons while the remote cursor is visible; Windows Raw Input
     // owns them in relative mode. A raw release cannot match a button that Qt
@@ -1114,7 +1102,8 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
     setRelativeMouse(hidden);
     if (hidden) return;
 
-    if (reposition && metadata.normalizedPosition) {
+    if (reposition && metadata.normalizedPosition && m_pressedMouseButtons.isEmpty()
+        && m_captureActive) {
         const auto local = mapRemoteCursorPosition(
             *metadata.normalizedPosition, m_videoSize, QSizeF(width(), height()));
         QCursor::setPos(mapToGlobal(local).toPoint());
@@ -1155,9 +1144,12 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
     }
 }
 
-QQuickRhiItemRenderer *StreamVideoItem::createRenderer()
+QSGNode *StreamVideoItem::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
 {
-    return new StreamVideoItemRenderer;
+    auto *node = static_cast<StreamVideoNode *>(oldNode);
+    if (!node) node = new StreamVideoNode(window());
+    node->synchronize(this);
+    return node;
 }
 
 void registerStreamVideoItemQmlType()

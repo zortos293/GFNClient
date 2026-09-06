@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const NATIVE_TRANSPORT: &str = "nvst";
+const CONSOLE_POLICY_VERSION: &str = "qtConsoleModePolicyVersion";
 
 pub struct SettingsStore {
     path: PathBuf,
@@ -65,7 +66,23 @@ impl SettingsStore {
             passthrough,
         };
         store.migrate_native_fullscreen_shortcut();
+        // Old builds enabled automatic switching by default, so an existing
+        // true value is not reliable evidence of opt-in. Reset that policy once;
+        // subsequent explicit opt-ins survive every restart.
+        let migrate_console_policy =
+            store.passthrough.get(CONSOLE_POLICY_VERSION) != Some(&json!(1));
+        if migrate_console_policy {
+            store
+                .values
+                .insert("switchToConsoleOnPad".to_owned(), json!(false));
+            store
+                .passthrough
+                .insert(CONSOLE_POLICY_VERSION.to_owned(), json!(1));
+        }
         store.normalize();
+        if migrate_console_policy && store.path.exists() {
+            store.save()?;
+        }
         Ok(store)
     }
 
@@ -92,10 +109,17 @@ impl SettingsStore {
             let raw = self.values["sessionProxyUrl"].as_str().unwrap_or("");
             normalize_proxy_url(raw)?;
         }
+        let previous_values = self.values.clone();
         self.values.insert(key.to_owned(), value);
         self.normalize();
-        self.save()
-            .map_err(|error| format!("Could not save settings: {error}"))?;
+        if key == "launchInConsoleMode" && self.values.get(key) == Some(&json!(false)) {
+            self.values
+                .insert("switchToConsoleOnPad".to_owned(), json!(false));
+        }
+        if let Err(error) = self.save() {
+            self.values = previous_values;
+            return Err(format!("Could not save settings: {error}"));
+        }
         Ok(self.values.get(key).cloned().unwrap_or(Value::Null))
     }
 
@@ -110,6 +134,12 @@ impl SettingsStore {
     fn normalize(&mut self) {
         normalize_types(&mut self.values);
         normalize_resolution(&mut self.values);
+        normalize_choice(
+            &mut self.values,
+            "desktopBackground",
+            &["art", "gradient", "solid"],
+            "art",
+        );
         normalize_choice(
             &mut self.values,
             "aspectRatio",
@@ -127,7 +157,16 @@ impl SettingsStore {
             &mut self.values,
             "nativeVideoBackend",
             &[
-                "auto", "d3d11", "d3d12", "nvdec", "vaapi", "v4l2", "vulkan", "software",
+                "auto",
+                "d3d11",
+                "d3d12",
+                "nvdec",
+                "cuda",
+                "vaapi",
+                "v4l2",
+                "vulkan",
+                "videotoolbox",
+                "software",
             ],
             "auto",
         );
@@ -234,6 +273,9 @@ impl SettingsStore {
         );
         clamp_number(&mut self.values, "posterSizeScale", 0.75, 1.5, 1.05);
         clamp_number(&mut self.values, "mouseSensitivity", 0.1, 3.0, 1.0);
+        clamp_number(&mut self.values, "desktopUiScale", 0.85, 1.25, 1.0);
+        clamp_number(&mut self.values, "statsOverlayScale", 0.85, 1.5, 1.0);
+        clamp_number(&mut self.values, "statsOverlayOpacity", 40.0, 100.0, 85.0);
         normalize_optional_integer(&mut self.values, "recordingBitrateMbps", 1, 12);
         normalize_bounded_strings(&mut self.values);
         normalize_nested_settings(&mut self.values);
@@ -602,13 +644,19 @@ fn defaults() -> Map<String, Value> {
         "showAntiAfkIndicator":true, "antiAfkReminderEveryMinutes":15,
         "antiAfkReminderDurationSeconds":5, "showStatsOnLaunch":false,
         "statsOverlayPosition":"top-right", "hideServerSelector":false,
+        "desktopUiScale":1.0, "statsOverlayScale":1.0, "statsOverlayOpacity":85,
+        "themeAccentOverride":false,
+        "statsShowFps":true, "statsShowRegion":true, "statsShowPing":true,
+        "statsShowBitrate":true, "statsShowJitter":true, "statsShowDrops":true,
+        "statsShowPacketLoss":true, "statsShowDecode":true, "statsShowLatency":true,
+        "statsShowVideo":true, "statsShowClock":true, "statsShowGraphs":true,
         "appAccentColor":"green", "appTheme":"auto", "appLanguage":"system", "themePack":"nocturne", "translucentUI":false,
         "showTileLabels":true,
         "controllerMode":true, "controllerModePromptDismissed":false,
         "reducedMotion":false,
         "launchInConsoleMode":false, "consoleProfilePickerOnLaunch":true,
-        "desktopRailCollapsed":true,
-        "switchToConsoleOnPad":true, "leaveConsoleOnPointer":true,
+        "desktopRailCollapsed":true, "desktopSidebarHover":true, "desktopBackground":"art",
+        "switchToConsoleOnPad":false, "leaveConsoleOnPointer":true,
         "autoFullScreen":false, "favoriteGameIds":[], "hiddenGameIds":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
         "showSessionReport":true, "showSessionTimeRemainingInStatsOverlay":false,
         "sessionClockShowEveryMinutes":60, "sessionClockShowDurationSeconds":30,
@@ -632,6 +680,57 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn console_switching_is_opt_in_and_manual_desktop_survives_reload() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-console-policy-{unique}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("settings.json"),
+            serde_json::to_vec(&json!({
+                "launchInConsoleMode": true,
+                "switchToConsoleOnPad": true,
+                "unrelatedLegacySetting": "preserve"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["switchToConsoleOnPad"], json!(false));
+        assert_eq!(store.all()["launchInConsoleMode"], json!(true));
+        store.set("switchToConsoleOnPad", json!(true)).unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(
+            store.all()["switchToConsoleOnPad"],
+            json!(true),
+            "do not migrate a new opt-in twice"
+        );
+        // A failed atomic save must not change the in-memory policy either.
+        let blocked_temporary = directory.join("settings.json.tmp");
+        fs::create_dir(&blocked_temporary).unwrap();
+        assert!(store.set("launchInConsoleMode", json!(false)).is_err());
+        assert_eq!(store.all()["launchInConsoleMode"], json!(true));
+        assert_eq!(store.all()["switchToConsoleOnPad"], json!(true));
+        fs::remove_dir(blocked_temporary).unwrap();
+        store.set("launchInConsoleMode", json!(false)).unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["launchInConsoleMode"], json!(false));
+        assert_eq!(store.all()["switchToConsoleOnPad"], json!(false));
+        store.set("launchInConsoleMode", json!(true)).unwrap();
+        assert_eq!(
+            store.all()["switchToConsoleOnPad"],
+            json!(false),
+            "manual console is not automatic opt-in"
+        );
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(persisted["unrelatedLegacySetting"], json!("preserve"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn persists_and_normalizes_settings() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -642,11 +741,56 @@ mod tests {
         assert_eq!(store.all()["launchInConsoleMode"], json!(false));
         assert_eq!(store.all()["transportMode"], json!("nvst"));
         assert_eq!(store.all()["desktopRailCollapsed"], json!(true));
-        assert_eq!(store.all()["switchToConsoleOnPad"], json!(true));
+        assert_eq!(store.all()["desktopSidebarHover"], json!(true));
+        assert_eq!(store.all()["desktopBackground"], json!("art"));
+        assert_eq!(
+            store.set("desktopBackground", json!("gradient")).unwrap(),
+            json!("gradient")
+        );
+        assert_eq!(
+            store.set("desktopBackground", json!("invalid")).unwrap(),
+            json!("art")
+        );
+        assert_eq!(
+            store.set("desktopSidebarHover", json!(false)).unwrap(),
+            json!(false)
+        );
+        assert_eq!(store.all()["switchToConsoleOnPad"], json!(false));
         assert_eq!(store.all()["leaveConsoleOnPointer"], json!(true));
         assert_eq!(store.all()["shortcutToggleFullscreen"], json!("F11"));
         assert_eq!(store.all()["shortcutScreenshot"], json!("Ctrl+F11"));
         assert_eq!(store.all()["statsOverlayPosition"], json!("top-right"));
+        for key in [
+            "statsShowFps",
+            "statsShowRegion",
+            "statsShowPing",
+            "statsShowBitrate",
+            "statsShowJitter",
+            "statsShowDrops",
+            "statsShowPacketLoss",
+            "statsShowDecode",
+            "statsShowLatency",
+            "statsShowVideo",
+            "statsShowClock",
+            "statsShowGraphs",
+        ] {
+            assert_eq!(store.all()[key], json!(true));
+            assert_eq!(store.set(key, json!(false)).unwrap(), json!(false));
+        }
+        assert_eq!(
+            store.set("statsOverlayScale", json!(99)).unwrap(),
+            json!(1.5)
+        );
+        assert_eq!(
+            store.set("statsOverlayOpacity", json!(0)).unwrap(),
+            json!(40.0)
+        );
+        assert_eq!(store.set("desktopUiScale", json!(0)).unwrap(), json!(0.85));
+        let preferences = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(preferences.all()["desktopSidebarHover"], json!(false));
+        assert_eq!(preferences.all()["statsShowFps"], json!(false));
+        assert_eq!(preferences.all()["statsShowRegion"], json!(false));
+        assert_eq!(preferences.all()["statsOverlayScale"], json!(1.5));
         assert_eq!(store.set("fps", json!(999)).unwrap(), json!(240));
         assert_eq!(store.set("maxBitrateMbps", json!(200)).unwrap(), json!(200));
         assert_eq!(

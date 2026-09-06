@@ -3,14 +3,15 @@ import OpenNOW
 
 Rectangle {
     id: panel
-    property int padding: 18
+    property bool paperStyle: false
+    property int padding: paperStyle ? 0 : 18
     default property alias content: body.data
 
     implicitHeight: body.implicitHeight + padding * 2
     radius: 14
-    color: Theme.glass
+    color: paperStyle ? Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.72) : Theme.glass
     border.width: 1
-    border.color: Theme.seam
+    border.color: paperStyle ? DesktopTokens.seamSoft : Theme.seam
 
     Column {
         id: body

@@ -3,6 +3,7 @@ import QtQuick
 import OpenNOW
 
 QtObject {
+    id: tokens
     readonly property color shell: Theme.shell
     readonly property color rail: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.90)
     readonly property color topBar: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.66)
@@ -49,19 +50,53 @@ QtObject {
     readonly property int libraryCellHeight: px(214)
     readonly property int libraryArtWidth: px(132)
     readonly property int libraryArtHeight: px(198)
+    property FontMetrics storeTitleMetrics: FontMetrics {
+        font.family: Theme.bodyFont
+        font.pixelSize: tokens.monoSize
+        font.weight: Font.Bold
+    }
+    readonly property int storeCardInfoHeight: px(8) + Math.ceil(storeTitleMetrics.height) * 2 + px(4) + px(17) + px(4)
     readonly property int quickDuration: AppController.reducedMotion ? 0 : 120
     readonly property int motionDuration: AppController.reducedMotion ? 0 : 220
     readonly property int revealDuration: AppController.reducedMotion ? 0 : 320
     readonly property real cardHoverScale: 1.025
     readonly property int cardOutlinePad: 2
-    readonly property color cardOutlineIdle: Qt.rgba(1, 1, 1, 0.16)
+    readonly property color cardOutlineIdle: Theme.seam
 
     function px(value) {
         return Math.max(1, Math.round(Number(value) * uiScale))
     }
 
     function scaleForWindow(width, height) {
-        return 1
+        // Qt already accounts for display DPI. Keep logical text readable;
+        // use reflow, not aggressive downscaling, for smaller windows.
+        return Math.max(0.95, Math.min(1.15, Math.min(width / 1440, height / 900)))
+    }
+
+    function storeKey(value) {
+        const key = String(value || "").toLowerCase()
+        if (key.indexOf("steam") >= 0) return "steam"
+        if (key.indexOf("epic") >= 0) return "epic"
+        if (key.indexOf("ubisoft") >= 0 || key.indexOf("uplay") >= 0) return "ubisoft"
+        if (key.indexOf("battle") >= 0) return "battlenet"
+        if (key.indexOf("xbox") >= 0) return "xbox"
+        if (key.indexOf("gog") >= 0) return "gog"
+        if (key.indexOf("gaijin") >= 0) return "gaijin"
+        if (key === "nvidia") return "nvidia"
+        if (key === "ea" || key === "ea_app" || key === "origin") return "ea"
+        return ""
+    }
+    function storeIconUrl(value) {
+        const key = storeKey(value)
+        return key ? "qrc:/qt/qml/OpenNOW/res/icons/store-" + key + ".svg" : ""
+    }
+    function storeLabel(value) {
+        const labels = {steam:"Steam", epic:"Epic Games", ubisoft:"Ubisoft Connect", battlenet:"Battle.net",
+            xbox:"Xbox", gog:"GOG", gaijin:"Gaijin", ea:"EA app", nvidia:"NVIDIA"}
+        return labels[storeKey(value)] || (String(value).toUpperCase() === "NONE" ? qsTr("Direct launch") : String(value))
+    }
+    function genreLabel(value) {
+        return String(value).toLowerCase().replace(/_/g, " ").replace(/\b\w/g, letter => letter.toUpperCase())
     }
 
     function artworkUrl(game, preferHero) {

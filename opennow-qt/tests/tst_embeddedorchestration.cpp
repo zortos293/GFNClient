@@ -56,7 +56,10 @@ private slots:
             var streamerStopExpected = false, streamInputStateKnown = false, streamRecordingActive = false;
             var streamStartedAtMs = 1, desiredStreamInputPaused = false, sessionClaimRequestId = '';
             var sessionClaimIsRecovery = false, streamerStartRequestId = '', streamerPrepareRequestId = '';
-            var nativeRuntimeReady = true, prepares = 0, claims = 0;
+            var sessionRecoveryPending = false, recoveryDiscoveryRequestId = '', recoverySessionId = '';
+            var streamerStopRequestId = '', streamStopRequestId = '', streamPollRequestId = '';
+            var NativeStreamRuntime = {running: false}, nativeRuntimeCapabilities = {};
+            var nativeRuntimeReady = true, prepares = 0, claims = 0, discoveries = 0;
             var streamerRestartTimer = {running: false, restarts: 0,
                 restart: function() { this.running = true; this.restarts++; },
                 stop: function() { this.running = false; }};
@@ -64,6 +67,7 @@ private slots:
             var CoreClient = {request: function(type) {
                 if (type === 'streamer.prepare') { prepares++; return 'prepare'; }
                 if (type === 'session.claim') { claims++; return 'claim'; }
+                if (type === 'session.remote.list') { discoveries++; return 'discovery'; }
                 throw new Error('Unexpected request: ' + type);
             }};
             var AppController = {route: 'stream', overlay: ''};
@@ -78,7 +82,13 @@ private slots:
             function updateStreamerFields(fields) { acceptStreamerSnapshot(Object.assign({}, streamer, fields)); }
         )JS")).isError());
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        const auto limit = QRegularExpression(QStringLiteral(
+            "readonly property int maximumSessionReconnectAttempts: (\\d+)")).match(shell);
+        QVERIFY(limit.hasMatch());
+        QVERIFY(!evaluate(QStringLiteral("var maximumSessionReconnectAttempts = %1;")
+                              .arg(limit.captured(1))).isError());
         for (const auto &name : {"acceptStreamerSnapshot", "recoverStreamingSession",
+                                "scheduleSessionRecovery", "discoverRecoverySession", "acceptRecoverySessions",
                                 "normalizedStreamingSession", "acceptStreamingSession",
                                 "startNativeStreamer", "retryNativeStreamer", "acceptNativeEvent"}) {
             const QRegularExpression function(QStringLiteral(
@@ -96,45 +106,51 @@ private slots:
             acceptStreamerSnapshot({status: 'error', message: 'No video UDP packets'});
             acceptStreamerSnapshot({status: 'stopped', message: 'Stopped'});
             acceptStreamerSnapshot({status: 'error', message: 'Late response'});
-            streamerRestartAttempts === 1 && streamerRestartTimer.restarts === 1
+            sessionReconnectAttempts === 0 && streamerRestartTimer.restarts === 1
                 && streamer.message === 'No video UDP packets';
         )JS")));
         QVERIFY(check(QStringLiteral(R"JS(
             acceptStreamingSession(activeSession);
-            prepares === 0 && streamerRestartAttempts === 1;
+            prepares === 0 && sessionReconnectAttempts === 0;
         )JS")));
         QVERIFY(check(QStringLiteral(R"JS(
-            streamerRestartTimer.running = false;
-            streamer = {status: 'starting', sessionId: 'seat'};
-            acceptStreamerSnapshot({status: 'streaming', sessionId: 'seat'});
-            acceptStreamerSnapshot({status: 'error', message: 'Still no video'});
-            streamerRestartAttempts === 2;
-        )JS")));
-        QVERIFY(check(QStringLiteral(R"JS(
-            streamerRestartTimer.running = false;
-            streamer = {status: 'starting', sessionId: 'seat'};
-            acceptStreamerSnapshot({status: 'error', message: 'OPTIONS failed: 400'});
-            sessionClaimRequestId = '';
-            acceptStreamingSession(activeSession);
-            streamerPrepareRequestId = '';
-            acceptStreamerSnapshot({status: 'error', message: 'OPTIONS failed: 400'});
-            sessionClaimRequestId = '';
-            acceptStreamingSession(activeSession);
-            streamerPrepareRequestId = '';
-            acceptStreamerSnapshot({status: 'error', message: 'HTTP 503'});
+            for (var attempt = 1; attempt <= maximumSessionReconnectAttempts; attempt++) {
+                streamerRestartTimer.running = false;
+                recoverStreamingSession('Connection lost');
+                if (discoveries !== attempt || !sessionRecoveryPending || prepares !== attempt - 1)
+                    throw new Error('Recovery must discover the active session before preparing media');
+                recoveryDiscoveryRequestId = '';
+                acceptRecoverySessions({sessions: [activeSession]});
+                if (claims !== attempt || !sessionClaimIsRecovery)
+                    throw new Error('Recovery must claim the discovered seat');
+                // Model a successful claim followed by a ready poll. The polling
+                // contract is separately exercised by the session resume tests.
+                sessionClaimRequestId = ''; sessionClaimIsRecovery = false;
+                sessionRecoveryPending = false;
+                acceptStreamingSession(activeSession);
+                if (prepares !== attempt || sessionReconnectAttempts !== attempt)
+                    throw new Error('A ready seat must not reset the video recovery budget');
+                streamerPrepareRequestId = '';
+                acceptStreamerSnapshot({status: 'streaming', sessionId: 'seat'});
+                if (sessionReconnectAttempts !== attempt)
+                    throw new Error('A transport handshake is not video progress');
+                acceptStreamerSnapshot({status: 'error', message: 'HTTP 503', sessionId: 'seat'});
+            }
             var previousPrepares = prepares;
             acceptStreamingSession(activeSession);
             startNativeStreamer();
-            streamerRecoveryExhausted && claims === 2 && prepares === previousPrepares
+            streamerRecoveryExhausted && claims === maximumSessionReconnectAttempts && prepares === previousPrepares
                 && streamState === 'error' && streamMessage === 'HTTP 503';
         )JS")));
         QVERIFY(check(QStringLiteral(R"JS(
             retryNativeStreamer();
             !streamerRecoveryExhausted && streamerRestartAttempts === 0
-                && sessionReconnectAttempts === 0 && prepares === previousPrepares + 1;
+                && sessionReconnectAttempts === 1 && prepares === previousPrepares
+                && discoveries === maximumSessionReconnectAttempts + 1 && sessionRecoveryPending;
         )JS")));
         QVERIFY(check(QStringLiteral(R"JS(
             streamerRestartAttempts = 2; sessionReconnectAttempts = 1;
+            sessionRecoveryPending = false; recoveryDiscoveryRequestId = '';
             acceptStreamerSnapshot({status: 'streaming', sessionId: 'seat'});
             var unchanged = streamerRestartAttempts === 2 && sessionReconnectAttempts === 1;
             acceptNativeEvent({type: 'status', event: 'first-frame', status: 'streaming', backend: 'D3D11'});
@@ -308,7 +324,7 @@ private slots:
         QVERIFY(main.contains(QStringLiteral(
             "window.lockedStreamDesktopSurface = !enabled")));
         QVERIFY(main.contains(QStringLiteral(
-            "if (window.activeRoute !== \"stream\"\n                && window.switchToConsoleOnPad")));
+            "const allowed = window.activeRoute !== \"stream\"\n                && window.switchToConsoleOnPad")));
         QVERIFY(!main.contains(QStringLiteral("function syncPadHold()")));
     }
 

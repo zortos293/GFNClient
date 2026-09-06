@@ -33,6 +33,7 @@ public:
                                 const QJsonObject &params = {},
                                 int timeoutMs = 15'000);
     Q_INVOKABLE bool cancel(const QString &requestId);
+    Q_INVOKABLE void logShellDiagnostic(const QString &message);
 
 signals:
     void stateChanged();

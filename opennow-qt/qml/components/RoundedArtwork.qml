@@ -11,7 +11,10 @@ Item {
 
     property bool loadStarted: false
     readonly property string normalizedArtwork: DesktopTokens.decodeArtworkUrl(root.artwork)
-    onVisibleChanged: loadStarted = visible
+    onNormalizedArtworkChanged: if (!visible) loadStarted = false
+    // Retained popups keep their resolved artwork between opens, avoiding a
+    // fallback flash and another image fade every time visibility changes.
+    onVisibleChanged: if (visible) loadStarted = true
     Component.onCompleted: if (visible)
         loadStarted = true
 
@@ -19,6 +22,7 @@ Item {
         id: artworkSource
         sourceUrl: root.normalizedArtwork
         active: root.loadStarted
+        requestActive: root.visible
     }
 
     Rectangle {

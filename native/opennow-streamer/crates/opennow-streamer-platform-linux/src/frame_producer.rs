@@ -43,6 +43,7 @@ pub struct RecordedGpuFrame {
 #[derive(Clone)]
 pub struct LinuxGpuFrameProducer {
     state: Arc<Mutex<SharedProducerState>>,
+    decode_sync: Arc<Mutex<Option<DecodeSync>>>,
     sequence: Arc<AtomicU64>,
     slot_count: u32,
 }
@@ -50,6 +51,54 @@ pub struct LinuxGpuFrameProducer {
 struct SharedProducerState {
     render: Option<VulkanRenderDevice>,
     producer: Option<LinuxFrameProducer>,
+}
+
+// Used only by the decoded-frame publisher, never Qt's render thread. Cache the
+// dispatch table rather than loading Vulkan functions for every decoded frame.
+struct DecodeSync {
+    _entry: ash::Entry,
+    identity: (usize, usize),
+    device: ash::Device,
+}
+impl DecodeSync {
+    fn new(frame: &VulkanVideoFrame) -> Result<Self> {
+        let entry = unsafe { ash::Entry::load() }
+            .map_err(|error| Error::backend(Subsystem::Vulkan, error.to_string()))?;
+        let instance = unsafe {
+            ash::Instance::load(
+                entry.static_fn(),
+                vk::Instance::from_raw(frame.instance as u64),
+            )
+        };
+        let device = unsafe {
+            ash::Device::load(
+                instance.fp_v1_0(),
+                vk::Device::from_raw(frame.device as u64),
+            )
+        };
+        Ok(Self {
+            _entry: entry,
+            identity: (frame.instance, frame.device),
+            device,
+        })
+    }
+    fn wait(&self, frame: &VulkanVideoFrame) -> Result<()> {
+        let (semaphores, values): (Vec<_>, Vec<_>) = timeline_waits(frame)?
+            .into_iter()
+            .map(|(semaphore, value)| (vk::Semaphore::from_raw(semaphore), value))
+            .unzip();
+        if semaphores.is_empty() {
+            return Ok(());
+        }
+        let wait = vk::SemaphoreWaitInfo::default()
+            .semaphores(&semaphores)
+            .values(&values);
+        unsafe {
+            self.device
+                .wait_semaphores(&wait, DECODE_WAIT_TIMEOUT.as_nanos() as u64)
+        }
+        .map_err(|error| vk_error("publisher wait for Vulkan decoder frame", error))
+    }
 }
 
 pub struct LinuxGpuFrame {
@@ -71,12 +120,27 @@ impl LinuxGpuFrameProducer {
                 producer: None,
             })),
             sequence: Arc::new(AtomicU64::new(0)),
+            decode_sync: Arc::new(Mutex::new(None)),
             slot_count,
         })
     }
 
     pub fn frame(&self, frame: DecodedVideoFrame) -> Result<LinuxGpuFrame> {
         frame.validate()?;
+        // This method runs on opennow-embedded-linux-frame-publisher. Retain the
+        // source owner while waiting, without locking render/presentation state.
+        if let Some(vulkan) = frame.vulkan.as_ref() {
+            let mut sync = self.decode_sync.lock().unwrap_or_else(|e| e.into_inner());
+            if sync
+                .as_ref()
+                .is_none_or(|s| s.identity != (vulkan.instance, vulkan.device))
+            {
+                *sync = Some(DecodeSync::new(vulkan)?);
+            }
+            sync.as_ref()
+                .expect("initialized decoder sync")
+                .wait(vulkan)?;
+        }
         Ok(LinuxGpuFrame {
             frame,
             producer: self.clone(),
@@ -451,10 +515,9 @@ impl LinuxFrameProducer {
             )));
         }
         let frame = Arc::new(frame);
-        let mut decode_waited = frame.vulkan.is_none();
         if let Some(vulkan) = frame.vulkan.as_ref() {
-            decode_waited = self.wait_for_decode(vulkan).is_ok();
-            if vulkan.device == self.render.device && decode_waited {
+            self.wait_for_decode(vulkan)?;
+            if vulkan.device == self.render.device {
                 let images = vulkan
                     .images
                     .iter()
@@ -476,29 +539,18 @@ impl LinuxFrameProducer {
             }
         }
         let mut gpu_error = None;
-        if decode_waited && self.dmabuf_import_supported && frame.dmabuf.is_some() {
+        if self.dmabuf_import_supported && frame.dmabuf.is_some() {
             match self.import_dmabuf(Arc::clone(&frame)) {
                 Ok(imported) => return Ok(PreparedLinuxFrame::DmaBuf(imported)),
                 Err(error) => gpu_error = Some(error),
             }
         }
-        if frame.planes.len() == 2 {
+        // CPU planes are accepted only from an explicitly CPU-backed decoder,
+        // never as an automatic substitute for failed native GPU interop.
+        if frame.vulkan.is_none() && frame.dmabuf.is_none() && frame.planes.len() == 2 {
             return Ok(PreparedLinuxFrame::Cpu(CpuNv12Frame {
                 luma: frame.planes[0].clone(),
                 chroma: frame.planes[1].clone(),
-                source: frame,
-            }));
-        }
-        if let Some(vulkan) = frame.vulkan.as_ref() {
-            let planes = vulkan.download_nv12()?;
-            if planes.len() != 2 {
-                return Err(Error::InvalidFormat(
-                    "Vulkan CPU fallback did not produce two NV12 planes".to_owned(),
-                ));
-            }
-            return Ok(PreparedLinuxFrame::Cpu(CpuNv12Frame {
-                luma: planes[0].clone(),
-                chroma: planes[1].clone(),
                 source: frame,
             }));
         }
@@ -507,7 +559,7 @@ impl LinuxFrameProducer {
         }
         Err(Error::unavailable(
             Subsystem::Vulkan,
-            "decoded frame cannot be synchronized with Qt's Vulkan device and has no CPU NV12 fallback",
+            "decoded GPU frame cannot be imported by Qt's Vulkan device; implicit CPU readback is disabled",
         ))
     }
 
@@ -516,6 +568,9 @@ impl LinuxFrameProducer {
             .into_iter()
             .map(|(semaphore, value)| (vk::Semaphore::from_raw(semaphore), value))
             .unzip();
+        if semaphores.is_empty() {
+            return Ok(());
+        }
         let wait = vk::SemaphoreWaitInfo::default()
             .semaphores(&semaphores)
             .values(&values);
@@ -538,8 +593,9 @@ impl LinuxFrameProducer {
             };
             &source_device
         };
-        unsafe { device.wait_semaphores(&wait, DECODE_WAIT_TIMEOUT.as_nanos() as u64) }
-            .map_err(|error| vk_error("host-wait for Vulkan decoder frame", error))
+        // Readiness was awaited by the publisher. Revalidate without waiting if
+        // this public preparation API is called with a frame from another owner.
+        decode_readiness(unsafe { device.wait_semaphores(&wait, 0) })
     }
 
     fn import_dmabuf(&mut self, source: Arc<DecodedVideoFrame>) -> Result<Arc<ImportedNv12Frame>> {
@@ -1736,9 +1792,31 @@ fn vk_error(context: &'static str, error: vk::Result) -> Error {
     Error::backend(Subsystem::Vulkan, format!("{context}: {error:?}"))
 }
 
+fn decode_readiness(result: std::result::Result<(), vk::Result>) -> Result<()> {
+    result.map_err(|error| {
+        if error == vk::Result::TIMEOUT {
+            Error::FrameNotReady
+        } else {
+            vk_error("check Vulkan decoder readiness", error)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn readiness_is_not_a_render_failure_and_device_loss_is_not_hidden() {
+        assert!(decode_readiness(Ok(())).is_ok());
+        assert!(matches!(
+            decode_readiness(Err(vk::Result::TIMEOUT)),
+            Err(Error::FrameNotReady)
+        ));
+        assert!(matches!(
+            decode_readiness(Err(vk::Result::ERROR_DEVICE_LOST)),
+            Err(Error::Backend { .. })
+        ));
+    }
     use crate::{DmaBufLayer, DmaBufObject, VulkanImage};
 
     fn vulkan_frame(images: Vec<VulkanImage>) -> VulkanVideoFrame {

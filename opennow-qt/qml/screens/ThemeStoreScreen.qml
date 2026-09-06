@@ -192,7 +192,7 @@ FocusScope {
                         color: Qt.rgba(1, 1, 1, 0.055)
                         border.color: root.selectedIndex === index ? Theme.focus : Theme.seam
                         border.width: root.selectedIndex === index ? 4 : 1
-                        scale: root.selectedIndex === index ? 1 : 0.97
+                        scale: AppController.reducedMotion || root.selectedIndex === index ? 1 : 0.97
                         Behavior on scale { NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic } }
 
                         Rectangle {

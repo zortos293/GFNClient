@@ -15,8 +15,9 @@ and an HTTP 503 are control-channel failures during recovery.
 - ANNOUNCE's local address follows the negotiated bundle peer's route, not the
   route to a public DNS server. This matters on split-tunnel/multi-NIC systems.
 - Seat readiness, PLAY success and audio/control traffic do not reset the recovery
-  budget. A failure's error/stopped notifications count once; two media retries
-  and two session claims exhaust automatic recovery. Only the first converted
+  budget. A failure's error/stopped notifications count once; automatic recovery
+  is bounded to eight attempts through active-session discovery, claim and ready
+  polling before media restarts. Only the first converted
   video frame, a new session, or explicit user retry resets the episode.
 - Both Qt stream screens keep the active video item visible while the recovery
   budget waits for video progress. The embedded D3D11 path emits its first-frame

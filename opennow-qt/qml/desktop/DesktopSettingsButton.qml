@@ -10,8 +10,9 @@ Button {
     property bool menu: false
     property string suffix: ""
 
-    implicitHeight: compact ? DesktopTokens.px(30) : DesktopTokens.controlHeight
-    implicitWidth: Math.max(compact ? 68 : 84, contentRow.implicitWidth + 28)
+    implicitHeight: menu ? DesktopTokens.px(40) : compact ? DesktopTokens.px(30) : DesktopTokens.controlHeight
+    implicitWidth: Math.max(compact ? 68 : 84, label.implicitWidth + 28
+        + (menu ? 22 : 0) + (suffix !== "" ? suffixText.implicitWidth + 18 : 0))
     hoverEnabled: true
     padding: 0
     leftPadding: 14
@@ -20,14 +21,15 @@ Button {
     bottomPadding: 0
 
     background: Rectangle {
-        radius: compact ? 9 : 10
+        radius: control.menu ? height / 2 : compact ? 9 : 10
         color: control.primary ? Theme.face
              : control.danger ? Qt.rgba(1, 0.32, 0.32, control.down ? 0.18 : 0.09)
-             : Qt.rgba(1, 1, 1, control.down ? 0.16 : control.hovered ? 0.12 : 0.08)
+             : control.menu ? (Theme.lightMode ? Qt.rgba(0,0,0,0.04) : Qt.rgba(0,0,0,0.35))
+             : control.down || control.hovered ? DesktopTokens.raisedStrong : DesktopTokens.raised
         border.width: control.activeFocus ? 2 : 1
         border.color: control.activeFocus ? DesktopTokens.focus
                     : control.danger ? Qt.rgba(1, 0.48, 0.48, 0.28)
-                    : Qt.rgba(1, 1, 1, 0.13)
+                    : Theme.seam
         Behavior on color { ColorAnimation { duration: Theme.focusDuration } }
     }
 
@@ -41,9 +43,12 @@ Button {
             Text {
                 id: label
                 text: control.text
-                color: control.primary ? Theme.faceText : control.danger ? "#FFC2C2" : Theme.label
+                width: Math.max(0, Math.min(implicitWidth, control.availableWidth
+                    - (control.menu ? 22 : 0) - (control.suffix !== "" ? suffixText.implicitWidth + 18 : 0)))
+                elide: Text.ElideRight
+                color: control.primary ? Theme.faceText : control.danger ? (Theme.lightMode ? "#9F1239" : "#FFC2C2") : Theme.label
                 font.family: Theme.bodyFont
-                font.pixelSize: DesktopTokens.smallSize
+                font.pixelSize: DesktopTokens.px(13)
                 font.weight: Font.Bold
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -64,11 +69,12 @@ Button {
                     font.weight: Font.Bold
                 }
             }
-            DesktopGlyph {
+            DesktopSettingsIcon {
                 visible: control.menu
                 width: 10
-                height: 6
-                icon: "desktop-chevron-down.svg"
+                height: 10
+                glyph: "chevron"; rotation: 90
+                ink: control.primary ? Theme.faceText : Theme.textMuted
                 anchors.verticalCenter: parent.verticalCenter
             }
         }

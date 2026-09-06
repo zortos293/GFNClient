@@ -5,6 +5,8 @@ import OpenNOW
 
 FocusScope {
     id: root
+    MotionProgress { id: proxyMotion; shown: root.proxyEditorOpen }
+    MotionProgress { id: shortcutMotion; shown: root.shortcutEditorOpen }
     property int initialSection: 1
     property bool initialDropdownOpen: false
     property int selectedSection: initialSection
@@ -928,11 +930,12 @@ FocusScope {
         }
     }
     Rectangle {
-        visible: root.proxyEditorOpen; anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.42); z: 30
+        visible: proxyMotion.present; enabled: root.proxyEditorOpen; opacity: proxyMotion.progress; anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.42); z: 30
         MouseArea { anchors.fill: parent; onClicked: root.proxyEditorOpen = false }
     }
     GlassPanel {
-        visible: root.proxyEditorOpen
+        visible: proxyMotion.present
+        enabled: root.proxyEditorOpen
         z: 31
         anchors.centerIn: parent
         width: 620
@@ -973,17 +976,16 @@ FocusScope {
                 }
             }
         }
-        scale: visible ? 1 : 0.94
-        opacity: visible ? 1 : 0
-        Behavior on scale { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutBack } }
-        Behavior on opacity { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic } }
+        scale: proxyMotion.zoom
+        opacity: proxyMotion.progress
     }
     Rectangle {
-        visible: root.shortcutEditorOpen; anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.42); z: 40
+        visible: shortcutMotion.present; enabled: root.shortcutEditorOpen; opacity: shortcutMotion.progress; anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.42); z: 40
         MouseArea { anchors.fill: parent; onClicked: root.shortcutEditorOpen = false }
     }
     GlassPanel {
-        visible: root.shortcutEditorOpen
+        visible: shortcutMotion.present
+        enabled: root.shortcutEditorOpen
         z: 41
         anchors.centerIn: parent
         width: 560
@@ -1011,10 +1013,8 @@ FocusScope {
                 }
             }
         }
-        scale: visible ? 1 : 0.94
-        opacity: visible ? 1 : 0
-        Behavior on scale { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutBack } }
-        Behavior on opacity { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic } }
+        scale: shortcutMotion.zoom
+        opacity: shortcutMotion.progress
     }
     AppChrome { anchors.fill: parent; title: qsTr("Settings  ·  ") + I18n.source(root.sections[root.selectedSection].name, I18n.revision); currentRoute: "settings"; onRouteRequested: route => AppController.navigate(route) }
 }

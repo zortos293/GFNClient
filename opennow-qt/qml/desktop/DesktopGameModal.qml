@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import OpenNOW
 
 FocusScope {
@@ -7,12 +8,17 @@ FocusScope {
     property var game: ShellStore.selectedGame
     signal closeRequested()
     signal playRequested()
-    focus: visible
-    onVisibleChanged: if (visible) Qt.callLater(() => primaryAction.forceActiveFocus())
+    objectName: "desktopGameModal"
+    property bool opened: false
+    visible: reveal.present
+    enabled: opened
+    focus: opened
+    onOpenedChanged: if (opened) Qt.callLater(() => { if (root.opened) primaryAction.forceActiveFocus() })
+    MotionProgress { id: reveal; objectName: "gameDetailsMotion"; shown: root.opened }
 
     readonly property int gutter: DesktopTokens.px(32)
-    readonly property int dialogWidth: Math.min(DesktopTokens.px(896), Math.max(DesktopTokens.px(640), parent.width - gutter * 2))
-    readonly property int dialogHeight: Math.min(DesktopTokens.px(666), Math.max(DesktopTokens.px(480), parent.height - gutter * 2))
+    readonly property int dialogWidth: Math.min(DesktopTokens.px(760), Math.max(0, width - gutter * 2))
+    readonly property int dialogHeight: Math.min(DesktopTokens.px(550), Math.max(0, height - gutter * 2))
     readonly property var streamSettings: ShellStore.settings || ({})
     readonly property var selectedVariant: {
         const game = root.game
@@ -204,400 +210,178 @@ FocusScope {
         {l: qsTr("Codec"), v: root.codecText}
     ]
 
+    function tune() { AppController.navigate("settings-streaming") }
+    readonly property var summaryCards: [
+        {glyph:"monitor", title:resolutionText + " · " + fpsText, detail:codecText + " · " + String(streamSettings.colorQuality || "8bit_420").replace("_", " ")},
+        {glyph:"globe", title:regionLabel(), detail:qsTr("Region selected at launch")},
+        {glyph:"clock", title:membershipText || qsTr("Membership"), detail:ShellStore.subscription && ShellStore.subscription.remainingHours !== undefined
+            ? qsTr("%1 h remaining").arg(Math.max(0, Number(ShellStore.subscription.remainingHours)).toFixed(1)) : qsTr("Entitlements checked at launch")}
+    ]
+    function regionLabel() {
+        const value = String(streamSettings.region || "")
+        const regions = ShellStore.regions || []
+        for (const region of regions)
+            if (region.url === value || region.name === value) return String(region.name)
+        return value ? qsTr("Selected region") : qsTr("Automatic region")
+    }
     Rectangle {
-        anchors.fill: parent
-        color: "#C9000000"
-        // This is a modal input shield as well as a scrim. MouseArea takes the
-        // exclusive mouse grab so the release cannot activate a poster below
-        // after closeRequested changes the route.
+        anchors.fill: parent; color: "#A6040D10"; opacity: reveal.progress
         MouseArea {
-            anchors.fill: parent
-            acceptedButtons: Qt.AllButtons
-            hoverEnabled: true
-            preventStealing: true
+            anchors.fill: parent; acceptedButtons: Qt.AllButtons
+            hoverEnabled: true; preventStealing: true
             onClicked: root.closeRequested()
             onWheel: wheel => wheel.accepted = true
         }
     }
-
     Rectangle {
         id: dialog
-        width: root.dialogWidth
-        height: root.dialogHeight
+        objectName: "gameDetailsDialog"
+        opacity: reveal.progress
+        scale: reveal.zoom
+        transformOrigin: Item.Center
         anchors.centerIn: parent
-        radius: DesktopTokens.px(18)
-        color: "#ED0B101A"
-        border.width: 1
-        border.color: "#29FFFFFF"
+        width: root.dialogWidth; height: root.dialogHeight
+        radius: 24; color: Theme.shell; border.width: 1; border.color: Theme.seam
         clip: true
-        scale: root.visible ? 1 : 0.96
-        opacity: root.visible ? 1 : 0
-        Behavior on scale { NumberAnimation { duration: DesktopTokens.motionDuration; easing.type: Easing.OutBack } }
-        Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
-        TapHandler { }
-
-        RoundedArtwork {
-            id: hero
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            height: Math.round(Math.min(DesktopTokens.px(250), dialog.height * 0.38))
-            artwork: DesktopTokens.artworkUrl(root.game, true)
-            cornerRadius: dialog.radius
-            scrimStart: 0.08
-            fallbackColor: "#1B2435"
-        }
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: hero.bottom
-            height: Math.round(hero.height * 0.52)
-            gradient: Gradient {
-                GradientStop { position: 0; color: "transparent" }
-                GradientStop { position: 1; color: "#FA080D16" }
-            }
-        }
-        Rectangle {
-            anchors.left: parent.left
-            anchors.leftMargin: DesktopTokens.px(21)
-            anchors.top: parent.top
-            anchors.topMargin: DesktopTokens.px(20)
-            width: publisher.implicitWidth + DesktopTokens.px(22)
-            height: DesktopTokens.px(26)
-            radius: DesktopTokens.px(8)
-            color: "#CC080B12"
-            border.width: 1
-            border.color: DesktopTokens.seam
-            Text {
-                id: publisher
-                anchors.centerIn: parent
-                text: root.game ? String(root.game.publisherName || qsTr("GEFORCE NOW")).toUpperCase() : qsTr("GEFORCE NOW")
-                color: DesktopTokens.textBody
-                font.family: DesktopTokens.monoFont
-                font.pixelSize: DesktopTokens.px(9)
-                font.weight: Font.DemiBold
-                font.letterSpacing: 0.6
-            }
-        }
-        DesktopButton {
-            anchors.right: parent.right
-            anchors.rightMargin: DesktopTokens.px(20)
-            anchors.top: parent.top
-            anchors.topMargin: DesktopTokens.px(20)
-            width: DesktopTokens.px(24)
-            height: DesktopTokens.px(24)
-            glyph: "desktop-close.svg"
-            glyphSize: DesktopTokens.px(14)
-            leftPadding: 0
-            rightPadding: 0
-            onClicked: root.closeRequested()
-        }
-        Text {
-            id: titleLabel
-            anchors.left: parent.left
-            anchors.leftMargin: DesktopTokens.px(21)
-            anchors.right: parent.right
-            anchors.rightMargin: DesktopTokens.px(21)
-            anchors.bottom: badges.top
-            anchors.bottomMargin: DesktopTokens.px(8)
-            text: root.game ? String(root.game.title || qsTr("Game")) : qsTr("Game")
-            color: DesktopTokens.text
-            elide: Text.ElideRight
-            font.family: DesktopTokens.displayFont
-            font.pixelSize: DesktopTokens.px(30)
-            font.weight: Font.Black
-            font.letterSpacing: -0.8
-        }
-        Row {
-            id: badges
-            anchors.left: parent.left
-            anchors.leftMargin: DesktopTokens.px(21)
-            anchors.bottom: hero.bottom
-            anchors.bottomMargin: DesktopTokens.px(16)
-            spacing: DesktopTokens.px(8)
-            Repeater {
-                model: root.badgeLabels
-                delegate: Rectangle {
-                    required property string modelData
-                    width: badgeText.implicitWidth + DesktopTokens.px(20)
-                    height: DesktopTokens.px(24)
-                    radius: DesktopTokens.px(8)
-                    color: modelData === qsTr("READY TO PLAY") ? "#1F56E6A5" : "#0FFFFFFF"
-                    border.width: 1
-                    border.color: modelData === qsTr("READY TO PLAY") ? "#5256E6A5" : DesktopTokens.seam
-                    Text {
-                        id: badgeText
-                        anchors.centerIn: parent
-                        text: modelData
-                        color: modelData === qsTr("READY TO PLAY") ? DesktopTokens.green : DesktopTokens.textBody
-                        font.family: DesktopTokens.monoFont
-                        font.pixelSize: DesktopTokens.px(9)
-                        font.weight: Font.DemiBold
-                        font.letterSpacing: 0.5
+        // Swallow blank-space clicks inside the modal, never activate its scrim.
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: wheel => wheel.accepted = true }
+        Flickable {
+            anchors.fill: parent
+            contentWidth: width; contentHeight: detailsColumn.implicitHeight
+            clip: true; boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Column {
+                id: detailsColumn
+                width: parent.width
+                Item {
+                    width: parent.width; height: Math.min(360 * DesktopTokens.uiScale, root.dialogHeight * 0.65)
+                    RoundedArtwork {
+                        anchors.fill: parent; artwork: DesktopTokens.artworkUrl(root.game, true)
+                        cornerRadius: 24; scrimStart: 0.1; fallbackColor: Theme.shell
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        gradient: Gradient {
+                            GradientStop { position: 0.25; color: "transparent" }
+                            GradientStop { position: 1; color: Theme.shell }
+                        }
+                    }
+                    Column {
+                        x: 24; anchors.bottom: parent.bottom; anchors.bottomMargin: 20
+                        width: parent.width - 48; spacing: 8
+                        Text {
+                            width: parent.width; text: root.game ? String(root.game.title || qsTr("Game")) : qsTr("Game")
+                            color: Theme.label; font.family: Theme.displayFont
+                            font.pixelSize: DesktopTokens.px(34); font.weight: Font.Black
+                            wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+                        }
+                        Flow {
+                            width: parent.width; spacing: 10
+                            Rectangle {
+                                width: ownedText.implicitWidth + 20; height: 26; radius: 13; color: DesktopTokens.raisedStrong
+                                Text { id: ownedText; anchors.centerIn: parent; text: root.ownershipText; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.Bold }
+                            }
+                            Text {
+                                text: [root.game && (root.game.publisherName || root.game.publisher) || "", root.lastPlayedText, root.game && root.game.hoursPlayed ? qsTr("%1 h").arg(root.game.hoursPlayed) : ""].filter(Boolean).join(" · ")
+                                color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize
+                            }
+                        }
                     }
                 }
-            }
-        }
-
-        Row {
-            id: actions
-            anchors.left: parent.left
-            anchors.leftMargin: DesktopTokens.px(21)
-            anchors.top: hero.bottom
-            anchors.topMargin: DesktopTokens.px(18)
-            spacing: DesktopTokens.px(10)
-            DesktopButton {
-                id: primaryAction
-                width: DesktopTokens.px(156)
-                height: DesktopTokens.px(40)
-                primary: true
-                glyph: "desktop-play.svg"
-                glyphSize: DesktopTokens.px(12)
-                text: qsTr("Start")
-                shortcutText: qsTr("ENTER")
-                onClicked: root.playRequested()
-            }
-            DesktopButton {
-                width: DesktopTokens.px(110)
-                height: DesktopTokens.px(40)
-                glyph: "desktop-star.svg"
-                glyphSize: DesktopTokens.px(15)
-                text: qsTr("Favourite")
-                onClicked: if (root.game) ShellStore.toggleFavorite(root.game)
-            }
-            DesktopButton {
-                width: DesktopTokens.px(157)
-                height: DesktopTokens.px(40)
-                glyph: "desktop-folder.svg"
-                glyphSize: DesktopTokens.px(15)
-                text: root.game && ShellStore.isFavorite(root.game) ? qsTr("In favourites") : qsTr("Add to collection")
-                onClicked: if (root.game) ShellStore.toggleFavorite(root.game)
-            }
-        }
-        Rectangle {
-            anchors.right: parent.right
-            anchors.rightMargin: DesktopTokens.px(21)
-            anchors.verticalCenter: actions.verticalCenter
-            width: ownedLabel.implicitWidth + DesktopTokens.px(28)
-            height: DesktopTokens.px(32)
-            radius: DesktopTokens.px(9)
-            color: "#CC070A11"
-            border.width: 1
-            border.color: DesktopTokens.seam
-            Row {
-                anchors.centerIn: parent
-                spacing: DesktopTokens.px(8)
-                Rectangle { width: 6; height: 6; radius: 3; color: root.isOwned ? DesktopTokens.green : DesktopTokens.textFaint }
-                Text {
-                    id: ownedLabel
-                    text: root.ownershipText
-                    color: DesktopTokens.textBody
-                    font.family: DesktopTokens.monoFont
-                    font.pixelSize: DesktopTokens.px(9)
-                    font.weight: Font.DemiBold
-                    font.letterSpacing: 0.5
+                Item {
+                    width: parent.width; height: actionRow.height + 24
+                    RowLayout {
+                        id: actionRow
+                        x: 24; y: 4; width: parent.width - 48; spacing: 10
+                        DesktopButton {
+                            id: primaryAction
+                            Layout.fillWidth: true; Layout.preferredHeight: 52
+                            primary: true; glyph: "desktop-play.svg"; text: qsTr("Play"); shortcutText: qsTr("ENTER")
+                            enabled: root.game !== null && root.gameAvailable
+                            onClicked: root.playRequested()
+                        }
+                        DesktopButton {
+                            Layout.preferredWidth: 52; Layout.preferredHeight: 52
+                            themedGlyph: "star"; leftPadding: 0; rightPadding: 0
+                            Accessible.name: root.game && ShellStore.isFavorite(root.game) ? qsTr("Remove favourite") : qsTr("Add favourite")
+                            ToolTip.visible: hovered; ToolTip.text: Accessible.name
+                            onClicked: if (root.game) ShellStore.toggleFavorite(root.game)
+                        }
+                        DesktopButton {
+                            Layout.preferredWidth: 52; Layout.preferredHeight: 52
+                            themedGlyph: "folder"; leftPadding: 0; rightPadding: 0
+                            Accessible.name: qsTr("Collections")
+                            ToolTip.visible: hovered; ToolTip.text: Accessible.name
+                            onClicked: collectionMenu.popup()
+                            Menu {
+                                id: collectionMenu
+                                MenuItem { text: qsTr("Favourites"); checkable: true; checked: root.game && ShellStore.isFavorite(root.game); onTriggered: if (root.game) ShellStore.toggleFavorite(root.game) }
+                            }
+                        }
+                        DesktopButton {
+                            Layout.preferredWidth: 52; Layout.preferredHeight: 52
+                            themedGlyph: "more"; leftPadding: 0; rightPadding: 0
+                            Accessible.name: qsTr("More game actions")
+                            onClicked: moreMenu.popup()
+                            Menu {
+                                id: moreMenu
+                                MenuItem { text: qsTr("Stream settings"); onTriggered: root.tune() }
+                                MenuItem { text: qsTr("Close details"); onTriggered: root.closeRequested() }
+                            }
+                        }
+                    }
                 }
-            }
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: actions.bottom
-            anchors.topMargin: DesktopTokens.px(18)
-            height: 1
-            color: DesktopTokens.seamSoft
-        }
-
-        Item {
-            id: body
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: actions.bottom
-            anchors.bottom: footer.top
-            anchors.leftMargin: DesktopTokens.px(21)
-            anchors.rightMargin: DesktopTokens.px(21)
-            anchors.topMargin: DesktopTokens.px(22)
-            anchors.bottomMargin: DesktopTokens.px(12)
-
-            Column {
-                id: leftCol
-                anchors.left: parent.left
-                anchors.right: streamCard.left
-                anchors.rightMargin: DesktopTokens.px(18)
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                spacing: DesktopTokens.px(14)
-                Text {
-                    width: parent.width
-                    wrapMode: Text.WordWrap
-                    elide: Text.ElideRight
-                    maximumLineCount: 3
-                    text: root.game && root.game.description
-                          ? String(root.game.description)
-                          : qsTr("Stream this game instantly from your linked library. Your settings and session preferences are applied before the remote machine starts.")
-                    color: DesktopTokens.textMuted
-                    font.family: DesktopTokens.bodyFont
-                    font.pixelSize: DesktopTokens.px(12)
-                    lineHeight: 1.45
-                }
-                Rectangle {
-                    width: parent.width
-                    height: DesktopTokens.px(62)
-                    radius: DesktopTokens.px(12)
-                    color: "#08FFFFFF"
-                    border.width: 1
-                    border.color: DesktopTokens.seamSoft
-                    Row {
-                        anchors.fill: parent
-                        anchors.margins: DesktopTokens.px(14)
+                Item {
+                    width: parent.width; height: summaryGrid.implicitHeight + 24
+                    GridLayout {
+                        id: summaryGrid
+                        x: 24; width: parent.width - 48
+                        columns: width < 620 ? 2 : 4
+                        columnSpacing: 10; rowSpacing: 10
                         Repeater {
-                            id: factRepeater
-                            model: root.factItems
-                            delegate: Item {
+                            model: root.summaryCards
+                            delegate: Rectangle {
                                 required property var modelData
-                                width: parent.width / Math.max(1, factRepeater.count)
-                                height: parent.height
-                                Column {
-                                    spacing: 5
-                                    Text {
-                                        text: modelData.l
-                                        color: DesktopTokens.textFaint
-                                        font.family: DesktopTokens.monoFont
-                                        font.pixelSize: DesktopTokens.px(8)
-                                        font.weight: Font.DemiBold
-                                        font.letterSpacing: 0.6
+                                Layout.fillWidth: true; Layout.preferredHeight: 68
+                                radius: 16; color: DesktopTokens.raised
+                                RowLayout {
+                                    anchors.fill: parent; anchors.margins: 12; spacing: 12
+                                    Rectangle {
+                                        Layout.preferredWidth: 36; Layout.preferredHeight: 36
+                                        radius: 11; color: DesktopTokens.raised
+                                        // Paper's accent icons sit on their own tile. Never use
+                                        // the fixed dark-ink settings SVGs on a dark surface.
+                                        DesktopSettingsIcon {
+                                            anchors.centerIn: parent; width: 18; height: 18
+                                            glyph: modelData.glyph
+                                            ink: Theme.lightMode ? Theme.label : Theme.focus
+                                        }
                                     }
-                                    Text {
-                                        width: parent.parent.width - DesktopTokens.px(8)
-                                        text: modelData.v
-                                        color: modelData.l === qsTr("AVAILABLE") && root.gameAvailable ? DesktopTokens.green : DesktopTokens.textBody
-                                        elide: Text.ElideRight
-                                        font.family: DesktopTokens.bodyFont
-                                        font.pixelSize: DesktopTokens.captionSize
-                                        font.weight: Font.DemiBold
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 2
+                                        Text { Layout.fillWidth: true; text: modelData.title; elide: Text.ElideRight; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.Bold }
+                                        Text { Layout.fillWidth: true; text: modelData.detail; elide: Text.ElideRight; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.smallSize }
                                     }
                                 }
                             }
                         }
-                    }
-                }
-                Text {
-                    width: parent.width
-                    wrapMode: Text.WordWrap
-                    text: root.friendsNote
-                    color: DesktopTokens.textMuted
-                    font.family: DesktopTokens.bodyFont
-                    font.pixelSize: DesktopTokens.monoSize
-                }
-            }
-
-            Rectangle {
-                id: streamCard
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                width: Math.min(DesktopTokens.px(288), Math.max(DesktopTokens.px(220), parent.width * 0.34))
-                radius: DesktopTokens.px(14)
-                color: "#CC070A11"
-                border.width: 1
-                border.color: DesktopTokens.seamSoft
-                Text {
-                    x: DesktopTokens.px(16)
-                    y: DesktopTokens.px(17)
-                    text: qsTr("Stream for this game")
-                    color: DesktopTokens.text
-                    font.family: DesktopTokens.bodyFont
-                    font.pixelSize: DesktopTokens.px(12)
-                    font.weight: Font.Black
-                }
-                Text {
-                    anchors.right: parent.right
-                    anchors.rightMargin: DesktopTokens.px(16)
-                    y: DesktopTokens.px(19)
-                    visible: root.membershipText !== ""
-                    text: root.membershipText
-                    color: DesktopTokens.amber
-                    font.family: DesktopTokens.monoFont
-                    font.pixelSize: DesktopTokens.px(8)
-                    font.weight: Font.DemiBold
-                    font.letterSpacing: 0.6
-                }
-                Column {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    anchors.leftMargin: DesktopTokens.px(16)
-                    anchors.rightMargin: DesktopTokens.px(16)
-                    anchors.topMargin: DesktopTokens.px(51)
-                    anchors.bottomMargin: DesktopTokens.px(16)
-                    spacing: DesktopTokens.px(18)
-                    Repeater {
-                        model: root.streamRows
-                        delegate: Item {
-                            required property var modelData
-                            width: parent.width
-                            height: DesktopTokens.px(22)
-                            Text {
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: modelData.l
-                                color: DesktopTokens.textMuted
-                                font.family: DesktopTokens.bodyFont
-                                font.pixelSize: DesktopTokens.captionSize
-                            }
-                            Text {
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: modelData.v
-                                color: DesktopTokens.textHigh
-                                font.family: DesktopTokens.bodyFont
-                                font.pixelSize: DesktopTokens.monoSize
-                                font.weight: Font.Bold
-                            }
+                        DesktopButton {
+                            Layout.preferredWidth: 68; Layout.preferredHeight: 68
+                            text: qsTr("Tune"); themedGlyph: "sliders"; leftPadding: 6; rightPadding: 6
+                            onClicked: root.tune()
                         }
-                    }
-                    DesktopButton {
-                        width: parent.width
-                        height: DesktopTokens.controlHeight
-                        text: qsTr("Edit stream settings")
-                        onClicked: AppController.navigate("settings-streaming")
                     }
                 }
             }
         }
-
-        Rectangle {
-            id: footer
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: DesktopTokens.px(44)
-            color: "#E8070A11"
-            Rectangle { width: parent.width; height: 1; color: DesktopTokens.seamSoft }
-            Row {
-                anchors.left: parent.left
-                anchors.leftMargin: DesktopTokens.px(21)
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: DesktopTokens.px(16)
-                DesktopKeyHint { keyText: "Esc"; label: qsTr("Close") }
-                DesktopKeyHint { keyText: qsTr("Enter"); label: qsTr("Start") }
-                DesktopKeyHint { keyText: "F"; label: qsTr("Favourite") }
-            }
-            Text {
-                anchors.right: parent.right
-                anchors.rightMargin: DesktopTokens.px(21)
-                anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("SESSION STARTS IN %1").arg(root.regionText)
-                color: DesktopTokens.textFaint
-                font.family: DesktopTokens.monoFont
-                font.pixelSize: DesktopTokens.px(9)
-                font.weight: Font.DemiBold
-                font.letterSpacing: 0.6
-            }
+        DesktopButton {
+            anchors.right: parent.right; anchors.rightMargin: 20
+            anchors.top: parent.top; anchors.topMargin: 20
+            width: 36; height: 36; themedGlyph: "close"; leftPadding: 0; rightPadding: 0
+            Accessible.name: qsTr("Close details")
+            onClicked: root.closeRequested()
         }
     }
     Keys.onEscapePressed: root.closeRequested()
-    Keys.onReturnPressed: root.playRequested()
+    Keys.onReturnPressed: if (primaryAction.enabled) root.playRequested()
 }

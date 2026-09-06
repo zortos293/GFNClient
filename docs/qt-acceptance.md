@@ -127,6 +127,68 @@ machine labels, architectures or window systems, missing platform package types,
 attestations, package hash/size mismatches, and unverified signing/update metadata. Its output keeps
 only input basenames, sizes and hashes rather than local paths.
 
+## Local Store paging checks
+
+Run `ctest --test-dir build/opennow-qt --output-on-failure -R "qml-store-(paging|navigation)"`.
+The fixture covers demand-only continuation, global facets, local ranking passthrough,
+six-result command-palette queries, cancellation, offscreen shelf requests, partial-row
+poster sizing, and keyboard/manual scrolling at both motion settings.
+
+With a signed-in account and a complete saved Store catalog, run the optional live check:
+
+```powershell
+./opennow-qt/tests/verify_store_local.ps1 -CorePath ./build/opennow-qt/opennow-core.exe
+```
+
+It opens a separate core process, checks bounded local pages and all saved categories,
+verifies metadata-only shelf responses and ranked searches, then closes its own process.
+No cache invalidation is requested. Also inspect the native Store: the loaded count must
+stay at 40 while idle; Load more adds one page; route re-entry retains it; category selection
+and See all remain in Store; Ctrl+K finds games outside the loaded page. Scroll through a
+short final row and confirm its posters remain the same size as those in a full row.
+
+## Desktop settings motion
+
+`qml-idle-mode` verifies that expiry of the mouse grace period cannot change the
+selected shell, general input-mode changes cannot trigger console mode, an explicit
+desktop choice wins over automatic controller switching, and fresh controller actions
+still honor the automatic-switch preference. `opennow-controllerinput-tests` checks
+that hotplug, stick drift and held navigation repeats do not emit fresh activity.
+
+Run `ctest --test-dir build/opennow-qt -R qml-settings-motion --output-on-failure`
+for windowed/fullscreen and normal/reduced-motion coverage. These cases verify that
+Account activity-sharing and crash-report controls are visible with Advanced closed
+(without changing either preference), inline pickers and Advanced sections have
+intermediate frames, rapid reversals settle at the correct height, and section/page
+changes finish fully opaque without fading the shell. Shortcuts must expand inline.
+Reduced motion must settle immediately. In the native app, also check resolution,
+theme, region and language pickers, Escape-to-close/focus return, and quick switching
+between settings sections and desktop pages.
+
+## Native session resume and frame lifetime
+
+- Pointer-lock HUD regression: in desktop and console shells, compact/expanded
+  statistics must be pointer-transparent while the stream's relative mouse mode is
+  enabled. F3/configured stats and copy shortcuts must still work. Unlocking restores
+  panel taps/scrolling. `qml-stream-recovery` covers both panel enablement states;
+  `opennow-streamvideo-tests` verifies native Windows raw-input confinement remains
+  one pixel in windowed/fullscreen modes and is released when overlays disable input.
+
+- Run `qml-stream-recovery`: claim acknowledgement and transient status `6` must
+  not prepare a streamer; a fresh ready poll must. Recovery must discover and claim
+  the exact previous session, ignore other games, and respect the retry budget.
+- Run `opennow-nativestreamruntime-tests`: presentation is invalidated immediately
+  on stop, failure, shutdown and a new start; only the matching successful start
+  response can enable it again.
+- Run `opennow-streamvideo-tests` on the native Windows platform (not just offscreen):
+  clearing imported video must reveal the background while preserving overlay pixels,
+  and new frames must import normally in windowed/fullscreen views.
+- With a real account, resume an existing seat and verify RESUME acceptance followed
+  by ready polling before native setup. Interrupt and restore the stream connection:
+  the same cloud game must reconnect with fresh context, without creating a new seat.
+  End the session during recovery and verify no late response restarts it. Stop one
+  game and start another; no frame from the previous game may flash during startup.
+
 ## Signing and package verification
 
 - Windows: verify Authenticode on every executable and installer with `signtool verify /pa /all`;

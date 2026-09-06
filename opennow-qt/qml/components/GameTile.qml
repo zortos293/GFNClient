@@ -23,7 +23,7 @@ ItemDelegate {
     Accessible.name: title
     Accessible.description: eyebrow
     Accessible.role: Accessible.Button
-    scale: highlighted ? 1.065 : 1
+    scale: !AppController.reducedMotion && highlighted ? 1.065 : 1
     z: highlighted ? 10 : 0
 
     background: RoundedArtwork {

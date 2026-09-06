@@ -122,6 +122,10 @@ pub(crate) fn select_video_path() -> LinuxVideoSelection {
     )
 }
 
+pub(crate) fn select_requested_video_path(requested: &str) -> LinuxVideoSelection {
+    select_video_path_for(Some(requested), capabilities(), selected_window_system())
+}
+
 fn select_video_path_for(
     requested: Option<&str>,
     capabilities: &LinuxCapabilitySnapshot,

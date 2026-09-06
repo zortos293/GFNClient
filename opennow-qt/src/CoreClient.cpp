@@ -1,7 +1,8 @@
 #include "CoreClient.h"
+#include "DiagnosticsPaths.h"
 
 #ifndef OPENNOW_VERSION
-#define OPENNOW_VERSION "0.5.4"
+#define OPENNOW_VERSION "1.0.0"
 #endif
 
 #include <QDateTime>
@@ -31,7 +32,7 @@ void appendCoreDiagnostics(const QList<QByteArray> &lines)
     if (lines.isEmpty()) {
         return;
     }
-    const auto dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const auto dataRoot = coreDiagnosticsDataRoot();
     if (dataRoot.isEmpty()) {
         return;
     }
@@ -63,6 +64,14 @@ void appendCoreDiagnostics(const QList<QByteArray> &lines)
         file.write("\n");
     }
 }
+}
+
+void CoreClient::logShellDiagnostic(const QString &message)
+{
+    auto safe = message.left(1024);
+    safe.replace(u'\n', u' ');
+    safe.replace(u'\r', u' ');
+    appendCoreDiagnostics({QByteArray("shell-mode ") + safe.toUtf8()});
 }
 
 CoreClient::CoreClient(QObject *parent)

@@ -1,3 +1,13 @@
+// Packaged GUI applications have no stderr console. Keep these low-frequency
+// decoder diagnostics in the FFI file sink as well as stderr for CLI tooling.
+macro_rules! video_log {
+    ($($args:tt)*) => {{
+        let message = format!($($args)*);
+        opennow_streamer_protocol::log::log_line("INFO", "windows-video", &message);
+        eprintln!("{message}");
+    }};
+}
+
 mod audio;
 mod decoder;
 mod embedded;

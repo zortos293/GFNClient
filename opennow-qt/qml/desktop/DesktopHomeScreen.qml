@@ -104,7 +104,7 @@ FocusScope {
 
     function setSelection(zone, index) {
         root.focusZone = Math.max(0, Math.min(3, zone))
-        const count = root.focusZone === 0 ? 6 : root.zoneGames(root.focusZone).length
+        const count = root.focusZone === 0 ? 2 : root.zoneGames(root.focusZone).length
         root.focusIndex = Math.max(0, Math.min(Math.max(0, count - 1), index))
         root.ensureSelectionVisible()
     }
@@ -127,7 +127,7 @@ FocusScope {
     }
 
     function moveHorizontal(delta) {
-        const count = root.focusZone === 0 ? 6 : root.zoneGames(root.focusZone).length
+        const count = root.focusZone === 0 ? 2 : root.zoneGames(root.focusZone).length
         if (count <= 0)
             return
         root.setSelection(root.focusZone, Math.max(0, Math.min(count - 1, root.focusIndex + delta)))
@@ -171,8 +171,6 @@ FocusScope {
                 root.startHero()
             else if (root.focusIndex === 1)
                 root.openGame(root.heroGame)
-            else
-                root.openFriends()
             return
         }
         const selectedGames = root.zoneGames(root.focusZone)
@@ -234,8 +232,7 @@ FocusScope {
                     id: heroCard
                     anchors.left: parent.left
                     anchors.top: parent.top
-                    anchors.right: friendsPanel.left
-                    anchors.rightMargin: 16
+                    anchors.right: parent.right
                     height: 262
                     layer.enabled: true
                     layer.smooth: true
@@ -368,69 +365,7 @@ FocusScope {
                     }
                 }
 
-                Rectangle {
-                    id: friendsPanel
-                    anchors.right: parent.right
-                    y: 0
-                    width: Math.max(260, Math.min(318, parent.width * 0.28))
-                    height: 262
-                    radius: 16
-                    color: "#C70B0F1A"
-                    border.width: 1
-                    border.color: "#17FFFFFF"
 
-                    Text {
-                        x: 16; y: 16
-                        text: qsTr("Friends")
-                        color: "#FFFFFF"
-                        font.family: Theme.bodyFont
-                        font.pixelSize: 14
-                        font.weight: Font.ExtraBold
-                    }
-                    Text {
-                        anchors.right: parent.right; anchors.rightMargin: 16; y: 17
-                        text: root.friendsAvailable ? qsTr("LIVE") : qsTr("UNAVAILABLE")
-                        color: "#80FFFFFF"
-                        font.family: Theme.monoFont
-                        font.pixelSize: 10
-                        font.weight: Font.DemiBold
-                        font.letterSpacing: 0.4
-                    }
-
-                    Text {
-                        x: 16
-                        y: 52
-                        width: parent.width - 32
-                        wrapMode: Text.WordWrap
-                        text: root.friendsAvailable
-                            ? qsTr("Your provider friends list is ready.")
-                            : (ShellStore.socialCapabilities.reason || qsTr("GeForce NOW does not expose a friends API OpenNOW can use."))
-                        color: "#99FFFFFF"
-                        font.family: Theme.bodyFont
-                        font.pixelSize: 12
-                        lineHeight: 1.4
-                    }
-
-                    Rectangle {
-                        id: partyButton
-                        x: 16; y: 216
-                        width: parent.width - 32; height: 34; radius: 10
-                        color: partyHover.hovered ? "#17FFFFFF" : "#0FFFFFFF"
-                        border.width: root.focusZone === 0 && root.focusIndex === 5 && AppController.inputMode !== "pointer" ? 2 : 1
-                        border.color: root.focusZone === 0 && root.focusIndex === 5 && AppController.inputMode !== "pointer" ? "#FFFFFF" : "#1FFFFFFF"
-                        Text {
-                            anchors.centerIn: parent
-                            text: qsTr("Open friends")
-                            color: "#CCFFFFFF"
-                            font.family: Theme.bodyFont
-                            font.pixelSize: 12
-                            font.weight: Font.Bold
-                        }
-                        HoverHandler { id: partyHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, 5) }
-                        TapHandler { onTapped: root.openFriends() }
-                        Behavior on color { ColorAnimation { duration: AppController.reducedMotion ? 0 : 90 } }
-                    }
-                }
             }
 
             Item {
@@ -530,7 +465,7 @@ FocusScope {
 
     Component.onCompleted: {
         root.focusZone = 0
-        root.focusIndex = Math.max(0, Math.min(5, ShellStore.focusIndex("desktop-home")))
+        root.focusIndex = Math.max(0, Math.min(1, ShellStore.focusIndex("desktop-home")))
         if (root.active)
             Qt.callLater(root.forceActiveFocus)
     }

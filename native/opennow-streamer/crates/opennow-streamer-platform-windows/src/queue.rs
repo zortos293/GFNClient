@@ -101,19 +101,16 @@ impl<T> BoundedQueue<T> {
         inner.values.pop_front()
     }
 
-    /// Waits until work is queued, the queue closes, or `timeout` expires.
-    ///
-    /// Unlike `pop_timeout`, this does not consume a value. Decoder workers use
-    /// it while an asynchronous MFT owns all current input credits: a new
-    /// compressed frame wakes the worker immediately, while the finite timeout
-    /// still lets it poll Media Foundation output events without depending on
-    /// the presentation thread.
-    pub(crate) fn wait_for_value(&self, timeout: Duration) -> bool {
+    /// Waits for actionable input, shutdown, or the next decoder-output poll.
+    /// Queued input cannot wake a decoder that has no input credits. In that
+    /// case even producer notifications must leave it asleep until the bounded
+    /// poll deadline (or shutdown), instead of spinning on a nonempty queue.
+    pub(crate) fn wait_for_decoder(&self, timeout: Duration, accepts_input: bool) -> bool {
         let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let inner = self
             .ready
             .wait_timeout_while(inner, timeout, |inner| {
-                inner.values.is_empty() && !inner.closed
+                (!accepts_input || inner.values.is_empty()) && !inner.closed
             })
             .unwrap_or_else(|error| error.into_inner())
             .0;
@@ -220,10 +217,36 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_value_does_not_consume_the_ready_value() {
+    fn decoder_wait_does_not_consume_actionable_input() {
         let queue = BoundedQueue::new(1);
         queue.push(7).unwrap();
-        assert!(queue.wait_for_value(Duration::from_millis(1)));
+        assert!(queue.wait_for_decoder(Duration::from_secs(1), true));
         assert_eq!(queue.try_pop(), Some(7));
+    }
+
+    #[test]
+    fn decoder_backpressure_waits_even_with_queued_input() {
+        let queue = BoundedQueue::new(1);
+        queue.push(7).unwrap();
+        let started = std::time::Instant::now();
+        let interval = Duration::from_millis(20);
+        assert!(queue.wait_for_decoder(interval, false));
+        assert!(started.elapsed() >= interval);
+        assert_eq!(queue.try_pop(), Some(7));
+    }
+
+    #[test]
+    fn closing_queue_interrupts_decoder_backpressure_wait() {
+        let queue = std::sync::Arc::new(BoundedQueue::new(1));
+        queue.push(7).unwrap();
+        let worker_queue = std::sync::Arc::clone(&queue);
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            worker_queue.wait_for_decoder(Duration::from_secs(30), false);
+            sent.send(()).unwrap();
+        });
+        queue.close();
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
     }
 }

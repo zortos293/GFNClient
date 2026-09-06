@@ -7,7 +7,9 @@ FocusScope {
     height: 900
     property string overlay: ""
     property bool inputBlocking: false
+    property bool pointerLocked: false
     focus: visible && inputBlocking
+    readonly property bool present: menuView.present || exitView.present || statsVisible
 
     readonly property bool menuVisible: overlay === "desktop-stream-menu"
     readonly property bool exitVisible: overlay === "desktop-stream-exit-confirm"
@@ -28,32 +30,7 @@ FocusScope {
         else
             AppController.showOverlay(prefix)
     }
-    function liveNumber(value) {
-        return value === undefined || value === null || isNaN(Number(value)) ? null : Number(value)
-    }
-    function firstAvailable(primary, fallback) {
-        return primary === undefined || primary === null ? fallback : primary
-    }
-    function liveValue(live, value) {
-        return ["starting", "negotiating", "connecting", "streaming", "error"]
-            .indexOf(String(live.status || "")) >= 0 ? value : undefined
-    }
-    function liveText(value) {
-        const number = root.liveNumber(value)
-        return number === null ? qsTr("N/A") : String(Math.round(number))
-    }
-    function copyStatsSummary() {
-        const live = ShellStore.streamer || ({})
-        const profile = ShellStore.negotiatedStreamProfile || ({})
-        const fps = root.liveText(root.liveValue(live,
-            root.firstAvailable(live.framesPerSecond, live.fps)))
-        const bitrate = root.liveText(root.liveValue(live,
-            root.firstAvailable(live.bitrateMbps, live.receiveBitrateMbps)))
-        const output = Number(profile.height || live.outputHeight || 0) > 0
-            ? Number(profile.height || live.outputHeight) + "p" : qsTr("pending")
-        return qsTr("Stream stats: %1 FPS, %2 Mbps, %3 output")
-            .arg(fps).arg(bitrate).arg(output)
-    }
+    function copyStatsSummary() { return statsView.report() }
     function copyStatsToClipboard() {
         const summary = root.copyStatsSummary()
         if (AppController.writeClipboardText(summary))
@@ -61,9 +38,9 @@ FocusScope {
     }
 
     DesktopInStreamMenu {
+        id: menuView
         anchors.fill: parent
-        visible: root.menuVisible
-        focus: visible
+        opened: root.menuVisible
         onResumeRequested: root.closeOverlay()
         onInviteRequested: if (ShellStore.socialCapabilities
                 && ShellStore.socialCapabilities.invitesAvailable)
@@ -82,16 +59,18 @@ FocusScope {
     }
 
     DesktopStreamExitConfirm {
+        id: exitView
         anchors.fill: parent
-        visible: root.exitVisible
-        focus: visible
+        opened: root.exitVisible
         onCancelRequested: root.closeOverlay()
         onConfirmRequested: ShellStore.confirmStreamExit()
     }
 
     DesktopStreamStats {
+        id: statsView
         anchors.fill: parent
         visible: root.statsVisible
+        pointerLocked: root.pointerLocked
         focus: false
         expanded: root.overlay === "desktop-stream-stats-expanded"
             || root.overlay === "stream-stats-expanded"

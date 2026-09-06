@@ -9,6 +9,8 @@ const MAX_REGIONS: usize = 32;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn ping_regions(params: &Value) -> Result<Value, String> {
+    let cancellation = crate::requests::current();
+    cancellation.check().map_err(|error| error.message)?;
     let regions = params["regions"]
         .as_array()
         .ok_or_else(|| "network.regions.ping requires a regions array".to_owned())?;
@@ -25,12 +27,14 @@ pub fn ping_regions(params: &Value) -> Result<Value, String> {
     thread::scope(|scope| {
         for (index, region_url) in inputs.into_iter().enumerate() {
             let output = Arc::clone(&results);
+            let cancellation = cancellation.clone();
             scope.spawn(move || {
-                let result = measure_region(&region_url);
+                let result = crate::requests::scope(cancellation, || measure_region(&region_url));
                 output.lock().expect("region ping output poisoned")[index] = result;
             });
         }
     });
+    cancellation.check().map_err(|error| error.message)?;
     let results = Arc::try_unwrap(results)
         .map_err(|_| "Region measurement workers did not finish".to_owned())?
         .into_inner()
@@ -39,6 +43,9 @@ pub fn ping_regions(params: &Value) -> Result<Value, String> {
 }
 
 fn measure_region(region_url: &str) -> Value {
+    if crate::requests::check().is_err() {
+        return Value::Null;
+    }
     let endpoint = match region_endpoint(region_url) {
         Ok(endpoint) => endpoint,
         Err(error) => return json!({"url":region_url,"pingMs":null,"error":error}),
@@ -46,6 +53,9 @@ fn measure_region(region_url: &str) -> Value {
     let _ = tcp_ping(&endpoint);
     let mut samples = Vec::with_capacity(3);
     for attempt in 0..3 {
+        if crate::requests::check().is_err() {
+            return Value::Null;
+        }
         if attempt > 0 {
             thread::sleep(Duration::from_millis(100));
         }
@@ -86,6 +96,9 @@ fn region_endpoint(region_url: &str) -> Result<Vec<SocketAddr>, String> {
 fn tcp_ping(addresses: &[SocketAddr]) -> Option<u128> {
     let started = Instant::now();
     for address in addresses {
+        if crate::requests::check().is_err() {
+            return None;
+        }
         if TcpStream::connect_timeout(address, CONNECT_TIMEOUT).is_ok() {
             return Some(started.elapsed().as_millis());
         }
@@ -97,6 +110,20 @@ fn tcp_ping(addresses: &[SocketAddr]) -> Option<u128> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn cancelled_region_measurement_does_not_start_network_work() {
+        let requests = Arc::new(crate::requests::Requests::default());
+        let permit = requests.admit("ping", "network.regions.ping").unwrap();
+        requests.cancel("ping");
+        crate::requests::scope(permit.token.clone(), || {
+            assert_eq!(
+                ping_regions(&json!({"regions":[]})).unwrap_err(),
+                "Request cancelled"
+            );
+            assert_eq!(measure_region("https://unresolvable.invalid"), Value::Null);
+        });
+    }
 
     #[test]
     fn region_ping_rejects_invalid_and_unbounded_input() {

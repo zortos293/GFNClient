@@ -35,7 +35,7 @@ int main(int argc, char **argv)
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"settings\":{\"launchInConsoleMode\":"
                       << (launchInConsoleMode ? "true" : "false")
-                      << ",\"reducedMotion\":true,\"appLanguage\":\"system\",\"autoCheckForUpdates\":false}}}\n" << std::flush;
+                      << ",\"switchToConsoleOnPad\":false,\"reducedMotion\":true,\"appLanguage\":\"system\",\"autoCheckForUpdates\":false}}}\n" << std::flush;
         } else if (method == "settings.set") {
             const auto consoleModeWrite = line.find("\"key\":\"launchInConsoleMode\"")
                 != std::string::npos;
@@ -46,9 +46,11 @@ int main(int argc, char **argv)
                 launchInConsoleMode = line.find("\"value\":true") != std::string::npos;
                 std::cout << "{\"type\":\"response\",\"id\":\"" << id
                           << "\",\"ok\":true,\"result\":{\"key\":\"launchInConsoleMode\",\"value\":"
-                          << (launchInConsoleMode ? "true" : "false") << "}}\n";
+                          << (launchInConsoleMode ? "true" : "false")
+                          << (launchInConsoleMode ? "" : ",\"changes\":{\"switchToConsoleOnPad\":false}") << "}}\n";
                 std::cout << "{\"type\":\"event\",\"name\":\"settings.changed\",\"payload\":{\"key\":\"launchInConsoleMode\",\"value\":"
-                          << (launchInConsoleMode ? "true" : "false") << "}}\n" << std::flush;
+                          << (launchInConsoleMode ? "true" : "false")
+                          << (launchInConsoleMode ? "" : ",\"changes\":{\"switchToConsoleOnPad\":false}") << "}}\n" << std::flush;
             } else {
                 std::cout << "{\"type\":\"response\",\"id\":\"" << id
                           << "\",\"ok\":true,\"result\":{}}\n" << std::flush;
@@ -64,7 +66,11 @@ int main(int argc, char **argv)
                       << "\",\"ok\":true,\"result\":{\"games\":[],\"totalCount\":0}}\n" << std::flush;
         } else if (method == "catalog.store.list") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
-                      << "\",\"ok\":true,\"result\":{\"games\":[],\"totalCount\":0,\"source\":\"store-browse\"}}\n" << std::flush;
+                      << "\",\"ok\":true,\"result\":{\"games\":[],\"totalCount\":0,\"source\":\"store-browse\",\"hasNextPage\":false,\"nextCursor\":\"\"}}\n" << std::flush;
+        } else if (method == "catalog.store.presentation") {
+            std::cout << "{\"type\":\"response\",\"id\":\"" << id
+                      << "\",\"ok\":true,\"result\":{\"section\":\"" << field(line, "section")
+                      << "\",\"items\":[]}}\n" << std::flush;
         } else if (method == "test.streamer-event") {
             std::cout << "{\"type\":\"event\",\"name\":\"streamer.changed\",\"payload\":{\"status\":\"streaming\",\"sessionId\":\"fixture-session\",\"firstFrameLatencyMs\":37,\"mediaBackend\":\"ffmpeg\",\"deviceRecoveryCount\":2,\"queueDropCount\":4}}\n";
             std::cout << "{\"type\":\"response\",\"id\":\"" << id

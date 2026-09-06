@@ -33,6 +33,7 @@ signals:
     void controllersChanged();
     void shellCaptureEnabledChanged();
     void controllerActivity();
+    void controllerActivityDetailed(const QString &device, const QString &control, int value);
     void gamepadSnapshot(quint8 controllerId, quint16 bitmap, quint16 buttons,
                          quint8 leftTrigger, quint8 rightTrigger,
                          qint16 leftStickX, qint16 leftStickY,
@@ -66,7 +67,8 @@ private:
     void closeController(SDL_JoystickID id);
     void handleButton(const SDL_GamepadButtonEvent &event, bool pressed);
     void handleAxis(const SDL_GamepadAxisEvent &event);
-    void updateDirection(RepeatingDirection &direction, bool active);
+    bool updateDirection(RepeatingDirection &direction, bool active);
+    void reportActivity(int slot, const QString &control, int value);
     void dispatchRepeats(qint64 now);
     void postKey(int key, bool pressed, bool autoRepeat = false);
     static int keyForButton(Uint8 button);
@@ -74,11 +76,14 @@ private:
     void publishGamepad(int slot, bool neutral = false);
     void publishConnectedGamepads(bool neutral = false);
     void updateSlotSnapshot(int slot);
+    void updatePollInterval();
+    void refreshControllerMetadata();
     static quint16 buttonMask(Uint8 button);
     static QPair<qint16, qint16> radialDeadzone(qint16 x, qint16 y);
     static quint8 triggerValue(qint16 value);
 
     QTimer m_pollTimer;
+    QVariantList m_controllerMetadata;
     QElapsedTimer m_clock;
     QHash<SDL_JoystickID, int> m_gamepadSlots;
     std::array<GamepadSlot, 4> m_slots;

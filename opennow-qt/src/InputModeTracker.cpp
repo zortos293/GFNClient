@@ -17,6 +17,9 @@ bool InputModeTracker::eventFilter(QObject *watched, QEvent *event)
     switch (event->type()) {
     case QEvent::KeyPress: {
         const auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (keyEvent->isAutoRepeat()
+                && keyEvent->nativeScanCode() == ControllerInput::syntheticControllerScanCode)
+            break;
         m_controller->setInputMode(
             keyEvent->nativeScanCode() == ControllerInput::syntheticControllerScanCode
                 ? QStringLiteral("controller")

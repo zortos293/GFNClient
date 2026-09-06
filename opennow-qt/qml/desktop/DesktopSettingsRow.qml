@@ -4,30 +4,42 @@ import OpenNOW
 
 Item {
     id: root
+    property bool paperStyle: false
+    property string glyph: ""
+    property bool expanded: false
+    property bool expandable: false
+    signal expansionRequested()
     property string title: ""
     property string description: ""
     property string value: ""
-    property int rowHeight: DesktopTokens.rowHeight
+    property int rowHeight: paperStyle ? DesktopTokens.px(68) : DesktopTokens.rowHeight
     property bool showDivider: true
     property string leadingLetter: ""
     property url leadingIcon: ""
-    property color leadingColor: Qt.rgba(1, 1, 1, 0.06)
-    readonly property bool hasLeading: leadingLetter !== "" || leadingIcon.toString() !== ""
+    property color leadingColor: DesktopTokens.raised
+    readonly property bool hasLeading: glyph !== "" || leadingLetter !== "" || leadingIcon.toString() !== ""
     default property alias trailing: trailingSlot.data
 
-    implicitHeight: rowHeight
+    readonly property bool stacked: width < trailingSlot.implicitWidth + (hasLeading ? 340 : 290)
+    implicitHeight: Math.max(rowHeight, stacked ? labels.implicitHeight + trailingSlot.height + 28
+        : labels.implicitHeight + (paperStyle ? 12 : 24))
 
     Rectangle {
         id: leadingTile
         visible: root.hasLeading
-        x: 0
-        anchors.verticalCenter: parent.verticalCenter
-        width: 36
-        height: 36
-        radius: 10
-        color: root.leadingColor
-        border.width: 1
-        border.color: Qt.rgba(1, 1, 1, 0.14)
+        x: root.paperStyle ? DesktopTokens.px(20) : 0
+        y: root.stacked ? 12 : (parent.height - height) / 2
+        width: root.paperStyle ? DesktopTokens.px(40) : 36
+        height: width
+        radius: root.paperStyle ? 12 : 10
+        color: root.expanded ? Theme.face : root.leadingColor
+        border.width: root.paperStyle ? 0 : 1
+        border.color: Theme.seam
+        DesktopSettingsIcon {
+            anchors.centerIn: parent; width: 20; height: 20
+            visible: root.glyph !== ""; glyph: root.glyph
+            ink: root.expanded ? Theme.faceText : Theme.label
+        }
         Image {
             anchors.centerIn: parent
             width: 19
@@ -40,7 +52,7 @@ Item {
         Text {
             anchors.centerIn: parent
             text: root.leadingLetter
-            visible: root.leadingIcon.toString() === ""
+            visible: root.leadingIcon.toString() === "" && root.glyph === ""
             color: Theme.label
             font.family: DesktopTokens.bodyFont
             font.pixelSize: 16
@@ -49,11 +61,12 @@ Item {
     }
 
     Column {
+        id: labels
         anchors.left: parent.left
-        anchors.leftMargin: root.hasLeading ? 50 : 0
-        anchors.right: trailingSlot.left
-        anchors.rightMargin: 20
-        anchors.verticalCenter: parent.verticalCenter
+        anchors.leftMargin: root.paperStyle ? DesktopTokens.px(root.hasLeading ? 76 : 20) : (root.hasLeading ? 50 : 0)
+        anchors.right: root.stacked ? parent.right : trailingSlot.left
+        anchors.rightMargin: root.paperStyle ? 16 : 20
+        y: root.stacked ? 10 : (parent.height - height) / 2
         spacing: 2
         Text {
             width: parent.width
@@ -61,8 +74,8 @@ Item {
             color: Theme.label
             font.family: Theme.bodyFont
             font.pixelSize: DesktopTokens.bodySize
-            font.weight: Font.Bold
-            elide: Text.ElideRight
+            font.weight: root.paperStyle ? Font.ExtraBold : Font.Bold
+            wrapMode: Text.WordWrap
         }
         Text {
             width: parent.width
@@ -71,15 +84,16 @@ Item {
             color: Theme.textMuted
             font.family: Theme.bodyFont
             font.pixelSize: DesktopTokens.captionSize
-            font.weight: Font.Medium
-            elide: Text.ElideRight
+            font.weight: root.paperStyle ? Font.DemiBold : Font.Medium
+            wrapMode: Text.WordWrap
         }
     }
 
     Row {
         id: trailingSlot
         anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
+        anchors.rightMargin: root.paperStyle ? DesktopTokens.px(68) : 0
+        y: root.stacked ? labels.y + labels.height + 8 : (parent.height - height) / 2
         spacing: 10
         height: DesktopTokens.controlHeight
 
@@ -90,11 +104,25 @@ Item {
         Text {
             visible: root.value !== ""
             text: root.value
-            color: Qt.rgba(1, 1, 1, 0.80)
+            color: Theme.label
             font.family: Theme.monoFont
             font.pixelSize: DesktopTokens.monoSize
             font.weight: Font.Bold
             anchors.verticalCenter: parent.verticalCenter
+        }
+    }
+
+    AbstractButton {
+        visible: root.paperStyle && root.expandable
+        anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(20)
+        anchors.verticalCenter: parent.verticalCenter; width: 32; height: 32
+        Accessible.name: root.title
+        onClicked: root.expansionRequested()
+        background: Rectangle { radius: 10; color: parent.activeFocus || parent.hovered ? DesktopTokens.raised : "transparent" }
+        DesktopSettingsIcon {
+            anchors.centerIn: parent; width: 14; height: 14; glyph: "chevron"
+            rotation: root.expanded ? -90 : 90; ink: root.expanded ? Theme.focus : Theme.textMuted
+            Behavior on rotation { enabled: !AppController.reducedMotion; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
         }
     }
 
@@ -114,6 +142,6 @@ Item {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         height: 1
-        color: Qt.rgba(1, 1, 1, 0.06)
+        color: DesktopTokens.seamSoft
     }
 }

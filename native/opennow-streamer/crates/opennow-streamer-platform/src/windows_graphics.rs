@@ -19,13 +19,17 @@ impl GraphicsFrame for D3d11Frame {
         &self,
         context: GraphicsContext,
         command: GraphicsRecordCommand,
-    ) -> Result<GraphicsRecordedFrame, String> {
+    ) -> Result<GraphicsRecordedFrame, crate::GraphicsFrameError> {
         if context.api != GraphicsApi::D3d11 {
-            return Err("a Windows decoded frame requires a D3D11 graphics context".to_owned());
+            return Err("a Windows decoded frame requires a D3D11 graphics context"
+                .to_owned()
+                .into());
         }
         if command.command_buffer != context.queue {
             return Err(
-                "D3D11 record command does not use Qt's adopted immediate context".to_owned(),
+                "D3D11 record command does not use Qt's adopted immediate context"
+                    .to_owned()
+                    .into(),
             );
         }
         let frame = unsafe {

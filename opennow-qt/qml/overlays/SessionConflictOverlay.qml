@@ -33,10 +33,7 @@ FocusScope {
         anchors.centerIn: parent
         width: Math.min(parent.width - 64, 660)
         height: 390
-        scale: root.visible ? 1 : 0.94
-        Behavior on scale {
-            NumberAnimation { duration: Theme.panelDuration; easing.type: Easing.OutBack }
-        }
+        // OverlayHost owns the single reveal transform.
 
         Column {
             anchors.fill: parent
@@ -105,7 +102,5 @@ FocusScope {
 
     Component.onCompleted: resumeButton.forceActiveFocus()
 
-    Behavior on opacity {
-        NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic }
-    }
+
 }

@@ -5,7 +5,28 @@ or newer and uses SDL3 for controller input. A bundled Rust process owns setting
 and is the start of the shell-neutral application core. See
 `docs/qt-migration.md` for the full parity and removal checklist.
 
+## Remote streaming diagnostics
+
+Settings → About → Copy diagnostics exports a bounded report containing both
+`native-streamer.log` and `qt-native.log` from the core's diagnostics directory
+(`%APPDATA%/OpenNOW/diagnostics` on Windows, or `OPENNOW_DATA_DIR/diagnostics`).
+Reproduce the problem, wait at least 10 seconds, then export before closing the app.
+
+The `diagnostics-v2` Qt startup marker identifies the detailed trace build. The trace
+records request IDs on both sides of the embedded ABI, queue acceptance, callback
+delivery, timed RTSPS stages, ICE/DTLS progress, two-second receive/assembly counters
+(including zero frames), decoder submission, adapter identity and first-frame events.
+Queue acceptance is not a successful handshake; a frame notification is not a
+presented frame. Compare the successive stages to locate a stall.
+
+Raw session contexts, credentials, URLs, SDP and media payloads are excluded from
+the new handshake trace. Logs rotate during use, and exports retain readable lines.
+No per-packet or per-input file logging is added to the gameplay path.
+
 ## Build
+
+Install the Qt ShaderTools development module with Qt Quick and Multimedia; CMake
+bakes the portable video-composition shaders into the executable at build time.
 
 ```sh
 cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Debug
@@ -73,3 +94,13 @@ QRhi command buffer, and expose only opaque frame tokens across the FFI. QML
 overlays therefore compose normally above the stream. No CPU frame callback,
 standalone SDL presenter, child HWND or paired top-level video window participates
 in the Qt path.
+
+`StreamVideoItem` uses `QSGRenderNode`: native YUV conversion runs before the Qt
+scene pass, then the converted texture is drawn directly into that pass. There is
+no additional item-sized RGBA render target. The shared video material preserves
+transforms, inherited opacity, scissor/stencil clips and letterboxing, and caches
+imported texture bindings per QRhi frame slot.
+
+For GPU pixel acceptance (including overlays, clipping and fullscreen), run
+`opennow-streamvideo-tests` with the native platform plugin, not `offscreen`.
+The normal offscreen CTest run deliberately skips those hardware-only checks.

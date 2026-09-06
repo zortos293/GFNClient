@@ -131,8 +131,8 @@ FocusScope {
         y: Math.max(76, Math.round((root.height - height) / 2))
         width: Math.min(620, root.width - 64)
         spacing: 0
-        opacity: 1
-        transform: Translate { id: revealTranslate; y: 0 }
+        opacity: reveal.progress
+        transform: Translate { y: AppController.reducedMotion ? 0 : 10 * (1 - reveal.progress) }
 
         Text {
             text: root.failed ? qsTr("SESSION INTERRUPTED") : qsTr("STARTING SESSION")
@@ -393,11 +393,7 @@ FocusScope {
         }
     }
 
-    SequentialAnimation {
-        running: true
-        NumberAnimation { target: launchContent; property: "opacity"; from: 0; to: 1; duration: AppController.reducedMotion ? 0 : 200; easing.type: Easing.OutCubic }
-        NumberAnimation { target: revealTranslate; property: "y"; from: AppController.reducedMotion ? 0 : 10; to: 0; duration: AppController.reducedMotion ? 0 : 180; easing.type: Easing.OutCubic }
-    }
+    MotionProgress { id: reveal; shown: root.visible }
 
     Keys.onPressed: event => {
         if (event.isAutoRepeat)

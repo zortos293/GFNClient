@@ -277,8 +277,8 @@ impl WindowsBackend {
         config.validate()?;
         let video = config.video;
         let describe = || {
-            let fps = video.frame_rate_numerator.get() as f64
-                / video.frame_rate_denominator.get() as f64;
+            let fps =
+                video.frame_rate_numerator.get() as f64 / video.frame_rate_denominator.get() as f64;
             format!(
                 "windows backend starting (api={api:?} decoder={decoder_mode:?} codec={} {}x{} {:.0}fps {}kbps pixel={:?} chroma={:?} full_range={})",
                 video.codec.label(),
@@ -296,7 +296,11 @@ impl WindowsBackend {
         {
             let _ = api;
             let _ = (decoder_mode, config);
-            log::log_line("WARN", "decode", "windows backend requested on non-windows build");
+            log::log_line(
+                "WARN",
+                "decode",
+                "windows backend requested on non-windows build",
+            );
             Err(BackendError::UnsupportedPlatform)
         }
 
@@ -324,7 +328,11 @@ impl WindowsBackend {
             ) {
                 Ok(worker) => worker,
                 Err(error) => {
-                    log::log_line("WARN", "decode", &format!("windows backend spawn failed: {error:?}"));
+                    log::log_line(
+                        "WARN",
+                        "decode",
+                        &format!("windows backend spawn failed: {error:?}"),
+                    );
                     return Err(error);
                 }
             };

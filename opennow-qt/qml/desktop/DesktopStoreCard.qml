@@ -12,8 +12,8 @@ Item {
     property bool owned: false
     property bool freeToPlay: false
     property color fallbackColor: Theme.cartSteam
-    property int tileWidth: 132
-    property int tileHeight: 250
+    property int tileWidth: DesktopTokens.libraryArtWidth
+    property int tileHeight: artHeight + DesktopTokens.storeCardInfoHeight
     readonly property int artHeight: Math.round(tileWidth * 198 / 132)
 
     signal activated(var game)
@@ -21,23 +21,26 @@ Item {
 
     width: tileWidth
     height: tileHeight
-    scale: selected ? DesktopTokens.cardHoverScale : 1
-    transformOrigin: Item.Center
-    z: selected ? 20 : 0
+    z: selected || visual.scale !== 1 ? 20 : 0
     Accessible.role: Accessible.Button
     Accessible.name: String(game && game.title || qsTr("Game"))
+    ToolTip.visible: pointer.containsMouse
+    ToolTip.delay: 700
+    ToolTip.text: root.Accessible.name
 
-    Behavior on scale {
-        NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic }
-    }
-
+    Item {
+        id: visual
+        anchors.fill: parent
+        scale: !AppController.reducedMotion && root.selected ? DesktopTokens.cardHoverScale : 1
+        transformOrigin: Item.Center
+        Behavior on scale { NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic } }
     RoundedArtwork {
         id: cover
         x: 0
         y: 0
         width: root.tileWidth
         height: root.artHeight
-        cornerRadius: 12
+        cornerRadius: DesktopTokens.px(12)
         scrimStart: 1
         artwork: DesktopTokens.artworkUrl(root.game, false)
         fallbackColor: root.fallbackColor
@@ -48,7 +51,7 @@ Item {
         y: -DesktopTokens.cardOutlinePad
         width: root.tileWidth + DesktopTokens.cardOutlinePad * 2
         height: root.artHeight + DesktopTokens.cardOutlinePad * 2
-        radius: 14
+        radius: DesktopTokens.px(14)
         color: "transparent"
         border.width: root.selected ? 2 : 1
         border.color: root.selected ? DesktopTokens.focus : DesktopTokens.cardOutlineIdle
@@ -59,32 +62,38 @@ Item {
     }
 
     Text {
+        id: cardTitle
+        objectName: "storeCardTitle"
         x: 0
-        y: root.artHeight + 8
+        y: root.artHeight + DesktopTokens.px(8)
         width: root.tileWidth
-        height: 15
+        height: implicitHeight
         text: root.game ? String(root.game.title || qsTr("Untitled game")) : qsTr("Untitled game")
-        color: Qt.rgba(1, 1, 1, 0.88)
+        color: DesktopTokens.text
         font.family: Theme.bodyFont
-        font.pixelSize: 12
+        font.pixelSize: DesktopTokens.monoSize
         font.weight: Font.Bold
         elide: Text.ElideRight
-        verticalAlignment: Text.AlignVCenter
+        wrapMode: Text.Wrap
+        maximumLineCount: 2
+        verticalAlignment: Text.AlignTop
     }
 
     Row {
+        objectName: "storeCardMetadata"
         x: 0
-        y: root.artHeight + 31
+        y: cardTitle.y + cardTitle.height + DesktopTokens.px(4)
+        visible: root.owned || root.freeToPlay || root.price !== "" || root.discount !== ""
         width: root.tileWidth
-        height: 17
-        spacing: 7
+        height: DesktopTokens.px(17)
+        spacing: DesktopTokens.px(7)
 
         Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             visible: root.discount.length > 0 && !root.owned
-            width: discountLabel.implicitWidth + 10
-            height: 17
-            radius: 5
+            width: discountLabel.implicitWidth + DesktopTokens.px(10)
+            height: DesktopTokens.px(17)
+            radius: DesktopTokens.px(5)
             color: Qt.rgba(0.431, 0.906, 0.718, 0.18)
 
             Text {
@@ -93,17 +102,18 @@ Item {
                 text: root.discount
                 color: DesktopTokens.green
                 font.family: Theme.monoFont
-                font.pixelSize: 9
+                font.pixelSize: DesktopTokens.tinySize
                 font.weight: Font.Bold
             }
         }
 
-        DesktopGlyph {
+        DesktopSettingsIcon {
             anchors.verticalCenter: parent.verticalCenter
             visible: root.owned
-            width: 10
-            height: 8
-            icon: "desktop-check-light.svg"
+            width: DesktopTokens.px(10)
+            height: DesktopTokens.px(8)
+            glyph: "check"
+            ink: DesktopTokens.textMuted
         }
 
         Text {
@@ -113,14 +123,16 @@ Item {
                              : root.freeToPlay ? qsTr("Free to play")
                                                : root.price
             color: root.freeToPlay ? DesktopTokens.green
-                                   : root.owned ? Qt.rgba(1, 1, 1, 0.50)
-                                                : "#FFFFFF"
+                                   : root.owned ? DesktopTokens.textMuted
+                                                : DesktopTokens.text
             font.family: Theme.monoFont
-            font.pixelSize: 11
+            font.pixelSize: DesktopTokens.smallSize
             font.weight: root.owned ? Font.DemiBold : Font.Bold
             elide: Text.ElideRight
         }
     }
+
+    } // visual; the pointer target does not move during zoom
 
     MouseArea {
         id: pointer

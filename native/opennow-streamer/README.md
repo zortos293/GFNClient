@@ -6,6 +6,28 @@ The Qt application loads `opennow-streamer-ffi` as an in-process shared library.
 
 ## Crates
 
+### Hardware selection in the Qt app
+
+Stream settings default to `nativeVideoBackend: auto`. On Windows the embedded presenter
+currently uses D3D11; its picker offers an explicit DX11 override and shows DX12/Vulkan as
+unavailable. Standalone D3D12 support does **not** imply embedded D3D12 texture interop.
+Unsupported forced backends fail explicitly; they never silently select a different API.
+On Linux supported decoder overrides are passed per session, without changing process-global
+environment variables. Qt's compositor still uses the platform-native presentation API.
+
+Windows codec detection requires both a usable Media Foundation transform and a matching
+DXVA decoder profile/configuration on the probed GPU. Decoder startup repeats the check on
+Qt's adopted device with the actual codec, dimensions, bit depth and chroma. Installing an
+AV1 codec package on a GPU without AV1 hardware support no longer makes it hardware-capable.
+The core resolves Auto against the embedded capability report before CloudMatch allocation.
+This is capability selection, not an automatic reconnect or codec change inside a live stream.
+
+GPU import/shader failures are reported to the shell and Qt log. To diagnose an individual
+black-screen report, collect `diagnostics/native-streamer.log` plus the Qt log and distinguish
+an entirely black application window from a stream-only black video surface.
+
+### Workspace components
+
 - `opennow-streamer-protocol`: versioned local command and session DTOs.
 - `opennow-streamer-core`: NVST lifecycle, command routing, media feedback and recording.
 - `opennow-streamer-transport`: Mjolnir SRTP plus the NVST-required ICE/DTLS/SCTP, RTCP and input implementation.
@@ -32,7 +54,38 @@ The Qt CMake build always compiles `opennow-streamer-ffi` with Cargo's release p
 
 The standalone `opennow-streamer` binary remains a development host and is not evidence for the packaged Qt presentation path.
 
+### Embedded latency and resource bounds
+
+- Windows decoder workers wait for actionable input or a bounded 1 ms output
+  poll; queued frames do not wake a worker that has no decoder input credits.
+  Closing the queue interrupts either wait immediately.
+- Windows conversion targets are allocated lazily for the QRhi slots actually
+  used, with an eight-slot upper bound. Format changes discard the old slot set.
+- Stereo SDL playout retains the 120 ms overflow bound. A backlog above 60 ms
+  lasting 200 ms enables allocation-free catch-up resampling (at most 2% faster)
+  until the queued tail reaches 40 ms. Normal playback is bit-exact; clearing
+  the buffer resets recovery. This controls the application queue, not latency
+  inside the OS audio device, and the temporary correction can slightly alter pitch.
+- Qt samples the converted surface directly in its scene pass; it does not
+  allocate a second video-sized intermediate render target. Native conversion
+  and Qt drawing remain on the same graphics command stream.
+
 ## Checks
+
+### Embedded session diagnostics
+
+Protocol 5 telemetry includes optional `jitterMs` (RTP interarrival jitter on
+the video 90 kHz clock) and `packetLossPercent` (cumulative authenticated RTP
+reception loss since stream start). Values are null before a stream is known.
+Reading these measurements does not advance RTCP report intervals. Qt forwards
+measured values without converting nulls into zeros; RTT, decode duration and
+end-to-end latency remain unavailable when no measurement source provides them.
+
+During Windows decoder recreation, the worker retains one pending recovery
+keyframe outside the bounded input queue. Already-queued descendants remain in
+FIFO order instead of being silently cleared. This adds at most one owned access
+unit while the replacement MFT waits for input credits; it adds no presenter or
+CPU pixel-copy path. Regression coverage verifies reference-chain ordering.
 
 ```sh
 cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check

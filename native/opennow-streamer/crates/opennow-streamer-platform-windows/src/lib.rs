@@ -1,5 +1,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(any(windows, test))]
+mod aperture;
 mod format;
 mod queue;
 

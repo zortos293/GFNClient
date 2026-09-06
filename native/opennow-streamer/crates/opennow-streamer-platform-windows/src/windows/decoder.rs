@@ -18,27 +18,30 @@ use ::windows::Win32::Media::MediaFoundation::{
     D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN_444, D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN10_444,
 };
 use ::windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFAttributes, IMFDXGIBuffer, IMFMediaEventGenerator, IMFSample, IMFTransform,
-    METransformHaveOutput, METransformNeedInput, MF_E_NO_EVENTS_AVAILABLE,
-    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_FLAG_NO_WAIT,
-    MF_LOW_LATENCY, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-    MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE,
-    MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateAttributes,
-    MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
-    MFNominalRange_0_255, MFSampleExtension_CleanPoint, MFT_CATEGORY_VIDEO_DECODER,
-    MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE,
-    MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_ENUM_HARDWARE_URL_Attribute,
-    MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    IMFActivate, IMFAttributes, IMFDXGIBuffer, IMFMediaEventGenerator, IMFMediaType, IMFSample,
+    IMFTransform, METransformHaveOutput, METransformNeedInput, MF_E_ATTRIBUTENOTFOUND,
+    MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
+    MF_EVENT_FLAG_NO_WAIT, MF_LOW_LATENCY, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MF_MT_GEOMETRIC_APERTURE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
+    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_PAN_SCAN_APERTURE, MF_MT_PAN_SCAN_ENABLED,
+    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MF_SA_D3D11_AWARE,
+    MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateAttributes, MFCreateMediaType,
+    MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFNominalRange_0_255,
+    MFSampleExtension_CleanPoint, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG,
+    MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
+    MFT_ENUM_FLAG_SYNCMFT, MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute,
+    MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
     MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
     MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
     MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
-    MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_AV1, MFVideoFormat_AYUV, MFVideoFormat_H264,
-    MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_P010, MFVideoFormat_Y410,
-    MFVideoInterlace_MixedInterlaceOrProgressive,
+    MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoArea, MFVideoFormat_AV1, MFVideoFormat_AYUV,
+    MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_P010,
+    MFVideoFormat_Y410, MFVideoInterlace_MixedInterlaceOrProgressive,
 };
 use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::core::Interface;
 
+use crate::aperture::VideoAperture;
 use crate::queue::BoundedQueue;
 use crate::{
     ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendEvent, EncodedVideoFrame, Subsystem, VideoChromaFormat,
@@ -52,6 +55,8 @@ pub(super) trait DecoderDevice {
 }
 
 pub(super) struct DecodedVideoFrame {
+    pub(super) format: VideoFormat,
+    pub(super) aperture: VideoAperture,
     pub(super) texture: ID3D11Texture2D,
     pub(super) subresource: u32,
     pub(super) timestamp_100ns: i64,
@@ -65,7 +70,11 @@ pub(super) struct DecodedVideoFrame {
 }
 
 impl DecodedVideoFrame {
-    pub(super) fn from_sample(sample: IMFSample, fallback_duration: i64) -> Result<Self, String> {
+    pub(super) fn from_sample(
+        sample: IMFSample,
+        format: VideoFormat,
+        aperture: VideoAperture,
+    ) -> Result<Self, String> {
         let (texture, subresource) = dxgi_surface(&sample)?;
         let timestamp_100ns = unsafe { sample.GetSampleTime().unwrap_or(0) };
         let duration_100ns = unsafe {
@@ -73,9 +82,11 @@ impl DecodedVideoFrame {
                 .GetSampleDuration()
                 .ok()
                 .filter(|duration| *duration > 0)
-                .unwrap_or(fallback_duration)
+                .unwrap_or(format.frame_duration_100ns())
         };
         Ok(Self {
+            format,
+            aperture,
             texture,
             subresource,
             timestamp_100ns,
@@ -93,6 +104,7 @@ pub(super) struct Decoder {
     output_stream: u32,
     input_credits: u32,
     format: VideoFormat,
+    aperture: VideoAperture,
     preferred_pixel_format: VideoPixelFormat,
     output_provides_samples: bool,
     stopped: bool,
@@ -136,6 +148,7 @@ impl Decoder {
                     output_provides_samples,
                     pixel_format,
                     full_range,
+                    aperture,
                 )) => {
                     let input_credits = u32::from(events.is_none());
                     let friendly_name =
@@ -159,11 +172,14 @@ impl Decoder {
                         output_stream,
                         input_credits,
                         format: VideoFormat {
+                            width: aperture.width,
+                            height: aperture.height,
                             pixel_format,
                             chroma_format: chroma_format(pixel_format),
                             full_range,
                             ..format
                         },
+                        aperture,
                         preferred_pixel_format: format.pixel_format,
                         output_provides_samples,
                         stopped: false,
@@ -309,16 +325,18 @@ impl Decoder {
             }
             if error.code() == MF_E_TRANSFORM_STREAM_CHANGE {
                 let pixel_format = self.select_video_output_type()?;
-                let (dimensions, full_range) = self.output_format()?;
+                let (aperture, full_range) =
+                    output_format(&self.transform, self.output_stream, self.format)?;
                 let updated = VideoFormat {
-                    width: dimensions.0,
-                    height: dimensions.1,
+                    width: aperture.width,
+                    height: aperture.height,
                     pixel_format,
                     chroma_format: chroma_format(pixel_format),
                     full_range,
                     ..self.format
                 };
                 self.format = updated;
+                self.aperture = aperture;
                 let _ = event_queue.push(BackendEvent::VideoFormatChanged(updated));
                 return Ok(OutputPoll::Produced);
             }
@@ -332,7 +350,7 @@ impl Decoder {
                 "hardware decoder requires caller-allocated output samples".to_owned()
             }
         })?;
-        let frame = DecodedVideoFrame::from_sample(sample, self.format.frame_duration_100ns())?;
+        let frame = DecodedVideoFrame::from_sample(sample, self.format, self.aperture)?;
         if decoded_frames.len() == ADAPTIVE_VIDEO_QUEUE_CAPACITY {
             decoded_frames.pop_front();
             let _ = event_queue.push(BackendEvent::QueueOverflow(Subsystem::VideoPresentation));
@@ -366,25 +384,6 @@ impl Decoder {
             self.preferred_pixel_format,
         )
     }
-
-    fn output_format(&self) -> Result<((u32, u32), bool), String> {
-        unsafe {
-            let media_type = self
-                .transform
-                .GetOutputCurrentType(self.output_stream)
-                .map_err(|error| error.to_string())?;
-            let packed = media_type
-                .GetUINT64(&MF_MT_FRAME_SIZE)
-                .map_err(|error| error.to_string())?;
-            let nominal_range = media_type
-                .GetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE)
-                .unwrap_or_default();
-            Ok((
-                ((packed >> 32) as u32, packed as u32),
-                nominal_range == MFNominalRange_0_255.0 as u32,
-            ))
-        }
-    }
 }
 
 fn activation_string(activation: &IMFActivate, key: &::windows::core::GUID) -> Option<String> {
@@ -416,6 +415,7 @@ type ConfiguredTransform = (
     bool,
     VideoPixelFormat,
     bool,
+    VideoAperture,
 );
 
 fn configure_transform<G: DecoderDevice>(
@@ -487,7 +487,7 @@ fn configure_transform<G: DecoderDevice>(
             .map_err(|error| error.to_string())?;
         let pixel_format =
             select_video_output_type(&transform, output_stream, format.pixel_format)?;
-        let full_range = output_full_range(&transform, output_stream);
+        let (aperture, full_range) = output_format(&transform, output_stream, format)?;
 
         let stream_info = transform
             .GetOutputStreamInfo(output_stream)
@@ -515,6 +515,7 @@ fn configure_transform<G: DecoderDevice>(
             true,
             pixel_format,
             full_range,
+            aperture,
         ))
     }
 }
@@ -798,14 +799,73 @@ fn chroma_format(pixel_format: VideoPixelFormat) -> VideoChromaFormat {
     }
 }
 
-fn output_full_range(transform: &IMFTransform, output_stream: u32) -> bool {
+fn output_format(
+    transform: &IMFTransform,
+    output_stream: u32,
+    fallback: VideoFormat,
+) -> Result<(VideoAperture, bool), String> {
     unsafe {
-        transform
+        let media_type = transform
             .GetOutputCurrentType(output_stream)
+            .map_err(|error| error.to_string())?;
+        let aperture = output_aperture(&media_type, fallback)?;
+        let full_range = media_type
+            .GetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE)
             .ok()
-            .and_then(|media_type| media_type.GetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE).ok())
-            .is_some_and(|range| range == MFNominalRange_0_255.0 as u32)
+            .filter(|range| *range != 0)
+            .map_or(fallback.full_range, |range| {
+                range == MFNominalRange_0_255.0 as u32
+            });
+        Ok((aperture, full_range))
     }
+}
+
+fn output_aperture(
+    media_type: &IMFMediaType,
+    fallback: VideoFormat,
+) -> Result<VideoAperture, String> {
+    let packed = match unsafe { media_type.GetUINT64(&MF_MT_FRAME_SIZE) } {
+        Ok(packed) => packed,
+        Err(error) if error.code() == MF_E_ATTRIBUTENOTFOUND => {
+            pack_pair(fallback.width, fallback.height)
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let pan_scan = unsafe { media_type.GetUINT32(&MF_MT_PAN_SCAN_ENABLED).unwrap_or(0) != 0 };
+    for key in [
+        pan_scan.then_some(&MF_MT_PAN_SCAN_APERTURE),
+        Some(&MF_MT_MINIMUM_DISPLAY_APERTURE),
+        Some(&MF_MT_GEOMETRIC_APERTURE),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let size = match unsafe { media_type.GetBlobSize(key) } {
+            Ok(size) => size as usize,
+            Err(error) if error.code() == MF_E_ATTRIBUTENOTFOUND => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        if size != size_of::<MFVideoArea>() {
+            return Err(format!("invalid decoder aperture blob size {size}"));
+        }
+        let mut bytes = [0_u8; size_of::<MFVideoArea>()];
+        unsafe { media_type.GetBlob(key, &mut bytes, None) }.map_err(|error| error.to_string())?;
+        let area = unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<MFVideoArea>()) };
+        if area.OffsetX.fract != 0 || area.OffsetY.fract != 0 {
+            return Err("fractional decoder aperture offsets cannot be represented by a D3D11 source rectangle".to_owned());
+        }
+        let area = (
+            i32::from(area.OffsetX.value),
+            i32::from(area.OffsetY.value),
+            area.Area.cx,
+            area.Area.cy,
+        );
+        if area == (0, 0, 0, 0) {
+            continue;
+        }
+        return VideoAperture::new((packed >> 32) as u32, packed as u32, Some(area));
+    }
+    VideoAperture::new((packed >> 32) as u32, packed as u32, None)
 }
 
 fn video_subtype(codec: VideoCodec) -> &'static ::windows::core::GUID {
@@ -846,6 +906,88 @@ fn pack_pair(high: u32, low: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_type_apertures_handle_padding_defaults_precedence_and_invalid_offsets() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let format = VideoFormat {
+            codec: VideoCodec::H264,
+            width: 1920,
+            height: 1080,
+            frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
+            frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
+            average_bitrate: 10_000_000,
+            pixel_format: VideoPixelFormat::Nv12,
+            chroma_format: VideoChromaFormat::Cs420,
+            full_range: true,
+        };
+        let media_type = unsafe { MFCreateMediaType().unwrap() };
+        assert_eq!(
+            output_aperture(&media_type, format).unwrap(),
+            VideoAperture::new(1920, 1080, None).unwrap()
+        );
+        unsafe {
+            media_type
+                .SetUINT64(&MF_MT_FRAME_SIZE, pack_pair(1920, 1088))
+                .unwrap();
+        }
+        assert_eq!(output_aperture(&media_type, format).unwrap().height, 1088);
+        let set_area = |key, area: MFVideoArea| {
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    (&area as *const MFVideoArea).cast::<u8>(),
+                    size_of::<MFVideoArea>(),
+                )
+            };
+            unsafe {
+                media_type.SetBlob(key, bytes).unwrap();
+            }
+        };
+        let mut area = MFVideoArea::default();
+        set_area(&MF_MT_MINIMUM_DISPLAY_APERTURE, area);
+        assert_eq!(output_aperture(&media_type, format).unwrap().height, 1088);
+        area.Area.cx = 1904;
+        area.Area.cy = 1080;
+        area.OffsetX.value = 8;
+        area.OffsetY.value = 4;
+        set_area(&MF_MT_GEOMETRIC_APERTURE, area);
+        let visible = output_aperture(&media_type, format).unwrap();
+        assert_eq!(
+            visible,
+            VideoAperture::new(1920, 1088, Some((8, 4, 1904, 1080))).unwrap()
+        );
+        area.Area.cy = 1072;
+        set_area(&MF_MT_MINIMUM_DISPLAY_APERTURE, area);
+        assert_eq!(output_aperture(&media_type, format).unwrap().height, 1072);
+        area.Area.cy = 1064;
+        set_area(&MF_MT_PAN_SCAN_APERTURE, area);
+        assert_eq!(output_aperture(&media_type, format).unwrap().height, 1072);
+        unsafe {
+            media_type.SetUINT32(&MF_MT_PAN_SCAN_ENABLED, 1).unwrap();
+        }
+        assert_eq!(output_aperture(&media_type, format).unwrap().height, 1064);
+        area.OffsetX.fract = 1;
+        set_area(&MF_MT_PAN_SCAN_APERTURE, area);
+        assert!(
+            output_aperture(&media_type, format)
+                .unwrap_err()
+                .contains("fractional")
+        );
+        area.OffsetX.fract = 0;
+        area.OffsetX.value = -1;
+        set_area(&MF_MT_PAN_SCAN_APERTURE, area);
+        assert!(output_aperture(&media_type, format).is_err());
+        unsafe {
+            media_type
+                .SetBlob(&MF_MT_PAN_SCAN_APERTURE, &[0_u8; 1])
+                .unwrap();
+        }
+        assert!(
+            output_aperture(&media_type, format)
+                .unwrap_err()
+                .contains("blob size")
+        );
+    }
 
     #[test]
     fn hardware_profiles_do_not_confuse_codec_depth_or_chroma() {

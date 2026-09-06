@@ -275,7 +275,9 @@ impl WindowsBackend {
         config: BackendConfig,
     ) -> Result<Self, BackendError> {
         config.validate()?;
+        #[cfg(windows)]
         let video = config.video;
+        #[cfg(windows)]
         let describe = || {
             let fps =
                 video.frame_rate_numerator.get() as f64 / video.frame_rate_denominator.get() as f64;

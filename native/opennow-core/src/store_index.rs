@@ -351,8 +351,10 @@ mod tests {
         let games = json!({"games":[{"id":"1","title":"Counter-Strike 2","genres":["ACTION"],"availableStores":["STEAM"]},
             {"id":"2","title":"Fortnite","genres":["ACTION"],"availableStores":["EPIC"]},
             {"id":"3","title":"Fortnite Festival","genres":["MUSIC"],"availableStores":["EPIC"]}]});
-        let mut index = StoreIndex::default();
-        index.complete = true;
+        let mut index = StoreIndex {
+            complete: true,
+            ..StoreIndex::default()
+        };
         for (i, g) in games["games"].as_array().unwrap().iter().enumerate() {
             index.add(g, json!("page"), format!("/games/{i}"), None);
         }
@@ -449,8 +451,10 @@ mod tests {
     fn owned_game_breaks_ambiguous_acronym_ties() {
         let games = json!({"games":[{"id":"1","title":"Clouds & Sheep 2"},
             {"id":"2","title":"Counter-Strike 2","isInLibrary":true}]});
-        let mut index = StoreIndex::default();
-        index.complete = true;
+        let mut index = StoreIndex {
+            complete: true,
+            ..StoreIndex::default()
+        };
         for (i, game) in games["games"].as_array().unwrap().iter().enumerate() {
             index.add(game, json!("page"), format!("/games/{i}"), None);
         }

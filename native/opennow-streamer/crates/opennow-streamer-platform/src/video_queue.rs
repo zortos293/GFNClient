@@ -7,6 +7,7 @@ use crate::media::EncodedFrame;
 
 pub(crate) struct VideoPacket {
     pub frame: EncodedFrame,
+    #[cfg(any(windows, test))]
     pub generation: u64,
     pub reset_decoder: bool,
 }
@@ -76,9 +77,11 @@ impl VideoQueue {
         let reset_decoder = state.waiting_for_keyframe;
         state.waiting_for_keyframe = false;
         state.request_pending = false;
+        #[cfg(any(windows, test))]
         let generation = state.generation;
         state.frames.push_back(VideoPacket {
             frame,
+            #[cfg(any(windows, test))]
             generation,
             reset_decoder,
         });

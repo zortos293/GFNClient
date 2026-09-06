@@ -17,7 +17,13 @@ set(CMAKE_AUTOMOC ON)
 # propagated by the targets below, so avoid the redundant compiler subprocess.
 set(CMAKE_AUTOMOC_COMPILER_PREDEFINES OFF)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui GuiPrivate Network Multimedia Test ShaderTools)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui Network Multimedia Test ShaderTools)
+# Qt 6.8 exports GuiPrivate with Gui; newer Qt versions package it separately.
+# Require the actual target on both layouts without requesting a 6.8 package
+# that does not exist. Private headers remain a mandatory build dependency.
+if(NOT TARGET Qt6::GuiPrivate)
+    find_package(Qt6GuiPrivate ${Qt6_VERSION} EXACT REQUIRED CONFIG)
+endif()
 find_package(SDL3 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

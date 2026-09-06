@@ -15,6 +15,10 @@
 #include <atomic>
 #include <memory>
 
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+#include <vulkan/vulkan.h>
+#endif
+
 #if defined(Q_OS_WIN)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -103,6 +107,10 @@ public:
             updates->uploadTexture(texture.get(), image);
             cb->resourceUpdate(updates);
         }
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+        if (textureWasSampled && m_rhi->backend() == QRhi::Vulkan)
+            texture->setNativeLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+#endif
         imported.store(renderer.importFrame(m_rhi->currentFrameSlot(), texture->nativeTexture(),
                                             QRhiTexture::RGBA8, QSize(4, 4)));
         importedSlots.store(int(renderer.importedSlotCount()));
@@ -111,6 +119,7 @@ public:
     void recordFrame(QRhiCommandBuffer *cb, const QRect &) override
     {
         renderer.render(cb, stencil, stencilReference);
+        if (imported.load()) textureWasSampled = true;
         ++frames;
     }
     void finishFrame() override {}
@@ -118,6 +127,7 @@ public:
     {
         renderer.release();
         texture.reset();
+        textureWasSampled = false;
         m_rhi = nullptr;
         ++releases;
     }
@@ -131,6 +141,7 @@ private:
     QRhi *m_rhi = nullptr;
     StreamVideoTextureRenderer renderer;
     std::unique_ptr<QRhiTexture> texture;
+    bool textureWasSampled = false;
     bool stencil = false;
     int stencilReference = 0;
 };

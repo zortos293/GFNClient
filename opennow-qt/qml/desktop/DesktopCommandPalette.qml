@@ -66,6 +66,7 @@ FocusScope {
             root.currentIndex = 0
             field.text = ""
             field.forceActiveFocus()
+            root.scheduleCurrentVisibility()
         } else root.cancelSearch()
     }
 
@@ -144,9 +145,9 @@ FocusScope {
     }
 
     function ensureCurrentVisible() {
-        if (!results || !resultsColumn) return
+        if (!opened || !results || !resultsColumn) return
         resultsColumn.forceLayout()
-        const row = currentRow()
+        const row = root.currentRow()
         if (!row) { results.contentY = 0; return }
         let position = results.contentY
         if (row.y < position) position = row.y
@@ -154,8 +155,14 @@ FocusScope {
             position = row.y + row.height - results.height
         results.contentY = Math.max(0, Math.min(position, results.contentHeight - results.height))
     }
-    onHeightChanged: Qt.callLater(root.ensureCurrentVisible)
-    onWidthChanged: Qt.callLater(root.ensureCurrentVisible)
+    // An owned timer is cancelled with the palette when a surface switch
+    // destroys it; a queued JavaScript callback can outlive its methods.
+    Timer { id: visibilityTimer; interval: 0; onTriggered: root.ensureCurrentVisible() }
+    function scheduleCurrentVisibility() {
+        if (opened && visibilityTimer) visibilityTimer.restart()
+    }
+    onHeightChanged: root.scheduleCurrentVisibility()
+    onWidthChanged: root.scheduleCurrentVisibility()
 
     function cycleScope() {
         root.scopeFilter = root.scopeFilter === "all" ? "games"
@@ -179,7 +186,7 @@ FocusScope {
 
     onQueryChanged: { root.currentIndex = 0; root.localGames = []; root.searchError = ""; root.scheduleSearch() }
     onScopeFilterChanged: { root.currentIndex = 0; root.scheduleSearch() }
-    onFlatCountChanged: { root.clampCurrent(); Qt.callLater(root.ensureCurrentVisible) }
+    onFlatCountChanged: { root.clampCurrent(); root.scheduleCurrentVisibility() }
 
     readonly property real contentHeight: resultsColumn.implicitHeight
     readonly property real panelHeight: Math.min(58 + Math.min(root.contentHeight, 428) + 42, Math.max(100, height - 32))

@@ -985,10 +985,14 @@ fn run_decoder_worker(
         return;
     }
 
-    video_log!(
-        "Embedded D3D11 decoder worker started codec={} pollMs={}",
-        format.codec.label(),
-        DECODER_POLL_INTERVAL.as_millis()
+    opennow_streamer_protocol::log::diagnostic(
+        "INFO",
+        "decode",
+        &format!(
+            "Embedded D3D11 decoder worker started codec={} pollMs={}",
+            format.codec.label(),
+            DECODER_POLL_INTERVAL.as_millis()
+        ),
     );
     let mut submitted_any = false;
     // One worker-owned access unit may be waiting for a replacement MFT's
@@ -1035,7 +1039,11 @@ fn run_decoder_worker(
                     .clear();
                 encoded.clear();
                 decoder_generation.fetch_add(1, Ordering::AcqRel);
-                video_log!("Embedded D3D11 decoder failed: {message}");
+                opennow_streamer_protocol::log::diagnostic(
+                    "WARN",
+                    "decode",
+                    &format!("Embedded D3D11 decoder failed: {message}"),
+                );
                 let _ = events.push(BackendEvent::DeviceLost {
                     subsystem: Subsystem::VideoDecode,
                     message,
@@ -1081,7 +1089,11 @@ fn run_decoder_worker(
                         break;
                     }
                     Err(message) => {
-                        video_log!("Embedded D3D11 decoder reset failed: {message}");
+                        opennow_streamer_protocol::log::diagnostic(
+                            "WARN",
+                            "decode",
+                            &format!("Embedded D3D11 decoder reset failed: {message}"),
+                        );
                         let _ = events.push(BackendEvent::DeviceLost {
                             subsystem: Subsystem::VideoDecode,
                             message,
@@ -1114,7 +1126,11 @@ fn run_decoder_worker(
                     .clear();
                 encoded.clear();
                 decoder_generation.fetch_add(1, Ordering::AcqRel);
-                video_log!("Embedded D3D11 decoder input failed: {message}");
+                opennow_streamer_protocol::log::diagnostic(
+                    "WARN",
+                    "decode",
+                    &format!("Embedded D3D11 decoder input failed: {message}"),
+                );
                 let _ = events.push(BackendEvent::DeviceLost {
                     subsystem: Subsystem::VideoDecode,
                     message,
@@ -1147,11 +1163,15 @@ fn run_decoder_worker(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .len();
-            video_log!(
-                "Embedded D3D11 decoder progress codec={} submitted={submitted_frames} produced={produced_frames} encodedQueued={} decodedReady={decoded_ready} generation={}",
-                format.codec.label(),
-                encoded.len(),
-                decoder_generation.load(Ordering::Acquire),
+            opennow_streamer_protocol::log::diagnostic(
+                "INFO",
+                "decode",
+                &format!(
+                    "Embedded D3D11 decoder progress codec={} submitted={submitted_frames} produced={produced_frames} encodedQueued={} decodedReady={decoded_ready} generation={}",
+                    format.codec.label(),
+                    encoded.len(),
+                    decoder_generation.load(Ordering::Acquire),
+                ),
             );
             last_progress_log = Instant::now();
         }
@@ -1208,7 +1228,11 @@ fn wait_for_recovery_keyframe(
                 return Some(frame);
             }
             Err(message) => {
-                video_log!("Embedded D3D11 decoder recovery failed: {message}");
+                opennow_streamer_protocol::log::diagnostic(
+                    "WARN",
+                    "decode",
+                    &format!("Embedded D3D11 decoder recovery failed: {message}"),
+                );
                 let _ = events.push(BackendEvent::DeviceLost {
                     subsystem: Subsystem::VideoDecode,
                     message,

@@ -1613,7 +1613,7 @@ struct EmbeddedD3d11State {
     producer: Option<(crate::GraphicsContext, crate::D3d11FrameProducer)>,
     frame_ready: Arc<dyn Fn() + Send + Sync>,
     keyframe_required: bool,
-    playback_started: bool,
+    first_frame_recorded: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -1670,7 +1670,7 @@ impl EmbeddedD3d11State {
             producer: None,
             frame_ready: Arc::new(|| {}),
             keyframe_required: false,
-            playback_started: false,
+            first_frame_recorded: false,
         }
     }
 
@@ -1685,6 +1685,10 @@ impl EmbeddedD3d11State {
 
     fn take_keyframe_required(&mut self) -> bool {
         std::mem::take(&mut self.keyframe_required)
+    }
+
+    fn take_first_recorded_frame(&mut self, succeeded: bool) -> bool {
+        succeeded && !std::mem::replace(&mut self.first_frame_recorded, true)
     }
 
     fn record(
@@ -1971,14 +1975,14 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
     ) -> Result<crate::GraphicsRecordedFrame, crate::GraphicsFrameError> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let result = state.record(context, command);
-        if result.is_ok() && !state.playback_started {
-            state.playback_started = true;
+        let first_frame = state.take_first_recorded_frame(result.is_ok());
+        let keyframe_required = state.take_keyframe_required();
+        drop(state);
+        if first_frame {
             let _ = self.shared.feedback.send(MediaFeedback::PlaybackStarted {
                 backend: "D3D11/Qt",
             });
         }
-        let keyframe_required = state.take_keyframe_required();
-        drop(state);
         if keyframe_required {
             invalidate_embedded_video(
                 &self.shared,
@@ -3637,6 +3641,24 @@ fn mark_macos_video_desynced(shared: &SharedPipeline, mid: &str, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn embedded_playback_starts_only_once_after_a_successful_record() {
+        let mut state = EmbeddedD3d11State::new(
+            MediaStreamConfig::default(),
+            Arc::new(Mutex::new(EmbeddedD3d11Submission::new())),
+        );
+        assert!(!state.take_first_recorded_frame(false));
+        assert!(!state.take_first_recorded_frame(false));
+        assert!(state.take_first_recorded_frame(true));
+        assert!(!state.take_first_recorded_frame(true));
+        state.reset();
+        assert!(
+            !state.take_first_recorded_frame(true),
+            "surface recreation is not a new session"
+        );
+    }
 
     #[cfg(target_os = "windows")]
     fn embedded_h264_frame(

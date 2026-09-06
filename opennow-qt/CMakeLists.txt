@@ -449,7 +449,8 @@ add_custom_target(opennow-license-notices ALL
 )
 add_dependencies(opennow-qt opennow-license-notices)
 
-set(OPENNOW_STREAMER_TARGET_DIR "${CMAKE_BINARY_DIR}/streamer-rust-target")
+set(OPENNOW_STREAMER_TARGET_DIR "${CMAKE_BINARY_DIR}/streamer-rust-target" CACHE PATH
+    "Streamer Cargo artifacts; use a shorter path if Windows MSBuild exceeds MAX_PATH")
 set(OPENNOW_STREAMER_ARTIFACT_ROOT "${OPENNOW_STREAMER_TARGET_DIR}")
 if(OPENNOW_RUST_TARGET)
     set(OPENNOW_STREAMER_ARTIFACT_ROOT
@@ -527,8 +528,10 @@ if(WIN32 AND OPENNOW_RUST_EFFECTIVE_TARGET MATCHES "-msvc$")
     set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "opennow_streamer_ffi.dll")
     set(OPENNOW_STREAMER_FFI_LINK_NAME "opennow_streamer_ffi.dll.lib")
 elseif(WIN32)
+    # MinGW ld links directly against the DLL; current rustc no longer emits
+    # a separate GNU import library for cdylib targets.
     set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "opennow_streamer_ffi.dll")
-    set(OPENNOW_STREAMER_FFI_LINK_NAME "libopennow_streamer_ffi.dll.a")
+    set(OPENNOW_STREAMER_FFI_LINK_NAME "${OPENNOW_STREAMER_FFI_RUNTIME_NAME}")
 elseif(APPLE)
     set(OPENNOW_STREAMER_FFI_RUNTIME_NAME "libopennow_streamer_ffi.dylib")
     set(OPENNOW_STREAMER_FFI_LINK_NAME "${OPENNOW_STREAMER_FFI_RUNTIME_NAME}")
@@ -807,7 +810,7 @@ if(BUILD_TESTING)
     qt_add_executable(opennow-embedded-orchestration-tests
         tests/tst_embeddedorchestration.cpp
     )
-    target_link_libraries(opennow-embedded-orchestration-tests PRIVATE Qt6::Test Qt6::Core)
+    target_link_libraries(opennow-embedded-orchestration-tests PRIVATE Qt6::Test Qt6::Core Qt6::Qml)
     target_compile_definitions(opennow-embedded-orchestration-tests PRIVATE
         OPENNOW_QT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME opennow-embedded-orchestration-tests

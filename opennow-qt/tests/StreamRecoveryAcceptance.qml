@@ -25,6 +25,8 @@ QtObject {
         client.state = "stopped"
         ShellStore.streamerStartRequestId = "fixture-blocked"
         ShellStore.streamInputPauseRequestId = "fixture-blocked"
+        // This is another reply for the same seat, not the first session.
+        ShellStore.activeSession = {sessionId:"fixture", phase:"ready", status:2}
         ShellStore.streamerRestartAttempts = 2
         ShellStore.sessionReconnectAttempts = 2
         ShellStore.acceptStreamingSession({sessionId:"fixture", phase:"ready", status:2})
@@ -39,6 +41,7 @@ QtObject {
         check(ShellStore.sessionClaimRequestId === "", "no claims after budget exhaustion")
         check(ShellStore.streamMessage === "decoder failed", "retain the failure message")
         ShellStore.streamerRestartTimer.stop()
+        ShellStore.streamerRecoveryExhausted = false
         ShellStore.sessionReconnectAttempts = 0
         ShellStore.streamer = {status:"stopped"}
         ShellStore.streamerStartRequestId = ""
@@ -91,6 +94,7 @@ QtObject {
               "stalled cleanup must retain native resource ownership")
         ShellStore.streamerStopRequestId = ""
         client.state = "stopped"
+        ShellStore.streamer = {sessionId:"fixture", status:"streaming"}
         ShellStore.acceptNativeEvent({type:"status", event:"first-frame", status:"streaming", backend:"fixture"})
         check(ShellStore.streamerRestartAttempts === 0 && ShellStore.sessionReconnectAttempts === 0,
               "video recovery must restore retry budgets")

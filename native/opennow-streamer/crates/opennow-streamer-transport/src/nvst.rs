@@ -4097,6 +4097,22 @@ impl ReservedNvstBundle {
         }
     }
 
+    /// Use the route to the negotiated media peer, not a public DNS service.
+    /// Split-tunnel VPNs can send those destinations through different NICs.
+    pub fn advertised_local_address_for(&self, peer: SocketAddr) -> std::io::Result<String> {
+        let local = self.socket.local_addr()?;
+        let probe = UdpSocket::bind(SocketAddr::new(local.ip(), 0))?;
+        probe.connect(peer)?;
+        let address = probe.local_addr()?.ip();
+        if address.is_unspecified() || !address.is_ipv4() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "no local IPv4 route to the NVST media peer",
+            ));
+        }
+        Ok(address.to_string())
+    }
+
     pub fn identity(&mut self) -> NvstBundleIdentity {
         nvst_local_bundle_identity(&mut self.rtc)
     }
@@ -4240,16 +4256,12 @@ fn bind_nvst_udp_socket(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket
     // delivery indeterminate. Keep this exact exclusive socket through ANNOUNCE.
     #[cfg(windows)]
     set_exclusive_udp_address(&socket)?;
-    #[cfg(unix)]
-    socket.set_reuse_address(true)?;
     if let Err(error) = socket.set_recv_buffer_size(NVST_UDP_RECEIVE_BUFFER_BYTES) {
         log_udp_error("receive-buffer", port, &error);
         eprintln!(
             "NVST could not enlarge UDP receive buffer to {NVST_UDP_RECEIVE_BUFFER_BYTES} bytes: {error}"
         );
     }
-    #[cfg(unix)]
-    socket.set_reuse_port(true)?;
     if let Err(error) = socket.bind(&SocketAddr::new(bind_ip, port).into()) {
         log_udp_error("bind-unavailable", port, &error);
         return Err(error);
@@ -4318,6 +4330,12 @@ pub fn reserve_nvst_mjolnir_udp_socket() -> std::io::Result<UdpSocket> {
 }
 
 fn reserve_nvst_socket_pair() -> std::io::Result<(UdpSocket, UdpSocket)> {
+    reserve_nvst_socket_pair_from(49_005)
+}
+
+fn reserve_nvst_socket_pair_from(
+    preferred_video_port: u16,
+) -> std::io::Result<(UdpSocket, UdpSocket)> {
     // Bifrost's Windows client reserves this exact pair first
     // (`general.clientPorts.useReserved=1`) and only falls back to dynamic
     // ports when it is unavailable. Some cloud seats do not route the
@@ -4325,9 +4343,10 @@ fn reserve_nvst_socket_pair() -> std::io::Result<(UdpSocket, UdpSocket)> {
     // though the version-6 NATT request is otherwise valid. Match the
     // official preference while preserving a non-fatal fallback for users
     // that already have either port occupied.
-    const OFFICIAL_MJOLNIR_PORT: u16 = 49_005;
-    const OFFICIAL_BUNDLE_PORT: u16 = 49_006;
-    reserve_nvst_socket_pair_preferred(OFFICIAL_MJOLNIR_PORT, OFFICIAL_BUNDLE_PORT)
+    let preferred_bundle_port = preferred_video_port.checked_add(1).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "NVST port pair overflows")
+    })?;
+    reserve_nvst_socket_pair_preferred(preferred_video_port, preferred_bundle_port)
 }
 
 fn reserve_nvst_socket_pair_preferred(
@@ -4350,6 +4369,14 @@ fn reserve_nvst_socket_pair_preferred(
         "WARN",
         "nvst-udp",
         "preferred-pair-unavailable falling_back=dynamic-adjacent",
+    );
+
+    opennow_streamer_protocol::log::log_async(
+        "INFO",
+        "transport",
+        &format!(
+            "NVST preferred UDP pair unavailable; reserving an exclusive dynamic pair: {last_error}"
+        ),
     );
 
     for _ in 0..MAX_PAIR_ATTEMPTS {
@@ -4491,12 +4518,17 @@ pub fn spawn_nvst_mjolnir_receiver(
     media_consumer: MediaConsumer,
     event_sender: Sender<NvstReceiveEvent>,
 ) -> Result<NvstUdpReceiverSession, NvstUdpReceiverError> {
-    eprintln!(
-        "NVST Mjolnir raw-SRTP video receiver arming on {}",
-        socket
-            .local_addr()
-            .map(|addr| addr.to_string())
-            .unwrap_or_else(|_| "unknown".to_owned())
+    opennow_streamer_protocol::log::diagnostic(
+        "INFO",
+        "transport",
+        &format!(
+            "NVST Mjolnir raw-SRTP video receiver arming on {} peer={}",
+            socket
+                .local_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|_| "unknown".to_owned()),
+            config.video_peer,
+        ),
     );
     spawn_receiver_thread(
         "opennow-nvst-mjolnir",
@@ -5868,6 +5900,13 @@ fn run_nvst_udp_receiver(
             eprintln!(
                 "NVST transport timeout counters: pings={pings_sent}, inbound={inbound_datagrams}, stunHandled={handled_stun}, stunInvalid={invalid_stun}, nonStun={non_stun}, wrongSource={wrong_source}"
             );
+            if inbound_datagrams == 0 {
+                opennow_streamer_protocol::log::diagnostic(
+                    "WARN",
+                    "transport",
+                    "NVST video UDP path received no datagrams; audio/control may still work. Check firewall/VPN routing and UDP port ownership. No video has reached SRTP authentication or decoding.",
+                );
+            }
         }
         forward_optional(&event_sender, timeout);
     }
@@ -6457,6 +6496,50 @@ mod tests {
         let reclaimed = bind_nvst_udp_socket(address.ip(), address.port())
             .expect("failed pair must release video reservation");
         assert_eq!(reclaimed.local_addr().unwrap(), address);
+    }
+
+    #[test]
+    fn nvst_unicast_socket_cannot_share_an_existing_port() {
+        let owner = reserve_nvst_mjolnir_udp_socket().unwrap();
+        let address = owner.local_addr().unwrap();
+        assert!(bind_nvst_udp_socket(address.ip(), address.port()).is_err());
+        let competitor = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+        competitor.set_reuse_address(true).unwrap();
+        assert!(competitor.bind(&address.into()).is_err());
+    }
+
+    #[test]
+    fn nvst_pair_falls_back_when_either_preferred_port_is_occupied() {
+        let (bundle, video) = reserve_nvst_socket_pair().unwrap();
+        let preferred = video.local_addr().unwrap().port();
+        let (other_bundle, other_video) = reserve_nvst_socket_pair_from(preferred).unwrap();
+        assert_ne!(other_video.local_addr().unwrap().port(), preferred);
+        assert_eq!(
+            other_bundle.local_addr().unwrap().port(),
+            other_video.local_addr().unwrap().port() + 1
+        );
+        drop(video);
+        let (third_bundle, third_video) = reserve_nvst_socket_pair_from(preferred).unwrap();
+        assert_ne!(third_video.local_addr().unwrap().port(), preferred);
+        assert_eq!(
+            third_bundle.local_addr().unwrap().port(),
+            third_video.local_addr().unwrap().port() + 1
+        );
+        // The failed pair attempt must release its first socket.
+        assert!(bind_nvst_udp_socket(IpAddr::V4(Ipv4Addr::UNSPECIFIED), preferred).is_ok());
+        drop(bundle);
+    }
+
+    #[test]
+    fn advertised_media_address_uses_the_requested_peer_route() {
+        // No packets or Internet access: UDP connect only asks the OS for a route.
+        let bundle = ReservedNvstBundle::reserve().unwrap();
+        assert_eq!(
+            bundle
+                .advertised_local_address_for("127.0.0.1:5004".parse().unwrap())
+                .unwrap(),
+            "127.0.0.1"
+        );
     }
 
     #[test]
@@ -8225,16 +8308,22 @@ mod tests {
             .local_addr()
             .expect("client address")
             .port();
-        drop(client_reservation);
-
         let mut config = config();
         config.client_udp_port = client_port;
         config.video_peer = server.local_addr().expect("server address");
         config.ping_payload = b"negotiated-ping".to_vec();
         let (media_consumer, _media_receiver) = mpsc::sync_channel(1);
         let (event_sender, _event_receiver) = mpsc::channel();
-        let session =
-            spawn_nvst_udp_receiver(config, media_consumer, event_sender).expect("UDP receiver");
+        // Keep the reservation alive: parallel socket tests can otherwise claim
+        // this ephemeral port between the probe and the receiver's bind.
+        let session = spawn_nvst_udp_receiver_with_socket(
+            config,
+            media_consumer,
+            event_sender,
+            Some(client_reservation),
+            None,
+        )
+        .expect("UDP receiver");
 
         let mut datagram = [0_u8; 64];
         let (first_len, _) = server.recv_from(&mut datagram).expect("first ping");

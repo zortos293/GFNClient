@@ -252,6 +252,13 @@ pub fn log_async(level: &'static str, area: &'static str, message: &str) {
     }
 }
 
+/// Low-frequency pipeline diagnostics must be visible both in standalone stderr
+/// captures and in the embedded Qt file sink. Never pass credentials or payloads.
+pub fn diagnostic(level: &'static str, area: &'static str, message: &str) {
+    log_async(level, area, message);
+    eprintln!("{message}");
+}
+
 /// Appends the first hit for `key` and then every [`THROTTLE_EVERY`]th
 /// repeat, tagging repeats with their running count. For hot paths where
 /// the same failure recurs per frame.
@@ -336,11 +343,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         set_log_file(&path).unwrap();
         log_async("INFO", "transport", "inbound=0 frames=0");
+        diagnostic("INFO", "transport", "NVST rx-stats inbound=0 pings=97");
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            if std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("inbound=0 frames=0")
+            let body = std::fs::read_to_string(&path).unwrap();
+            if body.contains("inbound=0 frames=0")
+                && body.contains("INFO transport NVST rx-stats inbound=0 pings=97")
             {
                 break;
             }

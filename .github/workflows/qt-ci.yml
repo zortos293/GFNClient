@@ -93,22 +93,6 @@ jobs:
             package-generator: ZIP
             rust-target: aarch64-pc-windows-msvc
             cmake-arch: ARM64
-          - label: macos-arm64
-            os: blacksmith-6vcpu-macos-15
-            build-parallel: 6
-            qt-host: mac
-            qt-arch: clang_64
-            package-generator: "DragNDrop;ZIP"
-            rust-target: aarch64-apple-darwin
-            cmake-arch: arm64
-          - label: macos-x64
-            os: blacksmith-6vcpu-macos-15
-            build-parallel: 6
-            qt-host: mac
-            qt-arch: clang_64
-            package-generator: "DragNDrop;ZIP"
-            rust-target: x86_64-apple-darwin
-            cmake-arch: x86_64
 
     env:
       CARGO_TERM_COLOR: always
@@ -239,7 +223,33 @@ jobs:
             nasm \
             pkg-config
 
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: qt-ci-${{ matrix.os }}-${{ matrix.label }}
+          cache-bin: false
+          workspaces: |
+            native/opennow-core -> target
+            native/opennow-streamer -> target
+            native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
+
+      - name: Cache Qt C++ compilation
+        if: runner.os != 'Windows'
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
+        with:
+          key: qt-ci-${{ matrix.os }}-${{ matrix.label }}
+          max-size: 500M
+
+      - name: Cache SDL3 installation
+        id: sdl-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/SDL-install
+          key: qt-ci-sdl-v1-${{ matrix.os }}-${{ matrix.label }}-${{ env.SDL_VERSION }}-${{ hashFiles('.github/workflows/qt-ci.yml') }}
+
       - name: Build SDL3
+        if: steps.sdl-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
@@ -316,6 +326,9 @@ jobs:
           fi
           if [[ -n "${OPENNOW_QT_HOST_PATH:-}" ]]; then
             OPENNOW_CMAKE_ARGS+=("-DQT_HOST_PATH=${OPENNOW_QT_HOST_PATH}")
+          fi
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            OPENNOW_CMAKE_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=ccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
           fi
           cmake -S opennow-qt -B build/opennow-qt-release \
             -DCMAKE_BUILD_TYPE=Release \

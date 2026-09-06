@@ -1,7 +1,7 @@
 # Qt production release candidates
 
-The `qt-release-candidate` workflow builds one immutable Qt/Rust source commit for all seven
-release architectures/window families. It does not publish a GitHub release;
+The `qt-release-candidate` workflow builds one immutable Qt/Rust source commit for Windows and
+Linux, each on x64 and ARM64. macOS builds are temporarily disabled in Actions. The workflow does not publish a GitHub release;
 it produces protected candidate artifacts that must still pass the live matrix and staged rollout.
 
 ## Protected environment
@@ -23,6 +23,10 @@ only `OPENNOW_UPDATE_ED25519_PRIVATE_KEY`; restrict it to a dedicated self-hoste
 | `OPENNOW_APPLE_API_KEY_ID` | Notarization API key ID |
 | `OPENNOW_APPLE_API_ISSUER_ID` | Notarization issuer ID |
 
+The macOS/Apple secrets are only needed when macOS builds are re-enabled. To restore macOS,
+restore its release job from Git history, its inventory dependency and the 12-artifact checks,
+and both macOS entries in the `qt-ci` matrix together.
+
 The matching Ed25519 public key is a workflow input, not a secret. The workflow embeds that exact
 value into every core. Ordinary Linux, Windows and macOS build workers never receive the update
 private seed. After their platform-signed artifacts are uploaded, the isolated signer downloads
@@ -40,12 +44,12 @@ ephemeral or reset after each approved release operation.
   diagnostics, telemetry and updater selection.
 - Windows x64/ARM64 application executables and MSI installers are timestamped with Authenticode;
   the portable ZIPs are unpacked and every executable is verified again.
-- macOS Intel/Apple-Silicon apps use hardened-runtime Developer ID signing. The app is notarized and
-  stapled before final ZIP/DMG creation; the DMG is then signed, notarized, stapled and assessed.
+- Current candidates do not include macOS packages. Re-enabling macOS must restore its Developer
+  ID signing, notarization, and stapling steps along with the build job.
 - Linux x64/ARM64 DEB and checksum-pinned AppImage builds use native runners.
 - Every installable artifact receives a sibling Ed25519 update manifest after platform signing.
-- The inventory job fails unless it finds both Windows MSI/ZIP pairs, both macOS DMG/ZIP pairs, both
-  Linux AppImage/DEB pairs and exactly one manifest per artifact. It records the immutable commit and
+- The inventory job fails unless it finds both Windows MSI/ZIP pairs, both Linux AppImage/DEB pairs,
+  no macOS DMGs, and exactly one manifest per artifact (eight artifacts total). It records the immutable commit and
   SHA-256 of every candidate file.
 
 Run the workflow manually with an exact reviewed 40-character source commit, version, and public

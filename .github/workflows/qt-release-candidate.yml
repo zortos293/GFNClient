@@ -114,7 +114,30 @@ jobs:
             libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
             libxrandr-dev libxrender-dev libxss-dev make nasm pkg-config
 
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: qt-release-${{ matrix.runner }}-${{ matrix.arch }}
+          cache-bin: false
+          workspaces: |
+            native/opennow-core -> ../../build/qt-release/rust-target
+            native/opennow-streamer -> ../../build/qt-release/streamer-rust-target
+
+      - name: Cache Qt C++ compilation
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
+        with:
+          key: qt-release-${{ matrix.runner }}-${{ matrix.arch }}
+          max-size: 500M
+
+      - name: Cache SDL3 installation
+        id: sdl-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/SDL-install
+          key: qt-release-sdl-v1-${{ matrix.runner }}-${{ matrix.arch }}-${{ env.SDL_VERSION }}-${{ hashFiles('.github/workflows/qt-release-candidate.yml') }}
+
       - name: Build SDL3
+        if: steps.sdl-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
@@ -130,6 +153,7 @@ jobs:
           UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
         run: |
           cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
@@ -293,7 +317,24 @@ jobs:
           cache: true
           cache-key-prefix: qt-release-windows-${{ matrix.arch }}
 
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: qt-release-windows-2025-${{ matrix.arch }}
+          cache-bin: false
+          workspaces: |
+            native/opennow-core -> ../../build/qt-release/rust-target
+            native/opennow-streamer -> ../../build/qt-release/streamer-rust-target
+
+      - name: Cache SDL3 installation
+        id: sdl-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/SDL-install
+          key: qt-release-sdl-v1-windows-2025-${{ matrix.arch }}-${{ env.SDL_VERSION }}-${{ hashFiles('.github/workflows/qt-release-candidate.yml') }}
+
       - name: Build SDL3
+        if: steps.sdl-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
@@ -393,163 +434,11 @@ jobs:
             build/release-artifacts/SHA256SUMS
           if-no-files-found: error
 
-  macos:
-    name: macos-${{ matrix.arch }}
-    needs: preflight
-    runs-on: blacksmith-6vcpu-macos-15
-    environment: qt-production-release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            rust_target: aarch64-apple-darwin
-            cmake_arch: arm64
-          - arch: x64
-            rust_target: x86_64-apple-darwin
-            cmake_arch: x86_64
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.preflight.outputs.source_sha }}
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - run: rustup target add ${{ matrix.rust_target }}
-
-      - uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: mac
-          target: desktop
-          arch: clang_64
-          modules: qtmultimedia qtshadertools
-          cache: true
-          cache-key-prefix: qt-release-macos-${{ matrix.arch }}
-
-      - name: Build SDL3
-        shell: bash
-        run: |
-          git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
-          cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL-build" -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} -DSDL_SHARED=ON -DSDL_STATIC=OFF \
-            -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF
-          cmake --build "$RUNNER_TEMP/SDL-build" --config Release --parallel
-          cmake --install "$RUNNER_TEMP/SDL-build" --config Release --prefix "$RUNNER_TEMP/SDL-install"
-
-      - name: Configure, build, test, and install release app
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
-        run: |
-          cmake -S opennow-qt -B build/qt-release -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} \
-            -DOPENNOW_RUST_TARGET=${{ matrix.rust_target }} \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
-            -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
-            -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
-          cmake --build build/qt-release --config Release --parallel
-          ctest --test-dir build/qt-release -C Release --output-on-failure --parallel 4
-          cmake --install build/qt-release --config Release --prefix "$RUNNER_TEMP/stage"
-
-      - name: Import Developer ID certificate
-        shell: bash
-        env:
-          MACOS_P12_BASE64: ${{ secrets.OPENNOW_MACOS_DEVELOPER_ID_P12_BASE64 }}
-          MACOS_P12_PASSWORD: ${{ secrets.OPENNOW_MACOS_DEVELOPER_ID_P12_PASSWORD }}
-        run: |
-          set -euo pipefail
-          keychain="$RUNNER_TEMP/opennow-signing.keychain-db"
-          password=$(openssl rand -hex 24)
-          printf '%s' "$MACOS_P12_BASE64" | openssl base64 -d -A > "$RUNNER_TEMP/opennow-signing.p12"
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          security import "$RUNNER_TEMP/opennow-signing.p12" -k "$keychain" \
-            -P "$MACOS_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
-          security list-keychains -d user -s "$keychain" login.keychain-db
-          echo "OPENNOW_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
-
-      - name: Sign, notarize, and package app
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          SIGN_IDENTITY: ${{ secrets.OPENNOW_MACOS_SIGN_IDENTITY }}
-          APPLE_API_KEY_BASE64: ${{ secrets.OPENNOW_APPLE_API_KEY_BASE64 }}
-          APPLE_API_KEY_ID: ${{ secrets.OPENNOW_APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.OPENNOW_APPLE_API_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          mkdir -p build/release-artifacts
-          app="$RUNNER_TEMP/stage/OpenNOW.app"
-          test -d "$app"
-          test -f "$app/Contents/MacOS/libopennow_streamer_ffi.dylib"
-          test -x "$app/Contents/MacOS/opennow-streamer"
-          while IFS= read -r -d '' item; do
-            codesign --force --options runtime --timestamp --keychain "$OPENNOW_SIGNING_KEYCHAIN" \
-              --sign "$SIGN_IDENTITY" "$item"
-          done < <(find "$app/Contents/Frameworks" "$app/Contents/PlugIns" "$app/Contents/MacOS" \
-            -type f \( -perm -111 -o -name '*.dylib' \) -print0 2>/dev/null)
-          while IFS= read -r framework; do
-            codesign --force --options runtime --timestamp --keychain "$OPENNOW_SIGNING_KEYCHAIN" \
-              --sign "$SIGN_IDENTITY" "$framework"
-          done < <(find "$app/Contents/Frameworks" -type d -name '*.framework' -print 2>/dev/null | sort -r)
-          codesign --force --options runtime --timestamp --keychain "$OPENNOW_SIGNING_KEYCHAIN" \
-            --sign "$SIGN_IDENTITY" "$app"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          printf '%s' "$APPLE_API_KEY_BASE64" | openssl base64 -d -A > "$RUNNER_TEMP/AuthKey.p8"
-          preflight_zip="$RUNNER_TEMP/OpenNOW-notarization.zip"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "$preflight_zip"
-          xcrun notarytool submit "$preflight_zip" --wait \
-            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" \
-            --issuer "$APPLE_API_ISSUER_ID" --output-format json > "$RUNNER_TEMP/notary-app.json"
-          jq -e '.status == "Accepted"' "$RUNNER_TEMP/notary-app.json"
-          xcrun stapler staple "$app"
-          xcrun stapler validate "$app"
-          spctl --assess --type execute --verbose=2 "$app"
-          zip="build/release-artifacts/OpenNOW-Qt-${RELEASE_VERSION}-macOS-${{ matrix.arch }}.zip"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
-          dmg="build/release-artifacts/OpenNOW-Qt-${RELEASE_VERSION}-macOS-${{ matrix.arch }}.dmg"
-          hdiutil create -volname OpenNOW -srcfolder "$app" -ov -format UDZO "$dmg"
-          codesign --force --timestamp --keychain "$OPENNOW_SIGNING_KEYCHAIN" \
-            --sign "$SIGN_IDENTITY" "$dmg"
-          xcrun notarytool submit "$dmg" --wait \
-            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" \
-            --issuer "$APPLE_API_ISSUER_ID" --output-format json > "$RUNNER_TEMP/notary-dmg.json"
-          jq -e '.status == "Accepted"' "$RUNNER_TEMP/notary-dmg.json"
-          xcrun stapler staple "$dmg"
-          xcrun stapler validate "$dmg"
-          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
-
-      - name: Record artifact checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          (cd build/release-artifacts && shasum -a 256 -- *.dmg *.zip > SHA256SUMS)
-
-      - name: Remove temporary signing material
-        if: always()
-        shell: bash
-        run: |
-          security delete-keychain "$OPENNOW_SIGNING_KEYCHAIN" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/opennow-signing.p12" "$RUNNER_TEMP/AuthKey.p8"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: opennow-qt-${{ inputs.version }}-macos-${{ matrix.arch }}-signed-notarized
-          path: |
-            build/release-artifacts/*.dmg
-            build/release-artifacts/*.zip
-            build/release-artifacts/SHA256SUMS
-          if-no-files-found: error
-
   inventory:
     name: isolated-update-signing-and-inventory
     runs-on: [self-hosted, opennow-release-signer]
     environment: qt-update-signing
-    needs: [preflight, linux, windows, macos]
+    needs: [preflight, linux, windows]
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -569,13 +458,13 @@ jobs:
             exit 1
           fi
           [[ $(find candidate -type f -name '*.msi' | wc -l) -eq 2 ]]
-          [[ $(find candidate -type f -name '*.dmg' | wc -l) -eq 2 ]]
+          [[ $(find candidate -type f -name '*.dmg' | wc -l) -eq 0 ]]
           [[ $(find candidate -type f -name '*.AppImage' | wc -l) -eq 2 ]]
           [[ $(find candidate -type f -name '*.deb' | wc -l) -eq 2 ]]
-          [[ $(find candidate -type f -name '*.zip' | wc -l) -eq 4 ]]
+          [[ $(find candidate -type f -name '*.zip' | wc -l) -eq 2 ]]
           assets=$(find candidate -type f \( -name '*.msi' -o -name '*.dmg' -o -name '*.AppImage' \
             -o -name '*.deb' -o -name '*.zip' \) | wc -l)
-          [[ "$assets" -eq 12 ]]
+          [[ "$assets" -eq 8 ]]
 
           signing_dir=$(mktemp -d "$RUNNER_TEMP/opennow-update-signing.XXXXXX")
           trap 'rm -rf "$signing_dir"' EXIT

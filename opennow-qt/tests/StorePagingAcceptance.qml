@@ -3,6 +3,7 @@ import OpenNOW
 
 QtObject {
     property Component paletteComponent: Component { DesktopCommandPalette {} }
+    property Component hostComponent: Component { Item {} }
     property Component shelfComponent: Component { DesktopStoreShelf {} }
     property QtObject client: QtObject {
         property string state: "ready"
@@ -21,6 +22,14 @@ QtObject {
         function cancel(id) { requestFailed(id, "cancelled", "Cancelled"); return true }
     }
     function check(ok, message) { if (!ok) throw new Error("Store pagination: " + message) }
+    function namedChild(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children || []) {
+            const found = namedChild(child, name)
+            if (found) return found
+        }
+        return null
+    }
     function game(id) {
         return {id:id, uuid:id, title:"Test game " + id, imageUrl:"", heroImageUrl:"",
             variants:[{id:id, store:"Steam", inLibrary:false}], availableStores:["Steam"], genres:[]}
@@ -146,7 +155,8 @@ QtObject {
         check(screen.genreOptions.indexOf("MUSIC") >= 0 && screen.categoryOptions.indexOf("shelf:0:0") >= 0,
             "facets were restricted to visible games")
 
-        const palette = paletteComponent.createObject(screen, {opened:true})
+        const paletteHost = hostComponent.createObject(screen, {width:480, height:320})
+        const palette = paletteComponent.createObject(paletteHost, {opened:true})
         check(palette !== null, "palette fixture failed to load")
         palette.query = "fortntie"
         palette.requestGames()
@@ -158,8 +168,22 @@ QtObject {
         check(palette.localGames.length === 0, "stale palette search was accepted")
         client.responseReceived(palette.searchRequestId, {games:[game("cs2")]})
         check(palette.gameList.length === 1 && palette.gameList[0].id === "cs2", "palette ignored ranked local results")
+        palette.query = ""
+        palette.scopeFilter = "actions"
+        palette.ensureCurrentVisible()
+        check(palette.panelWidth <= paletteHost.width - 32 && palette.panelTop + palette.panelHeight <= paletteHost.height - 16,
+            "command palette extends beyond the window")
+        palette.moveCurrent(-1)
+        const paletteViewport = namedChild(palette, "commandPaletteResults")
+        const lastCommand = palette.currentRow()
+        check(paletteViewport && lastCommand && lastCommand.y >= paletteViewport.contentY
+            && lastCommand.y + lastCommand.height <= paletteViewport.contentY + paletteViewport.height + 1,
+            "keyboard selection is outside the command viewport")
+        palette.moveCurrent(1)
+        check(palette.currentRow().y >= paletteViewport.contentY, "wrapped selection was not scrolled back")
         palette.opened = false
         palette.destroy()
+        paletteHost.destroy()
 
         const shelf = shelfComponent.createObject(screen, {width:600,materialized:false,categoryId:"shelf:0:0",totalCount:90})
         const hiddenRequestCount = client.requests.length

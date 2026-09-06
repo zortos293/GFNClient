@@ -135,7 +135,27 @@ FocusScope {
         if (root.flatCount === 0)
             return
         root.currentIndex = (root.currentIndex + delta + root.flatCount) % root.flatCount
+        root.ensureCurrentVisible()
     }
+
+    function currentRow() {
+        return currentIndex < gameList.length ? gameRows.itemAt(currentIndex)
+            : actionRows.itemAt(currentIndex - gameList.length)
+    }
+
+    function ensureCurrentVisible() {
+        if (!results || !resultsColumn) return
+        resultsColumn.forceLayout()
+        const row = currentRow()
+        if (!row) { results.contentY = 0; return }
+        let position = results.contentY
+        if (row.y < position) position = row.y
+        else if (row.y + row.height > position + results.height)
+            position = row.y + row.height - results.height
+        results.contentY = Math.max(0, Math.min(position, results.contentHeight - results.height))
+    }
+    onHeightChanged: Qt.callLater(root.ensureCurrentVisible)
+    onWidthChanged: Qt.callLater(root.ensureCurrentVisible)
 
     function cycleScope() {
         root.scopeFilter = root.scopeFilter === "all" ? "games"
@@ -159,19 +179,21 @@ FocusScope {
 
     onQueryChanged: { root.currentIndex = 0; root.localGames = []; root.searchError = ""; root.scheduleSearch() }
     onScopeFilterChanged: { root.currentIndex = 0; root.scheduleSearch() }
-    onFlatCountChanged: root.clampCurrent()
+    onFlatCountChanged: { root.clampCurrent(); Qt.callLater(root.ensureCurrentVisible) }
 
-    readonly property real contentHeight: (flatCount === 0 ? 56 : 0) + (gameList.length > 0 ? 26 + gameList.length * 56 : 0)
-        + (actionList.length > 0 ? 26 + actionList.length * 40 : 0)
-    readonly property real panelHeight: 58 + Math.min(root.contentHeight, 428) + 42
+    readonly property real contentHeight: resultsColumn.implicitHeight
+    readonly property real panelHeight: Math.min(58 + Math.min(root.contentHeight, 428) + 42, Math.max(100, height - 32))
+    readonly property real panelWidth: Math.max(0, Math.min(640, width - 32))
+    readonly property real panelTop: Math.min(120, Math.max(16, (height - panelHeight) / 2))
 
     Rectangle { anchors.fill: parent; color: "#A8000000"; opacity: reveal.progress; TapHandler { onTapped: root.closeRequested() } }
     Rectangle {
+        objectName: "commandPalettePanel"
         opacity: reveal.progress; scale: reveal.zoom
         transformOrigin: Item.Center
-        x: Math.round((parent.width - 640) / 2)
-        y: 120
-        width: 640
+        x: Math.round((parent.width - root.panelWidth) / 2)
+        y: root.panelTop
+        width: root.panelWidth
         height: root.panelHeight
         radius: 18
         color: "#FA0A0E15"
@@ -206,6 +228,8 @@ FocusScope {
         }
 
         Flickable {
+            id: results
+            objectName: "commandPaletteResults"
             x: 10; y: 58; width: parent.width - 20; height: root.panelHeight - 58 - 42
             contentWidth: width
             contentHeight: resultsColumn.implicitHeight
@@ -227,6 +251,7 @@ FocusScope {
                     verticalAlignment: Text.AlignVCenter
                 }
                 Repeater {
+                    id: gameRows
                     model: root.gameList
                     delegate: ItemDelegate {
                         id: gameRow
@@ -310,6 +335,7 @@ FocusScope {
                     verticalAlignment: Text.AlignVCenter
                 }
                 Repeater {
+                    id: actionRows
                     model: root.actionList
                     delegate: ItemDelegate {
                         id: command

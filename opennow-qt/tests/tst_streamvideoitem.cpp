@@ -2,8 +2,10 @@
 #include "LinuxVulkanGraphics.h"
 #include "NativeStreamRuntime.h"
 #include "StreamVideoTextureRenderer.h"
+#include "WaylandPointerCapture.h"
 
 #include <QGuiApplication>
+#include <QJsonDocument>
 #include <QCursor>
 #include <QScopeGuard>
 #include <QtQml/qqml.h>
@@ -470,6 +472,212 @@ private slots:
 #else
         QSKIP("Windows cursor confinement test.");
 #endif
+    }
+
+    void waylandAbsoluteToPendingRelativeLockSurvivesUntilCompositorAcknowledges()
+    {
+        if (!WaylandPointerCapture::isWayland()
+                || !qEnvironmentVariableIsSet("OPENNOW_TEST_WAYLAND_CAPTURE"))
+            QSKIP("Requires an interactive Wayland compositor");
+        NativeStreamRuntime::Api api{};
+        static OpenNowStreamerConfig callbacks;
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            *output = reinterpret_cast<OpenNowStreamer *>(new int(1));
+            return OPENNOW_STREAMER_OK;
+        };
+        api.destroy = [](OpenNowStreamer *handle) {
+            delete reinterpret_cast<int *>(handle);
+            return OPENNOW_STREAMER_OK;
+        };
+        api.send = [](const OpenNowStreamer *, const std::uint8_t *, std::size_t) {
+            return OPENNOW_STREAMER_OK;
+        };
+        api.setCaptureActive = [](const OpenNowStreamer *, bool, bool,
+                                  std::uintptr_t window, bool *raw) {
+            Q_ASSERT(window == 0);
+            *raw = false;
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        item->setVideoSize(QSize(1920, 1080));
+        connect(&window, &QWindow::widthChanged, item, [&window, item] { item->setSize(window.size()); });
+        connect(&window, &QWindow::heightChanged, item, [&window, item] { item->setSize(window.size()); });
+        window.show();
+        QTRY_VERIFY_WITH_TIMEOUT(window.isActive(), 10000);
+        item->forceActiveFocus();
+        QVERIFY(!item->captureActive());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("wayland-start")}}));
+        const QByteArray ready = R"({"id":"wayland-start","type":"ok"})";
+        callbacks.response_callback(reinterpret_cast<const std::uint8_t *>(ready.constData()),
+                                    ready.size(), callbacks.user_data);
+        QTRY_VERIFY(item->captureActive());
+        item->setRelativeMouse(true);
+        QVERIFY(!item->captureActive());
+        QTRY_VERIFY_WITH_TIMEOUT(item->m_waylandPointer->locked(), 10000);
+        QTRY_VERIFY(item->captureActive());
+        for (const bool fullscreen : {false, true}) {
+            if (fullscreen) window.showFullScreen();
+            else window.showNormal();
+            item->setSize(window.size());
+            item->setInputEnabled(false);
+            QVERIFY(!item->m_waylandPointer->locked());
+            QVERIFY(!item->captureActive());
+            item->setInputEnabled(true);
+            QTRY_VERIFY_WITH_TIMEOUT(item->m_waylandPointer->locked(), 10000);
+            QTRY_VERIFY(item->captureActive());
+        }
+        for (const bool failure : {false, true}) {
+            if (failure) {
+                const QByteArray error = R"({"type":"status","status":"error"})";
+                callbacks.event_callback(reinterpret_cast<const std::uint8_t *>(error.constData()),
+                                         error.size(), callbacks.user_data);
+            } else {
+                QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("stop")}}));
+            }
+            QTRY_VERIFY(!runtime.inputAllowed());
+            QVERIFY(item->isVisible());
+            QVERIFY(!item->m_waylandPointer->locked());
+            QVERIFY(!item->captureActive());
+            QMetaObject::invokeMethod(item->m_waylandPointer.get(), "stateChanged", Qt::QueuedConnection);
+            QTest::qWait(150);
+            QVERIFY(!item->m_waylandPointer->locked());
+            QVERIFY(!item->captureActive());
+            QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                                  {QStringLiteral("id"), QStringLiteral("wayland-start")}}));
+            callbacks.response_callback(reinterpret_cast<const std::uint8_t *>(ready.constData()),
+                                        ready.size(), callbacks.user_data);
+            QTRY_VERIFY_WITH_TIMEOUT(item->m_waylandPointer->locked(), 10000);
+            QTRY_VERIFY(item->captureActive());
+        }
+        window.hide();
+        QTRY_VERIFY(!item->m_waylandPointer->locked());
+        QTRY_VERIFY(!item->captureActive());
+    }
+
+    void sessionAuthorizationPreventsVisibleCaptureFromReopeningAfterReset()
+    {
+        static OpenNowStreamerConfig callbacks;
+        static QStringList inputCalls;
+        static OpenNowStreamerStatus commandStatus;
+        inputCalls.clear();
+        commandStatus = OPENNOW_STREAMER_OK;
+        NativeStreamRuntime::Api api{};
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            *output = reinterpret_cast<OpenNowStreamer *>(new int(1));
+            return OPENNOW_STREAMER_OK;
+        };
+        api.destroy = [](OpenNowStreamer *handle) {
+            delete reinterpret_cast<int *>(handle);
+            return OPENNOW_STREAMER_OK;
+        };
+        api.send = [](const OpenNowStreamer *, const std::uint8_t *, std::size_t) {
+            return commandStatus;
+        };
+        api.setCaptureActive = [](const OpenNowStreamer *, bool active, bool, std::uintptr_t, bool *raw) {
+            inputCalls.append(active ? QStringLiteral("open") : QStringLiteral("close"));
+            *raw = false;
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t, std::uint16_t, bool pressed) {
+            inputCalls.append(pressed ? QStringLiteral("key-down") : QStringLiteral("key-up"));
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        window.show();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QVERIFY(!runtime.presentationAllowed());
+        QVERIFY(!item->captureActive());
+        QVERIFY(!inputCalls.contains(QStringLiteral("open")));
+        const auto reply = [](const QString &id) {
+            const auto bytes = QJsonDocument(QJsonObject{{QStringLiteral("id"), id},
+                {QStringLiteral("type"), QStringLiteral("ok")}}).toJson(QJsonDocument::Compact);
+            callbacks.response_callback(reinterpret_cast<const std::uint8_t *>(bytes.constData()),
+                                        bytes.size(), callbacks.user_data);
+        };
+        const auto delayedCaptureCallback = [item] {
+            QMetaObject::invokeMethod(item->m_waylandPointer.get(), "stateChanged", Qt::QueuedConnection);
+            QCoreApplication::sendPostedEvents();
+            QCoreApplication::processEvents();
+            item->resynchronizeInput();
+        };
+        for (const auto reason : {QStringLiteral("stop"), QStringLiteral("presentation-error"),
+                                  QStringLiteral("terminal-error"), QStringLiteral("rejected-stop")}) {
+            QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                                  {QStringLiteral("id"), reason}}));
+            QVERIFY(!item->captureActive());
+            delayedCaptureCallback();
+            QVERIFY(!item->captureActive());
+            reply(reason);
+            QTRY_VERIFY(runtime.inputAllowed());
+            QTRY_VERIFY(item->captureActive());
+            QKeyEvent press(QEvent::KeyPress, Qt::Key_W, Qt::NoModifier);
+            item->keyPressEvent(&press);
+            QVERIFY(inputCalls.contains(QStringLiteral("key-down")));
+            inputCalls.clear();
+            if (reason == QStringLiteral("presentation-error")) {
+                runtime.reportPresentationError(QStringLiteral("fixture presentation failure"));
+            } else if (reason == QStringLiteral("terminal-error")) {
+                const QByteArray bytes = R"({"type":"status","status":"error"})";
+                callbacks.event_callback(reinterpret_cast<const std::uint8_t *>(bytes.constData()),
+                                         bytes.size(), callbacks.user_data);
+            } else {
+                commandStatus = reason == QStringLiteral("rejected-stop")
+                    ? OPENNOW_STREAMER_QUEUE_FULL : OPENNOW_STREAMER_OK;
+                QCOMPARE(runtime.send({{QStringLiteral("type"), QStringLiteral("stop")}}),
+                         commandStatus == OPENNOW_STREAMER_OK);
+                commandStatus = OPENNOW_STREAMER_OK;
+            }
+            QTRY_COMPARE(runtime.inputAllowed(), reason == QStringLiteral("rejected-stop"));
+            QVERIFY(window.isVisible());
+            QVERIFY(item->isVisible());
+            QCOMPARE(item->captureActive(), reason == QStringLiteral("rejected-stop"));
+            QVERIFY(inputCalls.indexOf(QStringLiteral("key-up")) >= 0);
+            QVERIFY(inputCalls.indexOf(QStringLiteral("key-up")) < inputCalls.indexOf(QStringLiteral("close")));
+            inputCalls.clear();
+            reply(reason);
+            delayedCaptureCallback();
+            QCOMPARE(runtime.inputAllowed(), reason == QStringLiteral("rejected-stop"));
+            QCOMPARE(item->captureActive(), reason == QStringLiteral("rejected-stop"));
+            QCOMPARE(inputCalls.contains(QStringLiteral("open")), reason == QStringLiteral("rejected-stop"));
+        }
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("pending-start")}}));
+        commandStatus = OPENNOW_STREAMER_QUEUE_FULL;
+        QVERIFY(!runtime.send({{QStringLiteral("type"), QStringLiteral("stop")}}));
+        commandStatus = OPENNOW_STREAMER_OK;
+        delayedCaptureCallback();
+        QVERIFY(!runtime.inputAllowed());
+        QVERIFY(!item->captureActive());
+        reply(QStringLiteral("pending-start"));
+        QTRY_VERIFY(runtime.presentationAllowed());
+        delayedCaptureCallback();
+        QVERIFY(runtime.inputAllowed());
+        QVERIFY(item->captureActive());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("fresh-start")}}));
+        reply(QStringLiteral("fresh-start"));
+        QTRY_VERIFY(item->captureActive());
     }
 
     void cursorModeChangesDoNotReleaseAnActiveDrag()

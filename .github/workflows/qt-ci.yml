@@ -223,6 +223,7 @@ jobs:
             libsecret-1-dev \
             libva-dev \
             libvulkan-dev \
+            libwayland-dev \
             libx11-dev \
             libxcursor-dev \
             libxext-dev \
@@ -233,7 +234,8 @@ jobs:
             libxss-dev \
             make \
             nasm \
-            pkg-config
+            pkg-config \
+            wayland-protocols
 
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6

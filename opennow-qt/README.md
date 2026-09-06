@@ -27,6 +27,10 @@ No per-packet or per-input file logging is added to the gameplay path.
 
 Install the Qt ShaderTools development module with Qt Quick and Multimedia; CMake
 bakes the portable video-composition shaders into the executable at build time.
+Linux input also requires `pkg-config`, `libwayland-dev` (including `wayland-scanner`),
+and `wayland-protocols`. These are mandatory build dependencies, including for builds
+that will run on X11. The Wayland backend uses the display, surface and pointer owned
+by Qt; it does not create a second connection or presenter window.
 
 ```sh
 cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Debug
@@ -44,6 +48,40 @@ QT_QPA_PLATFORM=offscreen ./build/opennow-qt/opennow-qt \
 Useful development switches are `--route <name>`, `--overlay <name>`,
 `--reduced-motion`, `--core <path>` and `--screenshot <png-path>`. The test suite
 opens every route and overlay with QML warnings treated as failures.
+
+### Native input acceptance
+
+Run the controller, stream video, native runtime and Wayland pointer unit tests first:
+
+```sh
+ctest --test-dir build/opennow-qt --output-on-failure \
+  -R 'opennow-(controllerinput|streamvideo|nativestreamruntime|waylandpointer)-tests'
+```
+
+With a native Wayland compositor and an interactive pointer seat, run these opt-in
+tests and move/click the pointer inside the test window when requested by capture:
+
+```sh
+QT_QPA_PLATFORM=wayland OPENNOW_TEST_WAYLAND_CAPTURE=1 \
+  ./build/opennow-qt/opennow-waylandpointer-tests compositorCaptureLifecycle
+QT_QPA_PLATFORM=wayland OPENNOW_TEST_WAYLAND_CAPTURE=1 \
+  ./build/opennow-qt/opennow-streamvideo-tests \
+  waylandAbsoluteToPendingRelativeLockSurvivesUntilCompositorAcknowledges
+```
+
+The compositor must provide `zwp_relative_pointer_manager_v1` and
+`zwp_pointer_constraints_v1`. Missing support visibly disables relative gameplay
+capture without stopping audio/video. Native Wayland never falls back to XWayland
+XInput2 or cursor warping. X11 retains XInput2 and Windows retains Raw Input.
+The ordinary input queue remains bounded to 256 events, with four coalesced controller
+neutral slots reserved for capture closure. Focus loss never depends on QML callback
+ordering to release a held controller.
+
+The public-safe `--smoke-test --route stream --smoke-input-capture-error` fixture
+renders the shared error banner over the existing stream item. Add `--desktop` for
+the desktop shell and `--screenshot /absolute/path.png` to save visual evidence.
+Offscreen and nested compositor tests do not replace live Windows/X11/Wayland
+controller and mouse acceptance on real streaming sessions.
 
 The representative-hardware performance workload drives production route and popup motion,
 checks focus after every transition, and records refresh-relative frame budgets atomically:

@@ -3,6 +3,7 @@
 #include "NativeStreamRuntime.h"
 #include "LinuxVulkanGraphics.h"
 #include "StreamVideoTextureRenderer.h"
+#include "WaylandPointerCapture.h"
 
 #include <QColor>
 #include <QSGRenderNode>
@@ -360,14 +361,30 @@ private:
 }
 
 StreamVideoItem::StreamVideoItem(QQuickItem *parent)
-    : QQuickItem(parent)
+    : QQuickItem(parent), m_waylandPointer(std::make_unique<WaylandPointerCapture>())
 {
+    connect(m_waylandPointer.get(), &WaylandPointerCapture::stateChanged, this, [this] {
+        syncCaptureState();
+        emit inputCaptureErrorChanged();
+    }, Qt::QueuedConnection);
+    connect(m_waylandPointer.get(), &WaylandPointerCapture::relativeMotion, this,
+            [this](qint16 x, qint16 y) {
+        if (m_captureActive && m_inputEnabled && m_relativeMouse && nativeRuntime)
+            nativeRuntime->submitMouseRelative(x, y);
+    });
     setFlag(ItemHasContents, true);
     setActiveFocusOnTab(true);
     setAcceptedMouseButtons(Qt::AllButtons);
     setKeepMouseGrab(true);
     setAcceptHoverEvents(true);
     if (nativeRuntime) {
+        connect(nativeRuntime, &NativeStreamRuntime::inputAllowedChanged,
+                this, &StreamVideoItem::syncCaptureState);
+        connect(nativeRuntime, &NativeStreamRuntime::inputCaptureReset, this, [this] {
+            releaseInput();
+            m_rawInputActive = false;
+            if (std::exchange(m_captureActive, false)) emit captureActiveChanged();
+        });
         setRenderCallback(std::make_shared<NativeStreamRenderCallback>(nativeRuntime));
         connect(nativeRuntime, &NativeStreamRuntime::frameAvailable,
                 this, &StreamVideoItem::requestFrame);
@@ -392,9 +409,11 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
             connect(currentWindow, &QWindow::yChanged,
                     this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
             connect(currentWindow, &QWindow::widthChanged,
-                    this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
+                    this, &StreamVideoItem::resynchronizeInput, Qt::UniqueConnection);
             connect(currentWindow, &QWindow::heightChanged,
-                    this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
+                    this, &StreamVideoItem::resynchronizeInput, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::screenChanged,
+                    this, &StreamVideoItem::resynchronizeInput, Qt::UniqueConnection);
         }
         syncCaptureState();
     });
@@ -402,11 +421,11 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
 
 StreamVideoItem::~StreamVideoItem()
 {
+    releaseInput();
     if (nativeRuntime && nativeRuntime->running()) {
         bool rawInput = false;
         nativeRuntime->setCaptureActive(false, false, 0, &rawInput);
     }
-    releaseInput();
 }
 
 QSize StreamVideoItem::videoSize() const
@@ -449,6 +468,11 @@ void StreamVideoItem::setInputEnabled(bool enabled)
 bool StreamVideoItem::captureActive() const
 {
     return m_captureActive;
+}
+
+QString StreamVideoItem::inputCaptureError() const
+{
+    return m_waylandPointer->error();
 }
 
 bool StreamVideoItem::relativeMouse() const
@@ -738,7 +762,7 @@ void StreamVideoItem::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     if (m_relativeMouse) {
-        if (!m_rawInputActive) {
+        if (!m_rawInputActive && !WaylandPointerCapture::isWayland()) {
             const auto delta = event->position() - m_lastMousePosition;
             const auto deltaX = std::clamp(qRound(delta.x()), -32768, 32767);
             const auto deltaY = std::clamp(qRound(delta.y()), -32768, 32767);
@@ -817,7 +841,7 @@ void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
 void StreamVideoItem::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry)
 {
     QQuickItem::geometryChange(newGeometry, oldGeometry);
-    updateCursorConfinement();
+    resynchronizeInput();
 }
 
 QRect StreamVideoItem::scaledCaptureRect(const QRectF &itemRect,
@@ -915,7 +939,8 @@ QPoint StreamVideoItem::mapRemoteCursorPosition(const QPoint &normalizedPosition
 void StreamVideoItem::resynchronizeInput()
 {
     syncCaptureState();
-    if (m_captureActive && m_relativeMouse && !m_rawInputActive) {
+    if (m_captureActive && m_relativeMouse && !m_rawInputActive
+            && !WaylandPointerCapture::isWayland()) {
         const auto anchor = mapToGlobal(QPointF(width() / 2.0, height() / 2.0)).toPoint();
         QCursor::setPos(anchor);
     } else if (m_captureActive && !m_relativeMouse) {
@@ -940,14 +965,28 @@ void StreamVideoItem::submitAbsoluteMouse(const QPointF &position)
 
 void StreamVideoItem::syncCaptureState()
 {
-    const auto desired = m_inputEnabled && isVisible() && hasActiveFocus()
-        && window() && window()->isActive() && nativeRuntime && nativeRuntime->running();
-    if (!desired && m_captureActive) releaseInput();
+    auto desired = m_inputEnabled && isVisible() && hasActiveFocus()
+        && window() && window()->isActive() && nativeRuntime && nativeRuntime->running()
+        && nativeRuntime->inputAllowed();
+    if (m_captureActive && (!desired || (WaylandPointerCapture::isWayland()
+            && m_relativeMouse && !m_waylandPointer->locked())))
+        releaseInput();
+    if (WaylandPointerCapture::isWayland()) {
+        const auto viewport = aspectFitRect(m_videoSize, QSize(qRound(width()), qRound(height())));
+        auto region = mapRectToScene(QRectF(viewport)).toAlignedRect();
+        if (window()) region.translate(window()->frameMargins().left(), window()->frameMargins().top());
+        m_waylandPointer->setCapture(window(), desired && m_relativeMouse, region);
+        if (m_relativeMouse) desired = desired && m_waylandPointer->locked();
+    }
     bool rawInput = false;
     if (nativeRuntime && nativeRuntime->running()) {
         nativeRuntime->setCaptureActive(
             desired, m_relativeMouse,
-            window() ? static_cast<std::uintptr_t>(window()->winId()) : 0,
+            window() && !WaylandPointerCapture::isWayland()
+#if defined(Q_OS_LINUX)
+                && QGuiApplication::platformName() == QStringLiteral("xcb")
+#endif
+                ? static_cast<std::uintptr_t>(window()->winId()) : 0,
             &rawInput);
     }
     m_rawInputActive = desired && rawInput;
@@ -955,7 +994,7 @@ void StreamVideoItem::syncCaptureState()
     m_captureActive = desired;
     if (m_captureActive) {
         m_lastMousePosition = mapFromGlobal(QCursor::pos());
-        if (m_relativeMouse) grabMouse();
+        if (m_relativeMouse && !WaylandPointerCapture::isWayland()) grabMouse();
     } else {
         ungrabMouse();
     }
@@ -965,6 +1004,7 @@ void StreamVideoItem::syncCaptureState()
 
 void StreamVideoItem::releaseInput()
 {
+    m_waylandPointer->release();
     const auto pendingRelativeMouse = m_pendingRelativeMouse;
     m_pendingRelativeMouse.reset();
     if (nativeRuntime) {
@@ -1079,7 +1119,7 @@ void StreamVideoItem::setRelativeMouse(bool relative)
     m_relativeMouse = relative;
     if (relative) {
         setCursor(Qt::BlankCursor);
-        if (m_captureActive) {
+        if (m_captureActive && !WaylandPointerCapture::isWayland()) {
             grabMouse();
             const auto anchor = mapToGlobal(QPointF(width() / 2.0, height() / 2.0)).toPoint();
             QCursor::setPos(anchor);
@@ -1109,7 +1149,7 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
     if (hidden) return;
 
     if (reposition && metadata.normalizedPosition && m_pressedMouseButtons.isEmpty()
-        && m_captureActive) {
+        && m_captureActive && !WaylandPointerCapture::isWayland()) {
         const auto local = mapRemoteCursorPosition(
             *metadata.normalizedPosition, m_videoSize, QSizeF(width(), height()));
         QCursor::setPos(mapToGlobal(local).toPoint());

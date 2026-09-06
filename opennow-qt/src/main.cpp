@@ -479,7 +479,34 @@ int main(int argc, char *argv[])
         }
     } else {
         const auto screenshotIndex = arguments.indexOf(u"--screenshot"_s);
-        if (smokeTest && (arguments.contains(u"--smoke-backend-availability"_s)
+        if (smokeTest && arguments.contains(u"--smoke-input-capture-error"_s)) {
+            auto *store = engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}});
+            store->setProperty("streamState", u"streaming"_s);
+            QTimer::singleShot(150, &application, [&] {
+                auto *window = engine.rootObjects().isEmpty() ? nullptr
+                    : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+                auto *notice = window ? window->findChild<QQuickItem *>(u"streamInputCaptureNotice"_s) : nullptr;
+                auto *surface = window ? window->findChild<QQuickItem *>(u"streamSurfaceHost"_s) : nullptr;
+                if (!notice || !surface || !surface->isVisible()) {
+                    qCritical("Input capture fixture could not find the visible stream surface and notice");
+                    application.exit(EXIT_FAILURE);
+                    return;
+                }
+                notice->setProperty("message", u"Relative mouse input requires Wayland relative-pointer-v1 and pointer-constraints-v1; the compositor does not provide both protocols."_s);
+                QTimer::singleShot(250, &application, [&, window, notice, surface] {
+                    bool passed = !qmlWarningOccurred && notice->isVisible() && surface->isVisible()
+                        && window->findChild<QQuickItem *>(u"streamSurfaceHost"_s) == surface;
+                    const auto shot = arguments.indexOf(u"--screenshot"_s);
+                    if (shot >= 0 && shot + 1 < arguments.size())
+                        passed = passed && QFileInfo(arguments.at(shot + 1)).isAbsolute()
+                            && window->grabWindow().save(arguments.at(shot + 1));
+                    if (!passed) qCritical("Input capture fixture did not preserve the visible stream surface");
+                    application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
+                });
+            });
+        } else if (smokeTest && (arguments.contains(u"--smoke-backend-availability"_s)
                          || arguments.contains(u"--smoke-idle-mode"_s)
                          || arguments.contains(u"--smoke-stream-recovery"_s))) {
             QQmlComponent component(&engine, QUrl(arguments.contains(u"--smoke-idle-mode"_s)

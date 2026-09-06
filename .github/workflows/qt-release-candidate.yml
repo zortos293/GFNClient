@@ -111,8 +111,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang libclang-dev libasound2-dev libdbus-1-dev libdrm-dev libpulse-dev libsecret-1-dev \
             libgstreamer-plugins-bad1.0-0 libgstreamer-plugins-good1.0-0 libva-dev libvulkan-dev libx11-dev \
-            libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
-            libxrandr-dev libxrender-dev libxss-dev make nasm pkg-config
+            libwayland-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+            libxrandr-dev libxrender-dev libxss-dev make nasm pkg-config wayland-protocols
 
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6

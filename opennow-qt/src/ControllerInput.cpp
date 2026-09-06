@@ -43,6 +43,7 @@ ControllerInput::ControllerInput(QObject *parent)
 ControllerInput::~ControllerInput()
 {
     m_pollTimer.stop();
+    publishConnectedGamepads(true);
     for (auto &slot : m_slots) {
         if (slot.gamepad) SDL_CloseGamepad(slot.gamepad);
         slot = {};
@@ -65,7 +66,7 @@ void ControllerInput::updatePollInterval()
 {
     // Keep hotplug discovery alive without waking the GUI 250 times/second
     // when there is no controller. Gameplay retains its low-latency cadence.
-    const auto interval = m_gamepadSlots.isEmpty() ? 100 : m_shellCaptureEnabled ? 16 : 4;
+    const auto interval = m_gamepadSlots.isEmpty() || m_inputSuspended ? 100 : m_shellCaptureEnabled ? 16 : 4;
     m_pollTimer.setTimerType(interval == 4 ? Qt::PreciseTimer : Qt::CoarseTimer);
     if (m_pollTimer.interval() != interval) m_pollTimer.setInterval(interval);
 }
@@ -98,6 +99,27 @@ void ControllerInput::refreshControllerMetadata()
 bool ControllerInput::shellCaptureEnabled() const
 {
     return m_shellCaptureEnabled;
+}
+
+bool ControllerInput::inputSuspended() const
+{
+    return m_inputSuspended;
+}
+
+void ControllerInput::setInputSuspended(bool suspended)
+{
+    if (m_inputSuspended == suspended) return;
+    if (suspended) publishConnectedGamepads(true);
+    m_inputSuspended = suspended;
+    for (auto *direction : {&m_left, &m_right, &m_up, &m_down})
+        *direction = RepeatingDirection{false, 0, 0, direction->key};
+    if (!suspended && !m_shellCaptureEnabled) {
+        for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
+            updateSlotSnapshot(slot);
+        publishConnectedGamepads();
+    }
+    updatePollInterval();
+    emit inputSuspendedChanged();
 }
 
 void ControllerInput::setShellCaptureEnabled(bool enabled)
@@ -188,7 +210,7 @@ void ControllerInput::closeController(SDL_JoystickID id)
     if (!slot.gamepad) return;
     SDL_CloseGamepad(slot.gamepad);
     slot = {};
-    if (!m_shellCaptureEnabled) publishGamepad(slotIndex, true);
+    publishGamepad(slotIndex, true);
     for (auto *direction : {&m_left, &m_right, &m_up, &m_down}) {
         direction->active = false;
         direction->pressedAt = 0;
@@ -205,7 +227,7 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
     if (slotIndex < 0) return;
     auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
     if (event.button == SDL_GAMEPAD_BUTTON_GUIDE) {
-        if (pressed && !m_shellCaptureEnabled)
+        if (pressed && !m_shellCaptureEnabled && !m_inputSuspended)
             emit localActionRequested(guideLocalAction);
     } else if (const auto mask = buttonMask(event.button); mask != 0) {
         if (pressed) slot.buttons |= mask;
@@ -213,7 +235,7 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
         if (!m_shellCaptureEnabled) publishGamepad(slotIndex);
     }
 
-    if (!m_shellCaptureEnabled) return;
+    if (!m_shellCaptureEnabled || m_inputSuspended) return;
     const auto key = keyForButton(event.button);
     if (key != 0) {
         postKey(key, pressed);
@@ -236,7 +258,7 @@ void ControllerInput::handleAxis(const SDL_GamepadAxisEvent &event)
     default: return;
     }
     if (!m_shellCaptureEnabled) publishGamepad(slotIndex);
-    if (!m_shellCaptureEnabled) return;
+    if (!m_shellCaptureEnabled || m_inputSuspended) return;
 
     const auto value = event.value;
     bool activated = false;
@@ -262,6 +284,7 @@ quint16 ControllerInput::gamepadBitmap() const
 
 void ControllerInput::publishGamepad(int slotIndex, bool neutral)
 {
+    if (m_inputSuspended && !neutral) return;
     const auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
     const auto left = neutral ? QPair<qint16, qint16>{} : radialDeadzone(slot.rawLeftX, slot.rawLeftY);
     const auto right = neutral ? QPair<qint16, qint16>{} : radialDeadzone(slot.rawRightX, slot.rawRightY);
@@ -375,7 +398,7 @@ void ControllerInput::dispatchRepeats(qint64 now)
 
 void ControllerInput::postKey(int key, bool pressed, bool autoRepeat)
 {
-    if (!m_shellCaptureEnabled) return;
+    if (!m_shellCaptureEnabled || m_inputSuspended) return;
     auto *target = QGuiApplication::focusObject();
     if (!target) target = QCoreApplication::instance();
     const auto type = pressed ? QEvent::KeyPress : QEvent::KeyRelease;

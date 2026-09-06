@@ -94,6 +94,11 @@ FocusScope {
         onLocalShortcutRequested: action => ShellStore.applyStreamShortcutAction(action)
     }
 
+    StreamInputNotice {
+        message: root.streaming && streamVideo.relativeMouse ? streamVideo.inputCaptureError : ""
+        z: 3
+    }
+
     Connections {
         target: ShellStore
         function onPointerLockToggleRequested() {

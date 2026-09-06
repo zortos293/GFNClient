@@ -463,7 +463,7 @@ impl CapturedInputQueue {
         {
             pending.pop_back();
         }
-        if pending.len() == CAPTURED_INPUT_CAPACITY {
+        if pending.len() >= CAPTURED_INPUT_CAPACITY {
             if let Some(index) = pending.iter().position(|event| {
                 matches!(
                     &event.input,
@@ -477,6 +477,33 @@ impl CapturedInputQueue {
             }
         }
         pending.push_back(sample);
+    }
+
+    pub(crate) fn release_gamepad(&self, controller_id: u8, bitmap: u16) {
+        assert!(controller_id < 4);
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending.retain(|sample| {
+            !matches!(sample.input,
+            CapturedInput::Gamepad { controller_id: id, .. } if id == controller_id)
+        });
+        pending.push_back(CapturedInputSample {
+            input: CapturedInput::Gamepad {
+                controller_id,
+                bitmap,
+                buttons: 0,
+                left_trigger: 0,
+                right_trigger: 0,
+                left_stick_x: 0,
+                left_stick_y: 0,
+                right_stick_x: 0,
+                right_stick_y: 0,
+            },
+            captured_at: Instant::now(),
+        });
+        debug_assert!(pending.len() <= CAPTURED_INPUT_CAPACITY + 4);
     }
 
     pub fn take(&self) -> Option<CapturedInput> {

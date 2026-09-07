@@ -167,7 +167,14 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
         Ok(GraphicsRecordedFrame {
             resource: frame.image,
             resource_view: frame.image_view,
-            texture_format: GraphicsTextureFormat::Rgba8,
+            texture_format: match frame.texture_format {
+                opennow_streamer_platform_linux::GpuTextureFormat::Rgba8 => {
+                    GraphicsTextureFormat::Rgba8
+                }
+                opennow_streamer_platform_linux::GpuTextureFormat::Rgb10A2 => {
+                    GraphicsTextureFormat::Rgb10A2
+                }
+            },
             width: frame.width,
             height: frame.height,
             frame_slot: frame.slot,
@@ -213,7 +220,14 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
         Ok(GraphicsRecordedFrame {
             resource: frame.texture as usize as u64,
             resource_view: 0,
-            texture_format: GraphicsTextureFormat::Rgba8,
+            texture_format: match frame.format {
+                opennow_streamer_platform_macos::MetalFrameFormat::Rgba8Unorm => {
+                    GraphicsTextureFormat::Rgba8
+                }
+                opennow_streamer_platform_macos::MetalFrameFormat::Rgb10a2Unorm => {
+                    GraphicsTextureFormat::Rgb10A2
+                }
+            },
             width: frame.width,
             height: frame.height,
             frame_slot: frame.frame_slot,

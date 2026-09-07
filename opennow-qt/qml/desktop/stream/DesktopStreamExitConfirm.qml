@@ -68,7 +68,9 @@ FocusScope {
             Text {
                 width: parent.width
                 topPadding: 10
-                text: qsTr("Your game will close on the remote rig. This session cannot be resumed after it ends.")
+                text: AppController.route === "inserting"
+                    ? qsTr("Your session request will be cancelled and you will leave the queue.")
+                    : qsTr("Your game will close on the remote rig. This session cannot be resumed after it ends.")
                 color: DesktopTokens.textBody
                 font.family: DesktopTokens.bodyFont
                 font.pixelSize: 14
@@ -84,7 +86,7 @@ FocusScope {
                 DesktopButton {
                     id: keepPlayingButton
                     objectName: "streamExitKeepPlaying"
-                    text: qsTr("Keep playing")
+                    text: AppController.route === "inserting" ? qsTr("Keep waiting") : qsTr("Keep playing")
                     shortcutText: qsTr("Esc")
                     primary: true
                     onClicked: root.cancelRequested()

@@ -982,7 +982,7 @@ QtObject {
             title: selectedGame.title || "GeForce NOW game",
             supportsInGameSettingsPersistence: Boolean(selectedVariant && selectedVariant.supportsInGameSettingsPersistence),
             accountLinked: Boolean(selectedVariant && selectedVariant.inLibrary),
-            appLaunchMode: Boolean(settings.controllerMode || settings.launchInConsoleMode || directConsoleMode)
+            appLaunchMode: settings.steamBigPictureMode === true
                 ? "gamepadFriendly" : "default"
         }
         const configuredRegion = String(settings.region || "")
@@ -1543,7 +1543,7 @@ QtObject {
     }
 
     function requestStreamExitConfirmation() {
-        if (AppController.route !== "stream")
+        if (AppController.route !== "stream" && AppController.route !== "inserting")
             return
         AppController.showOverlay("desktop-stream-exit-confirm")
         accessibilityMessage = qsTr("Confirm ending the cloud session")

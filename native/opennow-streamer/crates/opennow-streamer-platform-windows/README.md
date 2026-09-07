@@ -20,6 +20,24 @@ capability is reported only when its selected decoder class and the complete pre
 operation succeed. `WindowsBackend::probe` remains the D3D11 compatibility entry point.
 Non-Windows builds expose the same typed API but report the backend as unavailable.
 
+## Embedded Qt SDR conversion
+
+The embedded frame producer converts NV12/AYUV to RGBA8 and P010/Y410 to RGB10A2,
+preserving ten-bit precision until Qt's final SDR composition pass. RGB10A2 is an SDR
+intermediate, not an HDR or ten-bit scan-out guarantee. Both full- and limited-range
+BT.709 decoder output are converted to full-range BT.709 RGB.
+
+Embedded conversion requires `ID3D11VideoContext1` for explicit color-space selection and
+`ID3D11VideoProcessorEnumerator1` to validate the input/output format and color-space pair.
+Unsupported conversions fail explicitly; the producer does not silently replace RGB10A2
+with RGBA8 or rely on legacy driver color defaults. Format, range, and extent changes
+invalidate the processor, cached input views, and frame slots before conversion resumes.
+
+Media Foundation may temporarily negotiate a lower-precision output type before reading
+the first sequence header. That startup compatibility does not permit downgraded frames:
+each decoded surface must match its output media type and preserve at least the negotiated
+bit depth and chroma before entering the decoded queue.
+
 ## HEVC availability in Qt
 
 The embedded Qt stream view uses the same Media Foundation decoder configuration as the

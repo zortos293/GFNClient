@@ -144,6 +144,18 @@ pub(crate) fn embedded_video_backends_with_device(
     };
     #[cfg(target_os = "macos")]
     let mut backends = vec![hardware_backend()];
+    #[cfg(target_os = "macos")]
+    for backend in &mut backends {
+        for codec in &mut backend.codecs {
+            codec.color_qualities = Some(if !codec.available {
+                Vec::new()
+            } else if codec.codec == "h264" {
+                vec!["8bit_420"]
+            } else {
+                vec!["8bit_420", "10bit_420"]
+            });
+        }
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     let mut backends = Vec::new();
     apply_backend_policy(
@@ -587,6 +599,25 @@ mod tests {
                     assert!(backend.zero_copy_modes.is_empty());
                 } else {
                     assert!(colors.iter().all(|color| *color == "8bit_420"));
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn embedded_macos_reports_only_biplanar_color_profiles() {
+        for backend in embedded_video_backends() {
+            for codec in backend.codecs {
+                let colors = codec
+                    .color_qualities
+                    .expect("embedded macOS color profiles");
+                if !codec.available {
+                    assert!(colors.is_empty());
+                } else if codec.codec == "h264" {
+                    assert_eq!(colors, ["8bit_420"]);
+                } else {
+                    assert_eq!(colors, ["8bit_420", "10bit_420"]);
                 }
             }
         }

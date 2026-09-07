@@ -8,6 +8,7 @@ QtObject {
     required property bool signedIn
     required property var settings
     required property var setSetting
+    required property var applySetting
     signal accessibilityAnnounced(string message)
     signal storeSessionReset()
     property var catalogGames: []
@@ -16,6 +17,119 @@ QtObject {
     property string catalogState: "idle"
     property string catalogSource: "public"
     property string catalogRequestId: ""
+    readonly property var gameCollections: settings.gameCollections || []
+    property string activeCollectionId: ""
+    readonly property var activeCollection: collectionById(activeCollectionId)
+    property string collectionRequestId: ""
+    readonly property bool collectionsBusy: collectionRequestId !== ""
+    property string collectionError: ""
+    property string pendingCollectionId: ""
+    signal collectionSaved(string collectionId)
+
+    onGameCollectionsChanged: {
+        if (activeCollectionId && !collectionById(activeCollectionId))
+            activeCollectionId = ""
+    }
+    onReadyChanged: {
+        if (!ready && collectionsBusy) {
+            collectionRequestId = ""
+            collectionError = qsTr("The collection could not be saved. Reconnect and try again.")
+        }
+    }
+
+    property Connections collectionResponses: Connections {
+        target: root.coreClient
+        function onResponseReceived(requestId, result) {
+            if (!root.collectionRequestId || requestId !== root.collectionRequestId)
+                return
+            root.applySetting("gameCollections", result.value)
+            root.collectionRequestId = ""
+            root.collectionError = ""
+            root.collectionSaved(root.pendingCollectionId)
+        }
+        function onRequestFailed(requestId, code, message) {
+            if (!root.collectionRequestId || requestId !== root.collectionRequestId)
+                return
+            root.collectionRequestId = ""
+            root.collectionError = message
+        }
+    }
+
+    function collectionById(id) {
+        return gameCollections.find(collection => collection.id === id) || null
+    }
+
+    function isInCollection(game, collectionId) {
+        const collection = collectionById(collectionId)
+        const id = gameIdentity(game)
+        return collection !== null && id !== "" && collection.gameIds.indexOf(id) >= 0
+    }
+
+    function collectionNameError(name, exceptId) {
+        const trimmed = name.trim()
+        if (!trimmed)
+            return qsTr("Enter a collection name.")
+        if (trimmed.length > 80)
+            return qsTr("Use 80 characters or fewer.")
+        if (gameCollections.some(collection => collection.id !== exceptId
+                && collection.name.toLocaleLowerCase() === trimmed.toLocaleLowerCase()))
+            return qsTr("A collection with this name already exists.")
+        return ""
+    }
+
+    function saveCollections(collections, collectionId) {
+        if (collectionsBusy)
+            return false
+        collectionError = ""
+        if (!ready) {
+            collectionError = qsTr("The OpenNOW core is not ready")
+            return false
+        }
+        pendingCollectionId = collectionId
+        collectionRequestId = setSetting("gameCollections", collections)
+        return collectionRequestId !== ""
+    }
+
+    function createCollection(name, game) {
+        collectionError = collectionNameError(name, "")
+        if (collectionError)
+            return false
+        if (gameCollections.length >= 100) {
+            collectionError = qsTr("You can create up to 100 collections.")
+            return false
+        }
+        let id = ""
+        do {
+            id = "collection-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12)
+        } while (collectionById(id))
+        const gameId = gameIdentity(game)
+        return saveCollections(gameCollections.concat([{id: id, name: name.trim(), gameIds: gameId ? [gameId] : []}]), id)
+    }
+
+    function renameCollection(id, name) {
+        collectionError = collectionNameError(name, id)
+        if (collectionError || !collectionById(id))
+            return false
+        return saveCollections(gameCollections.map(collection => collection.id === id
+            ? {id: id, name: name.trim(), gameIds: collection.gameIds} : collection), id)
+    }
+
+    function deleteCollection(id) {
+        if (!collectionById(id))
+            return false
+        return saveCollections(gameCollections.filter(collection => collection.id !== id), "")
+    }
+
+    function toggleCollectionGame(id, game) {
+        const collection = collectionById(id)
+        const gameId = gameIdentity(game)
+        if (!collection || !gameId)
+            return false
+        const ids = collection.gameIds.indexOf(gameId) >= 0
+            ? collection.gameIds.filter(value => value !== gameId) : collection.gameIds.concat([gameId])
+        return saveCollections(gameCollections.map(value => value.id === id
+            ? {id: id, name: value.name, gameIds: ids} : value), id)
+    }
 
     // Store channel: the full CMS browse catalog (all games) for signed-in
     // users, static public list otherwise. Separate from the library channel

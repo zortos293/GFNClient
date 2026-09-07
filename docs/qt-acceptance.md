@@ -28,6 +28,24 @@ graph. There is no child streamer process, child HWND or paired native video win
 still prove each platform's native texture import and synchronization on real hardware; the design
 alone is not performance or zero-copy evidence.
 
+## Custom library collections
+
+Run `ctest --test-dir build/opennow-qt -R qml-collections --output-on-failure`
+for the isolated 960- and 1440-pixel collection workflows. These exercise the real
+Qt library, collection editor, and state owner with a mock core transport, including
+create/rename/delete, multiple membership, search/store/hidden filters, rejected
+names, failed saves, and disconnect recovery. Persistence and validation are covered
+by `cargo test --manifest-path native/opennow-core/Cargo.toml settings::tests`.
+
+For visual evidence, run the built app with `--smoke-test --allow-multiple-instances
+--desktop --route library --smoke-collections --reduced-motion --screenshot
+/absolute/path/collections.png`. The collections in this screenshot are test-created;
+new installations start with no collections. For a manual restart check, create a
+collection using **New collection** or the sidebar **+**, add/remove games through
+**Add to collection** in a game's context menu, restart, then rename and delete the
+folder. Membership and names must survive restart, and deleting a folder must not
+remove games from the library.
+
 ## Performance evidence
 
 Run the release package on the agreed baseline iGPU with its native display backend. Close frame

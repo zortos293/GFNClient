@@ -14,6 +14,7 @@ QtObject {
         signedIn: root.signedIn
         settings: root.settings
         setSetting: root.setSetting
+        applySetting: root.applySetting
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
         onStoreSessionReset: root.storeSessionReset()
     }
@@ -66,6 +67,23 @@ QtObject {
     property string authState: "idle"
     property string authMessage: ""
     property alias catalogGames: catalogOwner.catalogGames
+    readonly property var gameCollections: catalogOwner.gameCollections
+    property alias activeCollectionId: catalogOwner.activeCollectionId
+    readonly property var activeCollection: catalogOwner.activeCollection
+    readonly property bool collectionsBusy: catalogOwner.collectionsBusy
+    property alias collectionError: catalogOwner.collectionError
+    signal collectionSaved(string collectionId)
+    property Connections collectionSignals: Connections {
+        target: catalogOwner
+        function onCollectionSaved(collectionId) { root.collectionSaved(collectionId) }
+    }
+
+    function collectionNameError(name, exceptId) { return catalogOwner.collectionNameError(name, exceptId) }
+    function createCollection(name, game) { return catalogOwner.createCollection(name, game) }
+    function renameCollection(id, name) { return catalogOwner.renameCollection(id, name) }
+    function deleteCollection(id) { return catalogOwner.deleteCollection(id) }
+    function toggleCollectionGame(id, game) { return catalogOwner.toggleCollectionGame(id, game) }
+    function isInCollection(game, id) { return catalogOwner.isInCollection(game, id) }
     property alias selectedGame: catalogOwner.selectedGame
     property alias catalogTotalCount: catalogOwner.catalogTotalCount
     property alias catalogState: catalogOwner.catalogState

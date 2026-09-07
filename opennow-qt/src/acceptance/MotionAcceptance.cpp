@@ -153,11 +153,11 @@ void startSidebarAcceptance(QQuickWindow *window, AppController *controller,
     if (fullscreen) window->showFullScreen();
     auto *sidebar = findItem(window->contentItem(), QStringLiteral("desktopSidebar"));
     auto *icon = findItem(window->contentItem(), QStringLiteral("sidebarIcon-home"));
-    auto *star = findItem(window->contentItem(), QStringLiteral("sidebarCollectionIcon-favorites"));
-    if (!sidebar || !icon || !star) { QCoreApplication::exit(1); return; }
+    auto *library = findItem(window->contentItem(), QStringLiteral("sidebarIcon-library"));
+    if (!sidebar || !icon || !library) { QCoreApplication::exit(1); return; }
     sidebar->setProperty("collapsed", true);
     sidebar->setProperty("hoverExpanded", false);
-    struct State { int tick = 0; QPointF origin, starOrigin; QSizeF starSize; double width = 0; bool intermediate = false; };
+    struct State { int tick = 0; QPointF origin, libraryOrigin; QSizeF librarySize; double width = 0; bool intermediate = false; };
     const auto state = std::make_shared<State>();
     auto *timer = new QTimer(window);
     timer->setInterval(20);
@@ -170,8 +170,8 @@ void startSidebarAcceptance(QQuickWindow *window, AppController *controller,
         if (*qmlWarningOccurred) { fail("QML warning"); return; }
         if (tick == 15) {
             state->origin = icon->mapToScene(QPointF{});
-            state->starOrigin = star->mapToScene(QPointF{});
-            state->starSize = star->size();
+            state->libraryOrigin = library->mapToScene(QPointF{});
+            state->librarySize = library->size();
             state->width = sidebar->width();
             sidebar->setProperty("hoverExpanded", true);
         }
@@ -180,23 +180,23 @@ void startSidebarAcceptance(QQuickWindow *window, AppController *controller,
             if (std::abs(delta.x()) > 0.5 || std::abs(delta.y()) > 0.5) {
                 fail("compact and expanded navigation icons shifted"); return;
             }
-            const auto starDelta = star->mapToScene(QPointF{}) - state->starOrigin;
-            if (std::abs(starDelta.x()) > 0.5 || std::abs(starDelta.y()) > 0.5
-                || star->size() != state->starSize || !star->isVisible()) {
-                fail("favourite star moved, resized or disappeared"); return;
+            const auto libraryDelta = library->mapToScene(QPointF{}) - state->libraryOrigin;
+            if (std::abs(libraryDelta.x()) > 0.5 || std::abs(libraryDelta.y()) > 0.5
+                || library->size() != state->librarySize || !library->isVisible()) {
+                fail("library icon moved, resized or disappeared"); return;
             }
-            for (auto *ancestor = star; ancestor != sidebar; ancestor = ancestor->parentItem()) {
+            for (auto *ancestor = library; ancestor != sidebar; ancestor = ancestor->parentItem()) {
                 if (!ancestor || ancestor->opacity() != 1) {
-                    fail("favourite star faded during sidebar transition"); return;
+                    fail("library icon faded during sidebar transition"); return;
                 }
             }
-            int stars = 0;
-            const auto countStars = [&](auto &&self, QQuickItem *item) -> void {
-                if (item->property("icon").toString() == QStringLiteral("desktop-star.svg")) ++stars;
+            int libraryIcons = 0;
+            const auto countLibraryIcons = [&](auto &&self, QQuickItem *item) -> void {
+                if (item->objectName() == QStringLiteral("sidebarIcon-library")) ++libraryIcons;
                 for (auto *child : item->childItems()) self(self, child);
             };
-            countStars(countStars, sidebar);
-            if (stars != 1) { fail("sidebar duplicated the favourite star"); return; }
+            countLibraryIcons(countLibraryIcons, sidebar);
+            if (libraryIcons != 1) { fail("sidebar duplicated the library icon"); return; }
             const auto reveal = sidebar->property("reveal").toDouble();
             if (reveal > 0 && reveal < 1) state->intermediate = true;
         }

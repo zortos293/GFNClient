@@ -5,8 +5,16 @@ import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "desktopLibraryScreen"
     property string searchQuery: ""
     property string activeFilter: "all"
+    readonly property var collection: ShellStore.activeCollection
+    readonly property var collectionGameIds: new Set(root.collection ? root.collection.gameIds : [])
+    readonly property string selectedCollectionId: ShellStore.activeCollectionId
+    onSelectedCollectionIdChanged: {
+        activeFilter = "all"
+        closeContext()
+    }
     property var contextGame: null
     property var presentedContextGame: null
     onContextGameChanged: if (contextGame) presentedContextGame = contextGame
@@ -53,6 +61,8 @@ FocusScope {
         const source = ShellStore.catalogGames || []
         let count = 0
         for (let i = 0; i < source.length; ++i) {
+            if (root.collection && !root.collectionGameIds.has(ShellStore.gameIdentity(source[i])))
+                continue
             if (predicate(source[i]))
                 count += 1
         }
@@ -64,6 +74,8 @@ FocusScope {
         const result = []
         for (let index = 0; index < source.length; ++index) {
             const game = source[index]
+            if (root.collection && !root.collectionGameIds.has(ShellStore.gameIdentity(game)))
+                continue
             if (query !== "" && String(game.title || "").toLocaleLowerCase().indexOf(query) < 0)
                 continue
             const hidden = root.isHiddenGame(game)
@@ -96,15 +108,76 @@ FocusScope {
     readonly property int libraryCellW: Math.max(1, Math.floor(grid.width / libraryColumns))
     readonly property int libraryCellH: Math.round(libraryCellW * 214 / 146)
 
+    function editCollection(mode, game) {
+        collectionDialog.mode = mode
+        collectionDialog.collectionId = mode === "create" ? "" : root.collection.id
+        collectionDialog.initialName = mode === "create" ? "" : root.collection.name
+        collectionDialog.game = game || null
+        root.closeContext()
+        collectionDialog.open()
+    }
+
+    DesktopCollectionDialog {
+        id: collectionDialog
+        onCollectionOpened: collectionId => ShellStore.activeCollectionId = collectionId
+    }
+
+    Row {
+        id: collectionToolbar
+        x: 24; y: 16
+        width: parent.width - 48
+        height: 36
+        spacing: 8
+        Text {
+            width: Math.max(80, parent.width - collectionActions.width - parent.spacing)
+            height: 36
+            text: root.collection ? root.collection.name : qsTr("All games")
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            verticalAlignment: Text.AlignVCenter
+            color: DesktopTokens.text
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: 18
+            font.bold: true
+        }
+        Row {
+            id: collectionActions
+            spacing: 8
+            DesktopButton {
+                text: qsTr("All games")
+                visible: root.collection !== null
+                onClicked: ShellStore.activeCollectionId = ""
+            }
+            DesktopButton {
+                text: qsTr("Rename")
+                visible: root.collection !== null
+                enabled: !ShellStore.collectionsBusy
+                onClicked: root.editCollection("rename", null)
+            }
+            DesktopButton {
+                text: qsTr("Delete")
+                visible: root.collection !== null
+                enabled: !ShellStore.collectionsBusy
+                onClicked: root.editCollection("delete", null)
+            }
+            DesktopButton {
+                objectName: "libraryNewCollectionButton"
+                text: qsTr("New collection")
+                enabled: !ShellStore.collectionsBusy
+                onClicked: root.editCollection("create", null)
+            }
+        }
+    }
+
     Flow {
         id: filterRow
         x: 24
-        y: 16
+        y: collectionToolbar.y + collectionToolbar.height + 14
         width: parent.width - 48
         spacing: 8
         Repeater {
             model: [
-                {key:"all", label:qsTr("All"), count:ShellStore.catalogTotalCount || root.games.length},
+                {key:"all", label:qsTr("All"), count:root.countWhere(function(game) { return !root.isHiddenGame(game) })},
                 {key:"ready", label:qsTr("Ready to play"), count:root.countWhere(root.isReady)},
                 {key:"rtx", label:"RTX", count:root.countWhere(root.hasRtx)},
                 {key:"controller", label:qsTr("Controller"), count:root.countWhere(root.hasController)},
@@ -225,6 +298,33 @@ FocusScope {
         }
     }
 
+    Column {
+        anchors.centerIn: grid
+        width: Math.min(grid.width - 48, 460)
+        spacing: 12
+        visible: root.games.length === 0
+        Text {
+            width: parent.width
+            text: root.collection ? qsTr("No games in this view") : qsTr("No games found")
+            color: DesktopTokens.text
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: 22
+            font.bold: true
+            horizontalAlignment: Text.AlignHCenter
+        }
+        Text {
+            width: parent.width
+            text: root.collection
+                ? qsTr("Open All games, right-click a game, and choose Add to collection. Games can belong to more than one collection.")
+                : qsTr("Try a different search or filter.")
+            color: DesktopTokens.textMuted
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: 14
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
+        }
+    }
+
     MouseArea {
         anchors.fill: parent; z: 40
         visible: root.contextGame !== null
@@ -304,25 +404,72 @@ FocusScope {
         transformOrigin: Item.TopLeft
     }
     Rectangle {
-        x: root.contextPoint.x + 238; y: root.contextPoint.y + 104
-        width: 212; height: 76; radius: 12
+        x: Math.max(8, Math.min(root.width - width - 8, root.contextPoint.x + 238))
+        y: Math.max(8, Math.min(root.height - height - 8, root.contextPoint.y + 104))
+        width: 240
+        height: Math.min(root.height - 16, 96 + Math.min(6, ShellStore.gameCollections.length) * 36 + (ShellStore.collectionError ? 52 : 0))
+        radius: 12
         visible: collectionMotion.present
         enabled: root.contextGame !== null && root.collectionOpen
         z: 42
         color: "#F710131D"
         border.width: 1; border.color: "#29FFFFFF"
         Column {
-            x: 8; y: 8; width: 196; spacing: 0
+            x: 8; y: 8; width: parent.width - 16; spacing: 0
             Text { width: parent.width; height: 24; leftPadding: 8; text: qsTr("COLLECTIONS"); color: DesktopTokens.textFaint; verticalAlignment: Text.AlignVCenter; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.DemiBold; font.letterSpacing: 0.6 }
-            ItemDelegate {
-                width: 196; height: 32; padding: 8
-                background: Rectangle { radius: 7; color: parent.hovered || parent.activeFocus ? "#14FFFFFF" : "transparent" }
-                contentItem: Item {
-                    Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: qsTr("★  Favourites"); color: DesktopTokens.textBody; font.family: DesktopTokens.bodyFont; font.pixelSize: DesktopTokens.captionSize }
-                    Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: root.contextGame && ShellStore.isFavorite(root.contextGame) ? "✓" : "+"; color: DesktopTokens.focus; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.Bold }
+            ListView {
+                width: parent.width
+                height: Math.min(6, count) * 36
+                clip: true
+                model: ShellStore.gameCollections
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { }
+                delegate: ItemDelegate {
+                    id: membershipButton
+                    required property var modelData
+                    width: ListView.view.width
+                    height: 36
+                    padding: 8
+                    enabled: !ShellStore.collectionsBusy
+                    Accessible.name: modelData.name
+                    background: Rectangle { radius: 7; color: membershipButton.hovered || membershipButton.activeFocus ? "#14FFFFFF" : "transparent" }
+                    contentItem: Text {
+                        text: (ShellStore.isInCollection(root.contextGame, membershipButton.modelData.id) ? "✓  " : "+  ") + membershipButton.modelData.name
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignVCenter
+                        color: DesktopTokens.textBody
+                        font.family: DesktopTokens.bodyFont
+                        font.pixelSize: DesktopTokens.captionSize
+                    }
+                    onClicked: ShellStore.toggleCollectionGame(modelData.id, root.contextGame)
                 }
-                onClicked: root.activateContext("favorite")
             }
+            ItemDelegate {
+                id: newCollectionAction
+                width: parent.width; height: 40; padding: 8
+                enabled: !ShellStore.collectionsBusy
+                background: Rectangle { radius: 7; color: newCollectionAction.hovered || newCollectionAction.activeFocus ? "#14FFFFFF" : "transparent" }
+                contentItem: Text {
+                    text: qsTr("New collection")
+                    verticalAlignment: Text.AlignVCenter
+                    color: DesktopTokens.textBody
+                    font.family: DesktopTokens.bodyFont
+                    font.pixelSize: DesktopTokens.captionSize
+                }
+                onClicked: root.editCollection("create", root.contextGame)
+            }
+            Text {
+                width: parent.width
+                height: visible ? 52 : 0
+                visible: ShellStore.collectionError !== ""
+                text: ShellStore.collectionError
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: DesktopTokens.textMuted
+                font.family: DesktopTokens.bodyFont
+                font.pixelSize: 12
+                }
         }
         opacity: collectionMotion.progress
         scale: collectionMotion.zoom

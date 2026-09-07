@@ -232,6 +232,25 @@ That response and `settings.changed` event additionally contain
 before the primary key. Automatic console switching defaults off. Existing
 pre-opt-in settings receive a one-time reset of automatic switching only;
 explicit subsequent opt-ins and the independent startup preference are preserved.
+
+`gameCollections` defaults to `[]`. `settings.set` replaces the complete ordered
+array with at most 100 objects of the form
+`{"id":"collection-id","name":"Collection name","gameIds":["game-id"]}`.
+Collection IDs are caller-owned stable strings, unique across the array, and
+must not be regenerated when renaming a collection. IDs are preserved verbatim,
+must contain a non-whitespace character, and are limited to 128 Unicode characters.
+Names are trimmed and must contain 1–80 Unicode characters after trimming; names
+need not be unique. Each `gameIds` array contains at most 10,000 unique strings
+with the same nonempty/128-character ID constraints. Game IDs may appear in
+multiple collections, and empty collections are allowed. Array order is preserved.
+Malformed types, missing or extra fields, duplicate IDs, or exceeded limits return
+an error without modifying the in-memory settings or persisted file. Save failures
+also restore the previous in-memory settings, including when resetting settings.
+Reloads trim valid persisted names and preserve collections across unrelated writes;
+invalid persisted collections cause an `InvalidData` load error before any write,
+rather than silently dropping collections or truncating identifiers. A successful
+`settings.reset` clears collections along with other preferences.
+
 Provider discovery falls back to NVIDIA's
 default service when discovery is unavailable. Device-login tokens are stored
 through the OS credential store (DPAPI/Credential Manager, Keychain or Secret

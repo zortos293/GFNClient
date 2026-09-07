@@ -339,6 +339,18 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
             Decoder::probe(graphics, VideoCodec::Av1, WindowsDecoderMode::Hardware)
                 .map_err(|error| error.to_string())
         });
+    for (codec, result) in [
+        (VideoCodec::H264, &h264_decoder),
+        (VideoCodec::H265, &h265_decoder),
+        (VideoCodec::Av1, &av1_decoder),
+    ] {
+        if let Err(error) = result {
+            video_log!(
+                "Windows hardware decoder probe failed api={api:?} codec={}: {error}",
+                codec.label()
+            );
+        }
+    }
     let h264_software_decoder = graphics
         .as_ref()
         .map_err(Clone::clone)

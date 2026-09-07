@@ -29,6 +29,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
+mod audio_device;
 mod color;
 mod failure;
 mod format;
@@ -39,6 +40,7 @@ mod ring;
 #[cfg(target_os = "macos")]
 mod macos;
 
+pub use audio_device::AudioOutputDevice;
 pub use failure::{BackendFailure, BackendSubsystem, VideoDecodeLoss};
 pub use format::{
     AudioFormat, Av1Format, BackendConfig, BorrowedNsView, BorrowedNsWindow, EmbeddedBackendConfig,
@@ -59,8 +61,8 @@ pub(crate) const fn overlay_should_be_ordered(
 pub use macos::{
     AdoptedMetalContext, BackendError, BackendStats, EmbeddedFrameProducer, MacOsBackend,
     MetalFrame, MetalRecordedFrame, NativeSurfaceHandle, StreamSink, SubmitOutcome,
-    activate_stream_application, probe_av1_hardware, probe_h264_hardware, probe_h265_hardware,
-    pump_app_events,
+    activate_stream_application, audio_output_devices, probe_av1_hardware, probe_h264_hardware,
+    probe_h265_hardware, pump_app_events,
 };
 
 #[cfg(test)]

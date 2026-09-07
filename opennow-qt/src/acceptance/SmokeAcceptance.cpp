@@ -108,11 +108,14 @@ int AcceptanceSession::startSmokeWorkload()
             });
         });
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-backend-availability"_s)
+                     || m_arguments.contains(u"--smoke-audio-output"_s)
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
-        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-collections"_s)
+        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-audio-output"_s)
+            ? u"qrc:/acceptance/AudioOutputAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-collections"_s)
             ? u"qrc:/acceptance/CollectionsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-steam-big-picture"_s)
             ? u"qrc:/acceptance/SteamBigPictureAcceptance.qml"_s

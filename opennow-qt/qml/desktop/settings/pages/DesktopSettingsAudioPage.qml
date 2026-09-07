@@ -6,10 +6,53 @@ import OpenNOW
 DesktopSettingsPanel {
     id: page
     required property real availableWidth
+    required property var settingsScreen
+
+    readonly property string selectedDevice: String(page.settingsScreen.valueSetting("audioOutputDevice", ""))
+    readonly property var deviceItems: {
+        const items = [{label: qsTr("System default"), value: ""}]
+        for (const device of ShellStore.audioOutputDevices)
+            items.push({label: device.name, value: device.id})
+        if (selectedDevice && !items.some(item => item.value === selectedDevice))
+            items.push({label: qsTr("%1 (unavailable)").arg(selectedDevice), value: selectedDevice, disabled: true})
+        return items
+    }
+
+    Component.onCompleted: ShellStore.refreshAudioOutputDevices()
+    Connections {
+        target: ShellStore
+        function onNativeRuntimeReadyChanged() {
+            if (ShellStore.nativeRuntimeReady)
+                ShellStore.refreshAudioOutputDevices()
+        }
+    }
 
     width: page.availableWidth; paperStyle: true
     DesktopSettingsSection { text: qsTr("AUDIO") }
-    DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("Output device"); description: qsTr("The native streamer follows your operating system output"); value: qsTr("SYSTEM DEFAULT") }
+    DesktopSettingsChoice {
+        objectName: "audioOutputDeviceChoice"
+        width: parent.width; glyph: "wave"; title: qsTr("Output device")
+        description: qsTr("Applies to your next streaming session. A fixed device must be available when the session starts.")
+        items: page.deviceItems
+        value: page.selectedDevice
+        onSelected: value => page.settingsScreen.setSetting("audioOutputDevice", value)
+        onExpandedChanged: {
+            if (expanded)
+                ShellStore.refreshAudioOutputDevices()
+        }
+    }
+    DesktopSettingsRow {
+        width: parent.width; paperStyle: true; glyph: "arrows"; title: qsTr("Available outputs")
+        description: ShellStore.audioOutputDevicesError || (!ShellStore.nativeRuntimeReady
+            ? qsTr("Waiting for the native streamer")
+            : qsTr("Refresh after connecting or disconnecting an audio device"))
+        DesktopSettingsButton {
+            objectName: "refreshAudioOutputDevices"
+            text: ShellStore.audioOutputDevicesBusy ? qsTr("Loading…") : qsTr("Refresh devices")
+            enabled: ShellStore.nativeRuntimeReady && !ShellStore.audioOutputDevicesBusy
+            onClicked: ShellStore.refreshAudioOutputDevices()
+        }
+    }
     DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "sliders"; title: qsTr("Game volume"); description: qsTr("Use the system mixer or the game's own audio settings"); value: qsTr("SYSTEM MIXER") }
     DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("Microphone upstream"); description: qsTr("Microphone upstream is unavailable for NVST sessions"); value: qsTr("UNAVAILABLE") }
     DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "info"; title: qsTr("Audio format"); description: qsTr("Audio format and channel count are negotiated with the active GeForce NOW session."); showDivider: false }

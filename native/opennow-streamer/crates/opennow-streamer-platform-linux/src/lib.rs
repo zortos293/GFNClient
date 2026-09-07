@@ -7,6 +7,8 @@ compile_error!("the Linux backend currently supports x86_64 and aarch64");
 #[cfg(target_os = "linux")]
 mod audio;
 #[cfg(target_os = "linux")]
+mod audio_devices;
+#[cfg(target_os = "linux")]
 mod capability;
 #[cfg(target_os = "linux")]
 mod error;
@@ -30,6 +32,8 @@ pub use vulkan_device::{SharedVulkanDevice, VulkanDeviceInfo};
 
 #[cfg(target_os = "linux")]
 pub use audio::{AudioBackend, AudioBackendPreference, AudioConfig, AudioPacket};
+#[cfg(target_os = "linux")]
+pub use audio_devices::{AudioOutputDevice, audio_output_devices};
 #[cfg(target_os = "linux")]
 pub use capability::{
     BackendCapability, CapabilityReport, PresentationCapability, probe_capabilities,

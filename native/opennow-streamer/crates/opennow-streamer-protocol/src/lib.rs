@@ -5,6 +5,38 @@ pub mod log;
 
 pub const PROTOCOL_VERSION: u64 = 5;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AudioOutputDevice(String);
+
+impl AudioOutputDevice {
+    pub fn from_settings(settings: &Value) -> Result<Self, String> {
+        match settings.get("audioOutputDevice") {
+            None => Ok(Self::default()),
+            Some(Value::String(name)) => Self::new(name.clone()),
+            Some(_) => Err("audioOutputDevice must be a string".to_owned()),
+        }
+    }
+
+    pub fn new(name: String) -> Result<Self, String> {
+        if name.len() > 1024 || name.contains('\0') {
+            return Err(
+                "audioOutputDevice must be at most 1024 UTF-8 bytes and contain no NUL".to_owned(),
+            );
+        }
+        Ok(Self(name))
+    }
+
+    pub fn device_name(&self) -> Option<&str> {
+        (!self.0.is_empty()).then_some(self.0.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AudioDevice {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Command {
@@ -190,6 +222,45 @@ pub fn event(kind: &str, fields: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_output_device_defaults_and_preserves_exact_names() {
+        use super::AudioOutputDevice;
+        use serde_json::json;
+
+        for settings in [json!({}), json!({"audioOutputDevice": ""})] {
+            assert_eq!(
+                AudioOutputDevice::from_settings(&settings)
+                    .unwrap()
+                    .device_name(),
+                None
+            );
+        }
+        let settings = json!({"audioOutputDevice": " USB Speakers — 音声 "});
+        let selected = AudioOutputDevice::from_settings(&settings).unwrap();
+        assert_eq!(selected.device_name(), Some(" USB Speakers — 音声 "));
+    }
+
+    #[test]
+    fn audio_output_device_rejects_invalid_names_and_types() {
+        use super::AudioOutputDevice;
+        use serde_json::json;
+
+        for value in [
+            json!(null),
+            json!(1),
+            json!(true),
+            json!([]),
+            json!({}),
+            json!("a\0b"),
+            json!("é".repeat(513)),
+        ] {
+            assert!(
+                AudioOutputDevice::from_settings(&json!({"audioOutputDevice": value})).is_err()
+            );
+        }
+        assert!(AudioOutputDevice::new("é".repeat(512)).is_ok());
+    }
+
     use super::*;
 
     #[test]

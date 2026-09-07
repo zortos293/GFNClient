@@ -276,6 +276,7 @@ impl Engine {
         let id = command.id.clone();
         let result = match command.kind.as_str() {
             "hello" => self.hello(&command),
+            "audioDevices" => self.audio_devices(&command),
             "nvst-bind" => self.nvst_bind(command),
             "nvst-unbind" => self.nvst_unbind(command),
             "nvst-send" => self.nvst_send(command),
@@ -498,9 +499,44 @@ impl Engine {
         Ok(vec![response(command.id, "ok")])
     }
 
+    fn audio_devices(&self, command: &Command) -> Result<Vec<Value>, Value> {
+        let runtime = self.media_runtime.as_ref().ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "audio-devices-unavailable",
+                "Native media runtime is unavailable",
+            )
+        })?;
+        let devices = runtime
+            .audio_devices()
+            .map_err(|message| error(Some(&command.id), "audio-devices-unavailable", message))?;
+        let response = json!({"type": "audioDevices", "id": command.id, "devices": devices});
+        if serde_json::to_vec(&response)
+            .map_err(|error_value| {
+                error(
+                    Some(&command.id),
+                    "audio-devices-unavailable",
+                    error_value.to_string(),
+                )
+            })?
+            .len()
+            > 512 * 1024
+        {
+            return Err(error(
+                Some(&command.id),
+                "audio-devices-unavailable",
+                "Audio device list exceeds the response size limit",
+            ));
+        }
+        Ok(vec![response])
+    }
+
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
+        let audio_device =
+            opennow_streamer_protocol::AudioOutputDevice::from_settings(&context.settings)
+                .map_err(|message| error(Some(&command.id), "invalid-context", message))?;
         opennow_streamer_protocol::log::log_line(
             "INFO",
             "session",
@@ -632,7 +668,7 @@ impl Engine {
                 ),
             );
             let session = runtime
-                .start_with_backend(
+                .start_with_audio_device(
                     feedback_sender,
                     stream_config,
                     context
@@ -640,6 +676,7 @@ impl Engine {
                         .get("nativeVideoBackend")
                         .and_then(Value::as_str)
                         .unwrap_or("auto"),
+                    audio_device,
                 )
                 .map_err(|message| error(Some(&command.id), "media-output-unavailable", message))?;
             let sink = session.sink();
@@ -1153,6 +1190,8 @@ fn parse_context(context: Option<Value>, id: &str) -> Result<SessionContext, Val
 }
 
 fn validate_context(context: &SessionContext, id: &str) -> Result<(), Value> {
+    opennow_streamer_protocol::AudioOutputDevice::from_settings(&context.settings)
+        .map_err(|message| error(Some(id), "invalid-context", message))?;
     if context.session.session_id.trim().is_empty() {
         return Err(error(
             Some(id),
@@ -2200,6 +2239,34 @@ mod tests {
 
     fn lifecycle_state(engine: &Engine) -> State {
         lock_lifecycle(&engine.lifecycle).state
+    }
+
+    #[test]
+    fn audio_devices_without_runtime_returns_correlated_error() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let (responses, keep_running) =
+            engine.handle(command(json!({"type": "audioDevices", "id": "audio"})));
+        assert!(keep_running);
+        assert_eq!(responses[0]["type"], "error");
+        assert_eq!(responses[0]["id"], "audio");
+        assert_eq!(responses[0]["code"], "audio-devices-unavailable");
+        assert_eq!(lifecycle_state(&engine), State::Idle);
+    }
+
+    #[test]
+    fn start_rejects_invalid_audio_output_before_changing_state() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        for value in [json!(1), json!(null), json!("a\0b"), json!("é".repeat(513))] {
+            let mut context = synthetic_context("audio-test", json!([]));
+            context["settings"]["audioOutputDevice"] = value;
+            let (responses, _) = engine.handle(command(
+                json!({"type": "start", "id": "audio", "context": context}),
+            ));
+            assert_eq!(responses[0]["code"], "invalid-context");
+            assert_eq!(lifecycle_state(&engine), State::Idle);
+        }
     }
 
     #[test]

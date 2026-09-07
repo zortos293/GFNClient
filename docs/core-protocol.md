@@ -232,7 +232,11 @@ in `changes`; clients can still override appearance or restore the pack accent
 by setting `appTheme` or `themeAccentOverride` independently.
 
 Settings writes use a temporary file plus recoverable backup and normalize
-compatibility-sensitive values. Setting `launchInConsoleMode=false` atomically
+compatibility-sensitive values. `audioOutputDevice` is an opaque native output identifier
+(at most 1024 UTF-8 bytes, without NUL characters); an empty string follows the
+system default. It is persisted and passed unchanged in the prepared stream
+context for the next session. A missing fixed output fails playback startup
+instead of falling back to another device. Setting `launchInConsoleMode=false` atomically
 sets `switchToConsoleOnPad=false` too, so a manual desktop choice survives restart.
 That response and `settings.changed` event additionally contain
 `"changes":{"switchToConsoleOnPad":false}`; consumers apply these coupled values

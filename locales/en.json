@@ -1,4 +1,24 @@
 {
+  "customCollections": {
+    "duplicateName": "A collection with this name already exists.",
+    "name": "Collection name",
+    "create": "Create collection",
+    "firstCollection": "Create your first collection with +",
+    "delete": "Delete collection",
+    "confirmDelete": "Delete “%1”? Your games will stay in your library.",
+    "missingName": "Enter a collection name.",
+    "description": "Keep your games together in a folder of your own.",
+    "newCollection": "New collection",
+    "emptyView": "No games in this view",
+    "addHint": "Open All games, right-click a game, and choose Add to collection. Games can belong to more than one collection.",
+    "rename": "Rename",
+    "renameCollection": "Rename collection",
+    "saving": "Saving…",
+    "disconnected": "The collection could not be saved. Reconnect and try again.",
+    "searchHint": "Try a different search or filter.",
+    "nameTooLong": "Use 80 characters or fewer.",
+    "limit": "You can create up to 100 collections."
+  },
   "controllerStatus": {
     "chargingPercent": "Charging · %1%",
     "charging": "Charging",

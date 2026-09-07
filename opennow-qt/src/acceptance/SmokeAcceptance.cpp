@@ -108,10 +108,13 @@ int AcceptanceSession::startSmokeWorkload()
             });
         });
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-backend-availability"_s)
+                     || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
-        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-steam-big-picture"_s)
+        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-collections"_s)
+            ? u"qrc:/acceptance/CollectionsAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-steam-big-picture"_s)
             ? u"qrc:/acceptance/SteamBigPictureAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-idle-mode"_s)
             ? u"qrc:/acceptance/IdleModeAcceptance.qml"_s
@@ -122,6 +125,7 @@ int AcceptanceSession::startSmokeWorkload()
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
         if (m_arguments.contains(u"--smoke-stream-recovery"_s)
+            || m_arguments.contains(u"--smoke-collections"_s)
             || m_arguments.contains(u"--smoke-steam-big-picture"_s)) {
             auto *client = fixture->property("client").value<QObject *>();
             if (!client) return EXIT_FAILURE;
@@ -132,7 +136,16 @@ int AcceptanceSession::startSmokeWorkload()
             QVariant passed;
             const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && passed.toBool() && !m_qmlWarningOccurred;
-            m_application.exit(ok ? EXIT_SUCCESS : EXIT_FAILURE);
+            if (ok && m_arguments.contains(u"--smoke-collections"_s)) {
+                QTimer::singleShot(250, this, [this, window] {
+                    const auto shot = m_arguments.indexOf(u"--screenshot"_s);
+                    const bool saved = shot < 0 || (shot + 1 < m_arguments.size()
+                        && window->grabWindow().save(m_arguments.at(shot + 1)));
+                    m_application.exit(saved && !m_qmlWarningOccurred ? EXIT_SUCCESS : EXIT_FAILURE);
+                });
+            } else {
+                m_application.exit(ok ? EXIT_SUCCESS : EXIT_FAILURE);
+            }
         });
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-region-ping"_s) || m_arguments.contains(u"--smoke-store-paging"_s))) {
         const bool storePaging = m_arguments.contains(u"--smoke-store-paging"_s);

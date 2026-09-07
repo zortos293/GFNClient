@@ -56,6 +56,26 @@ Raw session contexts, credentials, URLs, SDP and media payloads are excluded fro
 the new handshake trace. Logs rotate during use, and exports retain readable lines.
 No per-packet or per-input file logging is added to the gameplay path.
 
+## Video color precision
+
+The color-depth setting selects the stream's encoded and decoded precision, not HDR.
+Ten-bit video stays ten-bit through native YUV-to-RGB conversion and GPU texture import;
+frame-generation history and generated output retain that texture format. The normal Qt SDR
+window uses an 8-bit swapchain. Its final video draw applies centered, static 8×8 spatial
+dithering after scaling so lower bits contribute to the displayed gradient instead of being
+discarded before composition. Black, white, neutral balance, and the SDR transfer function
+are preserved. High-precision texture render targets do not receive the 8-bit dither.
+
+`qt-native.log` reports `SDR video composition` when the imported or output format changes,
+including `textureBits`, `outputBits`, and the dither policy. A ten-bit stream with
+`textureBits=10 outputBits=8 dither=ordered-8x8` is the expected SDR path, not native ten-bit
+scan-out. HDR10 swapchains are not used to display unconverted SDR pixels.
+
+Run `ctest --test-dir build/opennow-qt -R opennow-streamcolor-tests --output-on-failure`
+for GPU readback checks of ten-bit gradients, endpoint and neutral colors, final quantization,
+and high-precision render targets. Live acceptance still requires checking gradients and
+black/white levels on the intended GPU and display in windowed and fullscreen modes.
+
 ## Build
 
 Install the Qt ShaderTools development module with Qt Quick and Multimedia; CMake
@@ -87,6 +107,15 @@ to check the in-stream exit confirmation in desktop/console and windowed/fullscr
 The keyboard fixtures cover Return, keypad Enter, Tab+Space, Escape, safe default focus,
 auto-repeat suppression, and preserving the stream surface/input across cancellation.
 They use a smoke session, not a live GFN connection.
+
+Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-session-launch-'`
+to check the desktop launch screen in windowed/fullscreen and normal/reduced-motion modes.
+The fixture exercises queue updates, entry/first-frame fades, reconnects, failures, cancellation
+confirmation, and interrupted transitions while checking that the same video item survives.
+Receiver readiness alone must not dismiss the launch screen. These tests inject native status
+and first-frame events; they do not establish live network or decoder behavior.
+When Xvfb is available, the video variants also render a synthetic GPU texture through the
+production video material and check that it stays covered until the first-frame handoff.
 
 Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-session-fullscreen-'`
 to verify that F11 can leave and re-enter fullscreen after confirming session exit,

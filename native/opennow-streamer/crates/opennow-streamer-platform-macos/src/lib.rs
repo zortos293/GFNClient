@@ -30,6 +30,7 @@
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 mod audio_device;
+mod color;
 mod failure;
 mod format;
 mod lifecycle;
@@ -44,8 +45,8 @@ pub use failure::{BackendFailure, BackendSubsystem, VideoDecodeLoss};
 pub use format::{
     AudioFormat, Av1Format, BackendConfig, BorrowedNsView, BorrowedNsWindow, EmbeddedBackendConfig,
     FrameTiming, H264Format, H264Framing, H264ParameterSets, H265Format, H265ParameterSets,
-    OwnedOverlayConfig, QueueLimits, RendererRect, ScreenRect, SurfaceTarget, VideoColorSpace,
-    VideoFormat, WindowSurfaceConfig,
+    MetalFrameFormat, OwnedOverlayConfig, QueueLimits, RendererRect, ScreenRect, SurfaceTarget,
+    VideoBitDepth, VideoColorSpace, VideoFormat, WindowSurfaceConfig,
 };
 pub use lifecycle::BackendState;
 

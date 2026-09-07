@@ -681,7 +681,8 @@ fn defaults() -> Map<String, Value> {
         "sessionClockShowEveryMinutes":60, "sessionClockShowDurationSeconds":30,
         "windowWidth":1400, "windowHeight":900, "keyboardLayout":"en-US",
         "gameLanguage":"en_US", "enablePersistingInGameSettings":false, "enableL4S":false,
-        "identifyAsSteamDeck":false, "enableCloudGsync":false, "discordRichPresence":false,
+        "identifyAsSteamDeck":false, "steamBigPictureMode":false,
+        "enableCloudGsync":false, "discordRichPresence":false,
         "autoCheckForUpdates":true, "updateChannel":"stable",
         "allowEscapeToExitFullscreen":false, "lastSeenReleaseHighlightsVersion":"",
         "videoShader":{"enabled":false,"sharpen":40,"saturation":100,"contrast":100,"brightness":100,"vibrance":0,"filmGrain":0},
@@ -742,6 +743,35 @@ mod tests {
         );
         fs::remove_dir_all(directory).unwrap();
     }
+
+    #[test]
+    fn steam_big_picture_is_opt_in_and_persists_independently() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-big-picture-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["steamBigPictureMode"], false);
+        store.set("launchInConsoleMode", json!(true)).unwrap();
+        store.set("controllerMode", json!(true)).unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["steamBigPictureMode"], false);
+        store.set("steamBigPictureMode", json!(true)).unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["steamBigPictureMode"], true);
+        store.set("launchInConsoleMode", json!(false)).unwrap();
+        store.set("controllerMode", json!(false)).unwrap();
+        assert_eq!(store.all()["steamBigPictureMode"], true);
+        store.set("steamBigPictureMode", json!(false)).unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["steamBigPictureMode"], false);
+        store.set("steamBigPictureMode", json!(true)).unwrap();
+        store.reset().unwrap();
+        assert_eq!(store.all()["steamBigPictureMode"], false);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn console_switching_is_opt_in_and_manual_desktop_survives_reload() {
         let unique = SystemTime::now()

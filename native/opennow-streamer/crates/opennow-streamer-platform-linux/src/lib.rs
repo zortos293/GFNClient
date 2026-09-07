@@ -49,9 +49,9 @@ pub use format::{
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use frame_producer::{
-    CpuNv12Frame, ImportedNv12Frame, LinuxFrameProducer, LinuxGpuFrame, LinuxGpuFrameProducer,
-    LinuxGpuRenderResources, PreparedLinuxFrame, PreparedVulkanFrame, PreparedVulkanImage,
-    RecordedGpuFrame, VulkanRenderDevice,
+    CpuNv12Frame, GpuTextureFormat, ImportedNv12Frame, LinuxFrameProducer, LinuxGpuFrame,
+    LinuxGpuFrameProducer, LinuxGpuRenderResources, PreparedLinuxFrame, PreparedVulkanFrame,
+    PreparedVulkanImage, RecordedGpuFrame, VulkanRenderDevice,
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use presentation::{NativeSurface, VulkanPresenter};

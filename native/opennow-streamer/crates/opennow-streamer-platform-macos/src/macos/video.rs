@@ -11,20 +11,26 @@ use objc2_core_media::{
     CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime,
     CMVideoFormatDescriptionCreate, CMVideoFormatDescriptionCreateFromH264ParameterSets,
     CMVideoFormatDescriptionCreateFromHEVCParameterSets,
+    kCMFormatDescriptionExtension_BitsPerComponent,
     kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms, kCMTimeInvalid,
     kCMVideoCodecType_AV1,
 };
 use objc2_core_video::{
-    CVImageBuffer, kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey,
-    kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+    CVImageBuffer, CVPixelBufferGetPixelFormatType, kCVPixelBufferIOSurfacePropertiesKey,
+    kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey,
+    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+    kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+    kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
 };
 use objc2_video_toolbox::{
     VTDecodeFrameFlags, VTDecodeInfoFlags, VTDecompressionOutputCallbackRecord,
     VTDecompressionSession, kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
 };
 
-use crate::failure::FailureReporter;
-use crate::format::{Av1Format, FrameTiming, H264Format, H265Format, VideoColorSpace, VideoFormat};
+use crate::failure::{BackendSubsystem, FailureReporter};
+use crate::format::{
+    Av1Format, FrameTiming, H264Format, H265Format, VideoBitDepth, VideoColorSpace, VideoFormat,
+};
 use crate::queue::{BoundedQueue, PushResult};
 
 use super::mailbox::LatestMailbox;
@@ -105,6 +111,7 @@ struct CallbackContext {
     failures: Arc<FailureReporter>,
     in_flight: Arc<InFlight>,
     color_space: VideoColorSpace,
+    bit_depth: VideoBitDepth,
 }
 
 pub(super) struct VideoDecoder {
@@ -127,6 +134,10 @@ impl VideoDecoder {
         maximum_in_flight: usize,
     ) -> Result<Self, BackendError> {
         let format_description = create_format_description(format)?;
+        let bitstream_depth =
+            unsafe { format_description.extension(kCMFormatDescriptionExtension_BitsPerComponent) }
+                .and_then(|value| value.downcast_ref::<CFNumber>().and_then(CFNumber::as_i32));
+        let bit_depth = format.destination_bit_depth(bitstream_depth)?;
         let in_flight = Arc::new(InFlight {
             count: AtomicUsize::new(0),
             maximum: maximum_in_flight,
@@ -137,13 +148,17 @@ impl VideoDecoder {
             failures,
             in_flight: Arc::clone(&in_flight),
             color_space: format.color_space(),
+            bit_depth,
         });
         let callback = VTDecompressionOutputCallbackRecord {
             decompressionOutputCallback: Some(decompression_callback),
             decompressionOutputRefCon: (&mut *callback_context as *mut CallbackContext).cast(),
         };
 
-        let pixel_format = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange as i32;
+        let pixel_format = match bit_depth {
+            VideoBitDepth::Eight => kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            VideoBitDepth::Ten => kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+        } as i32;
         let pixel_format_number = unsafe {
             CFNumber::new(
                 None,
@@ -323,6 +338,22 @@ unsafe extern "C-unwind" fn decompression_callback(
     if status == 0 {
         if let Some(image_buffer) = NonNull::new(image_buffer) {
             let image = unsafe { CFRetained::retain(image_buffer) };
+            let pixel_format = CVPixelBufferGetPixelFormatType(&image);
+            if context.bit_depth == VideoBitDepth::Ten
+                && pixel_format != kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                && pixel_format != kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+            {
+                context
+                    .counters
+                    .video_decode_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                context.failures.report_fatal(
+                    BackendSubsystem::VideoToolbox,
+                    format!("VideoToolbox did not preserve ten-bit output: pixel format {pixel_format:#010x}"),
+                );
+                context.in_flight.release();
+                return;
+            }
             let frame = DecodedFrame {
                 image,
                 color_space: context.color_space,

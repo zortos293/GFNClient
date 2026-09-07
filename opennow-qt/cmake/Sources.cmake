@@ -32,6 +32,7 @@ qt_add_executable(opennow-qt
     src/acceptance/FrameGenerationStatsAcceptance.cpp
     src/acceptance/StreamExitAcceptance.cpp
     src/acceptance/SessionFullscreenAcceptance.cpp
+    src/acceptance/SessionLaunchAcceptance.cpp
     src/app/AppController.cpp
     src/app/AppController.h
     src/app/ApplicationStartup.cpp

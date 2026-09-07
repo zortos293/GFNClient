@@ -26,12 +26,34 @@ if(BUILD_TESTING)
         endif()
     endif()
     set_tests_properties(opennow-frameinterpolator-tests PROPERTIES TIMEOUT 60)
+    qt_add_executable(opennow-streamcolor-tests tests/tst_streamcolor.cpp)
+    target_include_directories(opennow-streamcolor-tests PRIVATE src)
+    target_link_libraries(opennow-streamcolor-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate)
+    qt_add_shaders(opennow-streamcolor-tests "opennow-streamcolor-test-shaders"
+        PREFIX "/opennow/shaders" BASE "shaders"
+        FILES shaders/streamvideo.vert shaders/streamvideo.frag)
+    if(OPENNOW_XVFB_RUN)
+        add_test(NAME opennow-streamcolor-tests
+            COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-streamcolor-tests>" -o -,txt)
+        set_tests_properties(opennow-streamcolor-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
+    else()
+        add_test(NAME opennow-streamcolor-tests COMMAND opennow-streamcolor-tests -o -,txt)
+        if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            set_tests_properties(opennow-streamcolor-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
+    endif()
+    set_tests_properties(opennow-streamcolor-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/SteamBigPictureAcceptance.qml)
     add_test(NAME qml-audio-output
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-audio --smoke-audio-output --reduced-motion)
     set_tests_properties(qml-audio-output PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    add_test(NAME qml-steam-big-picture
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-streaming --smoke-steam-big-picture --reduced-motion)
+    set_tests_properties(qml-steam-big-picture PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     add_test(NAME qml-frame-generation
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-frame-generation --reduced-motion)
@@ -367,6 +389,23 @@ if(BUILD_TESTING)
     endforeach()
     foreach(motion_mode normal reduced)
         foreach(motion_window windowed fullscreen)
+            set(launch_args --smoke-test --allow-multiple-instances --desktop --route library --smoke-session-launch)
+            if(motion_mode STREQUAL "reduced")
+                list(APPEND launch_args --reduced-motion)
+            endif()
+            if(motion_window STREQUAL "fullscreen")
+                list(APPEND launch_args --smoke-motion-fullscreen)
+            endif()
+            add_test(NAME "qml-session-launch-${motion_mode}-${motion_window}" COMMAND opennow-qt ${launch_args})
+            set_tests_properties("qml-session-launch-${motion_mode}-${motion_window}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+            if(OPENNOW_XVFB_RUN)
+                add_test(NAME "qml-session-launch-video-${motion_mode}-${motion_window}"
+                    COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-qt>"
+                        ${launch_args} --smoke-session-launch-video)
+                set_tests_properties("qml-session-launch-video-${motion_mode}-${motion_window}" PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=xcb" TIMEOUT 30)
+            endif()
             set(motion_args --smoke-test --allow-multiple-instances --desktop --route home --smoke-paper-design --smoke-motion)
             if(motion_mode STREQUAL "reduced")
                 list(APPEND motion_args --reduced-motion)

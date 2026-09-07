@@ -870,7 +870,7 @@ impl MediaSession {
             ))
             .spawn(move || match stream.codec {
                 MediaVideoCodec::H264 => {
-                    run_macos_h264_video(video_shared, video_commands, stream.fps);
+                    run_macos_h264_video(video_shared, video_commands, stream.fps, true);
                 }
                 MediaVideoCodec::H265 => {
                     run_macos_h265_video(video_shared, video_commands, stream.fps);
@@ -1331,7 +1331,7 @@ impl MediaSession {
             ))
             .spawn(move || match stream.codec {
                 MediaVideoCodec::H264 => {
-                    run_macos_h264_video(video_shared, video_commands, stream.fps);
+                    run_macos_h264_video(video_shared, video_commands, stream.fps, false);
                 }
                 MediaVideoCodec::H265 => {
                     run_macos_h265_video(video_shared, video_commands, stream.fps);
@@ -3102,6 +3102,7 @@ fn run_macos_h264_video(
     shared: Arc<SharedPipeline>,
     host_commands: Sender<HostCommand>,
     stream_fps: u32,
+    allow_software_fallback: bool,
 ) {
     use std::sync::mpsc;
     use std::time::Duration;
@@ -3138,6 +3139,16 @@ fn run_macos_h264_video(
                 mark_macos_video_desynced(&shared, &frame.mid, reason);
             }
             if let Some(failure) = sink.fatal_failure() {
+                if !allow_software_fallback {
+                    let _ = shared.feedback.send(MediaFeedback::DecoderError {
+                        codec: "h264",
+                        message: format!(
+                            "{}; the Qt Metal stream view requires hardware decoding",
+                            failure.message
+                        ),
+                    });
+                    return;
+                }
                 shared.mac_software_fallback.store(true, Ordering::Release);
                 mark_macos_video_desynced(
                     &shared,
@@ -3307,7 +3318,8 @@ fn run_macos_h264_video(
                 );
             }
         }
-        if !playback_started && sink.stats().video_presented > 0 {
+        let stats = sink.stats();
+        if !playback_started && (stats.video_presented > 0 || stats.video_metal_completed > 0) {
             playback_started = true;
             let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
                 backend: "VideoToolbox/Metal",
@@ -3489,7 +3501,8 @@ fn run_macos_h265_video(
                 );
             }
         }
-        if !playback_started && sink.stats().video_presented > 0 {
+        let stats = sink.stats();
+        if !playback_started && (stats.video_presented > 0 || stats.video_metal_completed > 0) {
             playback_started = true;
             let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
                 backend: "VideoToolbox HEVC/Metal",
@@ -3686,7 +3699,8 @@ fn run_macos_av1_video(
                 );
             }
         }
-        if !playback_started && sink.stats().video_presented > 0 {
+        let stats = sink.stats();
+        if !playback_started && (stats.video_presented > 0 || stats.video_metal_completed > 0) {
             playback_started = true;
             let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
                 backend: "VideoToolbox AV1/Metal",

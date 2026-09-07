@@ -351,14 +351,27 @@ impl StreamerService {
                 ),
             });
         }
+        let videotoolbox = backends.iter().any(|backend| {
+            backend["backend"] == "videotoolbox"
+                && backend["platform"] == "macos"
+                && backend["available"].as_bool() == Some(true)
+        });
         let color = if hdr {
             "10bit_420"
         } else {
             settings["colorQuality"].as_str().unwrap_or("8bit_420")
         };
+        if videotoolbox && !matches!(color, "8bit_420" | "10bit_420") {
+            return Err(StreamerError {
+                code: "streamer_color_unavailable",
+                message: "The macOS embedded streamer supports 8-bit and 10-bit 4:2:0 SDR. Select 4:2:0 in Stream settings.".to_owned(),
+            });
+        }
         for backend in backends.iter_mut() {
-            let requires_profiles =
-                hdr || backend["backend"] == "vulkan" || backend["platform"] == "linux";
+            let requires_profiles = hdr
+                || backend["backend"] == "vulkan"
+                || backend["platform"] == "linux"
+                || backend["backend"] == "videotoolbox";
             for codec in backend["codecs"].as_array_mut().into_iter().flatten() {
                 let hdr_supported = codec
                     .get("hdrSupported")
@@ -398,6 +411,8 @@ impl StreamerService {
             let candidates: &[&str] = match color {
                 _ if hdr => &["h265", "av1"],
                 "8bit_444" | "10bit_444" => &["h265"],
+                "10bit_420" if videotoolbox => &["h265", "av1"],
+                _ if videotoolbox => macos_auto_codec_candidates(settings),
                 "10bit_420" => &["av1", "h265"],
                 _ => &["av1", "h265", "h264"],
             };
@@ -460,8 +475,14 @@ impl StreamerService {
         if !params["runtimeCapabilities"].is_null() {
             // Re-check the server's negotiated codec on resume/attachment as well. Never
             // reinterpret compressed AV1 bytes as H.264 when a persisted session is resumed.
+            let mut negotiated_settings = context["settings"].clone();
+            if let Some(color) =
+                context["session"]["negotiatedStreamProfile"]["colorQuality"].as_str()
+            {
+                negotiated_settings["colorQuality"] = json!(color);
+            }
             let resolved = Self::embedded_session_settings(
-                &context["settings"],
+                &negotiated_settings,
                 &params["runtimeCapabilities"],
             )?;
             context["settings"]["nativeHdrSupported"] = resolved["nativeHdrSupported"].clone();
@@ -904,6 +925,29 @@ fn available_codecs(capabilities: &Value) -> Vec<&'static str> {
         .into_iter()
         .filter(|codec| codec_available(capabilities, codec))
         .collect()
+}
+
+fn macos_auto_codec_candidates(settings: &Value) -> &'static [&'static str] {
+    let (width, height) = settings["resolution"]
+        .as_str()
+        .and_then(|value| value.split_once('x'))
+        .and_then(|(width, height)| Some((width.parse::<u64>().ok()?, height.parse::<u64>().ok()?)))
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .unwrap_or((1920, 1080));
+    let pixels = width.saturating_mul(height);
+    let fps = settings["fps"].as_u64().unwrap_or(60);
+    let bitrate = settings["maxBitrateMbps"].as_u64().unwrap_or(75);
+    if fps >= 144 {
+        &["h264", "h265", "av1"]
+    } else if pixels >= 3840 * 2160 || ((1..=30).contains(&bitrate) && pixels >= 2560 * 1440) {
+        &["av1", "h265", "h264"]
+    } else if (1..=30).contains(&bitrate) {
+        &["av1", "h264", "h265"]
+    } else if pixels >= 2560 * 1440 || bitrate >= 75 {
+        &["h265", "h264", "av1"]
+    } else {
+        &["h264", "h265", "av1"]
+    }
 }
 
 fn codec_available(capabilities: &Value, codec: &str) -> bool {
@@ -1883,6 +1927,135 @@ mod tests {
         let prepared = service.prepare_embedded(&params, &stale_hdr).unwrap();
         assert_eq!(prepared["context"]["settings"]["enableHdr"], false);
         assert_eq!(prepared["context"]["settings"]["nativeHdrSupported"], false);
+    }
+
+    #[test]
+    fn embedded_macos_auto_matches_hardware_stream_quality_policy() {
+        let caps = json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[{
+            "backend":"videotoolbox","platform":"macos","available":true,"codecs":[
+                {"codec":"h264","available":true,"colorQualities":["8bit_420"]}, {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]},
+                {"codec":"av1","available":true,"colorQualities":["8bit_420","10bit_420"]}]}]});
+        for (resolution, fps, bitrate, color, expected) in [
+            ("1920x1080", 60, 75, "8bit_420", "h265"),
+            ("1920x1080", 60, 50, "8bit_420", "h264"),
+            ("2560x1440", 60, 80, "8bit_420", "h265"),
+            ("1920x1080", 60, 30, "8bit_420", "av1"),
+            ("1920x1080", 60, 31, "8bit_420", "h264"),
+            ("3840x2160", 120, 80, "8bit_420", "av1"),
+            ("3840x2160", 144, 20, "8bit_420", "h264"),
+            ("1920x1080", 240, 75, "8bit_420", "h264"),
+            ("1920x1080", 60, 20, "10bit_420", "h265"),
+            ("1920x1080", 144, 75, "10bit_420", "h265"),
+        ] {
+            let settings = json!({"codec":"auto", "resolution":resolution,
+                "fps":fps, "maxBitrateMbps":bitrate, "colorQuality":color,
+                "transportMode":"nvst"});
+            let resolved = StreamerService::embedded_session_settings(&settings, &caps).unwrap();
+            assert_eq!(resolved["codec"], expected, "{settings}");
+            assert_eq!(resolved["colorQuality"], color);
+            assert_eq!(resolved["transportMode"], "nvst");
+            assert_eq!(settings["codec"], "auto");
+        }
+        assert_eq!(
+            StreamerService::embedded_session_settings(&json!({"codec":"auto"}), &caps).unwrap()["codec"],
+            "h265"
+        );
+    }
+
+    #[test]
+    fn embedded_macos_codec_policy_never_falls_back_to_unsupported_hardware() {
+        let mut caps = json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[{
+            "backend":"videotoolbox","platform":"macos","available":true,"codecs":[
+                {"codec":"h264","available":true,"colorQualities":["8bit_420"]}, {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]},
+                {"codec":"av1","available":false}]},
+            {"backend":"software","available":true,"codecs":[
+                {"codec":"av1","available":true,"colorQualities":["8bit_420","10bit_420"]}]}]});
+        let settings = json!({"codec":"auto", "maxBitrateMbps":20});
+        assert_eq!(
+            StreamerService::embedded_session_settings(&settings, &caps).unwrap()["codec"],
+            "h264"
+        );
+        assert_eq!(
+            StreamerService::embedded_session_settings(
+                &json!({"codec":"auto", "maxBitrateMbps":20, "resolution":"3840x2160"}),
+                &caps
+            )
+            .unwrap()["codec"],
+            "h265"
+        );
+        assert_eq!(
+            StreamerService::embedded_session_settings(&json!({"codec":"av1"}), &caps)
+                .unwrap_err()
+                .code,
+            "streamer_codec_unavailable"
+        );
+        assert_eq!(
+            StreamerService::embedded_session_settings(&json!({"codec":"h264"}), &caps).unwrap()["codec"],
+            "h264"
+        );
+        caps["videoBackends"][0]["codecs"][1]["available"] = json!(false);
+        assert_eq!(
+            StreamerService::embedded_session_settings(&settings, &caps).unwrap()["codec"],
+            "h264"
+        );
+        for codec in ["auto", "h264", "h265"] {
+            assert_eq!(
+                StreamerService::embedded_session_settings(
+                    &json!({"codec":codec,"colorQuality":"10bit_420"}),
+                    &caps,
+                )
+                .unwrap_err()
+                .code,
+                "streamer_codec_unavailable",
+            );
+        }
+        for codec in ["auto", "h264", "h265"] {
+            for color in ["8bit_444", "10bit_444"] {
+                assert_eq!(
+                    StreamerService::embedded_session_settings(
+                        &json!({"codec":codec,"colorQuality":color}),
+                        &caps
+                    )
+                    .unwrap_err()
+                    .code,
+                    "streamer_color_unavailable"
+                );
+            }
+        }
+        caps["videoBackends"][0]["available"] = json!(false);
+        assert_eq!(
+            StreamerService::embedded_session_settings(&settings, &caps)
+                .unwrap_err()
+                .code,
+            "streamer_backend_unavailable"
+        );
+    }
+
+    #[test]
+    fn embedded_macos_prepare_checks_negotiated_color_before_attachment() {
+        let service = StreamerService::new();
+        for color in ["8bit_444", "10bit_444"] {
+            let result = service.prepare_embedded(
+                &json!({"session": {
+                    "sessionId":"resume", "status":2,
+                    "negotiatedStreamProfile":{"codec":"H265", "colorQuality":color}
+                }, "runtimeCapabilities":{"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[{
+                    "backend":"videotoolbox","platform":"macos","available":true,
+                    "codecs":[{"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}]}]}}),
+                &json!({"codec":"auto", "colorQuality":"8bit_420"}),
+            );
+            assert_eq!(result.unwrap_err().code, "streamer_color_unavailable");
+        }
+        let prepared = service.prepare_embedded(
+            &json!({"session": {
+                "sessionId":"resume-ten-bit", "status":2,
+                "negotiatedStreamProfile":{"codec":"H265", "colorQuality":"10bit_420"}
+            }, "runtimeCapabilities":{"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[{
+                "backend":"videotoolbox","platform":"macos","available":true,
+                "codecs":[{"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}]}]}}),
+            &json!({"codec":"auto", "colorQuality":"8bit_420"}),
+        ).unwrap();
+        assert_eq!(prepared["context"]["settings"]["colorQuality"], "10bit_420");
     }
 
     #[test]

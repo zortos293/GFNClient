@@ -24,7 +24,8 @@ use objc2_core_video::{
 };
 use objc2_video_toolbox::{
     VTDecodeFrameFlags, VTDecodeInfoFlags, VTDecompressionOutputCallbackRecord,
-    VTDecompressionSession, kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+    VTDecompressionSession, VTSessionSetProperty, kVTDecompressionPropertyKey_RealTime,
+    kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
 };
 
 use crate::failure::{BackendSubsystem, FailureReporter};
@@ -205,6 +206,18 @@ impl VideoDecoder {
             status: -1,
         })?;
         let session = unsafe { CFRetained::from_raw(session_ptr) };
+        let realtime_status = unsafe {
+            VTSessionSetProperty(
+                session.as_ref(),
+                kVTDecompressionPropertyKey_RealTime,
+                Some(true_value.as_ref()),
+            )
+        };
+        if realtime_status != 0 {
+            eprintln!(
+                "VideoToolbox declined the real-time decode hint: OSStatus {realtime_status}"
+            );
+        }
 
         Ok(Self {
             session: Some(session),
@@ -588,5 +601,96 @@ mod tests {
             epoch: 0,
         };
         assert_eq!(time_to_100ns(time), 10_000_000);
+    }
+
+    #[test]
+    #[ignore = "requires a Mac with VideoToolbox hardware decode and a Metal device"]
+    fn hardware_decode_to_embedded_metal_survives_surface_retirement() {
+        use super::*;
+        use crate::{AdoptedMetalContext, EmbeddedFrameProducer, H264ParameterSets};
+        use objc2::rc::Retained;
+        use objc2_metal::{
+            MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandQueue,
+            MTLCreateSystemDefaultDevice, MTLDevice,
+        };
+
+        let sps = [
+            0x67, 0x42, 0xc0, 0x0a, 0xd9, 0x04, 0x26, 0xc0, 0x44, 0x00, 0x00, 0x03, 0x00, 0x04,
+            0x00, 0x00, 0x03, 0x01, 0xe2, 0x3c, 0x48, 0x99, 0x20,
+        ];
+        let pps = [0x68, 0xcb, 0x83, 0xcb, 0x20];
+        let idr = [
+            0x65, 0x88, 0x84, 0x04, 0xbc, 0x98, 0xa0, 0x00, 0x38, 0xa3, 0x27, 0x27, 0x27, 0x5d,
+            0x75, 0xd7, 0x5d, 0x75, 0xd7, 0x5d, 0x75, 0xd7, 0x80,
+        ];
+        let format = H264Format::new(
+            H264ParameterSets::new(sps, pps).unwrap(),
+            VideoColorSpace::Bt709,
+        )
+        .into();
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let queue = device.newCommandQueue().expect("Metal command queue");
+        let mailbox = Arc::new(LatestMailbox::new());
+        let counters = Arc::new(Counters::default());
+        let failures = Arc::new(FailureReporter::default());
+        let producer = EmbeddedFrameProducer::new(
+            Arc::clone(&mailbox),
+            Arc::clone(&counters),
+            Arc::clone(&failures),
+        );
+        let decoder = VideoDecoder::new(
+            &format,
+            DecodedFrameOutput::EmbeddedMailbox {
+                mailbox,
+                frame_available: None,
+            },
+            Arc::clone(&counters),
+            Arc::clone(&failures),
+            3,
+        )
+        .expect("hardware VideoToolbox session");
+        let mut sample = (idr.len() as u32).to_be_bytes().to_vec();
+        sample.extend_from_slice(&idr);
+        for _ in 0..3 {
+            assert!(
+                decoder
+                    .submit(&sample, FrameTiming::from_90khz(90_000, 1500))
+                    .unwrap()
+            );
+            assert_eq!(
+                unsafe {
+                    decoder
+                        .session
+                        .as_ref()
+                        .unwrap()
+                        .wait_for_asynchronous_frames()
+                },
+                0
+            );
+            let frame = producer.acquire_latest().expect("decoded hardware frame");
+            assert_eq!((frame.width(), frame.height()), (64, 64));
+            assert_eq!(frame.presentation_time_ns(), 1_000_000_000);
+            let command = queue.commandBuffer().expect("Metal command buffer");
+            let recorded = unsafe {
+                frame.record(
+                    AdoptedMetalContext {
+                        device: Retained::as_ptr(&device).cast_mut().cast(),
+                        command_buffer: Retained::as_ptr(&command).cast_mut().cast(),
+                    },
+                    0,
+                )
+            }
+            .expect("zero-copy IOSurface import and Metal conversion");
+            assert!(!recorded.texture.is_null());
+            assert_eq!((recorded.width, recorded.height), (64, 64));
+            producer.release_graphics_resources();
+            drop(frame);
+            command.commit();
+            command.waitUntilCompleted();
+            assert_eq!(command.status(), MTLCommandBufferStatus::Completed);
+        }
+        assert_eq!(counters.snapshot().video_metal_completed, 3);
+        assert_eq!(counters.snapshot().video_present_errors, 0);
+        assert!(failures.fatal_failure().is_none());
     }
 }

@@ -17,7 +17,34 @@ This isolated crate implements the macOS media path without GStreamer or FFmpeg:
 
 The crate is a member of the native-streamer workspace and is linked only on macOS.
 
-## Integration API
+## Qt embedded integration
+
+`MacOsBackend::start_embedded_with_publisher` runs on a session-owned worker and creates no
+AppKit window, Metal device, command queue, or display link. Hardware VideoToolbox decoding is
+required; the real-time property is requested as a best-effort latency hint. The single-frame
+mailbox drops obsolete decoded frames without blocking the decoder. Qt owns composition,
+fullscreen, overlays, and the graphics device throughout the session.
+
+The pixel buffer and its CoreVideo/Metal textures remain retained until Qt's command buffer
+completes, including when the stream item's graphics resources are retired before completion.
+`video_metal_completed` measures completion of this GPU work, separately from the standalone
+presenter's `video_presented` scanout count. Both paths can signal playback readiness. Persistent
+embedded decoder or GPU failure is reported rather than switching to an invisible SDL/software
+presenter.
+
+The core adapts the SDR Auto codec policy from
+[OpenNOW-Mac's stream settings](https://github.com/OpenCloudGaming/OpenNOW-Mac/blob/0a68e94c58b8190bbe3f789beb14a35c9ae99c6d/OPN/Stream/WebRTCMediaStreamSettings.swift):
+prefer H.264 at 144 FPS or higher; otherwise prefer hardware AV1 for constrained bitrate or 4K,
+and HEVC for 1440p or high bitrate. Selection stays within codecs actually supported by the Mac.
+The decoder's real-time hint follows its `NvstVideoToolboxDecoder.swift`. These settings do not
+import the reference's Swift/WebRTC runtime or change OpenNOW's NVST transport.
+
+The current Qt path supports SDR 8-bit 4:2:0 and preserves the main application's ten-bit
+HEVC/AV1 path through P010 and RGB10A2 textures. Ten-bit Auto selection stays on HEVC/AV1;
+H.264 remains eight-bit. Unsupported 4:4:4 requests, including resumed sessions, are rejected
+rather than silently reduced to 4:2:0. macOS HDR output is not advertised.
+
+## Standalone integration API
 
 Create `H264ParameterSets` from the current SPS and PPS (or `H265ParameterSets` from VPS, SPS and
 PPS) and start the backend on AppKit's main thread. OpenNOW's native host creates a standalone SDL/AppKit window and supplies its dedicated
@@ -165,6 +192,19 @@ On macOS, run:
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```
+
+On a Mac with working VideoToolbox hardware decoding and Metal, also run this offline acceptance
+test from the repository root (no GFN account is needed):
+
+```sh
+cargo test --manifest-path native/opennow-streamer/Cargo.toml \
+  -p opennow-streamer-platform-macos \
+  hardware_decode_to_embedded_metal_survives_surface_retirement -- --ignored --nocapture
+```
+
+It decodes a synthetic black H.264 frame in hardware, imports the IOSurface on an adopted Metal
+device, and retires/recreates graphics resources before GPU completion. Live gameplay still needs
+the Qt windowed/fullscreen, overlay, reconnect, and input checks in `docs/qt-acceptance.md`.
 
 Both Apple architectures can be type-checked from a non-macOS host when Rust's targets are
 installed. A real build still requires the Apple SDK and a matching C compiler because vendored

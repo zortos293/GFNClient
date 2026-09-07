@@ -739,7 +739,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         json!({"key":"ClientImeSupport","value":"0"}),
         json!({"key":"SubSessionId","value":random_uuid()}),
         json!({"key":"clientPhysicalResolution","value":physical_resolution}),
-        json!({"key":"networkType","value":if cfg!(target_os = "macos") { "WiFi5.0" } else { "Unknown" }}),
+        json!({"key":"networkType","value":"Unknown"}),
         json!({"key":"wssignaling","value":"1"}),
         json!({"key":"surroundAudioInfo","value":"2"}),
     ];
@@ -1778,6 +1778,18 @@ mod tests {
             );
             assert_eq!(body["sessionRequestData"]["appLaunchMode"], expected);
         }
+    }
+
+    #[test]
+    fn native_request_does_not_invent_the_clients_network_type() {
+        let body = build_create_body("12345", &json!({}), &json!({}), "device-id");
+        let network = body["sessionRequestData"]["metaData"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["key"] == "networkType")
+            .unwrap();
+        assert_eq!(network["value"], "Unknown");
     }
 
     #[test]

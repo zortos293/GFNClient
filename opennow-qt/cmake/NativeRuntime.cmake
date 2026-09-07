@@ -1,6 +1,17 @@
 set(OPENNOW_CORE_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-target")
 set(OPENNOW_CORE_PROFILE "$<IF:$<CONFIG:Release>,release,debug>")
 set(OPENNOW_CORE_SUFFIX "$<IF:$<PLATFORM_ID:Windows>,.exe,>")
+if(APPLE)
+    if(OPENNOW_PACKAGE_ARCH STREQUAL "arm64")
+        set(OPENNOW_MACOS_RUST_TARGET "aarch64-apple-darwin")
+    else()
+        set(OPENNOW_MACOS_RUST_TARGET "x86_64-apple-darwin")
+    endif()
+    if(OPENNOW_RUST_TARGET AND NOT OPENNOW_RUST_TARGET STREQUAL OPENNOW_MACOS_RUST_TARGET)
+        message(FATAL_ERROR "OPENNOW_RUST_TARGET must match the macOS Qt architecture: ${OPENNOW_MACOS_RUST_TARGET}")
+    endif()
+    set(OPENNOW_RUST_TARGET "${OPENNOW_MACOS_RUST_TARGET}")
+endif()
 set(OPENNOW_RUST_TARGET_ARGS)
 set(OPENNOW_CORE_ARTIFACT_ROOT "${OPENNOW_CORE_TARGET_DIR}")
 if(OPENNOW_RUST_TARGET)
@@ -153,6 +164,12 @@ set(OPENNOW_STREAMER_FFI_LINK_LIBRARY
 set(OPENNOW_STREAMER_FFI_ARTIFACTS
     "${OPENNOW_STREAMER_FFI_RUNTIME}" "${OPENNOW_STREAMER_FFI_LINK_LIBRARY}")
 list(REMOVE_DUPLICATES OPENNOW_STREAMER_FFI_ARTIFACTS)
+set(OPENNOW_STREAMER_FFI_CARGO_COMMAND build)
+set(OPENNOW_STREAMER_FFI_RUSTC_ARGS)
+if(APPLE)
+    set(OPENNOW_STREAMER_FFI_CARGO_COMMAND rustc)
+    set(OPENNOW_STREAMER_FFI_RUSTC_ARGS -- -C rpath=yes)
+endif()
 file(GLOB_RECURSE OPENNOW_STREAMER_RUST_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/crates/*.rs"
     "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/crates/*/Cargo.toml")
@@ -160,7 +177,7 @@ add_custom_command(
     OUTPUT ${OPENNOW_STREAMER_FFI_ARTIFACTS}
     COMMAND "${CMAKE_COMMAND}" -E env --unset=MAKEFLAGS --unset=MFLAGS
             "CMAKE=${CMAKE_COMMAND}"
-            "${CARGO_EXECUTABLE}" build
+            "${CARGO_EXECUTABLE}" ${OPENNOW_STREAMER_FFI_CARGO_COMMAND}
             --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
             --target-dir "${OPENNOW_STREAMER_TARGET_DIR}"
             --package opennow-streamer-ffi
@@ -168,6 +185,7 @@ add_custom_command(
             ${OPENNOW_RUST_TARGET_ARGS}
             ${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}
             --release
+            ${OPENNOW_STREAMER_FFI_RUSTC_ARGS}
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.lock"
         "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"

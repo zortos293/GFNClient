@@ -121,6 +121,7 @@
     "localOutputFps": "LOCAL OUTPUT FPS",
     "frameGeneration": "FRAME GENERATION",
     "warmingUp": "Warming up",
+    "frameGenerationRateLimit": "120 FPS generation limit",
     "displayRefresh": "Display refresh",
     "overloaded": "Overloaded",
     "discontinuity": "Discontinuity",

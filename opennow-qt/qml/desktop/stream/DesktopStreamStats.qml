@@ -45,6 +45,7 @@ Item {
         case "warming-up": return qsTr("Warming up")
         case "active": return qsTr("Active")
         case "display-refresh": return qsTr("Display refresh")
+        case "source-rate-limit": return qsTr("120 FPS generation limit")
         case "overloaded": return qsTr("Overloaded")
         case "discontinuity": return qsTr("Discontinuity")
         default: return qsTr("Unavailable")

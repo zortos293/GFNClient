@@ -63,6 +63,26 @@ private slots:
         QCOMPARE(pacer.source(130, 129 * 16'666'667ULL, 129 * 16'666'667LL, 120), Result::Interpolate);
     }
 
+    void doesNotGenerateAboveThe120FpsTarget()
+    {
+        for (const auto interval : {8'333'333ULL, 11'111'111ULL, 13'333'333ULL}) {
+            for (const bool timestamps : {false, true}) {
+                StreamFramePacer pacer;
+                pacer.source(1, 0, 0, 360);
+                for (std::uint64_t frame = 2; frame <= 20; ++frame) {
+                    QCOMPARE(pacer.source(frame, timestamps ? (frame - 1) * interval : 0,
+                                          (frame - 1) * interval, 360),
+                             StreamFramePacer::Result::SourceRateLimit);
+                    QVERIFY(!pacer.pending());
+                }
+                pacer.reset();
+                pacer.source(1, 0, 0, 360);
+                QCOMPARE(pacer.source(2, 16'666'667, 16'666'667, 360),
+                         StreamFramePacer::Result::Interpolate);
+            }
+        }
+    }
+
     void highRefreshDoesNotCompressTheOriginalPair()
     {
         StreamFramePacer pacer;

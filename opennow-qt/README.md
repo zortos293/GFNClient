@@ -90,6 +90,10 @@ stream FPS. A 60 FPS stream targets 120 displayed FPS only with a sufficiently f
 and a display running at approximately 120 Hz or higher. Input and game simulation remain at
 the source rate. Interpolation adds presentation latency and can artifact around fast motion,
 thin geometry, transparency, repeated textures, and the game's HUD.
+Generation is limited to a nominal 120 FPS target: source cadences faster than 60 FPS (with a
+small arrival-jitter margin) bypass interpolation and report `source-rate-limit`. In particular,
+a 120 FPS source is never doubled to 240, even on a 240 Hz or faster display. Normal source
+presentation is not capped or renegotiated by this guard.
 
 The Qt render-thread helper samples native GPU textures into two retained histories, estimates
 bidirectional motion through three reduced-resolution pyramids, and synthesizes one midpoint.
@@ -138,11 +142,16 @@ Xvfb. Without Xvfb, the offscreen platform can skip Vulkan coverage. Set
 resource use. The tests cover translated images versus a crossfade, cut fallback, 10-bit values,
 resource recreation, pacing, and the settings-to-surface bindings. Software Vulkan correctness
 does not establish a physical GPU's 8.33 ms presentation budget.
-The Linux `opennow-nativeframegeneration-tests` target drives the production native render
-callback with injected FFI frames and real adopted-device Vulkan textures. It checks absent,
+The Linux/Windows `opennow-nativeframegeneration-tests` target drives the production native render
+callback with injected FFI frames and real adopted-device Vulkan/D3D11 textures. It checks absent,
 repeated, and grouped PTS, generated/original scheduling across `frameSwapped`, pixel readback,
-Off, discontinuity diagnostics, metadata preservation, and resource release. It is not a network
-session, D3D11 integration test, or sustained output-FPS benchmark.
+Off, discontinuity diagnostics, metadata preservation, and resource release. Windows uses a
+D3D11 software device for deterministic CI coverage. It is not a network session, hardware
+swapchain test, or sustained output-FPS benchmark.
+Moving-image rows also require the presented midpoint to differ from the current source and
+approximate halfway motion, followed by an exact original. The shader suite separately checks
+pixel-scale detail at small motion offsets. These checks do not replace validation of a live
+Windows swapchain or establish that the submitted-output counter counts distinct motion frames.
 The `qml-frame-generation-stats-desktop` and `qml-frame-generation-stats-console` acceptance tests
 feed controlled snapshots through the render-callback boundary and the real item's timer, route
 facade, top-level overlay, and clipboard report. They check FPS-only changes, fallback/recovery,

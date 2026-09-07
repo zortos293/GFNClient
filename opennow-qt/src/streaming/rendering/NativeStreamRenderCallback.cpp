@@ -38,7 +38,7 @@ private:
 
 class NativeStreamRenderCallback final : public StreamVideoRenderCallback
 {
-    enum class FrameGenerationState { Off, WarmingUp, Active, DisplayTooSlow, Overloaded, Unavailable, Discontinuity };
+    enum class FrameGenerationState { Off, WarmingUp, Active, DisplayTooSlow, Overloaded, Unavailable, Discontinuity, SourceRateLimit };
 public:
     explicit NativeStreamRenderCallback(NativeStreamRuntime *runtime)
         : m_runtime(runtime)
@@ -244,6 +244,7 @@ public:
         if (decision != StreamFramePacer::Result::Interpolate) {
             m_interpolator.reset();
             switch (decision) {
+            case StreamFramePacer::Result::SourceRateLimit: m_frameGenerationStatus.store(FrameGenerationState::SourceRateLimit); return;
             case StreamFramePacer::Result::DisplayTooSlow: m_frameGenerationStatus.store(FrameGenerationState::DisplayTooSlow); return;
             case StreamFramePacer::Result::Overloaded: m_frameGenerationStatus.store(FrameGenerationState::Overloaded); return;
             case StreamFramePacer::Result::Discontinuity: m_frameGenerationStatus.store(FrameGenerationState::Discontinuity); break;
@@ -311,7 +312,8 @@ public:
     {
         const QString states[] = {QStringLiteral("off"), QStringLiteral("warming-up"),
             QStringLiteral("active"), QStringLiteral("display-refresh"),
-            QStringLiteral("overloaded"), QStringLiteral("unavailable"), QStringLiteral("discontinuity")};
+            QStringLiteral("overloaded"), QStringLiteral("unavailable"), QStringLiteral("discontinuity"),
+            QStringLiteral("source-rate-limit")};
         const QString timing[] = {QStringLiteral("none"), QStringLiteral("source-timestamps"),
                                   QStringLiteral("arrival-cadence")};
         const QString rejections[] = {QStringLiteral("none"), QStringLiteral("sequence-gap"),

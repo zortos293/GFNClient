@@ -143,7 +143,7 @@ if(BUILD_TESTING)
         target_link_libraries(opennow-streamvideo-tests PRIVATE Vulkan::Vulkan)
     endif()
     add_dependencies(opennow-streamvideo-tests opennow-streamer-ffi-build)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         qt_add_executable(opennow-nativeframegeneration-tests
             tests/tst_nativeframegeneration.cpp
             ${OPENNOW_STREAM_RUNTIME_SOURCES}
@@ -152,7 +152,10 @@ if(BUILD_TESTING)
             src/streaming/rendering/LinuxVulkanGraphics.cpp)
         target_include_directories(opennow-nativeframegeneration-tests PRIVATE src)
         target_link_libraries(opennow-nativeframegeneration-tests PRIVATE
-            Qt6::Test Qt6::GuiPrivate Qt6::Quick opennow-streamer-ffi Vulkan::Vulkan)
+            Qt6::Test Qt6::GuiPrivate Qt6::Quick opennow-streamer-ffi)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            target_link_libraries(opennow-nativeframegeneration-tests PRIVATE Vulkan::Vulkan)
+        endif()
         add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-build)
         qt_add_shaders(opennow-nativeframegeneration-tests "opennow-native-framegen-test-shaders"
             PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_STREAM_SHADERS})
@@ -165,6 +168,8 @@ if(BUILD_TESTING)
             set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         endif()
         set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES TIMEOUT 60)
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         qt_add_executable(opennow-linuxvulkangraphics-tests
             tests/tst_linuxvulkangraphics.cpp
             src/streaming/rendering/LinuxVulkanGraphics.cpp
@@ -269,6 +274,7 @@ if(BUILD_TESTING)
         TIMEOUT 8
     )
     if(WIN32)
+        add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-test-runtime)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
         set_target_properties(
@@ -278,6 +284,7 @@ if(BUILD_TESTING)
             opennow-streamvideo-tests
             opennow-waylandpointer-tests
             opennow-nativestreamruntime-tests
+            opennow-nativeframegeneration-tests
             opennow-embedded-orchestration-tests
             opennow-singleinstance-tests
             opennow-thumbnail-tests
@@ -320,6 +327,7 @@ if(BUILD_TESTING)
                 opennow-streamvideo-tests
                 opennow-waylandpointer-tests
                 opennow-nativestreamruntime-tests
+                opennow-nativeframegeneration-tests
                 opennow-embedded-orchestration-tests
                 opennow-singleinstance-tests
                 opennow-thumbnail-tests

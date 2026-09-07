@@ -43,11 +43,25 @@ QtObject {
         stats.frameGenerationStats = {status: "overloaded", outputFps: 59}
         check(stats.cards.find(card => card.field === "frameGenerationOutputFps").value === 59,
             "fallback is reflected in the output measurement")
-        ShellStore.streamer = {status: "stopped"}
+        ShellStore.streamer = {status: "streaming", framesPerSecond: 120}
+        stats.frameGenerationStats = {status: "source-rate-limit", outputFps: 120}
+        check(stats.frameGenerationState() === qsTr("120 FPS generation limit"),
+            "the source-rate limit has an explicit status")
+        check(stats.cards.find(card => card.field === "framesPerSecond").value === 120
+            && stats.cards.find(card => card.field === "frameGenerationOutputFps").value === 120,
+            "a 120 FPS source stays at 120 rather than claiming 240")
+        if (Qt.application.arguments.indexOf("--screenshot") >= 0) {
+            stats.anchors.fill = parent
+            stats.z = 10000
+            stats.expanded = true
+            stats.visible = true
+        } else {
+            ShellStore.streamer = {status: "stopped"}
+            stats.destroy()
+        }
         ShellStore.lastError = ""
         desktop.destroy()
         console.destroy()
-        stats.destroy()
         return true
     }
 }

@@ -343,12 +343,18 @@ internal class OpenNowVideoDecoderFactory(
     sharedContext: EglBase.Context,
     private val nativeLowLatencyDecoderEnabled: Boolean = false,
     private val requestedFps: () -> Int = { 60 },
+    private val hdrEnabled: () -> Boolean = { false },
+    private val hdrSurface: () -> HdrSurfaceTarget? = { null },
 ) : VideoDecoderFactory {
     private val defaultFactory = DefaultVideoDecoderFactory(sharedContext)
     private val hardwareFactory = openNowHardwareVideoDecoderFactory(sharedContext)
 
     override fun createDecoder(info: VideoCodecInfo): VideoDecoder? {
         val codec = info.name.toOpenNowVideoCodec()
+        if (hdrEnabled()) {
+            // Never let an HDR session fall through an 8-bit texture or software decoder.
+            return if (codec == VideoCodec.H265) HdrSurfaceVideoDecoder(requestedFps(), hdrSurface) else null
+        }
         val hardwareDecoder = if (codec != null) hardwareFactory.createDecoder(info) else null
         val decoder = when (codec) {
             VideoCodec.H264 -> hardwareDecoder ?: defaultFactory.createDecoder(info)

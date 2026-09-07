@@ -3041,6 +3041,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private fun effectiveStreamSettings(): StreamSettings {
         return streamSettingsBeforeDeviceAdjustment().adjustedForDevice(state.value.codecReport)
+            .withHdrDeviceSupport(getApplication())
     }
 
     private fun resumeSettingsForActiveSession(active: ActiveSessionInfo, requested: StreamSettings): StreamSettings {

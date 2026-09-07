@@ -199,6 +199,7 @@ data class StreamSettings(
     val codec: VideoCodec = VideoCodec.H264,
     val colorQuality: ColorQuality = ColorQuality.TenBit420,
     val hdrEnabled: Boolean = false,
+    @kotlinx.serialization.Transient val hdrDisplay: HdrDisplayProfile? = null,
     val region: String = "",
     val keyboardLayout: String = "en-US",
     val gameLanguage: String = "en_US",
@@ -506,6 +507,8 @@ data class AppSettings(
     /** Optional favorite affordance over catalogue artwork on mobile, handheld, and TV layouts. */
     val showFavoriteIconOnGameCards: Boolean = false,
     val expressiveUi: Boolean = true,
+    val uselessMascotEnabled: Boolean = false,
+    val uselessMascotDelaySeconds: Int = 5,
     /** Static outlines around game artwork, independent from optional animated border effects. */
     val liveSelectedOutlines: Boolean = false,
     /** Animated focus energy using the selected interface accent; never changes the accent itself. */
@@ -985,19 +988,11 @@ internal fun monthlyHoursRemainingFor(subscriptionInfo: SubscriptionInfo?, fallb
 internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings =
     if (hdrEnabled && !hasHdrStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false).withCodecColorCompatibility() else withCodecColorCompatibility()
 
-/**
- * NVIDIA exposes HDR on Android only through the SHIELD TV profile. Keep the known SHIELD
- * transport envelope explicit so unsupported handset, codec, high-FPS, and above-4K requests do
- * not reach CloudMatch as invalid session profiles. Disabling HDR intentionally preserves the
- * selected 10-bit color quality because 10-bit SDR is a separate stream mode.
- */
+/** Transport envelope; the actual HDR10 display and decoder are checked at launch. */
+@Suppress("UNUSED_PARAMETER")
 internal fun StreamSettings.hdrAvailableForAndroid(androidTvProfile: Boolean): Boolean {
     val (width, height) = streamResolutionPixels(this)
-    return androidTvProfile &&
-        codec == VideoCodec.H265 &&
-        fps <= 60 &&
-        width <= 3840 &&
-        height <= 2160
+    return codec == VideoCodec.H265 && fps <= 60 && width <= 3840 && height <= 2160
 }
 
 internal fun StreamSettings.withAndroidHdrCompatibility(androidTvProfile: Boolean): StreamSettings =

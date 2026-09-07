@@ -410,17 +410,20 @@ private fun hdrCapabilitiesJson(): JsonObject =
         put("staticMetadataDescriptorId", 0)
     }
 
-private fun hdrDisplayDataJson(): JsonObject =
-    buildJsonObject {
-        put("desiredContentMaxLuminance", 1000)
-        put("desiredContentMinLuminance", 0)
-        put("desiredContentMaxFrameAverageLuminance", 500)
+private fun hdrDisplayDataJson(display: HdrDisplayProfile?): JsonElement {
+    if (display == null) return JsonNull
+    return buildJsonObject {
+        put("desiredContentMaxLuminance", display.maxLuminance)
+        put("desiredContentMinLuminance", display.minLuminance)
+        put("desiredContentMaxFrameAverageLuminance", display.maxAverageLuminance)
     }
+}
 
 private data class StreamRequestProfile(
     val width: Int,
     val height: Int,
     val hdrEnabled: Boolean,
+    val hdrDisplay: HdrDisplayProfile?,
     val bitDepth: Int,
     val chroma: Int,
 )
@@ -433,6 +436,7 @@ private fun StreamSettings.requestProfile(): StreamRequestProfile {
         width = width,
         height = height,
         hdrEnabled = hdrEnabled,
+        hdrDisplay = compatible.hdrDisplay,
         bitDepth = if (hdrEnabled || compatible.colorQuality.name.startsWith("TenBit")) 10 else 0,
         chroma = if (compatible.colorQuality == ColorQuality.EightBit444 || compatible.colorQuality == ColorQuality.TenBit444) 2 else 0,
     )
@@ -456,7 +460,7 @@ private fun monitorSettings(
         put("heightInPixels", profile.height)
         put("framesPerSecond", fps)
         put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
-        put("displayData", if (profile.hdrEnabled) hdrDisplayDataJson() else JsonNull)
+        put("displayData", if (profile.hdrEnabled) hdrDisplayDataJson(profile.hdrDisplay) else JsonNull)
         put("hdr10PlusGamingData", JsonNull)
         put("dpi", if (identity.desktopMonitorDescriptor) 100 else 0)
     }
@@ -1424,7 +1428,6 @@ class GfnAuthRepository(
     private suspend fun pollDeviceCodeToken(challenge: DeviceCodeChallenge): AuthTokens {
         var intervalSeconds = challenge.intervalSeconds
         while (nowMs() < challenge.prompt.expiresAt) {
-            delay(intervalSeconds * 1000L)
             val body = FormBody.Builder()
                 .add("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
                 .add("device_code", challenge.deviceCode)
@@ -1435,7 +1438,10 @@ class GfnAuthRepository(
                 .headers(starfleetFormHeaders())
                 .post(body)
                 .build()
-            val (status, text) = http.awaitText(request)
+            val (status, text) = awaitDeviceCodePollResponse(
+                expiresAt = challenge.prompt.expiresAt,
+                intervalSeconds = intervalSeconds,
+            ) { http.awaitText(request) }
             val root = runCatching { OpenNowJson.parseToJsonElement(text).jsonObject }.getOrNull()
             if (status in 200..299 && root != null) {
                 return AuthTokens(

@@ -29,6 +29,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +51,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: OpenNowViewModel by viewModels()
+    private val mascotActivity = MascotActivityTracker()
     private val queueStatusNotifier by lazy { AndroidQueueStatusNotifier(this) }
     private val streamKeepAliveNotifier by lazy { AndroidStreamKeepAliveNotifier(this) }
     private var notificationPermissionRequested = false
@@ -96,10 +98,12 @@ class MainActivity : ComponentActivity() {
                 ready = true
             }
             if (ready) {
-                OpenNowApp(
-                    viewModel = viewModel,
-                    onMicrophoneCaptureActiveChange = streamKeepAliveNotifier::setMicrophoneCaptureActive,
-                )
+                CompositionLocalProvider(LocalMascotActivity provides mascotActivity) {
+                    OpenNowApp(
+                        viewModel = viewModel,
+                        onMicrophoneCaptureActiveChange = streamKeepAliveNotifier::setMicrophoneCaptureActive,
+                    )
+                }
             } else {
                 Box(
                     modifier = Modifier.fillMaxSize().background(Color(0xFF05070B)),
@@ -156,6 +160,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        mascotActivity.updateResumed(true)
         if (startupDataReady) {
             viewModel.setAndroidPictureInPictureActive(isAndroidPictureInPictureActive())
             // A process that was frozen or killed by an aggressive OEM memory manager comes back
@@ -172,7 +177,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        mascotActivity.updateResumed(false)
+        super.onPause()
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        mascotActivity.onKey(event)
         if (streamSystemUiActive && event.action == KeyEvent.ACTION_DOWN && event.shouldReapplyStreamSystemUi()) {
             enforceStreamSystemUiFromInput()
         }
@@ -251,6 +262,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        mascotActivity.onMotion(event)
         val mouseLikePointer = event.isMouseLikePointerEvent()
         if (streamSystemUiActive && (mouseLikePointer || event.isControllerMotionEvent())) {
             enforceStreamSystemUiFromInput()
@@ -322,6 +334,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        mascotActivity.onTouch(event)
         try {
             val decorView = window?.decorView
             if (streamSystemUiActive && event.isMouseLikePointerEvent()) {
@@ -380,6 +393,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        mascotActivity.updateFocused(hasFocus)
         if (!hasFocus) {
             // Pixel desktop and other freeform environments can intercept a shortcut after its
             // DOWN event (for example Alt+Tab), so no matching UP reaches this window.

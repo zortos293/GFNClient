@@ -3210,67 +3210,6 @@ private fun handleCatalogControllerAction(
     }
 }
 
-@Composable
-internal fun ControllerCatalogRailActionHints(modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier.padding(horizontal = 3.dp),
-        shape = RoundedCornerShape(8.dp),
-        color = Color.Black.copy(alpha = 0.8f),
-        tonalElevation = 2.dp,
-        shadowElevation = 2.dp,
-    ) {
-        Column(
-            Modifier.padding(horizontal = 4.dp, vertical = 5.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            ControllerCatalogActionHint(
-                button = "X",
-                label = stringResource(R.string.action_save),
-                buttonColor = Color(0xff4aa3ff),
-            )
-            ControllerCatalogActionHint(
-                button = "Y",
-                label = stringResource(R.string.action_play),
-                buttonColor = Color(0xffffcf40),
-            )
-        }
-    }
-}
-
-@Composable
-private fun ControllerCatalogActionHint(
-    button: String,
-    label: String,
-    buttonColor: Color,
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Surface(
-            modifier = Modifier.size(18.dp),
-            shape = CircleShape,
-            color = buttonColor,
-        ) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    button,
-                    color = Color.Black,
-                    fontWeight = FontWeight.Black,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
-        }
-        Text(
-            label,
-            color = Color.White,
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
 internal fun launcherBadgeForStoreKey(storeKey: String?): LauncherBadge =
     when (storeKey) {
         "STEAM" -> LauncherBadge(R.drawable.ic_store_steam, "Steam", Color(0xff17324d))

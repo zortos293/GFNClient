@@ -37,6 +37,19 @@ class InputEncoder {
         return wrapMouseMove(bytes)
     }
 
+    /** Match desktop's i16 splitting so coalesced fast motion cannot be clipped on the wire. */
+    internal fun encodeMouseMoves(dx: Int, dy: Int): Sequence<ByteArray> = sequence {
+        var remainingX = dx
+        var remainingY = dy
+        while (remainingX != 0 || remainingY != 0) {
+            val x = remainingX.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            val y = remainingY.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            yield(encodeMouseMove(x, y))
+            remainingX -= x
+            remainingY -= y
+        }
+    }
+
     /** Absolute host cursor position, matching the desktop GFN local-cursor encoder. */
     fun encodeMouseAbsolute(x: Int, y: Int, width: Int, height: Int): ByteArray {
         val bytes = ByteArray(26)
@@ -318,38 +331,27 @@ class InputEncoder {
             return KeyboardPayload(vk, resolvedScanCode, modifiers, timestampUs)
         }
 
-        /**
-         * The character to send as text because the key path cannot reproduce it faithfully.
-         *
-         * Two cases, both of which silently lost symbols while letters kept working:
-         *
-         * 1. **No mapping.** Android emits dedicated keycodes for some symbols — `KEYCODE_AT`,
-         *    `KEYCODE_POUND`, `KEYCODE_STAR`, `KEYCODE_PLUS`, the numpad operators — and none of
-         *    them have a [fallbackScanCode]. With no hardware scancode to fall back on,
-         *    [mapKeyboardPayload] returned null and `dispatchKey` swallowed the key.
-         *
-         * 2. **An AltGr layer.** [virtualKey] translates a keycode to its *US-layout* virtual key
-         *    and ignores the character the reader actually typed. On a layout where `@` is AltGr+Q
-         *    that reaches the host as Ctrl+Alt+Q. Letters survive because they sit at the same
-         *    keycode on every Latin layout; symbols do not, which is exactly the shape of the bug.
-         *
-         * A US layout is unaffected: Android resolves no printable character while Ctrl is held, so
-         * game shortcuts like Ctrl+Alt+F keep going down the key path untouched.
-         */
+        /** Use committed text for symbols; virtual keys describe positions on the host layout. */
         internal fun keyboardTextFallbackChar(
             unicodeChar: Int,
             baseUnicodeChar: Int,
             mapped: Boolean,
             altGraph: Boolean,
+            shortcut: Boolean = false,
+            keyCode: Int = KeyEvent.KEYCODE_UNKNOWN,
         ): Char? {
-            // Control characters have their own keycodes (Enter, Tab, Backspace) and must never be
-            // re-sent as text — the host would type a literal control byte instead of pressing them.
-            if (unicodeChar < 0x20 || unicodeChar == 0x7f) return null
-            if (unicodeChar > Char.MAX_VALUE.code) return null
-            val char = unicodeChar.toChar()
-            if (!mapped) return char
-            // A key that maps *and* whose character is unchanged by AltGr is already correct.
-            return char.takeIf { altGraph && unicodeChar != baseUnicodeChar }
+            if (shortcut) return null
+            val resolved = if (unicodeChar == 0) when (keyCode) {
+                KeyEvent.KEYCODE_AT -> '@'.code
+                KeyEvent.KEYCODE_POUND -> '#'.code
+                KeyEvent.KEYCODE_STAR -> '*'.code
+                KeyEvent.KEYCODE_PLUS -> '+'.code
+                else -> 0
+            } else unicodeChar
+            if (resolved < 0x20 || resolved == 0x7f || resolved > Char.MAX_VALUE.code) return null
+            val char = resolved.toChar()
+            val symbol = char in textBaseKeyCodes || char in textShiftedKeyCodes
+            return char.takeIf { !mapped || symbol || (altGraph && resolved != baseUnicodeChar) }
         }
 
         internal fun mapTextCharToKeySpec(char: Char): TextKeySpec? {

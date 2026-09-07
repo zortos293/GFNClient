@@ -543,6 +543,19 @@ internal fun PrintedWasteSelector(
         mutableStateOf<String?>((autoLocation ?: locations.firstOrNull())?.primary?.zoneId)
     }
     val selectedZone = locations.firstOrNull { it.primary.zoneId == selectedZoneId }?.primary ?: autoZone
+    val selectableZones = remember(locations) { locations.map { it.primary } }
+    var pendingHigherPingLaunch by remember(game.id) {
+        mutableStateOf<PrintedWasteZoneOption?>(null)
+    }
+    val launchSelectedZone: () -> Unit = {
+        selectedZone?.let { zone ->
+            if (hasHigherPingThanClosestPrintedWasteZone(zone, selectableZones)) {
+                pendingHigherPingLaunch = zone
+            } else {
+                viewModel.launchWithPrintedWaste(zone.routingUrl)
+            }
+        }
+    }
     val context = LocalContext.current
 
     BoxWithConstraints(
@@ -598,7 +611,7 @@ internal fun PrintedWasteSelector(
                             onRetry = viewModel::refreshPrintedWasteQueues,
                             onDismiss = viewModel::dismissPrintedWasteSelector,
                             onDefault = { viewModel.launchWithPrintedWaste(null) },
-                            onLaunch = { viewModel.launchWithPrintedWaste(selectedZone?.routingUrl) },
+                            onLaunch = launchSelectedZone,
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight(),
@@ -632,13 +645,41 @@ internal fun PrintedWasteSelector(
                             onRetry = viewModel::refreshPrintedWasteQueues,
                             onDismiss = viewModel::dismissPrintedWasteSelector,
                             onDefault = { viewModel.launchWithPrintedWaste(null) },
-                            onLaunch = { viewModel.launchWithPrintedWaste(selectedZone?.routingUrl) },
+                            onLaunch = launchSelectedZone,
                             modifier = Modifier.weight(1f),
                         )
                     }
                 }
             }
         }
+    }
+
+    pendingHigherPingLaunch?.let { zone ->
+        AlertDialog(
+            onDismissRequest = { pendingHigherPingLaunch = null },
+            text = {
+                Text(
+                    stringResource(R.string.queue_higher_ping_warning),
+                    color = Color(0xffff8d8d),
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingHigherPingLaunch = null
+                        viewModel.launchWithPrintedWaste(zone.routingUrl)
+                    },
+                ) {
+                    Text(stringResource(R.string.action_ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingHigherPingLaunch = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 

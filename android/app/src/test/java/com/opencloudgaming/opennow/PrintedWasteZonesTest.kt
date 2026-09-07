@@ -104,6 +104,24 @@ class PrintedWasteZonesTest {
     }
 
     @Test
+    fun selectingMoreLatencyThanTheClosestServerRequiresConfirmation() {
+        val closest = zone("NP-LAX-03", queue = 12, ping = 20)
+        val shorterQueue = zone("NP-ASH-04", queue = 1, ping = 180)
+        val zones = listOf(closest, shorterQueue)
+
+        assertTrue(hasHigherPingThanClosestPrintedWasteZone(shorterQueue, zones))
+        assertFalse(hasHigherPingThanClosestPrintedWasteZone(closest, zones))
+    }
+
+    @Test
+    fun missingPingDoesNotGuessThatASelectionIsHigherLatency() {
+        val unknown = zone("NP-LAX-03", queue = 1, ping = null)
+        val measured = zone("NP-ASH-04", queue = 2, ping = 40)
+
+        assertFalse(hasHigherPingThanClosestPrintedWasteZone(unknown, listOf(unknown, measured)))
+    }
+
+    @Test
     fun waitTimesReadAsMinutesThenHours() {
         assertEquals("1m", formatPrintedWasteWait(1_000L))
         assertEquals("5m", formatPrintedWasteWait(5L * 60_000L))

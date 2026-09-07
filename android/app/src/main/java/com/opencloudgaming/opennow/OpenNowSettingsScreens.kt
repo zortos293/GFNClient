@@ -59,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -914,8 +915,13 @@ private fun SettingsContent(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                val hdrAvailable = hasHdrStreamingPlan(state.subscriptionInfo, fallbackMembershipTier) &&
-                    settingsAvailableStream.hdrAvailableForAndroid(state.androidTvProfile)
+                val hdrDeviceAvailable by produceState(false, settingsAvailableStream.codec,
+                    settingsAvailableStream.resolution, settingsAvailableStream.fps) {
+                    value = withContext(Dispatchers.Default) {
+                        settingsAvailableStream.copy(hdrEnabled = true).withHdrDeviceSupport(context).hdrEnabled
+                    }
+                }
+                val hdrAvailable = hasHdrStreamingPlan(state.subscriptionInfo, fallbackMembershipTier) && hdrDeviceAvailable
                 SettingSwitch(
                     label = stringResource(R.string.settings_hdr),
                     checked = settings.stream.hdrEnabled && hdrAvailable,
@@ -929,7 +935,7 @@ private fun SettingsContent(
                         ).withCodecColorCompatibility()
                     }
                 }
-                if (!settingsAvailableStream.hdrAvailableForAndroid(state.androidTvProfile)) {
+                if (!hdrDeviceAvailable) {
                     Text(
                         if (state.androidTvProfile) {
                             stringResource(R.string.settings_hdr_android_tv_compatibility_hint)
@@ -1359,7 +1365,7 @@ private fun SettingsContent(
                 NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "border", "effects", "bonanza", "cinema", "catalog", "background", "wallpaper", "image", "custom", "tv", "safe area", "screen padding", "overscan") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "border", "effects", "bonanza", "cinema", "catalog", "background", "wallpaper", "image", "custom", "tv", "safe area", "screen padding", "overscan", "useless mascot", "screensaver", "inactivity") {
                 val accentOptions = selectableUiAccents().map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 ChoiceRow(
@@ -1400,6 +1406,25 @@ private fun SettingsContent(
                     indentLevel = 1,
                 ) { enabled ->
                     viewModel.updateSettings(settings.copy(absoluteCinemaEverywhere = enabled))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_useless_mascot),
+                    checked = settings.uselessMascotEnabled,
+                    description = stringResource(R.string.settings_useless_mascot_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(uselessMascotEnabled = enabled))
+                }
+                if (settings.uselessMascotEnabled) {
+                    NumberSlider(
+                        label = stringResource(R.string.settings_useless_mascot_delay),
+                        value = settings.uselessMascotDelaySeconds.toFloat(),
+                        min = 5f,
+                        max = 300f,
+                        step = 5f,
+                        unit = "s",
+                    ) { seconds ->
+                        viewModel.updateSettings(settings.copy(uselessMascotDelaySeconds = seconds.toInt()))
+                    }
                 }
                 SettingSwitch(
                     label = stringResource(R.string.settings_expressive_ui),

@@ -74,7 +74,6 @@ import org.webrtc.RtpSender
 import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
-import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoCodecInfo
 import org.webrtc.VideoDecoder
 import org.webrtc.VideoDecoderFactory
@@ -298,6 +297,7 @@ class NativeStreamClient(
      */
     @Volatile
     private var peerConnection: PeerConnection? = null
+    private val remoteIceCandidates = RemoteIceCandidateBuffer()
     private var signaling: GfnSignalingClient? = null
     @Volatile
     private var reliableInput: DataChannel? = null
@@ -327,7 +327,7 @@ class NativeStreamClient(
     private var microphoneSource: AudioSource? = null
     private var microphoneTrack: AudioTrack? = null
     private var microphoneSender: RtpSender? = null
-    private var renderer: SurfaceViewRenderer? = null
+    @Volatile private var renderer: StreamVideoSurface? = null
     private var rendererSharpnessDrawer: StreamSharpnessGlDrawer? = null
     private var rendererSurfaceCallback: SurfaceHolder.Callback? = null
     private val rendererSinkLifecycle = RendererSinkLifecycle()
@@ -542,14 +542,16 @@ class NativeStreamClient(
                     sharedContext = eglBase.eglBaseContext,
                     nativeLowLatencyDecoderEnabled = lowLatencyEnabled,
                     requestedFps = { settings.fps },
+                    hdrEnabled = { settings.hdrEnabled },
+                    hdrSurface = { renderer?.hdrTarget },
                 ),
             )
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
             .createPeerConnectionFactory()
     }
 
-    fun createRenderer(context: Context, settings: StreamSettings): SurfaceViewRenderer =
-        SurfaceViewRenderer(context).also { rendererView ->
+    fun createRenderer(context: Context, settings: StreamSettings): StreamVideoSurface =
+        StreamVideoSurface(context, settings.hdrEnabled).also { rendererView ->
             renderer?.let { oldRenderer ->
                 releaseRendererInternal(oldRenderer)
             }
@@ -639,7 +641,7 @@ class NativeStreamClient(
                     settings.streamSharpeningAmount,
                 )
             }
-            rendererSharpnessDrawer = sharpnessDrawer
+            rendererSharpnessDrawer = if (settings.hdrEnabled) null else sharpnessDrawer
             rendererView.init(eglBase.eglBaseContext, rendererEvents, EglBase.CONFIG_PLAIN, sharpnessDrawer)
             rendererView.setEnableHardwareScaler(fixedSizeSurface)
             NativeInputDiagnostics.add(
@@ -647,7 +649,7 @@ class NativeStreamClient(
                     "display=${displayMetrics.widthPixels}x${displayMetrics.heightPixels}",
             )
             rendererView.setMirror(false)
-            // Do not give SurfaceViewRenderer an opaque View background. Its decoded
+            // Do not give StreamVideoSurface an opaque View background. Its decoded
             // frames are presented by a separate Surface layer, so a normal View
             // background can cover every rendered frame on physical devices. The
             // Compose stream container already supplies the black pre-frame backdrop.
@@ -673,14 +675,14 @@ class NativeStreamClient(
             attachRendererSinkIfAvailable(rendererView)
         }
 
-    fun releaseRenderer(candidate: SurfaceViewRenderer) {
+    fun releaseRenderer(candidate: StreamVideoSurface) {
         if (renderer !== candidate) return
         releaseRendererInternal(candidate)
         renderer = null
         rendererSharpnessDrawer = null
     }
 
-    private fun attachRendererSinkIfAvailable(candidate: SurfaceViewRenderer) {
+    private fun attachRendererSinkIfAvailable(candidate: StreamVideoSurface) {
         if (renderer !== candidate || candidate.holder.surface?.isValid != true) return
         val track = videoTrack ?: return
         val generation = transportGeneration
@@ -699,7 +701,7 @@ class NativeStreamClient(
         }
     }
 
-    private fun detachRendererSink(candidate: SurfaceViewRenderer) {
+    private fun detachRendererSink(candidate: StreamVideoSurface) {
         if (renderer !== candidate || !rendererSinkLifecycle.requestDetach()) return
         val attachedTrack = videoTrack
         val generation = transportGeneration
@@ -711,14 +713,14 @@ class NativeStreamClient(
         }
     }
 
-    private fun releaseRendererInternal(candidate: SurfaceViewRenderer) {
+    private fun releaseRendererInternal(candidate: StreamVideoSurface) {
         prepareRendererForRelease(candidate)
         enqueueNativeLifecycleOperation("renderer-release") {
             candidate.release()
         }
     }
 
-    private fun prepareRendererForRelease(candidate: SurfaceViewRenderer) {
+    private fun prepareRendererForRelease(candidate: StreamVideoSurface) {
         if (renderer === candidate) {
             detachRendererSink(candidate)
         }
@@ -727,7 +729,7 @@ class NativeStreamClient(
         candidate.hideSurfaceBeforeRelease()
     }
 
-    private fun SurfaceViewRenderer.hideSurfaceBeforeRelease() {
+    private fun StreamVideoSurface.hideSurfaceBeforeRelease() {
         // SurfaceView frames are composited in a separate native layer. Hide that
         // layer before tearing down WebRTC so a stale/pre-frame buffer cannot remain
         // above the next Compose screen while SurfaceFlinger processes the detach.
@@ -748,7 +750,7 @@ class NativeStreamClient(
         rendererSharpnessDrawer?.amount = streamSharpnessShaderStrength(settings.streamSharpeningEnabled, settings.streamSharpeningAmount)
     }
 
-    private fun SurfaceViewRenderer.setStreamScaling() {
+    private fun StreamVideoSurface.setStreamScaling() {
         // Keep the complete decoded frame inside the SurfaceView. Phone edge-to-edge
         // presentation is applied by scaling the View itself, never by cropping video.
         setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
@@ -946,7 +948,7 @@ class NativeStreamClient(
         finishRelease()
     }
 
-    private fun finishRelease(preparedRenderer: SurfaceViewRenderer? = null) {
+    private fun finishRelease(preparedRenderer: StreamVideoSurface? = null) {
         inputScope.cancel()
         inputExecutor.shutdown()
         val activeFactory = factory
@@ -1028,6 +1030,7 @@ class NativeStreamClient(
         externalMouseMotionDeviceId = Int.MIN_VALUE
         externalMouseMotionSource = 0
         forwardedPhysicalInput.reset()
+        textFallbackKeys.clear()
         inputDropLogged = false
         externalMouseEventLogged = false
         externalMouseMoveSentLogged = false
@@ -1041,12 +1044,25 @@ class NativeStreamClient(
         emitControllerMouseAssistChanged(false)
     }
 
+    private val textFallbackKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<Triple<Int, Int, Int>>()
+
     fun dispatchKey(event: KeyEvent): Boolean {
         // Before the WebRTC input channel opens, leave keyboard events available to Android and
         // Compose. Consuming them here makes queue/desktop UI look completely unresponsive.
         if (!hasReadyInputChannel()) return false
-        if (event.isGamepadEvent() && dispatchGamepadKey(event)) {
-            return true
+        if (event.isGamepadEvent()) {
+            val receivedAtMs = SystemClock.uptimeMillis()
+            val handled = dispatchGamepadKey(event)
+            if (event.repeatCount == 0) {
+                NativeInputDiagnostics.retainCounted(
+                    key = "controller.key.${event.action}",
+                ) {
+                    "physical gamepad key device=${event.deviceId} key=${event.keyCode} action=${event.action} " +
+                        "deliveryDelayMs=${(receivedAtMs - event.eventTime).coerceAtLeast(0L)} " +
+                        "dispatchMs=${SystemClock.uptimeMillis() - receivedAtMs} handled=$handled"
+                }
+            }
+            if (handled) return true
         }
         val key = InputEncoder.mapKeyEvent(event)
         val hardwareKeyboard = event.isHardwareKeyboardSource()
@@ -1061,19 +1077,21 @@ class NativeStreamClient(
         if (shouldSuppressHardwareKeyboardRepeat(hardwareKeyboard, event.action, event.repeatCount)) {
             return true
         }
+        val textKey = Triple(event.deviceId, event.keyCode, event.scanCode)
+        if (event.action == KeyEvent.ACTION_UP && textFallbackKeys.remove(textKey)) return true
         val textFallback = InputEncoder.keyboardTextFallbackChar(
             unicodeChar = event.unicodeChar,
             baseUnicodeChar = event.getUnicodeChar(0),
             mapped = key != null,
-            altGraph = event.isAltPressed && event.isCtrlPressed,
+            altGraph = event.isAltPressed && event.unicodeChar != event.getUnicodeChar(0),
+            shortcut = event.isMetaPressed || (event.isCtrlPressed && !event.isAltPressed),
+            keyCode = event.keyCode,
         )
         if (textFallback != null) {
             // Send once, on the press. The release carries the same character and would double it.
             if (event.action == KeyEvent.ACTION_DOWN) {
+                textFallbackKeys.add(textKey)
                 sendKeyboardTextFallback(textFallback)
-                NativeInputDiagnostics.add(
-                    "keyboard text fallback key=${event.keyCode} char=$textFallback mapped=${key != null}",
-                )
             }
             return true
         }
@@ -1120,12 +1138,7 @@ class NativeStreamClient(
      * and the Android partially-reliable data channel has failed to move the live host cursor.
      */
     fun sendRawMouseMove(dx: Int, dy: Int): Boolean {
-        return sendInput(
-            inputEncoder.encodeMouseMove(dx, dy),
-            partiallyReliable = false,
-            fallbackToReliable = true,
-            resultDiagnosticKey = "mouse.move",
-        )
+        return sendBurstLimitedMouseMove(dx, dy, partiallyReliable = false)
     }
 
     /** Sends one batch of finger updates. Reliable: a dropped lift leaves a finger stuck down. */
@@ -1178,12 +1191,10 @@ class NativeStreamClient(
         mouseMoveBurstFlushJob = inputScope.launch {
             while (true) {
                 val waitMs = synchronized(mouseMoveBurstLock) {
-                    mouseMoveBurstLimiter.delayUntilFlushMs(SystemClock.elapsedRealtime())
-                }
-                if (waitMs == null) {
-                    synchronized(mouseMoveBurstLock) { mouseMoveBurstFlushJob = null }
-                    return@launch
-                }
+                    mouseMoveBurstLimiter.delayUntilFlushMs(SystemClock.elapsedRealtime()).also {
+                        if (it == null) mouseMoveBurstFlushJob = null
+                    }
+                } ?: return@launch
                 if (waitMs > 0L) delay(waitMs)
 
                 val flushed = synchronized(mouseMoveBurstLock) {
@@ -1240,11 +1251,13 @@ class NativeStreamClient(
         }
     }
 
-    private fun sendMouseMoveBatch(batch: MouseMoveBatch): Boolean =
-        sendInput(
-            inputEncoder.encodeMouseMove(batch.dx, batch.dy),
-            partiallyReliable = batch.partiallyReliable,
-        )
+    private fun sendMouseMoveBatch(batch: MouseMoveBatch): Boolean {
+        for (packet in inputEncoder.encodeMouseMoves(batch.dx, batch.dy)) {
+            if (!sendInput(packet, partiallyReliable = batch.partiallyReliable,
+                    fallbackToReliable = true, resultDiagnosticKey = "mouse.move")) return false
+        }
+        return true
+    }
 
     private fun dispatchMouseLikePointer(event: MotionEvent): Boolean {
         if (!externalMouseEventLogged) {
@@ -1371,6 +1384,7 @@ class NativeStreamClient(
 
     /** Releases input whose platform UP event can be lost when a desktop window loses focus. */
     fun releasePhysicalInputForLifecycle(reason: String) {
+        textFallbackKeys.clear()
         val pressed = forwardedPhysicalInput.takeReleaseSnapshot()
         if (pressed.isEmpty) return
         flushPendingMouseMove()
@@ -1524,12 +1538,10 @@ class NativeStreamClient(
         externalMouseMoveBurstFlushJob = inputScope.launch {
             while (true) {
                 val waitMs = synchronized(externalMouseMoveBurstLock) {
-                    externalMouseMoveBurstLimiter.delayUntilFlushMs(SystemClock.elapsedRealtime())
-                }
-                if (waitMs == null) {
-                    synchronized(externalMouseMoveBurstLock) { externalMouseMoveBurstFlushJob = null }
-                    return@launch
-                }
+                    externalMouseMoveBurstLimiter.delayUntilFlushMs(SystemClock.elapsedRealtime()).also {
+                        if (it == null) externalMouseMoveBurstFlushJob = null
+                    }
+                } ?: return@launch
                 if (waitMs > 0L) delay(waitMs)
 
                 val flushed = synchronized(externalMouseMoveBurstLock) {
@@ -1560,6 +1572,7 @@ class NativeStreamClient(
 
     private fun prepareExternalMouseMotion(event: MotionEvent) {
         if (externalMouseMotionDeviceId == event.deviceId && externalMouseMotionSource == event.source) return
+        flushPendingMouseMove()
         externalMouseMotionAccumulator.reset()
         externalMouseAbsolutePosition.reset()
         resetExternalMouseMoveBurstLimiter()
@@ -1652,16 +1665,10 @@ class NativeStreamClient(
         }
     }
 
-    /**
-     * Routes one character down the same reliable text channel the on-screen keyboard bar uses, and
-     * behind the same mutex, so a physical keystroke cannot overtake text already being replayed.
-     */
+    // Enqueue physical text synchronously, just like physical keys. Launching a separate
+    // coroutine here lets the following letter or Enter overtake the symbol.
     private fun sendKeyboardTextFallback(char: Char) {
-        scope.launch {
-            textSendMutex.withLock {
-                sendTextLocked(char.toString())
-            }
-        }
+        inputEncoder.encodeTextInput(char.toString()).forEach(::sendReliableInput)
     }
 
     private suspend fun sendTextLocked(text: String) {
@@ -2110,6 +2117,7 @@ class NativeStreamClient(
         lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
         enqueueNativeLifecycleOperation("transport-close") {
+            remoteIceCandidates.clear()
             // Peer creation, SDP/ICE/stats JNI calls, and this detach/dispose step share this one
             // executor. Capturing the peer here (instead of on the caller thread) closes the race
             // where a stale offer could create a peer after teardown had already captured null.
@@ -2210,12 +2218,11 @@ class NativeStreamClient(
             }
             is SignalingEvent.Log -> recordStreamDiagnostic(event.message)
             is SignalingEvent.RemoteIce -> {
-                enqueueNativeLifecycleOperation("remote-ice") {
-                    val pc = activePeerConnection(generation)
-                    val added = pc?.addIceCandidate(event.candidate)
-                    recordStreamDiagnostic(
-                        "remote ICE add requested accepted=${added ?: false} pcReady=${pc != null} ${event.candidate.diagnosticSummary()}",
-                    )
+                enqueueNativeLifecycleOperation("remote-ice") remoteIce@ {
+                    if (generation != transportGeneration) return@remoteIce
+                    remoteIceCandidates.receive(event.candidate) { candidate ->
+                        addRemoteIceCandidate(candidate, generation)
+                    }
                 }
             }
             is SignalingEvent.Offer -> {
@@ -2226,6 +2233,15 @@ class NativeStreamClient(
                 }
             }
         }
+    }
+
+    /** Runs on [nativeLifecycleExecutor], preserving native handle ownership through SDP setup. */
+    private fun addRemoteIceCandidate(candidate: IceCandidate, generation: Int) {
+        val pc = activePeerConnection(generation) ?: return
+        val added = pc.addIceCandidate(candidate)
+        recordStreamDiagnostic(
+            "remote ICE add requested accepted=$added pcReady=true ${candidate.diagnosticSummary()}",
+        )
     }
 
     /** Runs on [nativeLifecycleExecutor], preserving native handle ownership through SDP setup. */
@@ -2260,6 +2276,9 @@ class NativeStreamClient(
                     enqueueNativeLifecycleOperation("remote-description-set") remoteDescription@ {
                         val active = activePeerConnection(generation, pc) ?: return@remoteDescription
                         recordStreamDiagnostic("remote description set")
+                        remoteIceCandidates.onRemoteDescriptionSet { candidate ->
+                            addRemoteIceCandidate(candidate, generation)
+                        }
                         // WebRTC disposes previously returned transceiver wrappers whenever
                         // getTransceivers() refreshes its cache. Share one snapshot so the
                         // microphone sender remains valid through transport teardown.
@@ -3666,8 +3685,16 @@ class NativeStreamClient(
             val immediate = gamepadStateBurstLimiter.offer(
                 controllerId = controllerId,
                 nowMs = SystemClock.elapsedRealtime(),
+                hatButtons = physicalHatButtons,
+                leftTrigger = lastLeftTrigger,
+                rightTrigger = lastRightTrigger,
             )
-            if (immediate == null && gamepadStateBurstFlushJob?.isActive != true) {
+            if (immediate != null) {
+                // The immediate snapshot includes the pending stick state. A later motion sample
+                // must schedule its flush from this new send time, not from the superseded job.
+                gamepadStateBurstFlushJob?.cancel()
+                gamepadStateBurstFlushJob = null
+            } else if (gamepadStateBurstFlushJob?.isActive != true) {
                 scheduleGamepadStateBurstFlushLocked()
             }
             immediate
@@ -3726,7 +3753,12 @@ class NativeStreamClient(
             bitmap = bitmap,
             partiallyReliable = partiallyReliable,
         )
-        val sent = sendInput(packet, partiallyReliable = partiallyReliable, fallbackToReliable = !partiallyReliable)
+        val sent = sendInput(
+            packet,
+            partiallyReliable = partiallyReliable,
+            fallbackToReliable = !partiallyReliable,
+            resultDiagnosticKey = "controller.send.$controllerId",
+        )
         NativeInputDiagnostics.retainThrottled(
             key = "controller.packet.$controllerId",
             minimumIntervalMs = GAMEPAD_PACKET_DIAGNOSTIC_INTERVAL_MS,
@@ -3904,9 +3936,10 @@ class NativeStreamClient(
         // state(), bufferedAmount(), and send() can all contend on WebRTC/native locks; keeping
         // the complete sequence on the dedicated sender prevents a slow network/native lock from
         // turning a touch event into an Input dispatching timed out ANR.
+        val queuedAtMs = SystemClock.uptimeMillis()
         inputScope.launch {
             try {
-                sendInputOnWorker(queuedChannel, bytes, partiallyReliable, resultDiagnosticKey)
+                sendInputOnWorker(queuedChannel, bytes, partiallyReliable, resultDiagnosticKey, queuedAtMs)
             } finally {
                 pendingInputSends.decrementAndGet()
             }
@@ -3936,7 +3969,9 @@ class NativeStreamClient(
         bytes: ByteArray,
         partiallyReliable: Boolean,
         resultDiagnosticKey: String?,
+        queuedAtMs: Long,
     ) {
+        val queueDelayMs = (SystemClock.uptimeMillis() - queuedAtMs).coerceAtLeast(0L)
         runCatching {
             if (channel.state() != DataChannel.State.OPEN) {
                 resultDiagnosticKey?.let { key ->
@@ -3976,7 +4011,7 @@ class NativeStreamClient(
             val accepted = channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
             resultDiagnosticKey?.let { key ->
                 NativeInputDiagnostics.retainResult(key, accepted) {
-                    "path=worker requestedPartial=$partiallyReliable"
+                    "path=worker requestedPartial=$partiallyReliable queueDelayMs=$queueDelayMs"
                 }
             }
             if (accepted) {

@@ -4,7 +4,8 @@ package com.opencloudgaming.opennow
  * Coalesces high-rate analog snapshots while keeping the leading state change immediate.
  *
  * Gamepad packets contain the complete current state, so intermediate stick positions can be
- * replaced by the newest position. Button and trigger edges bypass this limiter.
+ * replaced by the newest position. Motion events also carry D-pad hats and analog triggers;
+ * changes to those controls must be sent immediately so a quick tap cannot be coalesced away.
  */
 internal class GamepadStateBurstLimiter(
     private val minimumIntervalMs: Long,
@@ -15,10 +16,20 @@ internal class GamepadStateBurstLimiter(
 
     private var lastSentAtMs: Long? = null
     private var pendingControllerId: Int? = null
+    private val motionControlsByController = mutableMapOf<Int, Long>()
 
-    fun offer(controllerId: Int, nowMs: Long): Int? {
+    fun offer(
+        controllerId: Int,
+        nowMs: Long,
+        hatButtons: Int = 0,
+        leftTrigger: Int = 0,
+        rightTrigger: Int = 0,
+    ): Int? {
+        val controls = (hatButtons.toLong() shl 16) or
+            ((leftTrigger.toLong() and 0xff) shl 8) or (rightTrigger.toLong() and 0xff)
+        val controlsChanged = controls != (motionControlsByController.put(controllerId, controls) ?: 0L)
         val lastSent = lastSentAtMs
-        if (lastSent == null || nowMs - lastSent >= minimumIntervalMs) {
+        if (controlsChanged || lastSent == null || nowMs - lastSent >= minimumIntervalMs) {
             pendingControllerId = null
             lastSentAtMs = nowMs
             return controllerId
@@ -43,5 +54,6 @@ internal class GamepadStateBurstLimiter(
     fun reset() {
         lastSentAtMs = null
         pendingControllerId = null
+        motionControlsByController.clear()
     }
 }

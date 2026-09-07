@@ -6,6 +6,49 @@ import org.junit.Test
 
 class GamepadStateBurstLimiterTest {
     @Test
+    fun quickHatTapPreservesPressAndReleaseInsideOneStickInterval() {
+        val limiter = GamepadStateBurstLimiter(minimumIntervalMs = 16)
+        assertEquals(0, limiter.offer(0, 100))
+        assertNull(limiter.offer(0, 102)) // Pending stick motion must not swallow the tap.
+        assertEquals(0, limiter.offer(0, 104, hatButtons = GamepadButtonMapping.DPAD_UP))
+        assertEquals(0, limiter.offer(0, 108, hatButtons = 0))
+        assertNull(limiter.flush(116))
+    }
+
+    @Test
+    fun rapidTriggerTapsPreserveBothTriggersAndPartialPressure() {
+        val limiter = GamepadStateBurstLimiter(minimumIntervalMs = 16)
+        assertEquals(0, limiter.offer(0, 100))
+        assertEquals(0, limiter.offer(0, 102, leftTrigger = 80))
+        assertEquals(0, limiter.offer(0, 104, leftTrigger = 255))
+        assertEquals(0, limiter.offer(0, 106, rightTrigger = 255))
+        assertEquals(0, limiter.offer(0, 108))
+        assertEquals(0, limiter.offer(0, 110, rightTrigger = 90))
+        assertEquals(0, limiter.offer(0, 112))
+    }
+
+    @Test
+    fun heldMotionButtonsStillAllowStickCoalescing() {
+        val limiter = GamepadStateBurstLimiter(minimumIntervalMs = 16)
+        assertEquals(0, limiter.offer(0, 100, hatButtons = 1, leftTrigger = 255))
+        assertNull(limiter.offer(0, 104, hatButtons = 1, leftTrigger = 255))
+        assertEquals(12L, limiter.delayUntilFlushMs(104))
+        assertEquals(0, limiter.flush(116))
+    }
+
+    @Test
+    fun tracksMotionButtonChangesPerControllerAndClearsThemOnReset() {
+        val limiter = GamepadStateBurstLimiter(minimumIntervalMs = 16)
+        assertEquals(0, limiter.offer(0, 100, leftTrigger = 255))
+        assertEquals(1, limiter.offer(1, 102, leftTrigger = 255))
+        assertEquals(0, limiter.offer(0, 104))
+        assertEquals(1, limiter.offer(1, 106))
+        limiter.reset()
+        assertEquals(0, limiter.offer(0, 108))
+        assertNull(limiter.offer(1, 110))
+    }
+
+    @Test
     fun sendsLeadingSnapshotAndCoalescesBurstToLatestController() {
         val limiter = GamepadStateBurstLimiter(minimumIntervalMs = 16)
 

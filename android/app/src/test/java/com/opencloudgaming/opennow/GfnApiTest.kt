@@ -4,6 +4,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.float
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.putJsonArray
@@ -800,6 +801,7 @@ class GfnApiTest {
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
+            hdrDisplay = HdrDisplayProfile(650f, 0.005f, 280f),
         )
 
         val sessionRequestData = buildMinimalClaimRequestBody("123", "device", settings)
@@ -809,8 +811,12 @@ class GfnApiTest {
         val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
 
         assertEquals(1, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
-        assertEquals(1000, monitor.getValue("displayData").jsonObject
-            .getValue("desiredContentMaxLuminance").jsonPrimitive.int)
+        assertEquals(650f, monitor.getValue("displayData").jsonObject
+            .getValue("desiredContentMaxLuminance").jsonPrimitive.float)
+        assertEquals(0.005f, monitor.getValue("displayData").jsonObject
+            .getValue("desiredContentMinLuminance").jsonPrimitive.float)
+        assertEquals(280f, monitor.getValue("displayData").jsonObject
+            .getValue("desiredContentMaxFrameAverageLuminance").jsonPrimitive.float)
         assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
         assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
         assertEquals(2, features.getValue("sdrColorSpace").jsonPrimitive.int)

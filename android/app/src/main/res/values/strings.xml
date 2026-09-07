@@ -238,6 +238,7 @@
     <string name="common_ready">Ready</string>
     <string name="queue_checking">Checking</string>
     <string name="queue_best_route">Best available route</string>
+    <string name="queue_higher_ping_warning">You have selected a server that has less queue but more ping. The amount of complaints I get about lag is because of this. Press default if you want the server closest to you.</string>
     <string name="queue_metric_ahead">Ahead</string>
     <string name="queue_metric_wait">Wait</string>
     <string name="session_timer">Session timer</string>
@@ -517,12 +518,12 @@
     <string name="settings_color">Color</string>
     <string name="settings_color_desc">8-bit 4:2:0 is the lightest and most compatible. 10-bit improves gradients but adds decoder and bandwidth requirements. Android normalizes unsupported combinations automatically.</string>
     <string name="settings_av1_ten_bit_badge">H.264/H.265 only</string>
-    <string name="settings_av1_ten_bit_hint">AV1 uses 8-bit color. Choose H.265 for 10-bit; HDR is limited to compatible Android TV modes.</string>
+    <string name="settings_av1_ten_bit_hint">AV1 uses 8-bit color. Choose H.265 for 10-bit and HDR on compatible displays.</string>
     <string name="settings_av1_ten_bit_downgraded">AV1 uses 8-bit color in OpenNOW. Switched to 8-bit and disabled HDR. Choose H.265 or H.264 to use 10-bit.</string>
     <string name="settings_hdr">HDR (Performance &amp; Ultimate)</string>
-    <string name="settings_hdr_desc">HDR needs a compatible Android TV display, H.265, 10-bit video, and a supported membership. It adds processing load and is not recommended for lag troubleshooting.</string>
-    <string name="settings_hdr_android_handheld_hint">HDR streaming is not available on Android handhelds. 10-bit SDR remains available with H.265.</string>
-    <string name="settings_hdr_android_tv_compatibility_hint">HDR on Android TV requires H.265 at 60 FPS or lower and a resolution up to 3840 x 2160.</string>
+    <string name="settings_hdr_desc">HDR10 requires a compatible display and hardware H.265 decoder, up to 4K at 60 FPS, and a supported membership. Video uses the display’s HDR processing; sharpening is unavailable in HDR.</string>
+    <string name="settings_hdr_android_handheld_hint">HDR requires an HDR10 display reporting its luminance range and a hardware H.265 Main10 decoder for the selected resolution and FPS.</string>
+    <string name="settings_hdr_android_tv_compatibility_hint">HDR requires an HDR10 display reporting its luminance range and hardware H.265 Main10, up to 3840 x 2160 at 60 FPS.</string>
     <string name="settings_region">Region</string>
     <string name="settings_session_proxy">Session proxy</string>
     <string name="settings_session_proxy_hint">Routes GFN session creation and queue polling through this proxy. Leave off for direct requests.</string>
@@ -938,4 +939,12 @@
     <string name="toast_store_disconnected">Store disconnected</string>
     <string name="toast_tutorial_reset">Tutorial will show on the next stream</string>
     <string name="touch_drag_label">Drag</string>
+    <string name="settings_useless_mascot">Add Useless Mascot</string>
+    <string name="settings_useless_mascot_desc">A tiny, deeply unhelpful logo bounces around when you go idle. Any input dismisses it. Takes a break during gameplay.</string>
+    <string name="settings_useless_mascot_delay">Activate after inactivity</string>
+    <string name="mascot_bugs">u got bugs hein?</string>
+    <string name="mascot_logs">send logs!! Send logs!!</string>
+    <string name="mascot_discord">find us on Discord!</string>
+    <string name="mascot_zortos">keep kalm, blame Zortos!</string>
+    <string name="mascot_hobbits">we are taking the hobbits to Isengard!</string>
 </resources>

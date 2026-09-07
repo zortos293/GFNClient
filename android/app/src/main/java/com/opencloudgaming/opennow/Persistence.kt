@@ -317,6 +317,7 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         uiAccent = if (uiAccent == UiAccent.LegacyOrange) UiAccent.Violet else uiAccent,
         stream = lowPowerSafe,
         posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
+        uselessMascotDelaySeconds = normalizeMascotDelaySeconds(uselessMascotDelaySeconds),
         streamKeyboardButtonPosition = streamKeyboardButtonPosition.normalized(),
         androidTouch = androidTouch.copy(
             touchSkinTint = androidTouch.touchSkinTint.withoutRemovedWarmTint(),

@@ -818,6 +818,11 @@ fun OpenNowApp(
                         },
                     )
                 }
+                UselessMascotOverlay(
+                    settings = state.settings,
+                    allowed = !showSetupFlow && state.authSession != null &&
+                        state.streamStatus != "streaming" && state.streamStatus != "connecting",
+                )
                 DiagnosticShareDialog(
                     state = state,
                     onUpload = viewModel::uploadDiagnosticShare,
@@ -1036,7 +1041,6 @@ private fun MainShell(
                                 horizontalChrome = horizontalChrome,
                                 detailRouteOpen = settingsDetailRouteOpen,
                             ),
-                            showCatalogControllerActions = physicalControllerConnected && scrollChromePage,
                             onNavigate = { page ->
                                 navigateFromAppChrome(page)
                             },
@@ -1325,7 +1329,6 @@ private fun AppNavigationRail(
     largeIcons: Boolean,
     darkenForCatalogBackground: Boolean,
     showSettingsBack: Boolean,
-    showCatalogControllerActions: Boolean,
     onNavigate: (AppPage) -> Unit,
     onSearch: (SearchTarget) -> Unit,
     onSettingsBack: () -> Unit,
@@ -1346,8 +1349,7 @@ private fun AppNavigationRail(
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
         ) {
-            BoxWithConstraints(Modifier.fillMaxSize()) {
-                val canFitCatalogControllerActions = maxHeight >= 440.dp
+            Box(Modifier.fillMaxSize()) {
                 Column(
                     modifier = Modifier
                         .align(if (showSettingsBack) Alignment.BottomCenter else Alignment.Center)
@@ -1397,12 +1399,6 @@ private fun AppNavigationRail(
                             pairedDeviceName = state.localTvConnector.pairedDeviceName,
                         ),
                     )
-                    AnimatedVisibility(visible = showCatalogControllerActions && canFitCatalogControllerActions) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Spacer(Modifier.height(8.dp))
-                            ControllerCatalogRailActionHints()
-                        }
-                    }
                     AnimatedVisibility(visible = showSettingsBack) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Spacer(Modifier.height(6.dp))

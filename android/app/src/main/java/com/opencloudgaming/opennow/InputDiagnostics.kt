@@ -142,6 +142,11 @@ object NativeInputDiagnostics {
     }
 
     @Synchronized
+    fun retainCounted(key: String, message: () -> String) {
+        buffer.retainCounted(key, message)
+    }
+
+    @Synchronized
     fun retainThrottled(key: String, minimumIntervalMs: Long, message: () -> String) {
         buffer.retainThrottled(key, minimumIntervalMs, message)
     }

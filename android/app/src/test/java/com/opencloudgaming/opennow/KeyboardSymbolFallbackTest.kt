@@ -34,8 +34,8 @@ class KeyboardSymbolFallbackTest {
 
     @Test
     fun anOrdinaryMappedKeyIsLeftOnTheKeyPath() {
-        // US layout Shift+2: already correct as VK_2 + Shift, and games need the real scancode.
-        assertNull(fallback(unicodeChar = '@'.code, mapped = true))
+        // Symbols use committed text; letter controls retain their real scancode.
+        assertEquals('@', fallback(unicodeChar = '@'.code, mapped = true))
         assertNull(fallback(unicodeChar = 'a'.code, mapped = true))
     }
 
@@ -80,5 +80,23 @@ class KeyboardSymbolFallbackTest {
     fun nonBmpCharactersAreNotTruncatedIntoTheWrongGlyph() {
         // An emoji arrives as a surrogate pair; halving it would send a lone surrogate.
         assertNull(fallback(unicodeChar = 0x1F600, mapped = false))
+    }
+    @Test
+    fun mappedSymbolsAlsoUseTextForHostLayoutIndependence() {
+        "!@#$%^&*()_+-=[]{}|;':\",./<>?`~".forEach {
+            assertEquals(it, fallback(it.code, mapped = true))
+        }
+    }
+
+    @Test
+    fun controlAndMetaShortcutsStayAsKeyEvents() {
+        assertNull(InputEncoder.keyboardTextFallbackChar('+'.code, '='.code, true, false, shortcut = true))
+        assertNull(InputEncoder.keyboardTextFallbackChar('!'.code, '1'.code, true, false, shortcut = true))
+    }
+
+    @Test
+    fun dedicatedSymbolKeysWorkEvenWithoutAndroidUnicodeMetadata() {
+        assertEquals('@', InputEncoder.keyboardTextFallbackChar(0, 0, true, false,
+            keyCode = android.view.KeyEvent.KEYCODE_AT))
     }
 }

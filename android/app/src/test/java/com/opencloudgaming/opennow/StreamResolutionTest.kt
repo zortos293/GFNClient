@@ -640,7 +640,7 @@ class StreamResolutionTest {
     }
 
     @Test
-    fun androidHandheldDisablesHdrButPreservesTenBitSdr() {
+    fun handheldHdrTransportIsEligiblePendingDisplayAndDecoderProbe() {
         val adjusted = StreamSettings(
             resolution = "1920x1080",
             fps = 60,
@@ -649,7 +649,7 @@ class StreamResolutionTest {
             hdrEnabled = true,
         ).withAndroidHdrCompatibility(androidTvProfile = false)
 
-        assertEquals(false, adjusted.hdrEnabled)
+        assertEquals(true, adjusted.hdrEnabled)
         assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
     }
 

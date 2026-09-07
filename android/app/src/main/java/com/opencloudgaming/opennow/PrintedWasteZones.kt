@@ -144,6 +144,16 @@ internal data class PrintedWasteZoneOption(
     val pingMs: Long?,
 )
 
+/** Whether [selected] has more measured latency than another selectable server. */
+internal fun hasHigherPingThanClosestPrintedWasteZone(
+    selected: PrintedWasteZoneOption,
+    selectableZones: List<PrintedWasteZoneOption>,
+): Boolean {
+    val selectedPing = selected.pingMs ?: return false
+    val closestPing = selectableZones.mapNotNull { it.pingMs }.minOrNull() ?: return false
+    return selectedPing > closestPing
+}
+
 internal fun recommendedPrintedWasteZone(zones: List<PrintedWasteZoneOption>): PrintedWasteZoneOption? {
     if (zones.isEmpty()) return null
     val pool = zones.filter { it.pingMs != null }.ifEmpty { zones }

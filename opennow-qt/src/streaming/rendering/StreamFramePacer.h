@@ -8,7 +8,7 @@
 class StreamFramePacer
 {
 public:
-    enum class Result { Duplicate, WarmingUp, Interpolate, Discontinuity, DisplayTooSlow, Overloaded };
+    enum class Result { Duplicate, WarmingUp, Interpolate, Discontinuity, DisplayTooSlow, Overloaded, SourceRateLimit };
     enum class TimingSource { None, SourceTimestamps, ArrivalCadence };
     enum class Rejection { None, SequenceGap, TimestampRegression, TimestampJump, ArrivalGap, CadenceUnavailable };
 
@@ -72,6 +72,7 @@ public:
             m_rejection = Rejection::CadenceUnavailable;
             return Result::Discontinuity;
         }
+        if (m_interval < 16'000'000) return Result::SourceRateLimit;
         if (!std::isfinite(refreshRate) || refreshRate < 1.95e9 / double(m_interval))
             return Result::DisplayTooSlow;
         if (pending) m_cooldownUntil = now + 2'000'000'000;

@@ -163,6 +163,49 @@ private slots:
         QVERIFY(error(third, scene(size, translation * 3 / 2)) < actualError * 0.45);
     }
 
+    void detailedTextureProducesIntermediateMotion_data()
+    {
+        QTest::addColumn<int>("translation");
+        QTest::addColumn<QSize>("size");
+        for (const int shift : {2, 4, 8, 10, 16})
+            QTest::newRow(qPrintable(QString::number(shift))) << shift << QSize(640, 360);
+        QTest::newRow("1440p-small-motion") << 4 << QSize(2560, 1440);
+    }
+
+    void detailedTextureProducesIntermediateMotion()
+    {
+        QFETCH(int, translation);
+        QFETCH(QSize, size);
+        const auto detailed = [&](int shift) {
+            QImage image = scene(size, shift);
+            for (int y = 0; y < size.height(); ++y) {
+                auto *row = image.scanLine(y);
+                for (int x = 0; x < size.width(); ++x) {
+                    const auto px = std::uint32_t(x - shift);
+                    const auto hash = (px * 73856093u) ^ (std::uint32_t(y) * 19349663u);
+                    const int detail = int((hash ^ (hash >> 13)) % 97) - 48;
+                    for (int channel = 0; channel < 3; ++channel)
+                        row[x * 4 + channel] = uchar(qBound(0, int(row[x * 4 + channel]) + detail, 255));
+                }
+            }
+            return image;
+        };
+        auto source = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(QRhiTexture::RGBA8, size));
+        QVERIFY(source->create());
+        StreamFrameInterpolator interpolator;
+        QVERIFY(interpolator.initialize(m_rhi.get()));
+        const auto previous = detailed(0);
+        const auto current = detailed(translation);
+        const auto expected = detailed(translation / 2);
+        QCOMPARE(submit(interpolator, source.get(), previous, false), previous);
+        const auto midpoint = submit(interpolator, source.get(), current, true);
+        QVERIFY(!midpoint.isNull());
+        const auto midpointError = error(midpoint, expected);
+        const auto sourceError = error(current, expected);
+        qInfo() << "Detailed midpoint/source errors:" << midpointError << sourceError;
+        QVERIFY(midpointError < sourceError * 0.45);
+    }
+
     void sceneCutUsesActualAndResetRetainsAllocation()
     {
         const QSize size(128, 96);

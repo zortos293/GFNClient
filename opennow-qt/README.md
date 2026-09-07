@@ -232,6 +232,8 @@ linear alpha blending through the HDR10 output pass, and chrome-layer resizing/f
 On Windows, the HDR test uses D3D11 WARP for both QRhi devices and disables desktop-settings
 discovery before constructing `QGuiApplication`. This keeps the native Windows window and GPU
 shader checks independent of the WinRT theme services missing from Windows Server CI runners.
+The Windows x64 CI lane runs on an interactive GitHub-hosted desktop and checks that desktop
+before building; session-0 service runners cannot validate native window exposure or fullscreen.
 These tests do not establish that a physical HDR monitor received HDR. The live Windows/Linux
 display and reconnect matrix is in [HDR validation](../docs/hdr.md).
 

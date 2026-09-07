@@ -16,6 +16,8 @@ on:
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/actionlint.yaml"
       - ".github/scripts/ensure-windows-media-foundation.ps1"
+      - ".github/scripts/ensure-windows-test-desktop.ps1"
+      - ".github/scripts/diagnose-windows-hdr-test.ps1"
       - "opennow-qt/**"
       - "native/opennow-core/**"
       - "native/opennow-streamer/**"
@@ -28,6 +30,8 @@ on:
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/actionlint.yaml"
       - ".github/scripts/ensure-windows-media-foundation.ps1"
+      - ".github/scripts/ensure-windows-test-desktop.ps1"
+      - ".github/scripts/diagnose-windows-hdr-test.ps1"
       - "opennow-qt/**"
       - "native/opennow-core/**"
       - "native/opennow-streamer/**"
@@ -105,7 +109,7 @@ jobs:
             qt-plugin-sha256: bf1c24aff6d749b5cf423afad6f15abd4440f81dec1aab95706b25f6667cdcf1
             appimage-runtime-sha256: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
           - label: windows-x64
-            os: blacksmith-4vcpu-windows-2025
+            os: windows-2025
             build-parallel: 4
             qt-host: windows
             qt-arch: win64_msvc2022_64
@@ -136,6 +140,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: .github/scripts/ensure-windows-media-foundation.ps1
+
+      - name: Verify Windows test desktop
+        if: matrix.label == 'windows-x64'
+        shell: pwsh
+        run: .github/scripts/ensure-windows-test-desktop.ps1
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

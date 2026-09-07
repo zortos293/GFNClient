@@ -146,6 +146,8 @@ pub(crate) struct OutputBuffers {
     linux_video: Mutex<VecDeque<QueuedLinuxVideoFrame>>,
     audio: Mutex<AudioPlayoutBuffer>,
     captured_input: Arc<CapturedInputQueue>,
+    microphone: Mutex<Option<std::sync::Weak<crate::microphone::MicrophoneShared>>>,
+    microphone_clock: Mutex<Instant>,
 }
 
 #[cfg(target_os = "windows")]
@@ -225,6 +227,15 @@ impl WindowsBridge {
 }
 
 impl OutputBuffers {
+    #[cfg(test)]
+    pub(crate) fn audio_samples_pending(&self) -> bool {
+        !self
+            .audio
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty()
+    }
+
     pub(crate) fn new() -> Self {
         Self::with_captured_input(Arc::new(CapturedInputQueue::default()))
     }
@@ -238,11 +249,50 @@ impl OutputBuffers {
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
             )),
             captured_input,
+            microphone: Mutex::new(None),
+            microphone_clock: Mutex::new(Instant::now()),
         }
     }
 
     pub(crate) fn captured_input(&self) -> Arc<CapturedInputQueue> {
         Arc::clone(&self.captured_input)
+    }
+
+    pub(crate) fn set_microphone(&self, shared: &Arc<crate::microphone::MicrophoneShared>) {
+        let mut microphone = self
+            .microphone
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(previous) = microphone.take().and_then(|previous| previous.upgrade()) {
+            previous.close(None);
+        }
+        *microphone = Some(Arc::downgrade(shared));
+    }
+
+    pub(crate) fn microphone_clock(&self) -> Instant {
+        *self
+            .microphone_clock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub(crate) fn reset_microphone_clock(&self) {
+        *self
+            .microphone_clock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Instant::now();
+    }
+
+    pub(crate) fn stop_microphone(&self) {
+        if let Some(microphone) = self
+            .microphone
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .and_then(|microphone| microphone.upgrade())
+        {
+            microphone.close(None);
+        }
     }
 
     pub(crate) fn replace_video(&self, frame: DecodedVideoFrame) -> bool {
@@ -343,14 +393,14 @@ impl OutputBuffers {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 pub(crate) struct HeadlessAudioOutput {
     device: AudioDevice<StreamAudioCallback>,
     output: Arc<OutputBuffers>,
     _sdl: sdl2::Sdl,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 impl HeadlessAudioOutput {
     pub(crate) fn start(
         output: Arc<OutputBuffers>,
@@ -379,7 +429,7 @@ impl HeadlessAudioOutput {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 impl Drop for HeadlessAudioOutput {
     fn drop(&mut self) {
         self.device.pause();
@@ -3145,6 +3195,8 @@ mod tests {
             linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
             audio: Mutex::new(AudioPlayoutBuffer::new(4)),
             captured_input: Arc::new(CapturedInputQueue::default()),
+            microphone: Mutex::new(None),
+            microphone_clock: Mutex::new(Instant::now()),
         };
         assert_eq!(output.push_audio(&[1.0, 2.0]), 0);
         assert_eq!(output.push_audio(&[3.0, 4.0, 5.0, 6.0]), 2);

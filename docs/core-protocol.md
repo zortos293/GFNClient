@@ -196,7 +196,7 @@ recovery. A native stop stalled for 30 seconds reports an error without launchin
 another transport over the still-owned resources.
 
 For the embedded Qt client, `session.create` and `streamer.prepare` accept an optional
-`runtimeCapabilities` object copied from the in-process streamer's protocol-5 `hello` response.
+`runtimeCapabilities` object copied from the in-process streamer's protocol-6 `hello` response.
 The core filters its available `videoBackends` by the persisted `nativeVideoBackend` preference
 and resolves codec `auto` to AV1, HEVC, then H.264 (subject to requested color mode) before
 CloudMatch allocation. This resolution is session-local: the saved preference stays `auto`.
@@ -243,6 +243,9 @@ That response and `settings.changed` event additionally contain
 before the primary key. Automatic console switching defaults off. Existing
 pre-opt-in settings receive a one-time reset of automatic switching only;
 explicit subsequent opt-ins and the independent startup preference are preserved.
+Existing microphone device selections are cleared only when explicitly selecting Open
+microphone; that write likewise reports `"changes":{"microphoneDeviceId":""}` so the
+shell follows the system-default capture selection.
 
 `gameCollections` defaults to `[]`. `settings.set` replaces the complete ordered
 array with at most 100 objects of the form

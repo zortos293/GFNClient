@@ -337,6 +337,21 @@ private slots:
                     bindings, Qt::Key_G, Qt::NoModifier).isEmpty());
     }
 
+    void microphoneShortcutRequiresExactModifiersAndAnEnabledBinding()
+    {
+        const QVariantMap bindings{
+            {QStringLiteral("toggle-microphone"), QVariantList{QStringLiteral("Ctrl+Shift+M")}},
+        };
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(bindings, Qt::Key_M,
+                     Qt::ControlModifier | Qt::ShiftModifier), QStringLiteral("toggle-microphone"));
+        QVERIFY(StreamVideoItem::shortcutActionForInput(bindings, Qt::Key_M,
+                    Qt::ControlModifier).isEmpty());
+        QVERIFY(StreamVideoItem::shortcutActionForInput(bindings, Qt::Key_M,
+                    Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier).isEmpty());
+        QVERIFY(StreamVideoItem::shortcutActionForInput({}, Qt::Key_M,
+                    Qt::ControlModifier | Qt::ShiftModifier).isEmpty());
+    }
+
     void shortcutBindingsAreExplicitAndObservable()
     {
         StreamVideoItem item;

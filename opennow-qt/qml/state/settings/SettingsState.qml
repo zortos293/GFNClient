@@ -302,9 +302,7 @@ QtObject {
     }
 
     function acceptSettings(result) {
-        root.settings = Object.assign({}, result.settings, {microphoneMode: "disabled"})
-        if (result.settings.microphoneMode !== "disabled")
-            root.setSetting("microphoneMode", "disabled")
+        root.settings = Object.assign({}, result.settings)
         root.consoleSurfaceConfirmedValue = Boolean(result.settings.launchInConsoleMode)
         root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
         root.consoleSurfaceInitialized = true

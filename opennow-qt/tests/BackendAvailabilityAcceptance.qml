@@ -25,7 +25,7 @@ QtObject {
     function run(parent) {
         ShellStore.settings = {codec:"av1",nativeVideoBackend:"auto"}
         ShellStore.nativeRuntimeReady = true
-        ShellStore.acceptNativeCapabilities({protocolVersion:5,videoBackends:[{
+        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
             backend:"d3d11",available:true,codecs:[
                 {codec:"h264",available:true},{codec:"h265",available:true},{codec:"av1",available:false}]
         }]})
@@ -48,7 +48,7 @@ QtObject {
             check(!dx11.enabled && dx11.opacity < 0.5 && !dx11.chosen, "persisted backend must gray out during probe")
         }
         ShellStore.nativeRuntimeReady = true
-        ShellStore.acceptNativeCapabilities({protocolVersion:5,videoBackends:[{
+        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
             backend:"d3d11",available:true,codecs:[{codec:"h264",available:true},{codec:"av1",available:true}]
         }]})
         check(find(codecs, "settingsOption-av1").enabled && find(codecs, "settingsOption-av1").opacity === 1,

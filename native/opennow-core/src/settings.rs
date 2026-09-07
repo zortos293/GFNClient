@@ -131,6 +131,10 @@ impl SettingsStore {
         let previous_values = self.values.clone();
         self.values.insert(key.to_owned(), value);
         self.normalize();
+        if key == "microphoneMode" && self.values.get(key) == Some(&json!("voice-activity")) {
+            self.values
+                .insert("microphoneDeviceId".to_owned(), json!(""));
+        }
         if key == "themePack" {
             let light = matches!(self.values[key].as_str(), Some("bone" | "cobalt"));
             self.values.insert(
@@ -267,7 +271,7 @@ impl SettingsStore {
         normalize_choice(
             &mut self.values,
             "microphoneMode",
-            &["disabled", "push-to-talk", "voice-activity"],
+            &["disabled", "voice-activity"],
             "disabled",
         );
         normalize_choice(
@@ -805,6 +809,51 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn microphone_is_opt_in_and_open_mode_survives_reload() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-microphone-policy-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        store
+            .set("audioOutputDevice", json!("Selected headphones"))
+            .unwrap();
+        assert_eq!(store.all()["microphoneMode"], json!("disabled"));
+        store
+            .set("microphoneDeviceId", json!("old-device-id"))
+            .unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["microphoneDeviceId"],
+            json!("old-device-id")
+        );
+        assert_eq!(
+            store
+                .set("microphoneMode", json!("voice-activity"))
+                .unwrap(),
+            json!("voice-activity")
+        );
+        let mut reloaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(reloaded.all()["microphoneMode"], json!("voice-activity"));
+        assert_eq!(reloaded.all()["microphoneDeviceId"], json!(""));
+        assert_eq!(
+            reloaded.all()["audioOutputDevice"],
+            json!("Selected headphones")
+        );
+        assert_eq!(
+            reloaded
+                .set("microphoneMode", json!("push-to-talk"))
+                .unwrap(),
+            json!("disabled")
+        );
+        assert_eq!(
+            reloaded.set("microphoneMode", json!("invalid")).unwrap(),
+            json!("disabled")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn audio_output_device_is_persisted_and_validated() {

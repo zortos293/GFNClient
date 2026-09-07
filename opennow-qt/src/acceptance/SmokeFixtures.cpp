@@ -30,6 +30,30 @@ int AcceptanceSession::prepareWindow()
         };
         if (window) window->resize(dimension(u"--smoke-width"_s, 1600),
                                    dimension(u"--smoke-height"_s, 900));
+        if (m_arguments.contains(u"--smoke-microphone-supported"_s)
+                || m_arguments.contains(u"--smoke-microphone-muted"_s)) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            const bool muted = m_arguments.contains(u"--smoke-microphone-muted"_s);
+            store->setProperty("streamerStartRequestId", u"microphone-visual-fixture"_s);
+            store->setProperty("streamInputPauseRequestId", u"microphone-visual-fixture"_s);
+            store->setProperty("nativeRuntimeReady", true);
+            store->setProperty("nativeRuntimeCapabilities", QVariantMap{
+                {u"protocolVersion"_s, 6}, {u"supportsMicrophone"_s, true}});
+            store->setProperty("settings", QVariantMap{
+                {u"microphoneMode"_s, muted ? u"voice-activity"_s : u"disabled"_s}});
+            if (muted) {
+                store->setProperty("sessionMicrophoneMode", u"voice-activity"_s);
+                store->setProperty("selectedGame", QVariantMap{{u"title"_s, u"Microphone acceptance fixture"_s}});
+                store->setProperty("activeSession", QVariantMap{
+                    {u"sessionId"_s, u"microphone-visual-fixture"_s}, {u"phase"_s, u"ready"_s}});
+                store->setProperty("streamer", QVariantMap{
+                    {u"status"_s, u"streaming"_s}, {u"microphoneState"_s, u"muted"_s},
+                    {u"microphoneEnabled"_s, false},
+                    {u"capabilities"_s, QVariantMap{{u"supportsMicrophone"_s, true}}}});
+                store->setProperty("streamState", u"streaming"_s);
+            }
+        }
         if (m_arguments.contains(u"--smoke-paper-design"_s)) {
             auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
             if (store) {

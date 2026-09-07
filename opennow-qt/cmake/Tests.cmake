@@ -69,7 +69,27 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(opennow-streamcolor-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/ControllerMetadataAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml)
+    add_test(NAME qml-microphone
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-audio --smoke-microphone --reduced-motion)
+    set_tests_properties(qml-microphone PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    foreach(surface desktop console)
+        set(microphone_settings_route settings-audio)
+        set(microphone_overlay desktop-stream-menu)
+        if(surface STREQUAL "console")
+            set(microphone_settings_route settings-input)
+            set(microphone_overlay guide-session)
+        endif()
+        add_test(NAME qml-microphone-settings-${surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                --route ${microphone_settings_route} --smoke-microphone-supported --reduced-motion)
+        add_test(NAME qml-microphone-muted-${surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                --route stream --overlay ${microphone_overlay} --smoke-microphone-muted --reduced-motion)
+        set_tests_properties(qml-microphone-settings-${surface} qml-microphone-muted-${surface}
+            PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
     add_test(NAME qml-audio-output
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-audio --smoke-audio-output --reduced-motion)

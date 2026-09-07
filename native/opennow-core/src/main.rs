@@ -262,7 +262,7 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v5", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v6", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "social.capabilitySurface"]}),
                 None,
             ))
         }
@@ -308,6 +308,9 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 });
             } else if key == "appAccentColor" {
                 event["changes"] = json!({"themeAccentOverride": true});
+            }
+            if key == "microphoneMode" && applied == json!("voice-activity") {
+                event["changes"] = json!({"microphoneDeviceId": ""});
             }
             Ok((event.clone(), Some(("settings.changed", event))))
         }

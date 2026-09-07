@@ -393,7 +393,9 @@ FocusScope {
                 ["English (US)","English (UK)","Turkish Q","German","French","Spanish","Spanish (Latin America)","Italian","Portuguese (Portugal)","Portuguese (Brazil)","Polish","Danish","Norwegian","Swedish","Finnish","Russian","Japanese","Korean","Chinese (Simplified)","Chinese (Traditional)"]))
             rows.push(choice("Game language", "Requested from the game when it supports it", "gameLanguage", ["en_US","en_GB","de_DE","fr_FR","es_ES","it_IT","pt_BR","ja_JP","ko_KR"], ["English (US)","English (UK)","Deutsch","Français","Español","Italiano","Português (BR)","日本語","한국어"]))
             rows.push({t:"Shortcuts", d:"Stats Ctrl+N · Pointer lock F8 · Fullscreen F11 · Screenshot Ctrl+F11", v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
-            rows.push({t:"Microphone", d:"Microphone upstream is unavailable for NVST sessions", v:"Unavailable", info:true})
+            rows.push(choice(qsTr("Microphone"), ShellStore.microphoneCaptureSupported ? ShellStore.microphoneDescription : qsTr("Microphone capture is unavailable in this build."),
+                "microphoneMode", ["disabled", "voice-activity"], [qsTr("Disabled"), qsTr("Open microphone")], "segments",
+                ShellStore.microphoneCaptureSupported ? [] : ["voice-activity"]))
             rows.push(shortcut("Toggle stats", "Cycle the Qt stream statistics overlay", "shortcutToggleStats"))
             rows.push(shortcut("Toggle pointer lock", "Capture or release the mouse on the Qt stream surface", "shortcutTogglePointerLock"))
             rows.push(shortcut("Toggle fullscreen", "Switch the Qt application surface between fullscreen and windowed", "shortcutToggleFullscreen"))
@@ -447,7 +449,9 @@ FocusScope {
         return [
             choice("Recording", "F12 clips · saved to ~/Videos/OpenNOW", "recordingResolution", ["720p","1080p","1440p"], ["720p · 30 FPS","1080p · 60 FPS","1440p · 60 FPS"], "segments"),
             {t:"Anti-AFK", d:"Nudge the session so GeForce NOW doesn't end it while idle", v:ShellStore.antiAfkEnabled ? "On" : "Off", control:"toggle", toggleState:ShellStore.antiAfkEnabled, action:"anti-afk"},
-            {t:"Microphone", d:"Microphone upstream is unavailable for NVST sessions", v:"Unavailable", info:true},
+            choice(qsTr("Microphone"), ShellStore.microphoneCaptureSupported ? ShellStore.microphoneDescription : qsTr("Microphone capture is unavailable in this build."),
+                "microphoneMode", ["disabled", "voice-activity"], [qsTr("Disabled"), qsTr("Open microphone")], "segments",
+                ShellStore.microphoneCaptureSupported ? [] : ["voice-activity"]),
             choice("Updates", qsTr("OpenNOW %1 · signed update feed").arg(ShellStore.updaterState.currentVersion || ""), "updateChannel", ["stable","nightly"], ["Stable","Nightly"], "segments"),
             {t:"Reset all settings", d:"Keeps your account and My games", v:"Reset to defaults", action:"reset", danger:true}
         ]

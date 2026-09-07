@@ -1291,6 +1291,12 @@ impl MediaSession {
                             }
                         }
                         HostCommand::Stop | HostCommand::Shutdown => break,
+                        HostCommand::StartMicrophone { reply, .. } => {
+                            let _ = reply.send(Err(
+                                "microphone capture is owned by the embedded runtime host"
+                                    .to_owned(),
+                            ));
+                        }
                         HostCommand::Surface { reply, .. } | HostCommand::Control { reply, .. } => {
                             let _ = reply.send(Ok(()));
                         }
@@ -2111,6 +2117,7 @@ impl MediaControl {
         self.shared.video.close();
         self.shared.audio.close();
         self.shared.recording_tap.unsubscribe();
+        self.shared.output.stop_microphone();
         self.shared.output.clear();
         let _ = self.host_commands.send(HostCommand::Stop);
     }

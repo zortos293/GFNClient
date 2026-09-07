@@ -68,6 +68,10 @@ FocusScope {
 
     function runAction(index) {
         if (closing) return
+        if (index === 6) {
+            ShellStore.toggleMicrophone()
+            return
+        }
         pendingAction = index
         closing = true
         if (reveal.progress === 0) Qt.callLater(root.finishAction)
@@ -392,6 +396,36 @@ FocusScope {
                     HoverHandler { id: statsHover; onHoveredChanged: if (hovered) root.selectedIndex = 5 }
                     TapHandler { onTapped: root.runAction(5) }
                 }
+                Rectangle {
+                    objectName: "streamMicrophoneControl"
+                    width: parent.width
+                    height: 40
+                    radius: 10
+                    enabled: ShellStore.microphoneCanToggle
+                    opacity: enabled ? 1 : 0.5
+                    color: root.selectedIndex === 6 ? "#1FFFFFFF" : "#0FFFFFFF"
+                    border.width: root.selectedIndex === 6 ? 2 : 1
+                    border.color: root.selectedIndex === 6 ? DesktopTokens.focus : "#17FFFFFF"
+                    Accessible.role: Accessible.Button
+                    Accessible.name: ShellStore.microphoneActionLabel
+                    Accessible.description: ShellStore.microphoneDescription
+                    Accessible.onPressAction: ShellStore.toggleMicrophone()
+                    Text {
+                        x: 14; anchors.verticalCenter: parent.verticalCenter
+                        text: ShellStore.microphoneToggleAvailable ? ShellStore.microphoneActionLabel : qsTr("Microphone")
+                        color: DesktopTokens.textHigh; font.family: DesktopTokens.bodyFont; font.pixelSize: 11
+                    }
+                    Text {
+                        anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter
+                        text: ShellStore.microphoneLabel
+                        color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: 9
+                    }
+                    ToolTip.visible: microphoneHover.hovered || (root.activeFocus && root.selectedIndex === 6)
+                    ToolTip.text: ShellStore.microphoneDescription
+                    ToolTip.delay: 600
+                    HoverHandler { id: microphoneHover; onHoveredChanged: if (hovered) root.selectedIndex = 6 }
+                    TapHandler { onTapped: root.runAction(6) }
+                }
             }
         }
     }
@@ -425,7 +459,7 @@ FocusScope {
             root.runAction(0)
             event.accepted = true
         } else if (event.key === Qt.Key_Down) {
-            root.selectedIndex = Math.min(5, root.selectedIndex + 1)
+            root.selectedIndex = Math.min(ShellStore.microphoneCanToggle ? 6 : 5, root.selectedIndex + 1)
             event.accepted = true
         } else if (event.key === Qt.Key_Up) {
             root.selectedIndex = Math.max(0, root.selectedIndex - 1)

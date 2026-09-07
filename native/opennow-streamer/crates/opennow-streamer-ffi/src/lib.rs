@@ -2026,7 +2026,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-1",
             "type": "hello",
-            "protocolVersion": 5
+            "protocolVersion": 6
         }))
         .expect("hello command");
 
@@ -2056,7 +2056,7 @@ mod tests {
         assert_eq!(response["type"], "audioDevices");
         assert_eq!(response["devices"], json!([]));
         assert_eq!(
-            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":5}"#),
+            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":6}"#),
             OpenNowStreamerStatus::Ok
         );
         assert_eq!(messages.wait_for_id("hello-after-audio")["type"], "ready");
@@ -2077,7 +2077,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-production",
             "type": "hello",
-            "protocolVersion": 5
+            "protocolVersion": 6
         }))
         .expect("hello command");
         assert_eq!(

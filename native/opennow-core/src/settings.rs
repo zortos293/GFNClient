@@ -112,6 +112,18 @@ impl SettingsStore {
         let previous_values = self.values.clone();
         self.values.insert(key.to_owned(), value);
         self.normalize();
+        if key == "themePack" {
+            let light = matches!(self.values[key].as_str(), Some("bone" | "cobalt"));
+            self.values.insert(
+                "appTheme".to_owned(),
+                json!(if light { "light" } else { "dark" }),
+            );
+            self.values
+                .insert("themeAccentOverride".to_owned(), json!(false));
+        } else if key == "appAccentColor" {
+            self.values
+                .insert("themeAccentOverride".to_owned(), json!(true));
+        }
         if key == "launchInConsoleMode" && self.values.get(key) == Some(&json!(false)) {
             self.values
                 .insert("switchToConsoleOnPad".to_owned(), json!(false));
@@ -695,6 +707,52 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn theme_packs_and_accent_overrides_are_atomic_and_persisted() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-theme-policy-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        for pack in [
+            "nocturne", "aurora", "kraft", "phosphor", "bone", "cobalt", "hibiscus", "chapel",
+        ] {
+            store.set("appAccentColor", json!("rose")).unwrap();
+            assert_eq!(store.all()["themeAccentOverride"], json!(true));
+            store.set("themePack", json!(pack)).unwrap();
+            let mut loaded = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(loaded.all()["themePack"], json!(pack));
+            assert_eq!(loaded.all()["themeAccentOverride"], json!(false));
+            assert_eq!(
+                loaded.all()["appTheme"],
+                json!(if matches!(pack, "bone" | "cobalt") {
+                    "light"
+                } else {
+                    "dark"
+                })
+            );
+            loaded.set("appTheme", json!("auto")).unwrap();
+            loaded.set("appAccentColor", json!("violet")).unwrap();
+            store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["appTheme"], json!("auto"));
+            assert_eq!(store.all()["themePack"], json!(pack));
+            assert_eq!(store.all()["themeAccentOverride"], json!(true));
+            assert_eq!(store.all()["appAccentColor"], json!("violet"));
+        }
+        let before = store.all();
+        fs::create_dir(directory.join("settings.json.tmp")).unwrap();
+        assert!(store.set("themePack", json!("bone")).is_err());
+        assert_eq!(store.all(), before);
+        fs::remove_dir(directory.join("settings.json.tmp")).unwrap();
+        store.set("themeAccentOverride", json!(false)).unwrap();
+        let before = store.all();
+        fs::create_dir(directory.join("settings.json.tmp")).unwrap();
+        assert!(store.set("appAccentColor", json!("green")).is_err());
+        assert_eq!(store.all(), before);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn steam_big_picture_is_opt_in_and_persists_independently() {

@@ -102,6 +102,12 @@ Useful development switches are `--route <name>`, `--overlay <name>`,
 `--reduced-motion`, `--core <path>` and `--screenshot <png-path>`. The test suite
 opens every route and overlay with QML warnings treated as failures.
 
+Run `ctest --test-dir build/opennow-qt --output-on-failure -R 'theme-tests|qml-theme-settings'`
+to check all built-in packs in both appearances, accent contrast, preview restoration,
+and the desktop Look controls at compact and desktop widths. The
+`--smoke-theme-settings --route settings-themes --desktop` workload also accepts
+`--smoke-light-theme` and `--screenshot <png-path>` for account-free visual checks.
+
 Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-stream-exit-'`
 to check the in-stream exit confirmation in desktop/console and windowed/fullscreen modes.
 The keyboard fixtures cover Return, keypad Enter, Tab+Space, Escape, safe default focus,

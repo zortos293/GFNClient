@@ -2982,6 +2982,8 @@
     "s_qt_controller_source_hint": "Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting.",
     "s_qt_controller_source_all": "All controllers (multiplayer)",
     "s_qt_controller_source_device": "Device %1 · %2",
-    "s_qt_controller_source_disconnected": "Selected controller disconnected"
+    "s_qt_controller_source_disconnected": "Selected controller disconnected",
+    "s_qt_theme_pack_applies_palette": "Applies the pack's appearance, accent and surfaces",
+    "s_qt_theme_sky_glass": "SKY GLASS"
   }
 }

@@ -68,7 +68,7 @@ Item {
                 onClicked: root.selected(chip.index, chip.modelData)
                 background: Rectangle {
                     radius: height / 2
-                    color: chip.on ? Theme.face : chip.hovered ? DesktopTokens.raised : "transparent"
+                    color: chip.on ? Theme.focus : chip.hovered ? DesktopTokens.raised : "transparent"
                     border.width: chip.activeFocus ? 2 : 0
                     border.color: Theme.focus
                 }
@@ -78,7 +78,7 @@ Item {
                     anchors.centerIn: parent
                     width: parent.width - 8
                     text: chip.label
-                    color: chip.on ? Theme.faceText : DesktopTokens.textBody
+                    color: chip.on ? Theme.focusText : DesktopTokens.textBody
                     font.family: Theme.bodyFont
                     font.pixelSize: DesktopTokens.px(13)
                     font.weight: chip.on ? Font.ExtraBold : Font.Bold

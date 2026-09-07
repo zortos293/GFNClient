@@ -468,6 +468,16 @@ if(BUILD_TESTING)
             endforeach()
         endforeach()
     endforeach()
+    foreach(surface desktop console)
+        foreach(mode windowed maximized)
+            add_test(NAME "qml-session-fullscreen-${surface}-${mode}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                    --${surface} --route stream --smoke-session-fullscreen
+                    --smoke-fullscreen-restore-${mode} --reduced-motion)
+            set_tests_properties("qml-session-fullscreen-${surface}-${mode}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+        endforeach()
+    endforeach()
     add_test(NAME qml-fullscreen-stream-stats-shortcut
              COMMAND opennow-qt --smoke-test --allow-multiple-instances
                      --desktop --route stream --smoke-fullscreen-stats-shortcut --reduced-motion)

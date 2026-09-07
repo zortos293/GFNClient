@@ -27,6 +27,7 @@ private:
     [[nodiscard]] int startSmokeWorkload();
     [[nodiscard]] int startFrameGenerationStatsWorkload();
     [[nodiscard]] int startStreamExitWorkload();
+    [[nodiscard]] int startSessionFullscreenWorkload();
 
     QGuiApplication &m_application;
     QQmlApplicationEngine &m_engine;

@@ -23,20 +23,22 @@ use ::windows::Win32::Media::MediaFoundation::{
     MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
     MF_EVENT_FLAG_NO_WAIT, MF_LOW_LATENCY, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
     MF_MT_GEOMETRIC_APERTURE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_PAN_SCAN_APERTURE, MF_MT_PAN_SCAN_ENABLED,
-    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MF_SA_D3D11_AWARE,
-    MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateAttributes, MFCreateMediaType,
-    MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFNominalRange_0_255,
-    MFSampleExtension_CleanPoint, MFSampleExtension_FrameCorruption, MFT_CATEGORY_VIDEO_DECODER,
-    MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE,
-    MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_ENUM_HARDWARE_URL_Attribute,
-    MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
-    MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
-    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
-    MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
-    MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoArea, MFVideoFormat_AV1, MFVideoFormat_AYUV,
-    MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_P010,
-    MFVideoFormat_Y410, MFVideoInterlace_MixedInterlaceOrProgressive,
+    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_MPEG2_PROFILE, MF_MT_PAN_SCAN_APERTURE,
+    MF_MT_PAN_SCAN_ENABLED, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE,
+    MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateAttributes,
+    MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
+    MFNominalRange_0_255, MFSampleExtension_CleanPoint, MFSampleExtension_FrameCorruption,
+    MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT,
+    MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
+    MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_FLUSH,
+    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM,
+    MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES,
+    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoArea,
+    MFVideoFormat_AV1, MFVideoFormat_AYUV, MFVideoFormat_H264, MFVideoFormat_HEVC,
+    MFVideoFormat_NV12, MFVideoFormat_P010, MFVideoFormat_Y410,
+    MFVideoInterlace_MixedInterlaceOrProgressive, eAVEncH265VProfile_Main_420_8,
+    eAVEncH265VProfile_Main_420_10, eAVEncH265VProfile_Main_444_8, eAVEncH265VProfile_Main_444_10,
 };
 use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::core::Interface;
@@ -147,6 +149,8 @@ impl Decoder {
         let activations = enumerate_decoders(graphics.adapter_luid()?, format.codec, mode)?;
         let mut failures = Vec::new();
         for activation in activations {
+            let friendly_name = activation_string(&activation, &MFT_FRIENDLY_NAME_Attribute)
+                .unwrap_or_else(|| "unknown".to_owned());
             match configure_transform(&activation, graphics, format) {
                 Ok((
                     transform,
@@ -159,9 +163,6 @@ impl Decoder {
                     aperture,
                 )) => {
                     let input_credits = u32::from(events.is_none());
-                    let friendly_name =
-                        activation_string(&activation, &MFT_FRIENDLY_NAME_Attribute)
-                            .unwrap_or_else(|| "unknown".to_owned());
                     let hardware_registered =
                         activation_string(&activation, &MFT_ENUM_HARDWARE_URL_Attribute).is_some();
                     video_log!(
@@ -194,7 +195,7 @@ impl Decoder {
                     });
                 }
                 Err(error) => {
-                    failures.push(error);
+                    failures.push(format!("{friendly_name}: {error}"));
                     unsafe {
                         let _ = activation.ShutdownObject();
                     }
@@ -434,7 +435,7 @@ fn configure_transform<G: DecoderDevice>(
     unsafe {
         let transform: IMFTransform = activation
             .ActivateObject()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("ActivateObject: {error}"))?;
         let attributes = transform
             .GetAttributes()
             .map_err(|error| error.to_string())?;
@@ -456,43 +457,13 @@ fn configure_transform<G: DecoderDevice>(
                 MFT_MESSAGE_SET_D3D_MANAGER,
                 graphics.device_manager().as_raw() as usize,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("MFT_MESSAGE_SET_D3D_MANAGER: {error}"))?;
 
         let (input_stream, output_stream) = stream_ids(&transform)?;
-        let input_type = MFCreateMediaType().map_err(|error| error.to_string())?;
-        input_type
-            .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-            .map_err(|error| error.to_string())?;
-        input_type
-            .SetGUID(&MF_MT_SUBTYPE, video_subtype(format.codec))
-            .map_err(|error| error.to_string())?;
-        input_type
-            .SetUINT64(&MF_MT_FRAME_SIZE, pack_pair(format.width, format.height))
-            .map_err(|error| error.to_string())?;
-        input_type
-            .SetUINT64(
-                &MF_MT_FRAME_RATE,
-                pack_pair(
-                    format.frame_rate_numerator.get(),
-                    format.frame_rate_denominator.get(),
-                ),
-            )
-            .map_err(|error| error.to_string())?;
-        input_type
-            .SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack_pair(1, 1))
-            .map_err(|error| error.to_string())?;
-        input_type
-            .SetUINT32(
-                &MF_MT_INTERLACE_MODE,
-                MFVideoInterlace_MixedInterlaceOrProgressive.0 as u32,
-            )
-            .map_err(|error| error.to_string())?;
-        input_type
-            .SetUINT32(&MF_MT_AVG_BITRATE, format.average_bitrate)
-            .map_err(|error| error.to_string())?;
+        let input_type = video_input_type(format)?;
         transform
             .SetInputType(input_stream, &input_type, 0)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("SetInputType: {error}"))?;
         let pixel_format =
             select_video_output_type(&transform, output_stream, format.pixel_format)?;
         let (aperture, full_range) = output_format(&transform, output_stream, format)?;
@@ -525,6 +496,54 @@ fn configure_transform<G: DecoderDevice>(
             full_range,
             aperture,
         ))
+    }
+}
+
+fn video_input_type(format: VideoFormat) -> Result<IMFMediaType, String> {
+    unsafe {
+        let input_type = MFCreateMediaType().map_err(|error| error.to_string())?;
+        input_type
+            .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+            .map_err(|error| error.to_string())?;
+        input_type
+            .SetGUID(&MF_MT_SUBTYPE, video_subtype(format.codec))
+            .map_err(|error| error.to_string())?;
+        if format.codec == VideoCodec::H265 {
+            let profile = match format.pixel_format {
+                VideoPixelFormat::Nv12 => eAVEncH265VProfile_Main_420_8,
+                VideoPixelFormat::P010 => eAVEncH265VProfile_Main_420_10,
+                VideoPixelFormat::Ayuv => eAVEncH265VProfile_Main_444_8,
+                VideoPixelFormat::Y410 => eAVEncH265VProfile_Main_444_10,
+            };
+            input_type
+                .SetUINT32(&MF_MT_MPEG2_PROFILE, profile.0 as u32)
+                .map_err(|error| format!("HEVC input profile: {error}"))?;
+        }
+        input_type
+            .SetUINT64(&MF_MT_FRAME_SIZE, pack_pair(format.width, format.height))
+            .map_err(|error| error.to_string())?;
+        input_type
+            .SetUINT64(
+                &MF_MT_FRAME_RATE,
+                pack_pair(
+                    format.frame_rate_numerator.get(),
+                    format.frame_rate_denominator.get(),
+                ),
+            )
+            .map_err(|error| error.to_string())?;
+        input_type
+            .SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack_pair(1, 1))
+            .map_err(|error| error.to_string())?;
+        input_type
+            .SetUINT32(
+                &MF_MT_INTERLACE_MODE,
+                MFVideoInterlace_MixedInterlaceOrProgressive.0 as u32,
+            )
+            .map_err(|error| error.to_string())?;
+        input_type
+            .SetUINT32(&MF_MT_AVG_BITRATE, format.average_bitrate)
+            .map_err(|error| error.to_string())?;
+        Ok(input_type)
     }
 }
 
@@ -914,6 +933,80 @@ fn pack_pair(high: u32, low: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hevc_input_types_set_the_negotiated_profile_before_decoder_configuration() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        for (pixel_format, profile) in [
+            (VideoPixelFormat::Nv12, eAVEncH265VProfile_Main_420_8),
+            (VideoPixelFormat::P010, eAVEncH265VProfile_Main_420_10),
+            (VideoPixelFormat::Ayuv, eAVEncH265VProfile_Main_444_8),
+            (VideoPixelFormat::Y410, eAVEncH265VProfile_Main_444_10),
+        ] {
+            let format = VideoFormat {
+                codec: VideoCodec::H265,
+                width: 2560,
+                height: 1440,
+                frame_rate_numerator: std::num::NonZeroU32::new(120).unwrap(),
+                frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
+                average_bitrate: 75_000_000,
+                pixel_format,
+                chroma_format: chroma_format(pixel_format),
+                full_range: false,
+            };
+            let input_type = video_input_type(format).unwrap();
+            unsafe {
+                assert_eq!(
+                    input_type.GetGUID(&MF_MT_MAJOR_TYPE).unwrap(),
+                    MFMediaType_Video
+                );
+                assert_eq!(
+                    input_type.GetGUID(&MF_MT_SUBTYPE).unwrap(),
+                    MFVideoFormat_HEVC
+                );
+                assert_eq!(
+                    input_type.GetUINT32(&MF_MT_MPEG2_PROFILE).unwrap(),
+                    profile.0 as u32
+                );
+                assert_eq!(
+                    input_type.GetUINT64(&MF_MT_FRAME_SIZE).unwrap(),
+                    pack_pair(2560, 1440)
+                );
+                assert_eq!(
+                    input_type.GetUINT64(&MF_MT_FRAME_RATE).unwrap(),
+                    pack_pair(120, 1)
+                );
+                assert_eq!(
+                    input_type.GetUINT32(&MF_MT_AVG_BITRATE).unwrap(),
+                    75_000_000
+                );
+                assert_eq!(
+                    input_type.GetUINT64(&MF_MT_PIXEL_ASPECT_RATIO).unwrap(),
+                    pack_pair(1, 1)
+                );
+                assert_eq!(
+                    input_type.GetUINT32(&MF_MT_INTERLACE_MODE).unwrap(),
+                    MFVideoInterlace_MixedInterlaceOrProgressive.0 as u32
+                );
+            }
+            for codec in [VideoCodec::H264, VideoCodec::Av1] {
+                let input_type = video_input_type(VideoFormat { codec, ..format }).unwrap();
+                unsafe {
+                    assert_eq!(
+                        input_type.GetGUID(&MF_MT_SUBTYPE).unwrap(),
+                        *video_subtype(codec)
+                    );
+                    assert_eq!(
+                        input_type
+                            .GetUINT32(&MF_MT_MPEG2_PROFILE)
+                            .unwrap_err()
+                            .code(),
+                        MF_E_ATTRIBUTENOTFOUND
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn output_samples_reject_reported_corruption_before_surface_extraction() {

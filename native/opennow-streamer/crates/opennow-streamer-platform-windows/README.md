@@ -20,6 +20,23 @@ capability is reported only when its selected decoder class and the complete pre
 operation succeed. `WindowsBackend::probe` remains the D3D11 compatibility entry point.
 Non-Windows builds expose the same typed API but report the backend as unavailable.
 
+## HEVC availability in Qt
+
+The embedded Qt stream view uses the same Media Foundation decoder configuration as the
+Windows capability probe. HEVC input types explicitly carry the profile matching the negotiated
+bit depth and chroma before the decoder selects its output type. Hardware profile checks and
+D3D11 surface requirements still apply; setting a profile does not enable an unsupported GPU.
+
+Windows must have a registered, activatable HEVC Media Foundation decoder, such as Microsoft's
+HEVC Video Extensions, in addition to a compatible GPU and driver. The app does not bundle a
+separate Windows HEVC decoder. An installed extension alone does not prove that decoder
+activation or D3D11 configuration succeeds.
+
+When Qt disables H.265, `%APPDATA%\OpenNOW\diagnostics\native-streamer.log` records
+`Windows hardware decoder probe failed` with `codec=H.265` and the decoder error, even if H.264
+remains available. `OPENNOW_DATA_DIR` overrides the data directory. Configuration failures include
+the MFT name and activation, D3D manager, or input-type stage where applicable.
+
 ## Integration API
 
 ```rust,no_run

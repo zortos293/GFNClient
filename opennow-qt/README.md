@@ -88,6 +88,13 @@ The keyboard fixtures cover Return, keypad Enter, Tab+Space, Escape, safe defaul
 auto-repeat suppression, and preserving the stream surface/input across cancellation.
 They use a smoke session, not a live GFN connection.
 
+Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-session-launch-'`
+to check the desktop launch screen in windowed/fullscreen and normal/reduced-motion modes.
+The fixture exercises queue updates, entry/first-frame fades, reconnects, failures, cancellation
+confirmation, and interrupted transitions while checking that the same video item survives.
+Receiver readiness alone must not dismiss the launch screen. These tests inject native status
+and first-frame events; they do not establish live network or decoder behavior.
+
 Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-session-fullscreen-'`
 to verify that F11 can leave and re-enter fullscreen after confirming session exit,
 in desktop/console mode, restoring either the normal or maximized window state.

@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QPointer>
 #include <QTimer>
 #include <QVariantList>
 
@@ -15,6 +16,8 @@ class ControllerInput final : public QObject
     Q_OBJECT
     Q_PROPERTY(int controllerCount READ controllerCount NOTIFY controllerCountChanged)
     Q_PROPERTY(QVariantList controllers READ controllers NOTIFY controllersChanged)
+    Q_PROPERTY(QVariantList availableControllers READ availableControllers NOTIFY availableControllersChanged)
+    Q_PROPERTY(quint32 inputControllerId READ inputControllerId WRITE setInputControllerId NOTIFY inputControllerIdChanged)
     Q_PROPERTY(bool shellCaptureEnabled READ shellCaptureEnabled WRITE setShellCaptureEnabled NOTIFY shellCaptureEnabledChanged)
     Q_PROPERTY(bool inputSuspended READ inputSuspended WRITE setInputSuspended NOTIFY inputSuspendedChanged)
 
@@ -26,6 +29,9 @@ public:
 
     [[nodiscard]] int controllerCount() const;
     [[nodiscard]] QVariantList controllers() const;
+    [[nodiscard]] QVariantList availableControllers() const;
+    [[nodiscard]] quint32 inputControllerId() const;
+    void setInputControllerId(quint32 id);
     [[nodiscard]] bool shellCaptureEnabled() const;
     void setShellCaptureEnabled(bool enabled);
     [[nodiscard]] bool inputSuspended() const;
@@ -34,6 +40,8 @@ public:
 signals:
     void controllerCountChanged(int count);
     void controllersChanged();
+    void availableControllersChanged();
+    void inputControllerIdChanged();
     void shellCaptureEnabledChanged();
     void inputSuspendedChanged();
     void controllerActivity();
@@ -65,6 +73,10 @@ private:
         qint16 rawRightY = 0;
         quint8 leftTrigger = 0;
         quint8 rightTrigger = 0;
+        QHash<int, QPointer<QObject>> shellKeys;
+        std::array<RepeatingDirection, 4> directions{{
+            {false, 0, 0, Qt::Key_Left}, {false, 0, 0, Qt::Key_Right},
+            {false, 0, 0, Qt::Key_Up}, {false, 0, 0, Qt::Key_Down}}};
     };
 
     void openController(SDL_JoystickID id);
@@ -74,7 +86,11 @@ private:
     bool updateDirection(RepeatingDirection &direction, bool active);
     void reportActivity(int slot, const QString &control, int value);
     void dispatchRepeats(qint64 now);
-    void postKey(int key, bool pressed, bool autoRepeat = false);
+    void resetDirections();
+    void handleShellButton(int slot, int key, bool pressed);
+    void releaseShellButtons(int slot);
+    [[nodiscard]] bool acceptsController(SDL_JoystickID id) const;
+    void postKey(int key, bool pressed, bool autoRepeat = false, QObject *target = nullptr);
     static int keyForButton(Uint8 button);
     [[nodiscard]] quint16 gamepadBitmap() const;
     void publishGamepad(int slot, bool neutral = false);
@@ -88,6 +104,8 @@ private:
 
     QTimer m_pollTimer;
     QVariantList m_controllerMetadata;
+    QVariantList m_availableControllerMetadata;
+    SDL_JoystickID m_inputControllerId = 0;
     QElapsedTimer m_clock;
     QHash<SDL_JoystickID, int> m_gamepadSlots;
     std::array<GamepadSlot, 4> m_slots;
@@ -96,8 +114,4 @@ private:
     bool m_inputSuspended = false;
     qint64 m_lastControllerMetadataAt = 0;
     qint64 m_lastGamepadSnapshotAt = 0;
-    RepeatingDirection m_left{false, 0, 0, Qt::Key_Left};
-    RepeatingDirection m_right{false, 0, 0, Qt::Key_Right};
-    RepeatingDirection m_up{false, 0, 0, Qt::Key_Up};
-    RepeatingDirection m_down{false, 0, 0, Qt::Key_Down};
 };

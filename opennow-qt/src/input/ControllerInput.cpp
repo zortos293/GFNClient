@@ -44,6 +44,8 @@ ControllerInput::~ControllerInput()
 {
     m_pollTimer.stop();
     publishConnectedGamepads(true);
+    for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
+        releaseShellButtons(slot);
     for (auto &slot : m_slots) {
         if (slot.gamepad) SDL_CloseGamepad(slot.gamepad);
         slot = {};
@@ -54,7 +56,8 @@ ControllerInput::~ControllerInput()
 
 int ControllerInput::controllerCount() const
 {
-    return m_gamepadSlots.size();
+    return m_inputControllerId ? static_cast<int>(m_gamepadSlots.contains(m_inputControllerId))
+                               : m_gamepadSlots.size();
 }
 
 QVariantList ControllerInput::controllers() const
@@ -62,11 +65,43 @@ QVariantList ControllerInput::controllers() const
     return m_controllerMetadata;
 }
 
+QVariantList ControllerInput::availableControllers() const
+{
+    return m_availableControllerMetadata;
+}
+
+quint32 ControllerInput::inputControllerId() const
+{
+    return m_inputControllerId;
+}
+
+bool ControllerInput::acceptsController(SDL_JoystickID id) const
+{
+    return id != 0 && (m_inputControllerId == 0 || m_inputControllerId == id);
+}
+
+void ControllerInput::setInputControllerId(quint32 id)
+{
+    if (id == m_inputControllerId || (id != 0 && !m_gamepadSlots.contains(id))) return;
+    publishConnectedGamepads(true);
+    for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
+        releaseShellButtons(slot);
+    resetDirections();
+    m_inputControllerId = id;
+    for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
+        updateSlotSnapshot(slot);
+    if (!m_shellCaptureEnabled) publishConnectedGamepads();
+    refreshControllerMetadata();
+    updatePollInterval();
+    emit controllerCountChanged(controllerCount());
+    emit inputControllerIdChanged();
+}
+
 void ControllerInput::updatePollInterval()
 {
     // Keep hotplug discovery alive without waking the GUI 250 times/second
     // when there is no controller. Gameplay retains its low-latency cadence.
-    const auto interval = m_gamepadSlots.isEmpty() || m_inputSuspended ? 100 : m_shellCaptureEnabled ? 16 : 4;
+    const auto interval = controllerCount() == 0 || m_inputSuspended ? 100 : m_shellCaptureEnabled ? 16 : 4;
     m_pollTimer.setTimerType(interval == 4 ? Qt::PreciseTimer : Qt::CoarseTimer);
     if (m_pollTimer.interval() != interval) m_pollTimer.setInterval(interval);
 }
@@ -74,6 +109,7 @@ void ControllerInput::updatePollInterval()
 void ControllerInput::refreshControllerMetadata()
 {
     QVariantList result;
+    QVariantList available;
     result.reserve(m_gamepadSlots.size());
     for (qsizetype index = 0; index < static_cast<qsizetype>(m_slots.size()); ++index) {
         const auto &slot = m_slots[static_cast<std::size_t>(index)];
@@ -81,18 +117,27 @@ void ControllerInput::refreshControllerMetadata()
         int batteryPercent = -1;
         const auto power = SDL_GetGamepadPowerInfo(slot.gamepad, &batteryPercent);
         const auto *name = SDL_GetGamepadName(slot.gamepad);
-        result.push_back(QVariantMap{
+        QVariantMap metadata{
             {QStringLiteral("slot"), index + 1},
             {QStringLiteral("instanceId"), static_cast<qulonglong>(slot.instanceId)},
             {QStringLiteral("name"), name ? QString::fromUtf8(name)
                                            : QStringLiteral("Game controller")},
             {QStringLiteral("batteryPercent"), batteryPercent},
             {QStringLiteral("charging"), power == SDL_POWERSTATE_CHARGING},
-        });
+        };
+        available.push_back(metadata);
+        if (acceptsController(slot.instanceId)) {
+            if (m_inputControllerId) metadata[QStringLiteral("slot")] = 1;
+            result.push_back(metadata);
+        }
     }
     if (result != m_controllerMetadata) {
         m_controllerMetadata = std::move(result);
         emit controllersChanged();
+    }
+    if (available != m_availableControllerMetadata) {
+        m_availableControllerMetadata = std::move(available);
+        emit availableControllersChanged();
     }
 }
 
@@ -109,10 +154,13 @@ bool ControllerInput::inputSuspended() const
 void ControllerInput::setInputSuspended(bool suspended)
 {
     if (m_inputSuspended == suspended) return;
-    if (suspended) publishConnectedGamepads(true);
+    if (suspended) {
+        publishConnectedGamepads(true);
+        for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
+            releaseShellButtons(slot);
+    }
     m_inputSuspended = suspended;
-    for (auto *direction : {&m_left, &m_right, &m_up, &m_down})
-        *direction = RepeatingDirection{false, 0, 0, direction->key};
+    resetDirections();
     if (!suspended && !m_shellCaptureEnabled) {
         for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
             updateSlotSnapshot(slot);
@@ -126,6 +174,10 @@ void ControllerInput::setShellCaptureEnabled(bool enabled)
 {
     if (m_shellCaptureEnabled == enabled) return;
     if (enabled) publishConnectedGamepads(true);
+    else {
+        for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
+            releaseShellButtons(slot);
+    }
     m_shellCaptureEnabled = enabled;
     if (!enabled) {
         for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
@@ -133,11 +185,7 @@ void ControllerInput::setShellCaptureEnabled(bool enabled)
         publishConnectedGamepads();
         m_lastGamepadSnapshotAt = m_clock.elapsed();
     } else {
-        for (auto *direction : {&m_left, &m_right, &m_up, &m_down}) {
-            direction->active = false;
-            direction->pressedAt = 0;
-            direction->repeatedAt = 0;
-        }
+        resetDirections();
     }
     updatePollInterval();
     emit shellCaptureEnabledChanged();
@@ -196,7 +244,7 @@ void ControllerInput::openController(SDL_JoystickID id)
     m_gamepadSlots.insert(id, slot);
     updateSlotSnapshot(slot);
     if (!m_shellCaptureEnabled) publishGamepad(slot);
-    emit controllerCountChanged(m_gamepadSlots.size());
+    emit controllerCountChanged(controllerCount());
     updatePollInterval();
     refreshControllerMetadata();
 }
@@ -208,15 +256,14 @@ void ControllerInput::closeController(SDL_JoystickID id)
     if (slotIndex < 0 || slotIndex >= static_cast<int>(m_slots.size())) return;
     auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
     if (!slot.gamepad) return;
+    const auto accepted = acceptsController(id);
+    releaseShellButtons(slotIndex);
     SDL_CloseGamepad(slot.gamepad);
     slot = {};
-    publishGamepad(slotIndex, true);
-    for (auto *direction : {&m_left, &m_right, &m_up, &m_down}) {
-        direction->active = false;
-        direction->pressedAt = 0;
-        direction->repeatedAt = 0;
-    }
-    emit controllerCountChanged(m_gamepadSlots.size());
+    if (accepted)
+        emit gamepadSnapshot(m_inputControllerId ? 0 : static_cast<quint8>(slotIndex),
+                             gamepadBitmap(), 0, 0, 0, 0, 0, 0, 0);
+    emit controllerCountChanged(controllerCount());
     updatePollInterval();
     refreshControllerMetadata();
 }
@@ -224,7 +271,7 @@ void ControllerInput::closeController(SDL_JoystickID id)
 void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pressed)
 {
     const auto slotIndex = m_gamepadSlots.value(event.which, -1);
-    if (slotIndex < 0) return;
+    if (slotIndex < 0 || !acceptsController(event.which)) return;
     auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
     if (event.button == SDL_GAMEPAD_BUTTON_GUIDE) {
         if (pressed && !m_shellCaptureEnabled && !m_inputSuspended)
@@ -238,7 +285,7 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
     const auto key = keyForButton(event.button);
     if (key != 0) {
-        postKey(key, pressed);
+        handleShellButton(slotIndex, key, pressed);
         if (pressed) reportActivity(slotIndex, QStringLiteral("button:%1").arg(event.button), 1);
     }
 }
@@ -246,7 +293,7 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
 void ControllerInput::handleAxis(const SDL_GamepadAxisEvent &event)
 {
     const auto slotIndex = m_gamepadSlots.value(event.which, -1);
-    if (slotIndex < 0) return;
+    if (slotIndex < 0 || !acceptsController(event.which)) return;
     auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
     switch (event.axis) {
     case SDL_GAMEPAD_AXIS_LEFTX: slot.rawLeftX = event.value; break;
@@ -262,18 +309,23 @@ void ControllerInput::handleAxis(const SDL_GamepadAxisEvent &event)
 
     const auto value = event.value;
     bool activated = false;
+    auto &left = slot.directions[0];
+    auto &right = slot.directions[1];
+    auto &up = slot.directions[2];
+    auto &down = slot.directions[3];
     if (event.axis == SDL_GAMEPAD_AXIS_LEFTX) {
-        activated |= updateDirection(m_left, value < (m_left.active ? -axisReleaseThreshold : -axisPressThreshold));
-        activated |= updateDirection(m_right, value > (m_right.active ? axisReleaseThreshold : axisPressThreshold));
+        activated |= updateDirection(left, value < (left.active ? -axisReleaseThreshold : -axisPressThreshold));
+        activated |= updateDirection(right, value > (right.active ? axisReleaseThreshold : axisPressThreshold));
     } else if (event.axis == SDL_GAMEPAD_AXIS_LEFTY) {
-        activated |= updateDirection(m_up, value < (m_up.active ? -axisReleaseThreshold : -axisPressThreshold));
-        activated |= updateDirection(m_down, value > (m_down.active ? axisReleaseThreshold : axisPressThreshold));
+        activated |= updateDirection(up, value < (up.active ? -axisReleaseThreshold : -axisPressThreshold));
+        activated |= updateDirection(down, value > (down.active ? axisReleaseThreshold : axisPressThreshold));
     }
     if (activated) reportActivity(slotIndex, QStringLiteral("axis:%1").arg(event.axis), value);
 }
 
 quint16 ControllerInput::gamepadBitmap() const
 {
+    if (m_inputControllerId) return m_gamepadSlots.contains(m_inputControllerId) ? 0x0101 : 0;
     quint16 bitmap = 0;
     for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot) {
         if (m_slots[static_cast<std::size_t>(slot)].gamepad)
@@ -286,9 +338,10 @@ void ControllerInput::publishGamepad(int slotIndex, bool neutral)
 {
     if (m_inputSuspended && !neutral) return;
     const auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
+    if (!slot.gamepad || !acceptsController(slot.instanceId)) return;
     const auto left = neutral ? QPair<qint16, qint16>{} : radialDeadzone(slot.rawLeftX, slot.rawLeftY);
     const auto right = neutral ? QPair<qint16, qint16>{} : radialDeadzone(slot.rawRightX, slot.rawRightY);
-    emit gamepadSnapshot(static_cast<quint8>(slotIndex), gamepadBitmap(),
+    emit gamepadSnapshot(m_inputControllerId ? 0 : static_cast<quint8>(slotIndex), gamepadBitmap(),
                          neutral ? 0 : slot.buttons,
                          neutral ? 0 : slot.leftTrigger, neutral ? 0 : slot.rightTrigger,
                          left.first, static_cast<qint16>(-left.second),
@@ -387,19 +440,52 @@ bool ControllerInput::updateDirection(RepeatingDirection &direction, bool active
 
 void ControllerInput::dispatchRepeats(qint64 now)
 {
-    for (auto *direction : {&m_left, &m_right, &m_up, &m_down}) {
-        if (!direction->active || now - direction->pressedAt < repeatDelayMs
-            || now - direction->repeatedAt < repeatIntervalMs) continue;
-        direction->repeatedAt = now;
-        postKey(direction->key, true, true);
-        postKey(direction->key, false, true);
+    if (!m_shellCaptureEnabled || m_inputSuspended) return;
+    for (auto &slot : m_slots) {
+        if (!slot.gamepad || !acceptsController(slot.instanceId)) continue;
+        for (auto &direction : slot.directions) {
+            if (!direction.active || now - direction.pressedAt < repeatDelayMs
+                || now - direction.repeatedAt < repeatIntervalMs) continue;
+            direction.repeatedAt = now;
+            postKey(direction.key, true, true);
+            postKey(direction.key, false, true);
+        }
     }
 }
 
-void ControllerInput::postKey(int key, bool pressed, bool autoRepeat)
+void ControllerInput::resetDirections()
+{
+    for (auto &slot : m_slots) {
+        for (auto &direction : slot.directions)
+            direction = RepeatingDirection{false, 0, 0, direction.key};
+    }
+}
+
+void ControllerInput::handleShellButton(int slotIndex, int key, bool pressed)
+{
+    auto &keys = m_slots[static_cast<std::size_t>(slotIndex)].shellKeys;
+    if (keys.contains(key) == pressed) return;
+    QPointer<QObject> target = pressed ? QPointer<QObject>(QGuiApplication::focusObject()) : keys.take(key);
+    if (pressed && !target) target = QCoreApplication::instance();
+    for (const auto &slot : m_slots) {
+        if (!slot.shellKeys.contains(key)) continue;
+        if (pressed) keys.insert(key, slot.shellKeys.value(key));
+        return;
+    }
+    if (pressed) keys.insert(key, target);
+    if (target) postKey(key, pressed, false, target);
+}
+
+void ControllerInput::releaseShellButtons(int slotIndex)
+{
+    const auto keys = m_slots[static_cast<std::size_t>(slotIndex)].shellKeys.keys();
+    for (const auto key : keys) handleShellButton(slotIndex, key, false);
+}
+
+void ControllerInput::postKey(int key, bool pressed, bool autoRepeat, QObject *target)
 {
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
-    auto *target = QGuiApplication::focusObject();
+    if (!target) target = QGuiApplication::focusObject();
     if (!target) target = QCoreApplication::instance();
     const auto type = pressed ? QEvent::KeyPress : QEvent::KeyRelease;
     QCoreApplication::postEvent(

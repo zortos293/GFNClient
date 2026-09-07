@@ -273,6 +273,20 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 8
     )
+    qt_add_executable(opennow-controllersources-tests
+        tests/tst_controllersources.cpp
+        src/input/ControllerInput.cpp
+        src/input/ControllerInput.h
+    )
+    target_include_directories(opennow-controllersources-tests PRIVATE src)
+    target_link_libraries(opennow-controllersources-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui SDL3::SDL3)
+    add_test(NAME opennow-controllersources-tests
+             COMMAND opennow-controllersources-tests -o -,txt)
+    set_tests_properties(opennow-controllersources-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 20
+    )
     if(WIN32)
         add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-test-runtime)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
@@ -289,6 +303,7 @@ if(BUILD_TESTING)
             opennow-singleinstance-tests
             opennow-thumbnail-tests
             opennow-controllerinput-tests
+            opennow-controllersources-tests
             PROPERTIES WIN32_EXECUTABLE FALSE)
 
         # windeployqt follows the application graph and therefore does not copy
@@ -331,7 +346,8 @@ if(BUILD_TESTING)
                 opennow-embedded-orchestration-tests
                 opennow-singleinstance-tests
                 opennow-thumbnail-tests
-                opennow-controllerinput-tests)
+                opennow-controllerinput-tests
+                opennow-controllersources-tests)
             add_dependencies(${test_target} opennow-qt-test-runtime)
         endforeach()
     endif()

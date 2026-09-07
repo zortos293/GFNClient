@@ -27,6 +27,7 @@ Use the registered `qt-ci` workflow name and an explicit `--ref dev`. The Action
 show the dispatch control until this workflow is also present on the default branch. Do not use
 the legacy `release` workflow instead. Publishing is opt-in: pushes, pull requests, and a manual
 run with the default input only upload validation artifacts.
+Manual runs have their own concurrency group, so a later branch push cannot cancel a publication.
 
 The version comes from `project(OpenNOWQt VERSION ...)` and the workflow run identity:
 `1.0.0-nightly.<run-number>.<run-attempt>`. The exact checked-out SHA is shared by every build and
@@ -55,6 +56,8 @@ macOS is currently disabled. `SHA256SUMS` covers the six packages and `RELEASE-I
 Checksums detect corruption; they do not replace a publisher signature. The inventory rejects
 missing platforms, duplicate basenames, wrong versions, empty files, and unexpected assets
 before any release upload.
+AppImage smoke tests use the packaged offscreen plugin with host Qt plugin, QML, and library
+search paths removed, so the installed CI toolkit cannot hide missing bundled dependencies.
 
 ## Updates and signed candidates
 

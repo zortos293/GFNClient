@@ -164,6 +164,7 @@ jobs:
         shell: bash
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so
           LINUXDEPLOY_ARCH: ${{ matrix.linuxdeploy_arch }}
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt_plugin_sha256 }}
@@ -198,6 +199,7 @@ jobs:
               --plugin qt --output appimage
           test -f build/AppDir/usr/lib/libva.so.2
           test -f build/AppDir/usr/lib/libva-drm.so.2
+          test -f build/AppDir/usr/plugins/platforms/libqoffscreen.so
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
             python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
           mv OpenNOW-Qt-*.AppImage build/release-artifacts/
@@ -210,7 +212,9 @@ jobs:
         run: |
           set -euo pipefail
           appimage=$(find build/release-artifacts -maxdepth 1 -type f -name '*.AppImage' -print -quit)
-          "$appimage" --smoke-test --allow-multiple-instances --route home --reduced-motion
+          env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
+            -u QML2_IMPORT_PATH -u QML_IMPORT_PATH -u LD_LIBRARY_PATH \
+            "$appimage" --smoke-test --allow-multiple-instances --route home --reduced-motion
           (cd build/release-artifacts && sha256sum -- *.AppImage *.deb > SHA256SUMS)
 
       - uses: actions/upload-artifact@v4

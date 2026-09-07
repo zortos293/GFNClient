@@ -36,7 +36,7 @@ on:
       - "package.json"
 
 concurrency:
-  group: qt-ci-${{ github.ref }}
+  group: qt-ci-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
@@ -403,6 +403,7 @@ jobs:
         shell: bash
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so
           LINUXDEPLOY_ARCH: ${{ matrix.linuxdeploy-arch }}
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy-sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt-plugin-sha256 }}
@@ -434,6 +435,7 @@ jobs:
               --output appimage
           test -f build/AppDir/usr/lib/libva.so.2
           test -f build/AppDir/usr/lib/libva-drm.so.2
+          test -f build/AppDir/usr/plugins/platforms/libqoffscreen.so
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
             python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
           mv OpenNOW-Qt-*.AppImage build/qt-packages/
@@ -447,7 +449,9 @@ jobs:
         run: |
           appimages=(build/qt-packages/OpenNOW-Qt-*.AppImage)
           [[ ${#appimages[@]} -eq 1 && -f "${appimages[0]}" ]]
-          "${appimages[0]}" \
+          env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
+            -u QML2_IMPORT_PATH -u QML_IMPORT_PATH -u LD_LIBRARY_PATH \
+            "${appimages[0]}" \
             --smoke-test --allow-multiple-instances --route home --reduced-motion
 
       - name: Upload unsigned validation package

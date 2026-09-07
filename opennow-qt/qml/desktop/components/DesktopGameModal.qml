@@ -70,24 +70,7 @@ FocusScope {
         const raw = String(game.lastPlayed || (root.selectedVariant && root.selectedVariant.lastPlayedDate) || "")
         if (!raw)
             return qsTr("Not played yet")
-        const parsed = Date.parse(raw)
-        if (isNaN(parsed))
-            return raw
-        const deltaMs = Date.now() - parsed
-        if (deltaMs < 0)
-            return Qt.formatDate(new Date(parsed), Qt.DefaultLocaleShortDate)
-        const minutes = Math.round(deltaMs / 60000)
-        if (minutes < 1)
-            return qsTr("Just now")
-        if (minutes < 60)
-            return qsTr("%1 minutes ago").arg(minutes)
-        const hours = Math.round(minutes / 60)
-        if (hours < 24)
-            return qsTr("%1 hours ago").arg(hours)
-        const days = Math.round(hours / 24)
-        if (days < 14)
-            return qsTr("%1 days ago").arg(days)
-        return Qt.formatDate(new Date(parsed), Qt.DefaultLocaleShortDate)
+        return DesktopTokens.relativeLastPlayed(raw, Date.now()) || qsTr("—")
     }
     readonly property string storesText: {
         const game = root.game

@@ -1908,6 +1908,25 @@ mod tests {
     }
 
     #[test]
+    fn embedded_prepare_preserves_selected_audio_output() {
+        for device in [
+            "",
+            "pipewire:alsa_output.usb-headphones",
+            "coreaudio:BuiltInSpeakerDevice",
+            "USB Headphones",
+        ] {
+            let service = StreamerService::new();
+            let prepared = service
+                .prepare_embedded(
+                    &json!({"session": {"sessionId": "audio-test", "status": 2}}),
+                    &json!({"codec": "h264", "audioOutputDevice": device}),
+                )
+                .unwrap();
+            assert_eq!(prepared["context"]["settings"]["audioOutputDevice"], device);
+        }
+    }
+
+    #[test]
     fn microphone_child_state_is_exposed_without_losing_the_message() {
         let state = Arc::new(Mutex::new(Snapshot::default()));
         apply_microphone_state(

@@ -14,9 +14,9 @@ use openh264::decoder::{Decoder as OpenH264Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 use opus::{Channels, Decoder as OpusNativeDecoder};
 
-use crate::output::{DecodedVideoFrame, OutputBuffers};
 #[cfg(target_os = "windows")]
-use crate::output::{HeadlessAudioOutput, WindowsBridge};
+use crate::output::WindowsBridge;
+use crate::output::{DecodedVideoFrame, OutputBuffers};
 use crate::queue::{BoundedQueue, PushResult};
 use crate::runtime::HostCommand;
 use crate::video_queue::VideoQueue;
@@ -329,6 +329,15 @@ impl MediaColorQuality {
 
     pub const fn is_444(self) -> bool {
         matches!(self, Self::EightBit444 | Self::TenBit444)
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn macos_bit_depth(self) -> opennow_streamer_platform_macos::VideoBitDepth {
+        use opennow_streamer_platform_macos::VideoBitDepth;
+        match self {
+            Self::EightBit420 | Self::EightBit444 => VideoBitDepth::Eight,
+            Self::TenBit420 | Self::TenBit444 => VideoBitDepth::Ten,
+        }
     }
 }
 
@@ -672,6 +681,11 @@ impl MediaSink {
     }
 }
 
+pub(crate) struct MediaSessionConfig<'a> {
+    pub(crate) stream: MediaStreamConfig,
+    pub(crate) audio_device: &'a opennow_streamer_protocol::AudioOutputDevice,
+}
+
 pub struct MediaSession {
     sink: MediaSink,
     video_worker: Option<JoinHandle<()>>,
@@ -679,8 +693,6 @@ pub struct MediaSession {
     #[cfg(target_os = "linux")]
     linux_monitor: Option<JoinHandle<()>>,
     embedded_host_worker: Option<JoinHandle<()>>,
-    #[cfg(target_os = "windows")]
-    headless_audio: Option<HeadlessAudioOutput>,
     #[cfg(target_os = "windows")]
     embedded_d3d11: Option<Arc<Mutex<EmbeddedD3d11State>>>,
     embedded_frames: Option<crate::GraphicsFramePublisher>,
@@ -818,8 +830,6 @@ impl MediaSession {
             linux_monitor: None,
             embedded_host_worker: None,
             #[cfg(target_os = "windows")]
-            headless_audio: None,
-            #[cfg(target_os = "windows")]
             embedded_d3d11: None,
             embedded_frames: None,
             host_commands,
@@ -887,8 +897,6 @@ impl MediaSession {
             #[cfg(target_os = "linux")]
             linux_monitor: None,
             embedded_host_worker: None,
-            #[cfg(target_os = "windows")]
-            headless_audio: None,
             embedded_frames: None,
             host_commands,
         })
@@ -976,8 +984,6 @@ impl MediaSession {
             audio_worker: Some(audio_worker),
             linux_monitor: Some(linux_monitor),
             embedded_host_worker: None,
-            #[cfg(target_os = "windows")]
-            headless_audio: None,
             embedded_frames: None,
             host_commands,
         })
@@ -987,7 +993,7 @@ impl MediaSession {
         output: Arc<OutputBuffers>,
         feedback: Sender<MediaFeedback>,
         host_commands: Sender<HostCommand>,
-        stream: MediaStreamConfig,
+        config: MediaSessionConfig<'_>,
         frames: crate::GraphicsFramePublisher,
         #[cfg(target_os = "linux")] linux_selection: LinuxVideoSelection,
         #[cfg(target_os = "linux")] vulkan_device: Option<Arc<crate::SharedVulkanDevice>>,
@@ -998,7 +1004,7 @@ impl MediaSession {
                 output,
                 feedback,
                 host_commands,
-                stream,
+                config,
                 frames,
                 linux_selection,
                 vulkan_device,
@@ -1006,11 +1012,24 @@ impl MediaSession {
         }
         #[cfg(target_os = "macos")]
         {
-            return Self::spawn_embedded_macos(output, feedback, host_commands, stream, frames);
+            return Self::spawn_embedded_macos(
+                output,
+                feedback,
+                host_commands,
+                config.stream,
+                config.audio_device,
+                frames,
+            );
         }
         #[cfg(target_os = "windows")]
         {
-            return Self::spawn_embedded_windows(output, feedback, host_commands, stream, frames);
+            return Self::spawn_embedded_windows(
+                output,
+                feedback,
+                host_commands,
+                config.stream,
+                frames,
+            );
         }
         #[allow(unreachable_code)]
         Err("embedded media is unsupported on this platform".to_owned())
@@ -1021,11 +1040,15 @@ impl MediaSession {
         output: Arc<OutputBuffers>,
         feedback: Sender<MediaFeedback>,
         host_commands: Sender<HostCommand>,
-        stream: MediaStreamConfig,
+        config: MediaSessionConfig<'_>,
         frames: crate::GraphicsFramePublisher,
         linux_selection: LinuxVideoSelection,
         vulkan_device: Option<Arc<crate::SharedVulkanDevice>>,
     ) -> Result<Self, String> {
+        let MediaSessionConfig {
+            stream,
+            audio_device,
+        } = config;
         let LinuxVideoPath::Hardware(decoder_preference) = linux_selection.path else {
             return Err(linux_selection.fallback_reason.unwrap_or_else(|| {
                 "embedded Linux output requires a native NV12 decoder".to_owned()
@@ -1044,6 +1067,9 @@ impl MediaSession {
         };
         config.decoder_preference = decoder_preference;
         config.embedded_presentation = true;
+        if let Some(audio) = config.audio.as_mut() {
+            audio.output_device = audio_device.device_name().unwrap_or_default().to_owned();
+        }
         if stream.color_quality.is_444() {
             return Err("embedded Linux decode does not support negotiated 4:4:4 color".to_owned());
         }
@@ -1130,8 +1156,6 @@ impl MediaSession {
             audio_worker: Some(audio_worker),
             linux_monitor: Some(linux_monitor),
             embedded_host_worker: None,
-            #[cfg(target_os = "windows")]
-            headless_audio: None,
             embedded_frames: Some(embedded_frames),
             host_commands,
         })
@@ -1143,8 +1167,14 @@ impl MediaSession {
         feedback: Sender<MediaFeedback>,
         _host_commands: Sender<HostCommand>,
         stream: MediaStreamConfig,
+        audio_device: &opennow_streamer_protocol::AudioOutputDevice,
         frames: crate::GraphicsFramePublisher,
     ) -> Result<Self, String> {
+        if stream.color_quality.is_444() {
+            return Err(
+                "embedded VideoToolbox decode does not support negotiated 4:4:4 color".to_owned(),
+            );
+        }
         let shared = Arc::new(SharedPipeline {
             video: Arc::new(VideoQueue::new(macos_video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
@@ -1159,6 +1189,7 @@ impl MediaSession {
             mac_sink: Mutex::new(None),
             mac_software_fallback: AtomicBool::new(false),
         });
+        let audio_output_device = audio_device.device_name().map(str::to_owned);
         let (host_commands, host_receiver) = std::sync::mpsc::channel();
         let embedded_frames = frames.clone();
         let embedded_host_worker = thread::Builder::new()
@@ -1178,6 +1209,7 @@ impl MediaSession {
                             EmbeddedBackendConfig {
                                 video,
                                 audio: AudioFormat::OPUS_STEREO_48KHZ,
+                                audio_output_device: audio_output_device.clone(),
                                 queues: QueueLimits::default(),
                             },
                             move |frame| {
@@ -1218,7 +1250,9 @@ impl MediaSession {
                             reply,
                         } => {
                             let result = start(
-                                H265Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
+                                H265Format::new(parameter_sets, VideoColorSpace::Bt709)
+                                    .with_bit_depth(stream.color_quality.macos_bit_depth())
+                                    .into(),
                             )
                             .and_then(|mut started| {
                                 started.set_paused(paused)?;
@@ -1259,12 +1293,18 @@ impl MediaSession {
                         HostCommand::Stop | HostCommand::Shutdown => break,
                         HostCommand::StartMicrophone { reply, .. } => {
                             let _ = reply.send(Err(
-                                "embedded microphone capture must start on the session owner thread"
+                                "microphone capture is owned by the embedded runtime host"
                                     .to_owned(),
                             ));
                         }
                         HostCommand::Surface { reply, .. } | HostCommand::Control { reply, .. } => {
                             let _ = reply.send(Ok(()));
+                        }
+                        HostCommand::AudioDevices(request) => {
+                            let _ = request.reply.send(Err(
+                                "Audio enumeration is owned by the embedded runtime host"
+                                    .to_owned(),
+                            ));
                         }
                         HostCommand::Cursor(_) => {}
                     }
@@ -1330,7 +1370,6 @@ impl MediaSession {
         stream: MediaStreamConfig,
         frames: crate::GraphicsFramePublisher,
     ) -> Result<Self, String> {
-        let audio = HeadlessAudioOutput::start(Arc::clone(&output))?;
         let bridge = Arc::new(WindowsBridge::new());
         let shared = Arc::new(SharedPipeline {
             video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
@@ -1496,7 +1535,6 @@ impl MediaSession {
             video_worker: Some(video_worker),
             audio_worker: Some(audio_worker),
             embedded_host_worker: None,
-            headless_audio: Some(audio),
             embedded_d3d11: Some(producer),
             embedded_frames: Some(embedded_frames),
             host_commands,
@@ -1567,8 +1605,6 @@ impl MediaSession {
             linux_monitor: None,
             embedded_host_worker: None,
             #[cfg(target_os = "windows")]
-            headless_audio: None,
-            #[cfg(target_os = "windows")]
             embedded_d3d11: None,
             embedded_frames: None,
             host_commands,
@@ -1621,10 +1657,6 @@ impl MediaSession {
                 .shared
                 .keyframe_requested
                 .store(false, Ordering::Release);
-        }
-        #[cfg(target_os = "windows")]
-        if let Some(audio) = self.headless_audio.as_ref() {
-            audio.set_paused(paused);
         }
         let _ = self.host_commands.send(HostCommand::Pause {
             paused,
@@ -3366,7 +3398,8 @@ fn run_macos_h265_video(
             && configured_parameter_sets.as_ref() != Some(parameter_sets)
             && frame.keyframe
         {
-            let format = H265Format::new(parameter_sets.clone(), VideoColorSpace::Bt709);
+            let format = H265Format::new(parameter_sets.clone(), VideoColorSpace::Bt709)
+                .with_bit_depth(shared.stream.color_quality.macos_bit_depth());
             let Some(sink) = backend_sink.as_ref() else {
                 return;
             };
@@ -3766,9 +3799,12 @@ mod tests {
                 Arc::new(OutputBuffers::new()),
                 feedback,
                 commands,
-                MediaStreamConfig {
-                    color_quality,
-                    ..MediaStreamConfig::default()
+                MediaSessionConfig {
+                    stream: MediaStreamConfig {
+                        color_quality,
+                        ..MediaStreamConfig::default()
+                    },
+                    audio_device: &opennow_streamer_protocol::AudioOutputDevice::default(),
                 },
                 frames,
                 LinuxVideoSelection {

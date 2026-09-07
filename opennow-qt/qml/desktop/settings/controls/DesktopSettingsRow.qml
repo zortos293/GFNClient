@@ -32,13 +32,13 @@ Item {
         width: root.paperStyle ? DesktopTokens.px(40) : 36
         height: width
         radius: root.paperStyle ? 12 : 10
-        color: root.expanded ? Theme.face : root.leadingColor
+        color: root.expanded ? Theme.focus : root.leadingColor
         border.width: root.paperStyle ? 0 : 1
         border.color: Theme.seam
         DesktopSettingsIcon {
             anchors.centerIn: parent; width: 20; height: 20
             visible: root.glyph !== ""; glyph: root.glyph
-            ink: root.expanded ? Theme.faceText : Theme.label
+            ink: root.expanded ? Theme.focusText : Theme.label
         }
         Image {
             anchors.centerIn: parent

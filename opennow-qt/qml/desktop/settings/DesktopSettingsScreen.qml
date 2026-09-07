@@ -29,7 +29,7 @@ FocusScope {
         {label: qsTr("Controls"), detail: qsTr("Pads, mouse, shortcuts"), icon: "controller", page: 5, keywords: "controller gyroscope steam sensitivity keyboard language shortcuts"},
         {label: qsTr("Look"), detail: qsTr("Theme, accent, layout"), icon: "palette", page: 8, keywords: "theme accent interface language scale motion console sidebar tiles"},
         {label: qsTr("Console mode"), detail: qsTr("Gamepad-first interface"), icon: "controller", page: 9, keywords: "console fullscreen gamepad startup"},
-        {label: qsTr("Network"), detail: qsTr("Region, ping, proxy"), icon: "globe", page: 6, keywords: "server region ping proxy bandwidth l4s"},
+        {label: qsTr("Network"), detail: qsTr("Region, ping, proxy"), icon: "globe", page: 6, keywords: "server region ping proxy l4s"},
         {label: qsTr("Account"), detail: qsTr("NVIDIA, stores, privacy"), icon: "person", page: 0, keywords: "profile subscription stores steam epic xbox ubisoft battle gaijin privacy"},
         {label: qsTr("About"), detail: qsTr("Updates, diagnostics"), icon: "info", page: 11, keywords: "version release update diagnostics"}
     ]
@@ -63,10 +63,6 @@ FocusScope {
     }
 
     function setChoice(key, value) {
-        if (key === "appAccentColor")
-            root.setSetting("themeAccentOverride", true)
-        if (key === "themePack")
-            root.setSetting("themeAccentOverride", false)
         const normalized = String(value || "").toLowerCase()
         const codec = String(root.valueSetting("codec", "auto")).toLowerCase()
         if (key === "colorQuality") {
@@ -161,40 +157,43 @@ FocusScope {
     }
 
     function regionGroup(name) {
-        const n = String(name || "").toLowerCase()
-        if (n.indexOf("us ") === 0 || n.indexOf("us-") === 0 || n.indexOf("ca ") === 0 || n.indexOf("canada") >= 0 || n.indexOf("north america") >= 0)
+        const n = String(name || "").trim().toLowerCase()
+        if (/^(us|ca)\b|\b(usa|canada|north america)\b/.test(n))
             return qsTr("NORTH AMERICA")
-        if (n.indexOf("eu ") === 0 || n.indexOf("eu-") === 0 || n.indexOf("uk") === 0 || n.indexOf("europe") >= 0 || n.indexOf("london") >= 0 || n.indexOf("frankfurt") >= 0 || n.indexOf("amsterdam") >= 0)
+        if (/^(eu|uk|tr)\b|\b(europe|united kingdom|sweden|netherlands|germany|france|poland|bulgaria|turkey|türkiye|london|frankfurt|amsterdam)\b/.test(n))
             return qsTr("EUROPE")
-        if (n.indexOf("jp") === 0 || n.indexOf("kr") === 0 || n.indexOf("sg") === 0 || n.indexOf("au") === 0 || n.indexOf("asia") >= 0 || n.indexOf("tokyo") >= 0 || n.indexOf("seoul") >= 0 || n.indexOf("singapore") >= 0 || n.indexOf("sydney") >= 0 || n.indexOf("india") >= 0)
+        if (/^(jp|kr|sg|au|tw|my|th)\b|\b(asia|japan|korea|taiwan|malaysia|thailand|australia|new zealand|tokyo|seoul|singapore|sydney|india)\b/.test(n))
             return qsTr("ASIA PACIFIC")
-        if (n.indexOf("br") === 0 || n.indexOf("south america") >= 0 || n.indexOf("brazil") >= 0 || n.indexOf("sao") >= 0)
+        if (/^br\b|\b(latam|south america|brazil|sao|são|chile|colombia|uruguay)\b/.test(n))
             return qsTr("SOUTH AMERICA")
-        if (n.indexOf("me ") === 0 || n.indexOf("middle") >= 0 || n.indexOf("uae") >= 0)
+        if (/^me\b|\b(middle east|uae|saudi|riyadh)\b/.test(n))
             return qsTr("MIDDLE EAST")
+        if (/\b(africa|johannesburg)\b/.test(n))
+            return qsTr("AFRICA")
         return qsTr("OTHER")
     }
 
     function regionChoiceItems() {
         const items = [{ kind: "choice", label: qsTr("Automatic"), detail: qsTr("Lowest latency"), value: "" }]
-        const regions = (ShellStore.regions || []).slice()
-        let lastGroup = ""
-        for (let i = 0; i < regions.length; ++i) {
-            const region = regions[i]
-            const group = root.regionGroup(region.name)
-            if (group !== lastGroup) {
-                items.push({ kind: "heading", label: group })
-                lastGroup = group
+        const groups = [qsTr("EUROPE"), qsTr("NORTH AMERICA"), qsTr("ASIA PACIFIC"),
+                        qsTr("SOUTH AMERICA"), qsTr("MIDDLE EAST"), qsTr("AFRICA"), qsTr("OTHER")]
+        const regions = (ShellStore.regions || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
+        for (const group of groups) {
+            const members = regions.filter(region => root.regionGroup(region.name) === group)
+            if (!members.length)
+                continue
+            items.push({ kind: "heading", label: group })
+            for (const region of members) {
+                const ping = root.regionPingMs(region.url)
+                items.push({
+                    kind: "choice",
+                    label: region.name,
+                    detail: ShellStore.regionPingBusy ? qsTr("Measuring…") : ping !== null ? (ping + " ms")
+                        : ShellStore.regionPingResults[region.url] === null ? qsTr("No response") : qsTr("Not measured"),
+                    detailColor: ping === null ? "" : root.pingRankColor(ping),
+                    value: region.url
+                })
             }
-            const ping = root.regionPingMs(region.url)
-            items.push({
-                kind: "choice",
-                label: region.name,
-                detail: ShellStore.regionPingBusy ? qsTr("Measuring…") : ping !== null ? (ping + " ms")
-                    : ShellStore.regionPingResults[region.url] === null ? qsTr("No response") : qsTr("Not measured"),
-                detailColor: ping === null ? "" : root.pingRankColor(ping),
-                value: region.url
-            })
         }
         return items
     }
@@ -501,8 +500,8 @@ FocusScope {
                             Rectangle {
                                 visible: !root.compactNavigation
                                 Layout.preferredWidth: 40; Layout.preferredHeight: 40
-                                radius: 12; color: root.selectedGroup === index ? Theme.face : DesktopTokens.raised
-                                DesktopSettingsIcon { anchors.centerIn: parent; width: 20; height: 20; glyph: modelData.icon; ink: root.selectedGroup === index ? Theme.faceText : Theme.label }
+                                radius: 12; color: root.selectedGroup === index ? Theme.focus : DesktopTokens.raised
+                                DesktopSettingsIcon { anchors.centerIn: parent; width: 20; height: 20; glyph: modelData.icon; ink: root.selectedGroup === index ? Theme.focusText : Theme.label }
                             }
                             ColumnLayout {
                                 Layout.fillWidth: true
@@ -626,6 +625,7 @@ FocusScope {
         id: audioPage
         DesktopSettingsAudioPage {
             availableWidth: contentFlick.width
+            settingsScreen: root
         }
     }
 

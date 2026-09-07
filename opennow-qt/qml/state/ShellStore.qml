@@ -14,6 +14,7 @@ QtObject {
         signedIn: root.signedIn
         settings: root.settings
         setSetting: root.setSetting
+        applySetting: root.applySetting
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
         onStoreSessionReset: root.storeSessionReset()
     }
@@ -66,6 +67,23 @@ QtObject {
     property string authState: "idle"
     property string authMessage: ""
     property alias catalogGames: catalogOwner.catalogGames
+    readonly property var gameCollections: catalogOwner.gameCollections
+    property alias activeCollectionId: catalogOwner.activeCollectionId
+    readonly property var activeCollection: catalogOwner.activeCollection
+    readonly property bool collectionsBusy: catalogOwner.collectionsBusy
+    property alias collectionError: catalogOwner.collectionError
+    signal collectionSaved(string collectionId)
+    property Connections collectionSignals: Connections {
+        target: catalogOwner
+        function onCollectionSaved(collectionId) { root.collectionSaved(collectionId) }
+    }
+
+    function collectionNameError(name, exceptId) { return catalogOwner.collectionNameError(name, exceptId) }
+    function createCollection(name, game) { return catalogOwner.createCollection(name, game) }
+    function renameCollection(id, name) { return catalogOwner.renameCollection(id, name) }
+    function deleteCollection(id) { return catalogOwner.deleteCollection(id) }
+    function toggleCollectionGame(id, game) { return catalogOwner.toggleCollectionGame(id, game) }
+    function isInCollection(game, id) { return catalogOwner.isInCollection(game, id) }
     property alias selectedGame: catalogOwner.selectedGame
     property alias catalogTotalCount: catalogOwner.catalogTotalCount
     property alias catalogState: catalogOwner.catalogState
@@ -251,6 +269,20 @@ QtObject {
     property bool nativeRuntimeReady: false
     readonly property int nativeProtocolVersion: 6
     property var nativeRuntimeCapabilities: ({})
+    property var audioOutputDevices: []
+    property bool audioOutputDevicesBusy: false
+    property string audioOutputDevicesError: ""
+    property string audioOutputDevicesRequestId: ""
+    property Timer audioOutputDevicesTimeout: Timer {
+        interval: 10000
+        onTriggered: {
+            root.takeNativeRequest(root.audioOutputDevicesRequestId)
+            root.audioOutputDevicesRequestId = ""
+            root.audioOutputDevicesBusy = false
+            root.audioOutputDevices = []
+            root.audioOutputDevicesError = qsTr("Audio device discovery timed out. Try refreshing again.")
+        }
+    }
     property int nativeRequestSequence: 0
     property var nativeRequests: ({})
     property int overlayRequestGeneration: 0
@@ -529,6 +561,20 @@ QtObject {
         delete requests[requestId]
         nativeRequests = requests
         return pending
+    }
+
+    function refreshAudioOutputDevices() {
+        if (audioOutputDevicesBusy || !nativeRuntimeReady)
+            return
+        audioOutputDevicesError = ""
+        audioOutputDevicesBusy = true
+        audioOutputDevicesRequestId = sendNativeCommand("audioDevices", {}, "audioDevices")
+        if (audioOutputDevicesRequestId === "") {
+            audioOutputDevicesBusy = false
+            audioOutputDevicesError = lastError
+        } else {
+            audioOutputDevicesTimeout.restart()
+        }
     }
 
     function ensureNativeRuntimeReady() {
@@ -1580,7 +1626,7 @@ QtObject {
     }
 
     function requestStreamExitConfirmation() {
-        if (AppController.route !== "stream")
+        if (AppController.route !== "stream" && AppController.route !== "inserting")
             return
         AppController.showOverlay("desktop-stream-exit-confirm")
         accessibilityMessage = qsTr("Confirm ending the cloud session")
@@ -1808,6 +1854,19 @@ QtObject {
         if (!pending)
             return
         const responseType = String(response.type || "")
+        if (pending.operation === "audioDevices") {
+            audioOutputDevicesTimeout.stop()
+            audioOutputDevicesRequestId = ""
+            audioOutputDevicesBusy = false
+            if (responseType === "audioDevices" && Array.isArray(response.devices)) {
+                audioOutputDevices = response.devices
+                audioOutputDevicesError = ""
+            } else {
+                audioOutputDevices = []
+                audioOutputDevicesError = String(response.message || qsTr("Could not list audio output devices"))
+            }
+            return
+        }
         if (responseType === "error") {
             const message = String(response.message || qsTr("The embedded media runtime rejected a command"))
             if (pending.operation === "hello") {
@@ -2055,6 +2114,11 @@ QtObject {
             if (NativeStreamRuntime.running)
                 return
             root.nativeRuntimeReady = false
+            root.audioOutputDevices = []
+            root.audioOutputDevicesBusy = false
+            root.audioOutputDevicesError = ""
+            root.audioOutputDevicesRequestId = ""
+            root.audioOutputDevicesTimeout.stop()
             root.nativeRequests = ({})
             root.streamerStartRequestId = ""
             root.streamerStopRequestId = ""

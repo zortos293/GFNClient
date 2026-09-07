@@ -1,5 +1,6 @@
 use crate::proxy::normalize_proxy_url;
 use serde_json::{Map, Value, json};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io;
@@ -33,7 +34,11 @@ impl SettingsStore {
                 Some(persisted) => {
                     for (key, value) in persisted {
                         if defaults.contains_key(&key) {
-                            let value = if key == "mouseAcceleration" {
+                            let value = if key == "gameCollections" {
+                                normalize_game_collections(value).map_err(|error| {
+                                    io::Error::new(io::ErrorKind::InvalidData, error)
+                                })?
+                            } else if key == "mouseAcceleration" {
                                 value.as_bool().map_or(value.clone(), |enabled| {
                                     Value::Number((if enabled { 100 } else { 1 }).into())
                                 })
@@ -94,6 +99,20 @@ impl SettingsStore {
         if !defaults().contains_key(key) {
             return Err(format!("Unknown setting: {key}"));
         }
+        if key == "audioOutputDevice" {
+            let device = value
+                .as_str()
+                .ok_or_else(|| "audioOutputDevice must be a string".to_owned())?;
+            if device.len() > 1024 || device.contains('\0') {
+                return Err(
+                    "audioOutputDevice must be at most 1024 bytes without NUL characters"
+                        .to_owned(),
+                );
+            }
+        }
+        if key == "gameCollections" {
+            value = normalize_game_collections(value)?;
+        }
         if key == "sessionProxyUrl" {
             let raw = value
                 .as_str()
@@ -116,6 +135,18 @@ impl SettingsStore {
             self.values
                 .insert("microphoneDeviceId".to_owned(), json!(""));
         }
+        if key == "themePack" {
+            let light = matches!(self.values[key].as_str(), Some("bone" | "cobalt"));
+            self.values.insert(
+                "appTheme".to_owned(),
+                json!(if light { "light" } else { "dark" }),
+            );
+            self.values
+                .insert("themeAccentOverride".to_owned(), json!(false));
+        } else if key == "appAccentColor" {
+            self.values
+                .insert("themeAccentOverride".to_owned(), json!(true));
+        }
         if key == "launchInConsoleMode" && self.values.get(key) == Some(&json!(false)) {
             self.values
                 .insert("switchToConsoleOnPad".to_owned(), json!(false));
@@ -128,22 +159,46 @@ impl SettingsStore {
     }
 
     pub fn reset(&mut self) -> Result<Value, String> {
+        let previous_values = self.values.clone();
         self.values = defaults();
         self.normalize();
-        self.save()
-            .map_err(|error| format!("Could not reset settings: {error}"))?;
+        if let Err(error) = self.save() {
+            self.values = previous_values;
+            return Err(format!("Could not reset settings: {error}"));
+        }
         Ok(self.all())
     }
 
     fn normalize(&mut self) {
         normalize_types(&mut self.values);
+        if self.values["audioOutputDevice"]
+            .as_str()
+            .is_some_and(|device| device.len() > 1024 || device.contains('\0'))
+        {
+            self.values
+                .insert("audioOutputDevice".to_owned(), json!(""));
+        }
         normalize_resolution(&mut self.values);
         normalize_choice(
             &mut self.values,
             "desktopBackground",
-            &["art", "gradient", "solid"],
+            &["art", "gradient", "solid", "custom"],
             "art",
         );
+        clamp_integer(&mut self.values, "desktopBackgroundOpacity", 0, 100, 30);
+        let background_image = self.values["desktopBackgroundImage"].as_str().unwrap_or("");
+        if !background_image.is_empty()
+            && (background_image.len() > 8192
+                || !url::Url::parse(background_image).is_ok_and(|url| {
+                    url.scheme() == "file"
+                        && url.to_file_path().is_ok()
+                        && url.query().is_none()
+                        && url.fragment().is_none()
+                }))
+        {
+            self.values
+                .insert("desktopBackgroundImage".to_owned(), json!(""));
+        }
         normalize_choice(
             &mut self.values,
             "aspectRatio",
@@ -337,6 +392,75 @@ impl SettingsStore {
         }
         Ok(())
     }
+}
+
+fn normalize_game_collections(mut value: Value) -> Result<Value, String> {
+    let collections = value
+        .as_array_mut()
+        .ok_or_else(|| "gameCollections must be an array".to_owned())?;
+    if collections.len() > 100 {
+        return Err("gameCollections must contain at most 100 collections".to_owned());
+    }
+    let mut collection_ids = HashSet::new();
+    for (index, collection) in collections.iter_mut().enumerate() {
+        let invalid = || format!("gameCollections[{index}] must contain id, name and gameIds");
+        let collection = collection.as_object_mut().ok_or_else(invalid)?;
+        if collection.len() != 3 {
+            return Err(format!(
+                "gameCollections[{index}] must contain only id, name and gameIds"
+            ));
+        }
+        let id = collection
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid)?;
+        if id.trim().is_empty() || id.chars().count() > 128 {
+            return Err(format!(
+                "gameCollections[{index}].id must be nonempty and at most 128 characters"
+            ));
+        }
+        if !collection_ids.insert(id.to_owned()) {
+            return Err(format!("gameCollections[{index}].id must be unique"));
+        }
+        let name = collection
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid)?
+            .trim();
+        if name.is_empty() || name.chars().count() > 80 {
+            return Err(format!(
+                "gameCollections[{index}].name must be nonempty and at most 80 characters after trimming"
+            ));
+        }
+        let name = name.to_owned();
+        let game_ids = collection
+            .get("gameIds")
+            .and_then(Value::as_array)
+            .ok_or_else(invalid)?;
+        if game_ids.len() > 10_000 {
+            return Err(format!(
+                "gameCollections[{index}].gameIds must contain at most 10000 IDs"
+            ));
+        }
+        let mut seen = HashSet::new();
+        for game_id in game_ids {
+            let game_id = game_id
+                .as_str()
+                .ok_or_else(|| format!("gameCollections[{index}].gameIds must contain strings"))?;
+            if game_id.trim().is_empty() || game_id.chars().count() > 128 {
+                return Err(format!(
+                    "gameCollections[{index}].gameIds must contain nonempty IDs of at most 128 characters"
+                ));
+            }
+            if !seen.insert(game_id) {
+                return Err(format!(
+                    "gameCollections[{index}].gameIds must contain unique IDs"
+                ));
+            }
+        }
+        collection.insert("name".to_owned(), Value::String(name));
+    }
+    Ok(value)
 }
 
 fn normalize_resolution(values: &mut Map<String, Value>) {
@@ -633,7 +757,7 @@ fn defaults() -> Map<String, Value> {
         "resolution":"1920x1080", "aspectRatio":"16:9", "posterSizeScale":1.05,
         "fps":60, "frameGeneration":"off", "maxBitrateMbps":75, "recordingBitrateMbps":null,
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
-        "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"",
+        "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"", "audioOutputDevice":"",
         "nativeCloudGsyncMode":"auto", "nativeD3dFullscreenMode":"auto",
         "nativeExternalRenderer":false, "transportMode":"nvst", "showNativeStreamerStats":false,
         "codec":"auto", "fallbackCodec":"auto", "decoderPreference":"auto",
@@ -661,8 +785,9 @@ fn defaults() -> Map<String, Value> {
         "reducedMotion":false,
         "launchInConsoleMode":false, "consoleProfilePickerOnLaunch":true,
         "desktopRailCollapsed":true, "desktopSidebarHover":true, "desktopBackground":"art",
+        "desktopBackgroundImage":"", "desktopBackgroundOpacity":30,
         "switchToConsoleOnPad":false, "leaveConsoleOnPointer":true,
-        "autoFullScreen":false, "favoriteGameIds":[], "hiddenGameIds":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
+        "autoFullScreen":false, "favoriteGameIds":[], "hiddenGameIds":[], "gameCollections":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
         "showSessionReport":true, "showSessionTimeRemainingInStatsOverlay":false,
         "sessionClockShowEveryMinutes":60, "sessionClockShowDurationSeconds":30,
         "windowWidth":1400, "windowHeight":900, "keyboardLayout":"en-US",
@@ -693,6 +818,9 @@ mod tests {
             .as_nanos();
         let directory = env::temp_dir().join(format!("opennow-microphone-policy-{unique}"));
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        store
+            .set("audioOutputDevice", json!("Selected headphones"))
+            .unwrap();
         assert_eq!(store.all()["microphoneMode"], json!("disabled"));
         store
             .set("microphoneDeviceId", json!("old-device-id"))
@@ -711,6 +839,10 @@ mod tests {
         assert_eq!(reloaded.all()["microphoneMode"], json!("voice-activity"));
         assert_eq!(reloaded.all()["microphoneDeviceId"], json!(""));
         assert_eq!(
+            reloaded.all()["audioOutputDevice"],
+            json!("Selected headphones")
+        );
+        assert_eq!(
             reloaded
                 .set("microphoneMode", json!("push-to-talk"))
                 .unwrap(),
@@ -720,6 +852,97 @@ mod tests {
             reloaded.set("microphoneMode", json!("invalid")).unwrap(),
             json!("disabled")
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn audio_output_device_is_persisted_and_validated() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-audio-settings-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["audioOutputDevice"], json!(""));
+        let name = "USB Headphones – Audio";
+        assert_eq!(
+            store.set("audioOutputDevice", json!(name)).unwrap(),
+            json!(name)
+        );
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["audioOutputDevice"], json!(name));
+        for invalid in [
+            json!(42),
+            json!(null),
+            json!("speaker\0other"),
+            json!("é".repeat(513)),
+        ] {
+            assert!(store.set("audioOutputDevice", invalid).is_err());
+            assert_eq!(store.all()["audioOutputDevice"], json!(name));
+        }
+        store.set("audioOutputDevice", json!("")).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["audioOutputDevice"],
+            json!("")
+        );
+        let mut persisted: Value =
+            serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
+        persisted["audioOutputDevice"] = json!("bad\0device");
+        fs::write(
+            directory.join("settings.json"),
+            serde_json::to_vec(&persisted).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["audioOutputDevice"],
+            json!("")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn theme_packs_and_accent_overrides_are_atomic_and_persisted() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-theme-policy-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        for pack in [
+            "nocturne", "aurora", "kraft", "phosphor", "bone", "cobalt", "hibiscus", "chapel",
+        ] {
+            store.set("appAccentColor", json!("rose")).unwrap();
+            assert_eq!(store.all()["themeAccentOverride"], json!(true));
+            store.set("themePack", json!(pack)).unwrap();
+            let mut loaded = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(loaded.all()["themePack"], json!(pack));
+            assert_eq!(loaded.all()["themeAccentOverride"], json!(false));
+            assert_eq!(
+                loaded.all()["appTheme"],
+                json!(if matches!(pack, "bone" | "cobalt") {
+                    "light"
+                } else {
+                    "dark"
+                })
+            );
+            loaded.set("appTheme", json!("auto")).unwrap();
+            loaded.set("appAccentColor", json!("violet")).unwrap();
+            store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["appTheme"], json!("auto"));
+            assert_eq!(store.all()["themePack"], json!(pack));
+            assert_eq!(store.all()["themeAccentOverride"], json!(true));
+            assert_eq!(store.all()["appAccentColor"], json!("violet"));
+        }
+        let before = store.all();
+        fs::create_dir(directory.join("settings.json.tmp")).unwrap();
+        assert!(store.set("themePack", json!("bone")).is_err());
+        assert_eq!(store.all(), before);
+        fs::remove_dir(directory.join("settings.json.tmp")).unwrap();
+        store.set("themeAccentOverride", json!(false)).unwrap();
+        let before = store.all();
+        fs::create_dir(directory.join("settings.json.tmp")).unwrap();
+        assert!(store.set("appAccentColor", json!("green")).is_err());
+        assert_eq!(store.all(), before);
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -748,6 +971,239 @@ mod tests {
         store.set("steamBigPictureMode", json!(true)).unwrap();
         store.reset().unwrap();
         assert_eq!(store.all()["steamBigPictureMode"], false);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn game_collections_persist_and_survive_unrelated_changes() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-collections-persistence-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["gameCollections"], json!([]));
+        let collections = json!([
+            {"id":"stable-b", "name":"  Favorites  ", "gameIds":["game-b", "game-a"]},
+            {"id":"stable-a", "name":"Favorites", "gameIds":["game-a"]},
+            {"id":"empty", "name":"Empty", "gameIds":[]}
+        ]);
+        let mut expected = collections.clone();
+        expected[0]["name"] = json!("Favorites");
+        assert_eq!(
+            store.set("gameCollections", collections.clone()).unwrap(),
+            expected
+        );
+        store.set("fps", json!(120)).unwrap();
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["gameCollections"], expected);
+        let mut persisted: Value =
+            serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
+        persisted["gameCollections"] = collections;
+        fs::write(
+            directory.join("settings.json"),
+            serde_json::to_vec(&persisted).unwrap(),
+        )
+        .unwrap();
+        let loaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(loaded.all()["gameCollections"], expected);
+        expected[0]["name"] = json!("Renamed");
+        store.set("gameCollections", expected.clone()).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["gameCollections"],
+            expected
+        );
+        assert_eq!(store.reset().unwrap()["gameCollections"], json!([]));
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["gameCollections"],
+            json!([])
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn game_collections_reject_invalid_updates_without_data_loss() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-collections-invalid-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        let collection = json!({"id":"stable", "name":"Keep", "gameIds":["game-a"]});
+        store
+            .set("gameCollections", json!([collection.clone()]))
+            .unwrap();
+        let original = store.all();
+        let persisted = fs::read(directory.join("settings.json")).unwrap();
+        let mut invalid = vec![
+            json!(null),
+            json!({}),
+            json!("wrong"),
+            json!(true),
+            json!([null]),
+            json!([[]]),
+            json!([collection.clone(), collection.clone()]),
+            json!([{"id":"stable", "name":"Keep", "gameIds":[], "unexpected":true}]),
+        ];
+        for (key, values) in [
+            (
+                "id",
+                vec![
+                    json!(null),
+                    json!(42),
+                    json!(""),
+                    json!(" \t"),
+                    json!("x".repeat(129)),
+                ],
+            ),
+            (
+                "name",
+                vec![
+                    json!(null),
+                    json!(false),
+                    json!(""),
+                    json!(" \n"),
+                    json!("界".repeat(81)),
+                ],
+            ),
+            (
+                "gameIds",
+                vec![
+                    json!(null),
+                    json!({}),
+                    json!([null]),
+                    json!([1]),
+                    json!([""]),
+                    json!([" \t"]),
+                    json!(["x".repeat(129)]),
+                    json!(["game-a", "game-a"]),
+                    json!(
+                        (0..10_001)
+                            .map(|id| format!("game-{id}"))
+                            .collect::<Vec<_>>()
+                    ),
+                ],
+            ),
+        ] {
+            let mut missing = collection.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            invalid.push(json!([missing]));
+            for value in values {
+                let mut malformed = collection.clone();
+                malformed[key] = value;
+                invalid.push(json!([malformed]));
+            }
+        }
+        invalid.push(json!(
+            (0..101)
+                .map(|id| json!({"id":format!("collection-{id}"), "name":"Name", "gameIds":[]}))
+                .collect::<Vec<_>>()
+        ));
+        for value in invalid {
+            let error = store.set("gameCollections", value).unwrap_err();
+            assert!(error.contains("gameCollections"), "{error}");
+            assert_eq!(store.all(), original);
+            assert_eq!(
+                fs::read(directory.join("settings.json")).unwrap(),
+                persisted
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn game_collections_accept_inclusive_unicode_and_count_bounds() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-collections-bounds-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        let mut collections = (0..100)
+            .map(|id| json!({"id":format!("collection-{id}"), "name":"Same name", "gameIds":[]}))
+            .collect::<Vec<_>>();
+        let mut game_ids = (0..9_999)
+            .map(|id| format!("game-{id}"))
+            .collect::<Vec<_>>();
+        game_ids.push("界".repeat(128));
+        collections[0] = json!({"id":"界".repeat(128), "name":"界".repeat(80), "gameIds":game_ids});
+        let expected = json!(collections);
+        assert_eq!(
+            store.set("gameCollections", expected.clone()).unwrap(),
+            expected
+        );
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["gameCollections"],
+            expected
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn game_collections_save_and_reset_failures_restore_previous_values() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-collections-save-failure-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        store
+            .set(
+                "gameCollections",
+                json!([{"id":"stable", "name":"Keep", "gameIds":["game-a"]}]),
+            )
+            .unwrap();
+        let original = store.all();
+        let persisted = fs::read(directory.join("settings.json")).unwrap();
+        fs::create_dir(directory.join("settings.json.tmp")).unwrap();
+        assert!(
+            store
+                .set("gameCollections", json!([]))
+                .unwrap_err()
+                .contains("Could not save settings")
+        );
+        assert_eq!(store.all(), original);
+        assert!(
+            store
+                .reset()
+                .unwrap_err()
+                .contains("Could not reset settings")
+        );
+        assert_eq!(store.all(), original);
+        assert_eq!(
+            fs::read(directory.join("settings.json")).unwrap(),
+            persisted
+        );
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all(),
+            original
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn game_collections_invalid_persisted_data_is_not_rewritten() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-collections-load-failure-{unique}"));
+        fs::create_dir_all(&directory).unwrap();
+        for collections in [
+            json!(null),
+            json!([{"id":"stable", "name":"Keep", "gameIds":["game-a", "game-a"]}]),
+        ] {
+            let persisted = serde_json::to_vec(&json!({"gameCollections":collections})).unwrap();
+            fs::write(directory.join("settings.json"), &persisted).unwrap();
+            let error = SettingsStore::load(Some(directory.clone())).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains("gameCollections"));
+            assert_eq!(
+                fs::read(directory.join("settings.json")).unwrap(),
+                persisted
+            );
+            assert!(!directory.join("settings.json.bak").exists());
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -799,6 +1255,72 @@ mod tests {
         let persisted: Value =
             serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
         assert_eq!(persisted["unrelatedLegacySetting"], json!("preserve"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn custom_background_preferences_are_bounded_and_persisted() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-background-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["desktopBackgroundImage"], json!(""));
+        assert_eq!(store.all()["desktopBackgroundOpacity"], json!(30));
+        assert_eq!(
+            store.set("desktopBackground", json!("custom")).unwrap(),
+            json!("custom")
+        );
+
+        let image = url::Url::from_file_path(directory.join("写真 #1.png"))
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            store.set("desktopBackgroundImage", json!(image)).unwrap(),
+            json!(image)
+        );
+        for (input, expected) in [
+            (json!(-10), 0),
+            (json!(110), 100),
+            (json!(0), 0),
+            (json!(65), 65),
+            (json!(null), 30),
+            (json!("50"), 30),
+        ] {
+            assert_eq!(
+                store.set("desktopBackgroundOpacity", input).unwrap(),
+                json!(expected)
+            );
+        }
+        store.set("desktopBackgroundOpacity", json!(65)).unwrap();
+        let reloaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(reloaded.all()["desktopBackground"], json!("custom"));
+        assert_eq!(reloaded.all()["desktopBackgroundImage"], json!(image));
+        assert_eq!(reloaded.all()["desktopBackgroundOpacity"], json!(65));
+
+        for invalid in [
+            "https://example.com/image.png",
+            "qrc:/image.png",
+            "relative.png",
+            "file:///image.png?download=1",
+            "file:///image.png#fragment",
+        ] {
+            assert_eq!(
+                store.set("desktopBackgroundImage", json!(invalid)).unwrap(),
+                json!("")
+            );
+        }
+        assert_eq!(
+            store
+                .set("desktopBackgroundImage", json!("x".repeat(8193)))
+                .unwrap(),
+            json!("")
+        );
+        store.reset().unwrap();
+        assert_eq!(store.all()["desktopBackground"], json!("art"));
+        assert_eq!(store.all()["desktopBackgroundImage"], json!(""));
+        assert_eq!(store.all()["desktopBackgroundOpacity"], json!(30));
         fs::remove_dir_all(directory).unwrap();
     }
 

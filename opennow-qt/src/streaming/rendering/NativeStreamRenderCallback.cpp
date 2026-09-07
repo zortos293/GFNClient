@@ -9,6 +9,7 @@
 
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
+#include <QDebug>
 
 #include <utility>
 #include <atomic>
@@ -224,6 +225,14 @@ public:
             reportFailure(QStringLiteral("Could not import the decoded video texture into Qt. The decoder and graphics backend must use compatible GPU resources."));
             return;
         }
+        if (m_reportedColorFormat != recorded.texture_format
+                || m_reportedOutputBits != m_textures.outputBits()) {
+            m_reportedColorFormat = recorded.texture_format;
+            m_reportedOutputBits = m_textures.outputBits();
+            qInfo("SDR video composition: textureBits=%u outputBits=%d dither=%s",
+                  recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2 ? 10u : 8u,
+                  m_reportedOutputBits, m_reportedOutputBits == 8 ? "ordered-8x8" : "none");
+        }
         m_outputDirty = true;
         m_outputKind = 1;
         if (!m_frameGeneration || m_frameGenerationFailed) return;
@@ -380,12 +389,16 @@ public:
         if (m_graphicsReady && m_runtime) m_runtime->sceneGraphShutdown();
         m_graphicsReady = false;
         m_reportedFailure = false;
+        m_reportedColorFormat = 0;
+        m_reportedOutputBits = 0;
         m_rhi = nullptr;
     }
 
 private:
     NativeStreamRuntime *m_runtime;
     QRhi *m_rhi = nullptr;
+    std::uint32_t m_reportedColorFormat = 0;
+    int m_reportedOutputBits = 0;
     StreamVideoTextureRenderer m_textures;
     StreamFrameInterpolator m_interpolator;
     StreamFramePacer m_pacer;

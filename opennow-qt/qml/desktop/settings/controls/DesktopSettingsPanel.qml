@@ -9,7 +9,7 @@ Rectangle {
 
     implicitHeight: body.implicitHeight + padding * 2
     radius: 14
-    color: paperStyle ? Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.72) : Theme.glass
+    color: Theme.glass
     border.width: 1
     border.color: paperStyle ? DesktopTokens.seamSoft : Theme.seam
 

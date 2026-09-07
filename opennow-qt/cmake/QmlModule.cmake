@@ -42,6 +42,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/home/DesktopHomePoster.qml
         qml/desktop/home/DesktopHomeScreen.qml
         qml/desktop/library/DesktopLibraryScreen.qml
+        qml/desktop/library/DesktopCollectionDialog.qml
         qml/desktop/settings/DesktopSettingsScreen.qml
         qml/desktop/settings/controls/DesktopSettingsAdvanced.qml
         qml/desktop/settings/controls/DesktopSettingsButton.qml

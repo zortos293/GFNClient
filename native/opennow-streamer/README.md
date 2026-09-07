@@ -48,6 +48,48 @@ The Qt path does not create an SDL video window or a child streamer process. `Na
 
 The FFI exposes no CPU image, encoded-frame callback, swap chain, window or Qt object. See `crates/opennow-streamer-ffi/README.md` for ownership and threading details.
 
+### Audio output selection
+
+Protocol 5 accepts the additive request `{"type":"audioDevices","id":"audio-1"}`
+and returns `{"type":"audioDevices","id":"audio-1","devices":[{"id":"...","name":"..."}]}`.
+Failures return a correlated `error` with code `audio-devices-unavailable`; an empty
+successful list is not an enumeration failure. Queries run on the existing native
+host worker with a two-second response timeout and at most one outstanding query.
+Lists exceeding 512 KiB return an error rather than exceeding Qt's callback bound.
+Queries neither open a playback device
+nor pause, recreate, or stop the active session.
+
+The optional session-context `settings.audioOutputDevice` string is an opaque ID
+from this response. An absent or empty string uses the system default and preserves
+existing backend fallback behavior. Nonempty IDs are used only when the next session
+starts, must contain no NUL and be at most 1024 UTF-8 bytes, and must identify exactly
+one available output. Missing or ambiguous fixed outputs fail explicitly rather than
+opening the default. Clients persist IDs, never list positions, device indices, or
+display names. Duplicate identities are excluded from enumeration.
+
+The Qt embedded backends use their actual playback identities:
+
+- Windows uses exact SDL2 playback device names. SDL playback and enumeration share
+  the existing embedded host worker; Qt does not create a second audio owner.
+- Linux uses `pipewire:<node.name>` or `alsa:<PCM hint name>`. PipeWire enumeration
+  requires `pw-dump` and is bounded to 1.5 seconds and 4 MiB; playback uses `pw-cat`.
+  ALSA enumeration uses the playback PCM hints from the same dynamically loaded
+  libasound backend. Default-routing aliases are excluded from fixed ALSA choices.
+  Fixed outputs disable cross-backend fallback; PipeWire streams also set
+  `node.dont-fallback` and `node.dont-reconnect`.
+- macOS uses `coreaudio:<device UID>` and passes that UID through native backend
+  startup and audio recovery rather than persisting an AudioDeviceID.
+
+The development standalone host uses SDL identities for SDL playback and CoreAudio
+identities for native macOS playback. Standalone Windows native WASAPI output does
+not support fixed SDL device selection; use the Qt embedded path instead.
+The startup selection guarantee does not promise that the operating system will
+never reroute an already-playing stream after device loss.
+
+This extension does not change protocol or FFI ABI versions: old clients omit the
+setting and keep default behavior, and new clients must tolerate `unknown-command`
+from older runtimes that do not implement enumeration.
+
 ## Packaging
 
 The Qt CMake build always compiles `opennow-streamer-ffi` with Cargo's release profile and links the resulting shared library to `opennow-qt`. CPack installs that library beside the Qt executable and `opennow-core`; there is no separate streamer executable, helper application or native video window in the Qt package. Linux packages enable the bundled FFmpeg fallback while optional GPU driver interfaces remain dynamically discovered.
@@ -97,6 +139,15 @@ failure disables only the microphone, not game audio/video. Session termination
 also closes capture. Queue drops are reported in microphone diagnostics without
 logging audio contents.
 
+Embedded capture devices are owned by the existing embedded runtime host, sharing
+SDL ownership with Windows playback and output-device enumeration. Engine keeps
+only the microphone session's shared control; the uplink worker receives encoded
+packets without owning SDL. Mute pauses hardware synchronously, and the host
+reclaims stopped capture on its next bounded poll. The host sleeps without a
+polling timer when no capture is active. Output enumeration and input-pause
+commands never open, mute, or restart capture. The actual audio-device-aware
+stream-start entry point resets the microphone clock; mute/unmute does not.
+
 The local JSON protocol is version 6; the C ABI is unchanged. `hello` exposes
 `supportsMicrophone` for runtime capture support, while the `start` response
 reports the negotiated session capability. `microphone-set` requires a boolean
@@ -136,5 +187,16 @@ cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check
 cargo clippy --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
 cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace
 ```
+
+Controlled output tests can also run without physical audio hardware:
+
+```sh
+SDL_AUDIODRIVER=dummy cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-platform selected_sdl_output -- --ignored
+ALSA_CONFIG_PATH="$PWD/native/opennow-streamer/crates/opennow-streamer-platform-linux/tests/fixtures/audio-null.conf" cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-platform-linux selected_alsa_output -- --ignored
+```
+
+The ignored `selected_pipewire_output` test requires an isolated PipeWire server
+and session manager with an `Audio/Sink` node named `opennow_test_output`. Point
+`XDG_RUNTIME_DIR` at that server's private runtime directory when running the test.
 
 Release validation must additionally run authorized live sessions on Windows, Linux/X11, Linux/Wayland, Intel macOS and Apple Silicon to validate NVST interoperability, native GPU import, audio, input, recovery and device-loss behavior.

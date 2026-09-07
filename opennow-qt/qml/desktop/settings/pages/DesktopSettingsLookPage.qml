@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import OpenNOW
 
 Column {
@@ -12,46 +13,123 @@ Column {
 
     width: page.availableWidth; spacing: 20
     property bool allThemes: false
+    readonly property string backgroundImage: String(page.settingsScreen.valueSetting("desktopBackgroundImage", ""))
+
+    FileDialog {
+        id: backgroundDialog
+        objectName: "customBackgroundDialog"
+        title: qsTr("Choose a background image")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Images (*.png *.jpg *.jpeg *.webp *.bmp)")]
+        onAccepted: {
+            page.settingsScreen.setSetting("desktopBackgroundImage", selectedFile.toString())
+            page.settingsScreen.setSetting("desktopBackground", "custom")
+            chooseBackgroundButton.forceActiveFocus()
+        }
+        onRejected: chooseBackgroundButton.forceActiveFocus()
+    }
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("THEME") }
         DesktopSettingsChoice {
             objectName: "renewThemeChoice"
             width: parent.width; glyph: "moon"; title: qsTr("Theme")
-            description: qsTr("Uses the existing OpenNOW theme collection")
+            description: qsTr("Applies the pack's appearance, accent and surfaces")
             items: ["aurora","nocturne","kraft","phosphor","hibiscus","chapel","bone","cobalt"].map(id => ({label:page.settingsScreen.themeMeta(id).name,detail:page.settingsScreen.themeMeta(id).blurb,value:id}))
             value: page.settingsScreen.valueSetting("themePack","nocturne")
             onSelected: value => page.settingsScreen.setChoice("themePack",value)
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "moon"; title: qsTr("Appearance")
-            DesktopSettingsSegmented { options: ["auto","light","dark"]; selectedIndex: options.indexOf(page.settingsScreen.valueSetting("appTheme","auto")); onSelected: (index,value) => page.settingsScreen.setSetting("appTheme",value) }
+            DesktopSettingsSegmented {
+                options: [{label:qsTr("Auto"),value:"auto"},{label:qsTr("Light"),value:"light"},{label:qsTr("Dark"),value:"dark"}]
+                selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("appTheme","auto"))
+                onSelected: (index,item) => page.settingsScreen.setSetting("appTheme",item.value)
+            }
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "palette"; title: qsTr("Accent"); description: qsTr("Selection, toggles and keyboard focus")
             Row {
                 spacing: 10
+                DesktopSettingsButton {
+                    objectName: "themePackAccent"
+                    text: qsTr("Theme")
+                    compact: true
+                    primary: !Theme.accentOverridden
+                    onClicked: page.settingsScreen.setSetting("themeAccentOverride", false)
+                }
                 Repeater {
-                    model: [{value:"green",color:"#6EE7B7"},{value:"blue",color:"#7FD4FF"},{value:"violet",color:"#A78BFA"},{value:"rose",color:"#FF8A9A"},{value:"coral",color:"#FF8A80"},{value:"amber",color:"#FFD166"},{value:"white",color:"#FFFFFF"}]
+                    model: Theme.accentChoices
                     delegate: AbstractButton {
-                        required property var modelData
-                        width: 28; height: 28; Accessible.name: modelData.value
-                        onClicked: page.settingsScreen.setChoice("appAccentColor",modelData.value)
+                        required property string modelData
+                        objectName: "themeAccent-" + modelData
+                        width: 28; height: 28; Accessible.name: modelData
+                        checked: Theme.accentOverridden && Theme.accent === modelData
+                        onClicked: page.settingsScreen.setChoice("appAccentColor",modelData)
                         background: Rectangle {
-                            radius: 14; color: parent.modelData.color
-                            border.width: parent.activeFocus || page.settingsScreen.valueSetting("appAccentColor","green") === parent.modelData.value ? 3 : 0
-                            border.color: Theme.lightMode ? "#111827" : "#FFFFFF"
+                            radius: 14; color: Theme.accentColor(parent.modelData)
+                            border.width: parent.activeFocus || parent.checked ? 3 : 0
+                            border.color: Theme.label
                         }
                     }
                 }
             }
         }
         DesktopSettingsRow {
-            width: parent.width; paperStyle: true; glyph: "image"; title: qsTr("Background"); description: qsTr("Artwork, gradient or a solid theme color"); showDivider: false
+            width: parent.width; paperStyle: true; glyph: "image"; title: qsTr("Background"); description: qsTr("Game art, a custom image, gradient or solid color")
             DesktopSettingsSegmented {
-                options: [{label:qsTr("Game art"),value:"art"},{label:qsTr("Gradient"),value:"gradient"},{label:qsTr("Solid"),value:"solid"}]; optionWidth: 80
+                objectName: "desktopBackgroundChoice"
+                options: [{label:qsTr("Game art"),value:"art"},{label:qsTr("Gradient"),value:"gradient"},{label:qsTr("Solid"),value:"solid"},{label:qsTr("Custom"),value:"custom"}]; optionWidth: 80
                 selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("desktopBackground","art"))
                 onSelected: (index,item) => page.settingsScreen.setSetting("desktopBackground",item.value)
+            }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "image"; title: qsTr("Custom image")
+            description: backgroundPreview.status === Image.Error
+                ? qsTr("Image unavailable. Choose another file or remove it.")
+                : page.backgroundImage !== "" ? qsTr("Keep the image in its original location") : qsTr("Choose a local PNG, JPEG, WebP or BMP image")
+            Row {
+                spacing: 10
+                Image {
+                    id: backgroundPreview
+                    objectName: "customBackgroundPreview"
+                    width: 60; height: 40
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: page.backgroundImage !== ""
+                    source: page.backgroundImage
+                    sourceSize: Qt.size(120, 80)
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                }
+                DesktopSettingsButton {
+                    id: chooseBackgroundButton
+                    objectName: "chooseCustomBackground"
+                    text: qsTr("Choose image…")
+                    onClicked: backgroundDialog.open()
+                }
+                DesktopSettingsButton {
+                    objectName: "removeCustomBackground"
+                    text: qsTr("Remove")
+                    visible: page.backgroundImage !== ""
+                    onClicked: {
+                        page.settingsScreen.setSetting("desktopBackgroundImage", "")
+                        if (page.settingsScreen.valueSetting("desktopBackground", "art") === "custom")
+                            page.settingsScreen.setSetting("desktopBackground", "art")
+                        chooseBackgroundButton.forceActiveFocus()
+                    }
+                }
+            }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("Image opacity")
+            description: qsTr("0% hides the image · 100% shows the full image"); showDivider: false
+            DesktopSettingsSlider {
+                objectName: "customBackgroundOpacity"
+                enabled: page.settingsScreen.valueSetting("desktopBackground", "art") === "custom" && page.backgroundImage !== ""
+                from: 0; to: 100; stepSize: 1
+                value: Number(page.settingsScreen.valueSetting("desktopBackgroundOpacity", 30))
+                onCommitted: value => page.settingsScreen.setSetting("desktopBackgroundOpacity", value)
             }
         }
     }

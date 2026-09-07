@@ -114,13 +114,13 @@ Item {
                                 onClicked: { root.selected(modelData.value); root.expanded = false }
                                 Keys.onEscapePressed: event => { root.expanded = false; event.accepted = true }
                                 background: Rectangle {
-                                    radius: 12; color: tile.selected ? Theme.face : tile.hovered ? DesktopTokens.raisedStrong : DesktopTokens.raised
+                                    radius: 12; color: tile.selected ? Theme.focus : tile.hovered ? DesktopTokens.raisedStrong : DesktopTokens.raised
                                     border.width: 1; border.color: tile.activeFocus ? Theme.focus : DesktopTokens.seamSoft
                                 }
                                 Column {
                                     anchors.centerIn: parent; spacing: 0
-                                    Text { anchors.horizontalCenter: parent.horizontalCenter; text: tile.modelData.label; color: tile.selected ? Theme.faceText : Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.ExtraBold }
-                                    Text { anchors.horizontalCenter: parent.horizontalCenter; text: tile.modelData.detail; color: tile.selected ? Qt.rgba(Theme.faceText.r,Theme.faceText.g,Theme.faceText.b,0.64) : Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(10.5) }
+                                    Text { anchors.horizontalCenter: parent.horizontalCenter; text: tile.modelData.label; color: tile.selected ? Theme.focusText : Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.ExtraBold }
+                                    Text { anchors.horizontalCenter: parent.horizontalCenter; text: tile.modelData.detail; color: tile.selected ? Qt.rgba(Theme.focusText.r,Theme.focusText.g,Theme.focusText.b,0.64) : Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(10.5) }
                                 }
                             }
                         }

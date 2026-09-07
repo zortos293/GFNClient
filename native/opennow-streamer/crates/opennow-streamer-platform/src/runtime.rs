@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use opennow_streamer_protocol::RenderSurface;
+use opennow_streamer_protocol::{AudioDevice, AudioOutputDevice, RenderSurface};
 
 use crate::GraphicsFramePublisher;
-use crate::media::{MediaFeedback, MediaSession, MediaStreamConfig};
+use crate::media::{MediaFeedback, MediaSession, MediaSessionConfig, MediaStreamConfig};
 #[cfg(target_os = "windows")]
 use crate::output::WindowsBridge;
 use crate::output::{ActiveOutput, OutputBuffers, OutputControl, OutputEvent};
@@ -22,6 +22,7 @@ use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 const HOST_POLL_INTERVAL: Duration = Duration::from_micros(250);
 const HOST_START_TIMEOUT: Duration = Duration::from_secs(10);
 const HOST_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
+const MICROPHONE_HOST_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaRuntimeControl {
@@ -34,16 +35,29 @@ pub(crate) enum MacH264Configuration {
     SoftwareFallback { reason: String },
 }
 
+pub(crate) struct AudioDeviceRequest {
+    pub(crate) reply: Sender<Result<Vec<AudioDevice>, String>>,
+    pending: Arc<AtomicBool>,
+}
+
+impl Drop for AudioDeviceRequest {
+    fn drop(&mut self) {
+        self.pending.store(false, Ordering::Release);
+    }
+}
+
 pub(crate) enum HostCommand {
     StartMicrophone {
         device_id: String,
         shared: Arc<crate::microphone::MicrophoneShared>,
         reply: Sender<Result<(), String>>,
     },
+    AudioDevices(AudioDeviceRequest),
     Start {
         reply: Sender<Result<(), String>>,
         feedback: Sender<MediaFeedback>,
         stream: MediaStreamConfig,
+        audio_device: AudioOutputDevice,
     },
     Pause {
         paused: bool,
@@ -84,6 +98,7 @@ pub(crate) enum HostCommand {
 #[derive(Clone)]
 pub struct MediaRuntime {
     commands: Sender<HostCommand>,
+    audio_query_pending: Arc<AtomicBool>,
     output: Arc<OutputBuffers>,
     paused: Arc<AtomicBool>,
     use_hardware: Arc<AtomicBool>,
@@ -128,12 +143,8 @@ impl MediaRuntime {
     pub fn start_microphone(&self, device_id: &str) -> Result<crate::MicrophoneSession, String> {
         self.output.stop_microphone();
         let shared = crate::microphone::MicrophoneShared::new();
-        let mut session = crate::MicrophoneSession::from_shared(Arc::clone(&shared));
+        let session = crate::MicrophoneSession::from_shared(Arc::clone(&shared));
         self.output.set_microphone(&shared);
-        if matches!(self.mode, MediaRuntimeMode::Embedded(..)) {
-            session.start_capture(device_id, self.output.microphone_clock())?;
-            return Ok(session);
-        }
         let (reply, response) = mpsc::channel();
         self.commands
             .send(HostCommand::StartMicrophone {
@@ -146,6 +157,22 @@ impl MediaRuntime {
             .recv_timeout(HOST_START_TIMEOUT)
             .map_err(|_| "native media host did not start microphone capture".to_owned())??;
         Ok(session)
+    }
+
+    pub fn audio_devices(&self) -> Result<Vec<AudioDevice>, String> {
+        if self.audio_query_pending.swap(true, Ordering::AcqRel) {
+            return Err("native audio device enumeration is already in progress".to_owned());
+        }
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(HostCommand::AudioDevices(AudioDeviceRequest {
+                reply,
+                pending: Arc::clone(&self.audio_query_pending),
+            }))
+            .map_err(|_| "native media host is no longer running".to_owned())?;
+        response
+            .recv_timeout(HOST_CONTROL_TIMEOUT)
+            .map_err(|_| "native audio device enumeration timed out".to_owned())?
     }
 
     pub fn start(
@@ -189,15 +216,55 @@ impl MediaRuntime {
         stream: MediaStreamConfig,
         requested: &str,
     ) -> Result<MediaSession, String> {
+        self.start_with_audio_device(feedback, stream, requested, AudioOutputDevice::default())
+    }
+
+    pub fn start_with_audio_device(
+        &self,
+        feedback: Sender<MediaFeedback>,
+        stream: MediaStreamConfig,
+        requested: &str,
+        audio_device: AudioOutputDevice,
+    ) -> Result<MediaSession, String> {
         self.validate_backend(requested)?;
         self.output.stop_microphone();
         self.output.reset_microphone_clock();
         if let MediaRuntimeMode::Embedded(frames, _device) = &self.mode {
+            #[cfg(target_os = "macos")]
+            if let Some(id) = audio_device.device_name() {
+                if self
+                    .audio_devices()?
+                    .iter()
+                    .filter(|device| device.id == id)
+                    .count()
+                    != 1
+                {
+                    return Err("The selected audio output device is unavailable or ambiguous. Select another device or System default.".to_owned());
+                }
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let (reply, response) = mpsc::channel();
+                self.commands
+                    .send(HostCommand::Start {
+                        reply,
+                        feedback: feedback.clone(),
+                        stream,
+                        audio_device: audio_device.clone(),
+                    })
+                    .map_err(|_| "native media host is no longer running".to_owned())?;
+                response
+                    .recv_timeout(HOST_START_TIMEOUT)
+                    .map_err(|_| "native audio output startup timed out".to_owned())??;
+            }
             let session = MediaSession::spawn_embedded(
                 Arc::clone(&self.output),
                 feedback,
                 self.commands.clone(),
-                stream,
+                crate::media::MediaSessionConfig {
+                    stream,
+                    audio_device: &audio_device,
+                },
                 frames.clone(),
                 #[cfg(target_os = "linux")]
                 crate::linux_backend::select_embedded_video_path(
@@ -207,7 +274,10 @@ impl MediaRuntime {
                 ),
                 #[cfg(target_os = "linux")]
                 _device.clone(),
-            )?;
+            )
+            .inspect_err(|_| {
+                let _ = self.commands.send(HostCommand::Stop);
+            })?;
             if self.paused.load(Ordering::Acquire) {
                 session.set_paused(true);
             }
@@ -236,6 +306,7 @@ impl MediaRuntime {
                 reply,
                 feedback: feedback.clone(),
                 stream,
+                audio_device,
             })
             .map_err(|_| "native media host is no longer running".to_owned())?;
         response
@@ -350,6 +421,7 @@ impl MainThreadHost {
         let mut feedback: Option<Sender<MediaFeedback>> = None;
         let mut software_playback_started = false;
         let mut active_stream = MediaStreamConfig::default();
+        let mut active_audio_device = AudioOutputDevice::default();
         loop {
             match self.commands.recv_timeout(HOST_POLL_INTERVAL) {
                 Ok(HostCommand::StartMicrophone {
@@ -372,10 +444,12 @@ impl MainThreadHost {
                     reply,
                     feedback: session_feedback,
                     stream,
+                    audio_device,
                 }) => {
                     active_stream = stream;
                     self.output.stop_microphone();
                     microphone = None;
+                    active_audio_device = audio_device;
                     if let Some(output) = active.as_mut() {
                         output.stop();
                     }
@@ -392,7 +466,10 @@ impl MainThreadHost {
                         surface.as_ref(),
                         paused,
                         requested_hardware,
-                        stream,
+                        MediaSessionConfig {
+                            stream,
+                            audio_device: &active_audio_device,
+                        },
                         requested_linux_hardware,
                         #[cfg(target_os = "windows")]
                         Arc::clone(&self.windows_bridge),
@@ -408,7 +485,10 @@ impl MainThreadHost {
                                 surface.as_ref(),
                                 paused,
                                 false,
-                                stream,
+                                MediaSessionConfig {
+                                    stream,
+                                    audio_device: &active_audio_device,
+                                },
                                 false,
                                 #[cfg(target_os = "windows")]
                                 Arc::clone(&self.windows_bridge),
@@ -446,6 +526,35 @@ impl MainThreadHost {
                             let _ = reply.send(Err(error));
                         }
                     }
+                }
+                Ok(HostCommand::AudioDevices(request)) => {
+                    let reply = &request.reply;
+                    #[cfg(target_os = "windows")]
+                    if self.use_macos_hardware.load(Ordering::Acquire)
+                        || active
+                            .as_ref()
+                            .is_some_and(|output| matches!(output, ActiveOutput::Windows(_)))
+                    {
+                        let _ = reply.send(Err("Fixed audio output selection is unavailable in the standalone Windows native output. Use the Qt embedded stream view.".to_owned()));
+                        continue;
+                    }
+                    #[cfg(target_os = "macos")]
+                    if self.use_macos_hardware.load(Ordering::Acquire) {
+                        let devices = opennow_streamer_platform_macos::audio_output_devices()
+                            .map(|devices| {
+                                devices
+                                    .into_iter()
+                                    .map(|device| AudioDevice {
+                                        id: device.id,
+                                        name: device.name,
+                                    })
+                                    .collect()
+                            })
+                            .map_err(|error| error.to_string());
+                        let _ = reply.send(devices);
+                        continue;
+                    }
+                    let _ = reply.send(crate::output::audio_devices());
                 }
                 Ok(HostCommand::Pause {
                     paused: new_paused,
@@ -494,7 +603,10 @@ impl MainThreadHost {
                             Some(&new_surface),
                             paused,
                             false,
-                            active_stream,
+                            MediaSessionConfig {
+                                stream: active_stream,
+                                audio_device: &active_audio_device,
+                            },
                             false,
                         ) {
                             Ok(output) => {
@@ -564,7 +676,10 @@ impl MainThreadHost {
                             let fallback = ActiveOutput::initialize(
                                 Arc::clone(&self.output),
                                 false,
-                                active_stream,
+                                MediaSessionConfig {
+                                    stream: active_stream,
+                                    audio_device: &active_audio_device,
+                                },
                                 false,
                             )
                             .and_then(|mut output| {
@@ -628,7 +743,10 @@ impl MainThreadHost {
                         surface.as_ref(),
                         paused,
                         false,
-                        active_stream,
+                        MediaSessionConfig {
+                            stream: active_stream,
+                            audio_device: &active_audio_device,
+                        },
                         false,
                     );
                     match replacement {
@@ -751,7 +869,10 @@ impl MainThreadHost {
                             let mut replacement = ActiveOutput::initialize(
                                 Arc::clone(&self.output),
                                 false,
-                                active_stream,
+                                MediaSessionConfig {
+                                    stream: active_stream,
+                                    audio_device: &active_audio_device,
+                                },
                                 #[cfg(target_os = "windows")]
                                 Arc::clone(&self.windows_bridge),
                                 false,
@@ -811,7 +932,10 @@ impl MainThreadHost {
                                 surface.as_ref(),
                                 paused,
                                 false,
-                                active_stream,
+                                MediaSessionConfig {
+                                    stream: active_stream,
+                                    audio_device: &active_audio_device,
+                                },
                                 false,
                             );
                             match fallback {
@@ -850,7 +974,10 @@ impl MainThreadHost {
                                 surface.as_ref(),
                                 paused,
                                 false,
-                                active_stream,
+                                MediaSessionConfig {
+                                    stream: active_stream,
+                                    audio_device: &active_audio_device,
+                                },
                                 false,
                             );
                             if let Ok(replacement) = fallback {
@@ -916,6 +1043,7 @@ pub fn create_runtime() -> Result<(MainThreadHost, MediaRuntime), String> {
         },
         MediaRuntime {
             commands,
+            audio_query_pending: Arc::new(AtomicBool::new(false)),
             output,
             paused,
             use_hardware: use_macos_hardware,
@@ -949,26 +1077,145 @@ pub fn create_embedded_runtime_with_vulkan_device(
     vulkan_device: Option<Arc<crate::SharedVulkanDevice>>,
 ) -> MediaRuntime {
     let (commands, receiver) = mpsc::channel();
-    if let Some(cursor_update) = cursor_update {
-        let _ = std::thread::Builder::new()
-            .name("opennow-embedded-cursor".to_owned())
-            .spawn(move || {
-                while let Ok(command) = receiver.recv() {
+    let output = Arc::new(OutputBuffers::with_captured_input(captured_input));
+    let host_output = Arc::clone(&output);
+    let _ = std::thread::Builder::new()
+        .name("opennow-embedded-host".to_owned())
+        .spawn(move || {
+            #[cfg(any(target_os = "windows", test))]
+            let mut audio = None;
+            let mut microphone: Option<crate::microphone::MicrophoneCapture> = None;
+            loop {
+                let command = if microphone.is_some() {
+                    receiver.recv_timeout(MICROPHONE_HOST_POLL_INTERVAL)
+                } else {
+                    receiver
+                        .recv()
+                        .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                };
+                let command = match command {
+                    Ok(command) => Some(command),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                if let Some(command) = command {
                     match command {
-                        HostCommand::Cursor(bytes) => cursor_update(bytes),
+                        HostCommand::StartMicrophone {
+                            device_id,
+                            shared,
+                            reply,
+                        } => {
+                            microphone = None;
+                            let result = crate::microphone::MicrophoneCapture::start(
+                                &device_id,
+                                shared,
+                                host_output.microphone_clock(),
+                            )
+                            .map(|capture| microphone = Some(capture));
+                            if reply.send(result).is_err() {
+                                microphone = None;
+                            }
+                        }
+                        HostCommand::Cursor(bytes) => {
+                            if let Some(update) = &cursor_update {
+                                update(bytes);
+                            }
+                        }
+                        HostCommand::AudioDevices(request) => {
+                            let reply = &request.reply;
+                            #[cfg(all(target_os = "linux", not(test)))]
+                            let devices = opennow_streamer_platform_linux::audio_output_devices()
+                                .map(|devices| {
+                                    devices
+                                        .into_iter()
+                                        .map(|device| AudioDevice {
+                                            id: device.id,
+                                            name: device.name,
+                                        })
+                                        .collect()
+                                })
+                                .map_err(|error| error.to_string());
+                            #[cfg(any(target_os = "windows", test))]
+                            let devices = crate::output::audio_devices();
+                            #[cfg(all(target_os = "macos", not(test)))]
+                            let devices = opennow_streamer_platform_macos::audio_output_devices()
+                                .map(|devices| {
+                                    devices
+                                        .into_iter()
+                                        .map(|device| AudioDevice {
+                                            id: device.id,
+                                            name: device.name,
+                                        })
+                                        .collect()
+                                })
+                                .map_err(|error| error.to_string());
+                            #[cfg(not(any(
+                                target_os = "linux",
+                                target_os = "windows",
+                                target_os = "macos",
+                                test
+                            )))]
+                            let devices =
+                                Err("Native audio device enumeration is unavailable".to_owned());
+                            let _ = reply.send(devices);
+                        }
+                        #[cfg(any(target_os = "windows", test))]
+                        HostCommand::Start {
+                            reply,
+                            audio_device,
+                            ..
+                        } => {
+                            host_output.stop_microphone();
+                            microphone = None;
+                            audio = None;
+                            let result = crate::output::HeadlessAudioOutput::start(
+                                Arc::clone(&host_output),
+                                &audio_device,
+                            )
+                            .map(|started| {
+                                audio = Some(started);
+                            });
+                            if reply.send(result).is_err() {
+                                audio = None;
+                            }
+                        }
+                        #[cfg(any(target_os = "windows", test))]
+                        HostCommand::Pause { paused, reply } => {
+                            if let Some(audio) = &audio {
+                                audio.set_paused(paused);
+                            }
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Ok(()));
+                            }
+                        }
+                        HostCommand::Stop => {
+                            host_output.stop_microphone();
+                            microphone = None;
+                            #[cfg(any(target_os = "windows", test))]
+                            {
+                                audio = None;
+                            }
+                        }
                         HostCommand::Shutdown => break,
                         _ => {}
                     }
                 }
-            });
-    } else {
-        drop(receiver);
-    }
+                if let Some(capture) = microphone.as_mut() {
+                    capture.poll();
+                    if capture.stopped() {
+                        microphone = None;
+                    }
+                }
+            }
+            host_output.stop_microphone();
+            drop(microphone);
+        });
     #[cfg(target_os = "linux")]
     let linux_selection = crate::linux_backend::select_video_path();
     MediaRuntime {
         commands,
-        output: Arc::new(OutputBuffers::with_captured_input(captured_input)),
+        audio_query_pending: Arc::new(AtomicBool::new(false)),
+        output,
         paused: Arc::new(AtomicBool::new(false)),
         use_hardware: Arc::new(AtomicBool::new(true)),
         #[cfg(target_os = "windows")]
@@ -1019,6 +1266,10 @@ pub fn create_test_runtime() -> (TestMediaRuntimeHost, MediaRuntime) {
                                 .send(Err("test media runtime has no microphone capture device"
                                     .to_owned()));
                     }
+                    HostCommand::AudioDevices(request) => {
+                        let reply = &request.reply;
+                        let _ = reply.send(Ok(Vec::new()));
+                    }
                     HostCommand::Start { reply, .. } => {
                         let _ = reply.send(Err(
                             "test media runtime does not start media sessions".to_owned()
@@ -1058,6 +1309,7 @@ pub fn create_test_runtime() -> (TestMediaRuntimeHost, MediaRuntime) {
         },
         MediaRuntime {
             commands,
+            audio_query_pending: Arc::new(AtomicBool::new(false)),
             output,
             paused,
             use_hardware: use_macos_hardware,
@@ -1077,14 +1329,14 @@ fn initialize_output(
     surface: Option<&RenderSurface>,
     paused: bool,
     use_hardware: bool,
-    stream: MediaStreamConfig,
+    config: MediaSessionConfig<'_>,
     use_linux_hardware: bool,
     #[cfg(target_os = "windows")] windows_bridge: Arc<WindowsBridge>,
 ) -> Result<ActiveOutput, String> {
     let mut output = ActiveOutput::initialize(
         output,
         use_hardware,
-        stream,
+        config,
         #[cfg(target_os = "windows")]
         windows_bridge,
         use_linux_hardware,
@@ -1175,7 +1427,233 @@ fn ensure_macos_main_thread() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires SDL_AUDIODRIVER=dummy in an isolated test process"]
+    fn embedded_host_shares_sdl_playback_capture_and_enumeration_lifetimes() {
+        use super::{HostCommand, MediaRuntime};
+        use std::sync::{Arc, mpsc};
+        use std::time::{Duration, Instant};
+
+        fn wait_until(mut condition: impl FnMut() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !condition() {
+                assert!(
+                    Instant::now() < deadline,
+                    "embedded audio host did not settle"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        fn start_playback(
+            runtime: &MediaRuntime,
+            device: &opennow_streamer_protocol::AudioOutputDevice,
+        ) {
+            let (reply, response) = mpsc::channel();
+            let (feedback, _) = mpsc::channel();
+            runtime
+                .commands
+                .send(HostCommand::Start {
+                    reply,
+                    feedback,
+                    stream: crate::MediaStreamConfig::default(),
+                    audio_device: device.clone(),
+                })
+                .unwrap();
+            response
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+        }
+
+        fn playback_consumes(runtime: &MediaRuntime) {
+            runtime.output.push_audio(&[0.25; 4096]);
+            wait_until(|| !runtime.output.audio_samples_pending());
+        }
+
+        fn next_microphone(receiver: &crate::MicrophoneReceiver) -> u32 {
+            let mut timestamp = None;
+            wait_until(|| {
+                timestamp = receiver.try_recv().unwrap().map(|frame| frame.timestamp);
+                timestamp.is_some()
+            });
+            timestamp.unwrap()
+        }
+
+        assert_eq!(std::env::var("SDL_AUDIODRIVER").as_deref(), Ok("dummy"));
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let (cursor_sent, cursor_received) = mpsc::channel();
+        let runtime = super::create_embedded_runtime_with_input(
+            frames,
+            Arc::new(crate::CapturedInputQueue::default()),
+            Some(Arc::new(move |bytes| {
+                let _ = cursor_sent.send(bytes);
+            })),
+        );
+        let devices = runtime.audio_devices().unwrap();
+        let selected = opennow_streamer_protocol::AudioOutputDevice::new(
+            devices.first().expect("dummy playback device").id.clone(),
+        )
+        .unwrap();
+        start_playback(&runtime, &selected);
+        playback_consumes(&runtime);
+        assert!(
+            sdl2::init().is_err(),
+            "the embedded host must remain SDL's sole initialization thread"
+        );
+
+        let mut microphone = runtime.start_microphone("").unwrap();
+        let receiver = microphone.receiver();
+        let first = next_microphone(&receiver);
+        assert_eq!(runtime.audio_devices().unwrap(), devices);
+        playback_consumes(&runtime);
+        for paused in [true, false] {
+            let (reply, response) = mpsc::channel();
+            runtime
+                .commands
+                .send(HostCommand::Pause {
+                    paused,
+                    reply: Some(reply),
+                })
+                .unwrap();
+            response
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            next_microphone(&receiver);
+            assert!(receiver.status().enabled);
+        }
+        playback_consumes(&runtime);
+
+        let stop_receiver = microphone.receiver();
+        std::thread::spawn(move || stop_receiver.stop())
+            .join()
+            .unwrap();
+        wait_until(|| !receiver.capture_device_open());
+        assert!(!receiver.status().enabled);
+        assert_eq!(receiver.try_recv(), Ok(None));
+        assert_eq!(runtime.audio_devices().unwrap(), devices);
+        assert!(!receiver.capture_device_open());
+        playback_consumes(&runtime);
+        microphone.stop();
+        assert!(runtime.start_microphone("unsupported-input").is_err());
+        playback_consumes(&runtime);
+
+        let restarted = runtime.start_microphone("").unwrap();
+        let restarted_receiver = restarted.receiver();
+        assert!(
+            next_microphone(&restarted_receiver).wrapping_sub(first)
+                >= crate::MICROPHONE_FRAME_SAMPLES as u32
+        );
+        receiver.stop();
+        assert!(restarted_receiver.status().enabled);
+        playback_consumes(&runtime);
+
+        restarted_receiver.pause_capture_device();
+        wait_until(|| !restarted_receiver.capture_device_open());
+        assert!(!restarted_receiver.status().enabled);
+        assert!(restarted_receiver.status().error.is_some());
+        playback_consumes(&runtime);
+        let terminal_microphone = runtime.start_microphone("").unwrap();
+        let terminal_receiver = terminal_microphone.receiver();
+        next_microphone(&terminal_receiver);
+
+        runtime.commands.send(HostCommand::Stop).unwrap();
+        runtime.commands.send(HostCommand::Cursor(vec![1])).unwrap();
+        assert_eq!(
+            cursor_received
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap(),
+            vec![1]
+        );
+        assert!(!restarted_receiver.status().enabled);
+        assert!(!restarted_receiver.capture_device_open());
+        assert!(!terminal_receiver.status().enabled);
+        assert!(!terminal_receiver.capture_device_open());
+        runtime.output.push_audio(&[0.25; 4096]);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(runtime.output.audio_samples_pending());
+
+        start_playback(&runtime, &selected);
+        let final_microphone = runtime.start_microphone("").unwrap();
+        let final_receiver = final_microphone.receiver();
+        next_microphone(&final_receiver);
+        runtime.shutdown();
+        assert!(!final_receiver.status().enabled);
+        assert_eq!(
+            cursor_received.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+        assert!(!final_receiver.capture_device_open());
+    }
+
+    #[cfg(feature = "test-runtime")]
+    #[test]
+    fn timed_out_audio_query_does_not_queue_more_requests() {
+        let (host, mut runtime) = super::create_test_runtime();
+        let original = runtime.clone();
+        let (commands, receiver) = std::sync::mpsc::channel();
+        runtime.commands = commands;
+        assert!(runtime.audio_devices().unwrap_err().contains("timed out"));
+        assert!(
+            runtime
+                .audio_devices()
+                .unwrap_err()
+                .contains("already in progress")
+        );
+        drop(receiver.try_recv().expect("one queued query"));
+        assert!(receiver.try_recv().is_err());
+        assert!(
+            !runtime
+                .audio_query_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+        drop(receiver);
+        assert!(
+            runtime
+                .audio_devices()
+                .unwrap_err()
+                .contains("no longer running")
+        );
+        assert!(
+            !runtime
+                .audio_query_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+        original.shutdown();
+        host.join().expect("test host");
+    }
+
     use super::backend_preference_allows_value;
+
+    #[cfg(feature = "test-runtime")]
+    #[test]
+    fn audio_device_start_resets_microphone_but_enumeration_does_not() {
+        let (host, runtime) = super::create_test_runtime();
+        let shared = crate::microphone::MicrophoneShared::new();
+        let microphone = crate::MicrophoneSession::from_shared(std::sync::Arc::clone(&shared));
+        runtime.output.set_microphone(&shared);
+        let receiver = microphone.receiver();
+        let previous_clock = runtime.output.microphone_clock();
+        assert_eq!(runtime.audio_devices().unwrap(), Vec::new());
+        assert!(receiver.status().enabled);
+        assert_eq!(runtime.output.microphone_clock(), previous_clock);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let (feedback, _) = std::sync::mpsc::channel();
+        let media = runtime
+            .start_with_audio_device(
+                feedback,
+                crate::MediaStreamConfig::default(),
+                "auto",
+                opennow_streamer_protocol::AudioOutputDevice::default(),
+            )
+            .unwrap();
+        assert!(!receiver.status().enabled);
+        assert!(runtime.output.microphone_clock() > previous_clock);
+        drop(media);
+        runtime.shutdown();
+        host.join().unwrap();
+    }
 
     #[cfg(feature = "test-runtime")]
     #[test]

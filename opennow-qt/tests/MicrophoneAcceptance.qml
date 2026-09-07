@@ -2,6 +2,7 @@ import QtQuick
 import OpenNOW
 
 QtObject {
+    id: fixture
     property QtObject runtime: QtObject {
         property bool running: true
         property string lastError: ""
@@ -14,8 +15,10 @@ QtObject {
         function send(command) { commands = commands.concat([command]); return true }
     }
     property Component audioComponent: Component {
-        DesktopSettingsAudioPage { availableWidth: 1000 }
+        DesktopSettingsAudioPage { availableWidth: 1000; settingsScreen: fixture }
     }
+    function valueSetting(key, fallback) { return ShellStore.settings[key] ?? fallback }
+    function setSetting(key, value) { ShellStore.setSetting(key, value) }
     function check(ok, message) { if (!ok) throw new Error("Microphone: " + message) }
     function find(item, name) {
         if (item.objectName === name) return item
@@ -37,6 +40,10 @@ QtObject {
         check(open && !open.enabled, "unsupported builds must not offer capture")
         ShellStore.acceptNativeCapabilities({protocolVersion: 6, supportsMicrophone: true})
         check(find(audio, "settingsOption-voice-activity").enabled, "supported builds must offer opt-in")
+        check(runtime.commands.length === 1 && runtime.commands[0].type === "audioDevices",
+            "opening Audio settings must only discover output devices")
+        ShellStore.acceptNativeResponse({id: runtime.commands[0].id, type: "audioDevices", devices: []})
+        runtime.commands = []
         check(ShellStore.prepareMicrophoneStart("microphone-fixture", "voice-activity"),
             "new opted-in sessions must start enabled")
         ShellStore.sessionMicrophoneMode = "disabled"
@@ -105,6 +112,17 @@ QtObject {
             "session teardown must disable microphone controls")
         check(runtime.commands.every(command => command.type === "microphone-set"),
             "microphone controls must never restart transport")
+        ShellStore.activeSession = {sessionId: "microphone-fixture", phase: "ready", status: 2}
+        ShellStore.acceptNativeEvent({type: "microphone-state", state: "ready", enabled: true})
+        const beforeRefresh = runtime.commands.length
+        ShellStore.refreshAudioOutputDevices()
+        check(runtime.commands.length === beforeRefresh + 1
+            && runtime.commands[beforeRefresh].type === "audioDevices"
+            && ShellStore.microphoneEnabled, "output discovery must not change active capture")
+        ShellStore.acceptNativeResponse({id: runtime.commands[beforeRefresh].id, type: "error",
+            message: "Output discovery failed"})
+        check(ShellStore.microphoneEnabled && ShellStore.microphoneCanToggle,
+            "output discovery failure must not mute microphone or stop the session")
         audio.destroy()
         return true
     }

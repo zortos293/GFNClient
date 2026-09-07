@@ -22,6 +22,11 @@ pub(crate) struct AudioPlayoutBuffer {
 }
 
 impl AudioPlayoutBuffer {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
     pub(crate) fn new(capacity: usize) -> Self {
         assert!(capacity >= CHANNELS && capacity % CHANNELS == 0);
         Self {

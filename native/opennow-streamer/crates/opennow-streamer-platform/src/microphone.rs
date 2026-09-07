@@ -481,7 +481,6 @@ impl Drop for MicrophoneCapture {
 
 pub struct MicrophoneSession {
     shared: Arc<MicrophoneShared>,
-    capture: Option<MicrophoneCapture>,
 }
 
 pub struct MicrophoneReceiver {
@@ -489,6 +488,16 @@ pub struct MicrophoneReceiver {
 }
 
 impl MicrophoneReceiver {
+    #[cfg(test)]
+    pub(crate) fn capture_device_open(&self) -> bool {
+        self.shared.device_status().is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_capture_device(&self) {
+        self.shared.pause_device();
+    }
+
     pub fn try_recv(&self) -> Result<Option<EncodedMicrophoneFrame>, String> {
         self.shared.poll_device();
         let mut state = self
@@ -531,27 +540,7 @@ impl MicrophoneReceiver {
 
 impl MicrophoneSession {
     pub(crate) fn from_shared(shared: Arc<MicrophoneShared>) -> Self {
-        Self {
-            shared,
-            capture: None,
-        }
-    }
-
-    #[cfg(test)]
-    fn start_local(device_id: &str, origin: Instant) -> Result<Self, String> {
-        let shared = MicrophoneShared::new();
-        let mut session = Self::from_shared(shared);
-        session.start_capture(device_id, origin)?;
-        Ok(session)
-    }
-
-    pub(crate) fn start_capture(&mut self, device_id: &str, origin: Instant) -> Result<(), String> {
-        self.capture = Some(MicrophoneCapture::start(
-            device_id,
-            Arc::clone(&self.shared),
-            origin,
-        )?);
-        Ok(())
+        Self { shared }
     }
 
     pub fn receiver(&self) -> MicrophoneReceiver {
@@ -560,28 +549,16 @@ impl MicrophoneSession {
         }
     }
 
-    fn poll(&mut self) {
-        if let Some(capture) = self.capture.as_mut() {
-            capture.poll();
-            if capture.stopped() {
-                self.capture = None;
-            }
-        }
-    }
-
     pub fn try_recv(&mut self) -> Result<Option<EncodedMicrophoneFrame>, String> {
-        self.poll();
         self.receiver().try_recv()
     }
 
     pub fn status(&mut self) -> MicrophoneStatus {
-        self.poll();
         self.receiver().status()
     }
 
     pub fn stop(&mut self) {
         self.shared.close(None);
-        self.capture = None;
     }
 }
 
@@ -594,6 +571,44 @@ impl Drop for MicrophoneSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct LocalMicrophoneSession {
+        session: MicrophoneSession,
+        capture: Option<MicrophoneCapture>,
+    }
+
+    impl std::ops::Deref for LocalMicrophoneSession {
+        type Target = MicrophoneSession;
+
+        fn deref(&self) -> &Self::Target {
+            &self.session
+        }
+    }
+
+    impl std::ops::DerefMut for LocalMicrophoneSession {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.session
+        }
+    }
+
+    impl LocalMicrophoneSession {
+        fn stop(&mut self) {
+            self.session.stop();
+            self.capture = None;
+        }
+    }
+
+    impl MicrophoneSession {
+        fn start_local(device_id: &str, origin: Instant) -> Result<LocalMicrophoneSession, String> {
+            let shared = MicrophoneShared::new();
+            let session = Self::from_shared(Arc::clone(&shared));
+            let capture = MicrophoneCapture::start(device_id, shared, origin)?;
+            Ok(LocalMicrophoneSession {
+                session,
+                capture: Some(capture),
+            })
+        }
+    }
 
     fn wait_for_packet(receiver: &MicrophoneReceiver) -> EncodedMicrophoneFrame {
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -613,6 +628,7 @@ mod tests {
     fn receiver_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<MicrophoneReceiver>();
+        assert_send_sync::<MicrophoneSession>();
     }
 
     #[test]

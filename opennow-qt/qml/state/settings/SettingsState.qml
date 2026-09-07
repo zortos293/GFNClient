@@ -281,6 +281,12 @@ QtObject {
     function applySetting(key, value) {
         const updated = Object.assign({}, settings)
         updated[key] = value
+        if (key === "themePack") {
+            updated.appTheme = value === "bone" || value === "cobalt" ? "light" : "dark"
+            updated.themeAccentOverride = false
+        } else if (key === "appAccentColor") {
+            updated.themeAccentOverride = true
+        }
         settings = updated
         if (["nativeStreamerExecutablePath", "nativeVideoBackend", "decoderPreference"].indexOf(key) >= 0)
             Qt.callLater(root.refreshStreamerDetection)

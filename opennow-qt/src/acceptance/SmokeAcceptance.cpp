@@ -22,7 +22,25 @@ using namespace Qt::StringLiterals;
 int AcceptanceSession::startSmokeWorkload()
 {
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
-    if (m_smokeTest && m_arguments.contains(u"--smoke-input-capture-error"_s)) {
+    if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation"_s)) {
+        QQmlComponent component(&m_engine, QUrl(u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s));
+        auto *fixture = component.create();
+        if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
+        fixture->setParent(&m_engine);
+        QTimer::singleShot(150, this, [this, fixture] {
+            auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+            QVariant passed;
+            const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
+                Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && passed.toBool() && !m_qmlWarningOccurred;
+            if (!ok) { m_application.exit(EXIT_FAILURE); return; }
+            QTimer::singleShot(150, this, [this, window] {
+                const auto shot = m_arguments.indexOf(u"--screenshot"_s);
+                const bool saved = shot < 0 || (shot + 1 < m_arguments.size()
+                    && window->grabWindow().save(m_arguments.at(shot + 1)));
+                m_application.exit(saved && !m_qmlWarningOccurred ? EXIT_SUCCESS : EXIT_FAILURE);
+            });
+        });
+    } else if (m_smokeTest && m_arguments.contains(u"--smoke-input-capture-error"_s)) {
         auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
         if (!store) return EXIT_FAILURE;
         store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}});

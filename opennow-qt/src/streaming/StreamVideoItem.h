@@ -10,6 +10,7 @@
 #include <QRect>
 #include <QSize>
 #include <QVariantMap>
+#include <QTimer>
 
 #include <memory>
 #include <optional>
@@ -32,6 +33,10 @@ class StreamVideoItem : public QQuickItem
                    NOTIFY relativeMouseChanged)
     Q_PROPERTY(QVariantMap shortcutBindings READ shortcutBindings WRITE setShortcutBindings
                    NOTIFY shortcutBindingsChanged)
+    Q_PROPERTY(bool frameGeneration READ frameGeneration WRITE setFrameGeneration
+                   NOTIFY frameGenerationChanged)
+    Q_PROPERTY(QVariantMap frameGenerationStats READ frameGenerationStats
+                   NOTIFY frameGenerationStatsChanged)
 
 public:
     struct RemoteCursorMetadata {
@@ -59,6 +64,9 @@ public:
     void setShortcutBindings(const QVariantMap &bindings);
     [[nodiscard]] std::shared_ptr<StreamVideoRenderCallback> renderCallback() const;
     void setRenderCallback(std::shared_ptr<StreamVideoRenderCallback> callback);
+    bool frameGeneration() const;
+    void setFrameGeneration(bool enabled);
+    QVariantMap frameGenerationStats() const;
 
     static void setNativeStreamRuntime(NativeStreamRuntime *runtime);
     [[nodiscard]] static NativeStreamRuntime *nativeStreamRuntime();
@@ -91,6 +99,8 @@ signals:
     void inputCaptureErrorChanged();
     void relativeMouseChanged();
     void shortcutBindingsChanged();
+    void frameGenerationChanged();
+    void frameGenerationStatsChanged();
     void localShortcutRequested(const QString &action);
 
 protected:
@@ -117,6 +127,7 @@ private:
 
     void applyRemoteCursor(const QByteArray &bytes);
     void syncCaptureState();
+    void connectFrameSwaps();
     void releaseInput();
     void releaseQtMouseButtons();
     void updateCursorConfinement();
@@ -137,6 +148,10 @@ private:
     QPointF m_lastMousePosition;
     std::unique_ptr<class WaylandPointerCapture> m_waylandPointer;
     bool m_inputEnabled = true;
+    bool m_frameGeneration = false;
+    QTimer m_frameStatsTimer;
+    QMetaObject::Connection m_frameSwapConnection;
+    QMetaObject::Connection m_frameUpdateConnection;
     bool m_captureActive = false;
     bool m_relativeMouse = false;
     bool m_rawInputActive = false;

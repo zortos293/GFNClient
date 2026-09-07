@@ -2,6 +2,7 @@
 
 #include <QQuickWindow>
 #include <QSGRenderNode>
+#include <QScreen>
 #include <rhi/qrhi.h>
 
 namespace {
@@ -22,6 +23,9 @@ public:
             m_callback = callback;
         }
         m_bounds = item->boundingRect();
+        if (m_callback)
+            m_callback->setFrameGeneration(item->frameGeneration() && item->isVisible(),
+                m_window->screen() ? m_window->screen()->refreshRate() : 0.0);
         m_viewport = StreamVideoItem::aspectFitRect(item->videoSize(), m_bounds.size().toSize());
         markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
     }

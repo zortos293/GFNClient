@@ -1,7 +1,37 @@
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(opennow-framepacer-tests tests/tst_framepacer.cpp)
+    target_include_directories(opennow-framepacer-tests PRIVATE src)
+    target_link_libraries(opennow-framepacer-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-framepacer-tests COMMAND opennow-framepacer-tests -o -,txt)
+    qt_add_executable(opennow-frameinterpolator-tests
+        tests/tst_frameinterpolator.cpp
+        src/streaming/rendering/StreamFrameInterpolator.cpp)
+    target_include_directories(opennow-frameinterpolator-tests PRIVATE src)
+    target_link_libraries(opennow-frameinterpolator-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate)
+    qt_add_shaders(opennow-frameinterpolator-tests "opennow-framegen-test-shaders"
+        PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_STREAM_SHADERS})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_program(OPENNOW_XVFB_RUN xvfb-run)
+    endif()
+    if(OPENNOW_XVFB_RUN)
+        add_test(NAME opennow-frameinterpolator-tests
+            COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-frameinterpolator-tests>" -o -,txt)
+        set_tests_properties(opennow-frameinterpolator-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
+    else()
+        add_test(NAME opennow-frameinterpolator-tests COMMAND opennow-frameinterpolator-tests -o -,txt)
+        if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            set_tests_properties(opennow-frameinterpolator-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
+    endif()
+    set_tests_properties(opennow-frameinterpolator-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml)
+    add_test(NAME qml-frame-generation
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-streaming --smoke-frame-generation --reduced-motion)
+    set_tests_properties(qml-frame-generation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     add_test(NAME qml-idle-mode
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-idle-mode --reduced-motion)
@@ -93,7 +123,7 @@ if(BUILD_TESTING)
     qt_add_shaders(opennow-streamvideo-tests "opennow-stream-test-shaders"
         PREFIX "/opennow/shaders"
         BASE "shaders"
-        FILES shaders/streamvideo.vert shaders/streamvideo.frag
+        FILES ${OPENNOW_STREAM_SHADERS}
     )
     target_link_libraries(opennow-streamvideo-tests PRIVATE
         opennow-platform-input

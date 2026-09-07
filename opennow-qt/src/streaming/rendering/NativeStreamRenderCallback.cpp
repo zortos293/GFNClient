@@ -4,11 +4,15 @@
 #include "streaming/rendering/LinuxVulkanGraphics.h"
 #include "streaming/rendering/StreamVideoRenderCallback.h"
 #include "streaming/rendering/StreamVideoTextureRenderer.h"
+#include "streaming/rendering/StreamFrameInterpolator.h"
+#include "streaming/rendering/StreamFramePacer.h"
 
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
 
 #include <utility>
+#include <atomic>
+#include <chrono>
 
 namespace {
 class ExternalCommandScope final
@@ -34,6 +38,7 @@ private:
 
 class NativeStreamRenderCallback final : public StreamVideoRenderCallback
 {
+    enum class FrameGenerationState { Off, WarmingUp, Active, DisplayTooSlow, Overloaded, Unavailable, Discontinuity };
 public:
     explicit NativeStreamRenderCallback(NativeStreamRuntime *runtime)
         : m_runtime(runtime)
@@ -130,6 +135,10 @@ public:
         if (!m_runtime || !m_runtime->presentationAllowed()
                 || m_presentationGeneration != m_runtime->presentationGeneration()) return;
         if (!m_graphicsReady || !m_rhi || !commandBuffer) return;
+        if (m_resetFrameGeneration) {
+            resetFrameGeneration();
+            m_resetFrameGeneration = false;
+        }
         if (!m_textures.prepare(commandBuffer)) {
             reportFailure(QStringLiteral("Could not create the video shaders or GPU resources. Check the packaged shaders and GPU driver."));
             return;
@@ -187,8 +196,10 @@ public:
             m_textures.clearFrames();
             return;
         }
-        if (status == OPENNOW_STREAMER_NO_FRAME) return;
-        if (status == OPENNOW_STREAMER_STALE_FRAME) return;
+        if (status == OPENNOW_STREAMER_NO_FRAME || status == OPENNOW_STREAMER_STALE_FRAME) {
+            prepareOriginal();
+            return;
+        }
         if (status != OPENNOW_STREAMER_OK || !frame || recorded.resource == 0
             || recorded.width == 0 || recorded.height == 0
             || (recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8
@@ -209,8 +220,99 @@ public:
         if (!m_textures.importFrame(command.frame_slot, texture,
             recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2
                 ? QRhiTexture::RGB10A2 : QRhiTexture::RGBA8,
-            QSize(int(recorded.width), int(recorded.height))))
+            QSize(int(recorded.width), int(recorded.height)))) {
             reportFailure(QStringLiteral("Could not import the decoded video texture into Qt. The decoder and graphics backend must use compatible GPU resources."));
+            return;
+        }
+        m_outputDirty = true;
+        m_outputKind = 1;
+        if (!m_frameGeneration || m_frameGenerationFailed) return;
+
+        const auto now = clockNs();
+        const auto decision = m_pacer.source(info.sequence, info.presentation_time_ns, now, m_refreshRate);
+        if (decision == StreamFramePacer::Result::Duplicate) {
+            m_outputDirty = false;
+            if (m_pacer.pending())
+                m_textures.selectTexture(m_interpolator.midpointTexture());
+            else if (m_interpolator.hasPair())
+                m_textures.selectTexture(m_interpolator.currentTexture());
+            prepareOriginal();
+            return;
+        }
+        m_needsFrame.store(false);
+        if (decision != StreamFramePacer::Result::Interpolate) {
+            m_interpolator.reset();
+            switch (decision) {
+            case StreamFramePacer::Result::DisplayTooSlow: m_frameGenerationStatus.store(FrameGenerationState::DisplayTooSlow); return;
+            case StreamFramePacer::Result::Overloaded: m_frameGenerationStatus.store(FrameGenerationState::Overloaded); return;
+            case StreamFramePacer::Result::Discontinuity: m_frameGenerationStatus.store(FrameGenerationState::Discontinuity); break;
+            default: m_frameGenerationStatus.store(FrameGenerationState::WarmingUp); break;
+            }
+        }
+        auto *source = m_textures.importedTexture();
+        if (m_historySize != source->pixelSize() || m_historyFormat != source->format()) {
+            m_textures.clearExternalTextures();
+            m_interpolator.release();
+            m_historySize = source->pixelSize();
+            m_historyFormat = source->format();
+        }
+        if (!m_interpolator.initialize(m_rhi) || !m_interpolator.ingest(commandBuffer, source)) {
+            disableFrameGeneration();
+            return;
+        }
+        if (!m_interpolator.hasPair()) {
+            if (decision != StreamFramePacer::Result::Discontinuity)
+                m_frameGenerationStatus.store(FrameGenerationState::WarmingUp);
+            return;
+        }
+        if (!m_textures.selectTexture(m_interpolator.midpointTexture())) {
+            disableFrameGeneration();
+            return;
+        }
+        m_midpointSwapped.store(false);
+        m_pacer.midpoint(clockNs());
+        m_needsFrame.store(true);
+        m_outputKind = 2;
+        m_frameGenerationStatus.store(FrameGenerationState::Active);
+    }
+
+    void setFrameGeneration(bool enabled, double refreshRate) override
+    {
+        if (m_frameGeneration != enabled || m_refreshRate != refreshRate)
+            m_resetFrameGeneration = true;
+        m_frameGeneration = enabled;
+        m_refreshRate = refreshRate;
+    }
+
+    bool needsFrame() const override
+    {
+        return m_needsFrame.load() && m_runtime && m_runtime->presentationAllowed();
+    }
+
+    void frameSwapped() override
+    {
+        const int kind = m_submittedKind.exchange(0);
+        if (kind) ++m_outputCount;
+        if (kind == 2) m_midpointSwapped.store(true);
+        const auto now = clockNs();
+        const auto start = m_sampleStart.load();
+        if (!start) {
+            m_sampleStart.store(now);
+            m_outputCount.store(0);
+        } else if (now - start >= 1'000'000'000) {
+            m_outputFps.store(double(m_outputCount.exchange(0)) * 1.0e9 / double(now - start));
+            m_sampleStart.store(now);
+        }
+    }
+
+    QVariantMap frameGenerationStats() const override
+    {
+        const QString states[] = {QStringLiteral("off"), QStringLiteral("warming-up"),
+            QStringLiteral("active"), QStringLiteral("display-refresh"),
+            QStringLiteral("overloaded"), QStringLiteral("unavailable"), QStringLiteral("discontinuity")};
+        return {{QStringLiteral("status"), states[int(m_frameGenerationStatus.load())]},
+                {QStringLiteral("outputFps"), clockNs() - m_sampleStart.load() < 2'000'000'000
+                    ? m_outputFps.load() : 0.0}};
     }
 
     void setComposition(const QMatrix4x4 &matrix, const QRectF &bounds,
@@ -230,6 +332,10 @@ public:
         if (!m_runtime || !m_runtime->presentationAllowed()
                 || m_presentationGeneration != m_runtime->presentationGeneration()) return;
         m_textures.render(commandBuffer, m_stencil, m_stencilReference);
+        if (m_outputDirty) {
+            m_submittedKind.store(m_outputKind);
+            m_outputDirty = false;
+        }
     }
 
     void finishFrame() override
@@ -243,6 +349,16 @@ public:
         if (m_rhi && m_graphicsReady) m_rhi->finish();
         finishFrame();
         m_textures.release();
+        m_interpolator.release();
+        m_pacer.reset();
+        m_needsFrame.store(false);
+        m_submittedKind.store(0);
+        m_outputCount.store(0);
+        m_outputFps.store(0);
+        m_sampleStart.store(0);
+        m_outputDirty = false;
+        m_midpointSwapped.store(false);
+        m_resetFrameGeneration = true;
         if (m_rhi && m_graphicsReady) m_rhi->finish();
         if (m_graphicsReady && m_runtime) m_runtime->sceneGraphShutdown();
         m_graphicsReady = false;
@@ -254,12 +370,70 @@ private:
     NativeStreamRuntime *m_runtime;
     QRhi *m_rhi = nullptr;
     StreamVideoTextureRenderer m_textures;
+    StreamFrameInterpolator m_interpolator;
+    StreamFramePacer m_pacer;
+    QSize m_historySize;
+    QRhiTexture::Format m_historyFormat = QRhiTexture::UnknownFormat;
+    double m_refreshRate = 0;
+    bool m_frameGeneration = false;
+    bool m_frameGenerationFailed = false;
+    bool m_resetFrameGeneration = false;
+    bool m_outputDirty = false;
+    int m_outputKind = 0;
+    std::atomic_bool m_needsFrame = false;
+    std::atomic_bool m_midpointSwapped = false;
+    std::atomic_int m_submittedKind = 0;
+    std::atomic<FrameGenerationState> m_frameGenerationStatus = FrameGenerationState::Off;
+    std::atomic_uint64_t m_outputCount = 0;
+    std::atomic_int64_t m_sampleStart = 0;
+    std::atomic<double> m_outputFps = 0;
     OpenNowStreamerFrame *m_preparedFrame = nullptr;
     int m_stencilReference = 0;
     bool m_stencil = false;
     bool m_graphicsReady = false;
     bool m_reportedFailure = false;
     quint64 m_presentationGeneration = 0;
+    static std::int64_t clockNs()
+    {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    void resetFrameGeneration()
+    {
+        m_textures.clearExternalTextures();
+        m_interpolator.release();
+        m_pacer.reset();
+        m_needsFrame.store(false);
+        m_submittedKind.store(0);
+        m_midpointSwapped.store(false);
+        m_outputDirty = false;
+        m_frameGenerationFailed = false;
+        m_frameGenerationStatus.store(m_frameGeneration ? FrameGenerationState::WarmingUp : FrameGenerationState::Off);
+    }
+
+    void disableFrameGeneration()
+    {
+        m_textures.clearExternalTextures();
+        m_interpolator.release();
+        m_pacer.reset();
+        m_needsFrame.store(false);
+        m_frameGenerationFailed = true;
+        m_frameGenerationStatus.store(FrameGenerationState::Unavailable);
+    }
+
+    void prepareOriginal()
+    {
+        if (!m_frameGeneration || !m_midpointSwapped.load()
+            || !m_pacer.takeOriginal(clockNs(), m_refreshRate)) return;
+        m_needsFrame.store(false);
+        if (!m_textures.selectTexture(m_interpolator.currentTexture())) {
+            disableFrameGeneration();
+            return;
+        }
+        m_outputDirty = true;
+        m_outputKind = 1;
+    }
     void reportFailure(const QString &message)
     {
         if (m_reportedFailure || !m_runtime) return;

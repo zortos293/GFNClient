@@ -14,6 +14,9 @@ set(OPENNOW_STREAM_PRESENTATION_SOURCES
     src/streaming/rendering/StreamVideoItemRendering.cpp
     src/streaming/rendering/StreamVideoRenderCallback.h
     src/streaming/rendering/StreamVideoTextureRenderer.h
+    src/streaming/rendering/StreamFrameInterpolator.cpp
+    src/streaming/rendering/StreamFrameInterpolator.h
+    src/streaming/rendering/StreamFramePacer.h
 )
 
 qt_add_executable(opennow-qt

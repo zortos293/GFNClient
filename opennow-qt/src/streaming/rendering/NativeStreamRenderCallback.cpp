@@ -86,7 +86,17 @@ public:
                 context.queue = reinterpret_cast<void *>(handles->gfxQueue);
                 context.queue_family_index = handles->gfxQueueFamilyIdx;
 #if defined(Q_OS_LINUX)
-                if (LinuxVulkanGraphics::dmabufImportEnabled(handles->inst, handles->physDev))
+                if (m_runtime && m_runtime->vulkanDevice()) {
+                    OpenNowStreamerVulkanDeviceInfo info{};
+                    info.version = OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION;
+                    info.struct_size = sizeof(info);
+                    if (opennow_streamer_vulkan_device_info(m_runtime->vulkanDevice(), &info)
+                            != OPENNOW_STREAMER_OK
+                            || !LinuxVulkanGraphics::Device::matchesContext(info, context)) {
+                        reportFailure(QStringLiteral("Qt is not using the embedded Vulkan Video device. Restart OpenNOW to recreate the shared graphics device."));
+                        return;
+                    }
+                } else if (LinuxVulkanGraphics::dmabufImportEnabled(handles->inst, handles->physDev))
                     context.enabled_capabilities = OPENNOW_STREAMER_GRAPHICS_CAP_VULKAN_DMABUF_IMPORT;
 #endif
                 break;

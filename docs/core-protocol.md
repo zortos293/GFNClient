@@ -200,6 +200,16 @@ For the embedded Qt client, `session.create` and `streamer.prepare` accept an op
 The core filters its available `videoBackends` by the persisted `nativeVideoBackend` preference
 and resolves codec `auto` to AV1, HEVC, then H.264 (subject to requested color mode) before
 CloudMatch allocation. This resolution is session-local: the saved preference stays `auto`.
+Each codec entry may include `colorQualities`, an authoritative array of supported settings
+values such as `8bit_420` and `10bit_420`. An empty array means no supported color modes.
+The embedded Linux runtime publishes this field for every codec: Vulkan values come from the
+attached device's actual decode profiles, while non-Vulkan Linux paths report only 8-bit 4:2:0.
+The core filters codecs by the requested color mode before both Auto and manual selection, so
+an HEVC decoder supporting Main but not Main10 cannot allocate a 10-bit session, and the shared
+Vulkan path cannot allocate 4:4:4. Missing or malformed advanced-color profile information on
+Linux/Vulkan fails closed; other platforms retain their existing behavior when this optional
+field is absent. The selected codec and color remain session-local and never downgrade the
+user's requested color mode.
 Manual unavailable codecs/backends return `streamer_codec_unavailable` or
 `streamer_backend_unavailable`, respectively. `streamer.prepare` also validates the negotiated
 codec on resume; it never changes the codec of an already allocated stream. Older callers without

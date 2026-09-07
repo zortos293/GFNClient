@@ -17,7 +17,7 @@ const DRM_FORMAT_R8: u32 = u32::from_le_bytes(*b"R8  ");
 const DRM_FORMAT_GR88: u32 = u32::from_le_bytes(*b"GR88");
 const DECODE_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 const NV12_VERTEX_SHADER: &[u8] = include_bytes!("../shaders/nv12.vert.spv");
-const NV12_FRAGMENT_SHADER: &[u8] = include_bytes!("../shaders/nv12.frag.spv");
+const NV12_FRAGMENT_SHADER: &[u8] = include_bytes!("../shaders/embedded_yuv.frag.spv");
 const DEFAULT_FRAME_SLOTS: u32 = 3;
 const MAX_FRAME_SLOTS: u32 = 8;
 
@@ -26,6 +26,7 @@ pub struct VulkanRenderDevice {
     pub instance: usize,
     pub physical_device: usize,
     pub device: usize,
+    pub queue: usize,
     pub queue_family: u32,
     pub dmabuf_import_enabled: bool,
 }
@@ -60,7 +61,11 @@ impl LinuxGpuRenderResources {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut retirement_error = None;
         if let Some(producer) = state.producer.as_ref() {
-            let result = unsafe { producer.device.device_wait_idle() };
+            let result = unsafe {
+                producer
+                    .device
+                    .queue_wait_idle(vk::Queue::from_raw(producer.render.queue as u64))
+            };
             if let Err(error) = result {
                 if error != vk::Result::ERROR_DEVICE_LOST {
                     retirement_error = Some(vk_error("retire Qt Vulkan resources", error));
@@ -163,7 +168,11 @@ impl LinuxGpuFrameProducer {
         frame.validate()?;
         // This method runs on opennow-embedded-linux-frame-publisher. Retain the
         // source owner while waiting, without locking render/presentation state.
-        if let Some(vulkan) = frame.vulkan.as_ref() {
+        if let Some(vulkan) = frame
+            .vulkan
+            .as_ref()
+            .filter(|vulkan| !vulkan.completed_gpu_copy())
+        {
             let mut sync = self.decode_sync.lock().unwrap_or_else(|e| e.into_inner());
             if sync
                 .as_ref()
@@ -239,19 +248,17 @@ impl LinuxGpuFrame {
             });
             state.render = Some(render);
         }
-        unsafe {
-            state
-                .producer
-                .as_mut()
-                .expect("producer initialized")
-                .record_frame(self.frame.clone(), command_buffer, frame_slot)
-        }
+        let producer = state.producer.as_mut().expect("producer initialized");
+        let result =
+            unsafe { producer.record_frame(self.frame.clone(), command_buffer, frame_slot) };
+        producer.device_lost |= matches!(&result, Err(Error::DeviceLost { .. }));
+        result
     }
 }
 
 impl VulkanRenderDevice {
     fn validate(self) -> Result<()> {
-        if self.instance == 0 || self.physical_device == 0 || self.device == 0 {
+        if self.instance == 0 || self.physical_device == 0 || self.device == 0 || self.queue == 0 {
             return Err(Error::InvalidFormat(
                 "Qt Vulkan render device contains a null handle".to_owned(),
             ));
@@ -383,6 +390,7 @@ pub struct LinuxFrameProducer {
     renderer: Option<RendererResources>,
     slots: Vec<Option<FrameSlotResources>>,
     generation: u64,
+    device_lost: bool,
 }
 
 struct RendererResources {
@@ -429,7 +437,9 @@ impl LinuxFrameProducer {
     /// # Safety
     ///
     /// All handles must belong to the same live Vulkan device and remain valid
-    /// for the lifetime described above.
+    /// for the lifetime described above. `render.queue` must be reserved for
+    /// Qt, externally synchronized by the calling render thread, and excluded
+    /// from FFmpeg's queue table.
     pub unsafe fn new(render: VulkanRenderDevice) -> Result<Self> {
         unsafe { Self::new_with_slots(render, DEFAULT_FRAME_SLOTS) }
     }
@@ -473,6 +483,7 @@ impl LinuxFrameProducer {
             renderer: None,
             slots: (0..slot_count).map(|_| None).collect(),
             generation: 0,
+            device_lost: false,
         })
     }
 
@@ -485,7 +496,8 @@ impl LinuxFrameProducer {
     /// # Safety
     ///
     /// `command_buffer` must belong to the adopted device and be in the
-    /// recording state on the QRhi render thread.
+    /// recording state on the QRhi render thread. Qt must submit it on the
+    /// adopted queue after this call's decoder semaphore wait submission.
     pub unsafe fn record_frame(
         &mut self,
         frame: DecodedVideoFrame,
@@ -506,6 +518,7 @@ impl LinuxFrameProducer {
         let timestamp_us = frame.timestamp_us;
         let color_matrix = frame.format.color_matrix;
         let full_range = frame.format.color_range == crate::ColorRange::Full;
+        let chroma_location = frame.format.chroma_location;
         let prepared = self.prepare(frame)?;
         self.ensure_renderer()?;
         self.ensure_slot(slot_index, width, height)?;
@@ -513,6 +526,21 @@ impl LinuxFrameProducer {
         let (luma_view, chroma_view) =
             self.prepare_input(slot_index, command_buffer, &prepared, width, height)?;
         self.update_descriptors(slot_index, luma_view, chroma_view);
+        if let PreparedLinuxFrame::Vulkan(frame) = &prepared {
+            if let Err(error) =
+                self.enqueue_decode_wait(frame.source.vulkan.as_ref().expect("Vulkan source"))
+            {
+                for view in self.slots[slot_index]
+                    .as_mut()
+                    .expect("frame slot initialized")
+                    .owned_input_views
+                    .drain(..)
+                {
+                    unsafe { self.device.destroy_image_view(view, None) };
+                }
+                return Err(error);
+            }
+        }
         unsafe {
             self.record_conversion(
                 slot_index,
@@ -522,6 +550,7 @@ impl LinuxFrameProducer {
                 height,
                 color_matrix,
                 full_range,
+                chroma_location,
             )?;
         }
         self.generation = self.generation.wrapping_add(1);
@@ -543,35 +572,49 @@ impl LinuxFrameProducer {
 
     pub fn prepare(&mut self, frame: DecodedVideoFrame) -> Result<PreparedLinuxFrame> {
         frame.validate()?;
-        if frame.format.pixel_format != PixelFormat::Nv12 {
+        if self.device_lost {
+            return Err(vk_error(
+                "embedded Vulkan device is lost",
+                vk::Result::ERROR_DEVICE_LOST,
+            ));
+        }
+        if !matches!(
+            frame.format.pixel_format,
+            PixelFormat::Nv12 | PixelFormat::P010
+        ) {
             return Err(Error::InvalidFormat(format!(
-                "embedded Linux presentation requires NV12, received {:?}",
+                "embedded Linux presentation requires NV12 or P010, received {:?}",
                 frame.format.pixel_format
             )));
         }
         let frame = Arc::new(frame);
         if let Some(vulkan) = frame.vulkan.as_ref() {
+            validate_direct_frame(vulkan, frame.format, self.render)?;
             self.wait_for_decode(vulkan)?;
-            if vulkan.device == self.render.device {
-                let images = vulkan
-                    .images
-                    .iter()
-                    .map(|image| PreparedVulkanImage {
-                        image: image.image,
-                        format: image.format,
-                        width: image.width,
-                        height: image.height,
-                        old_layout: image.layout,
-                        old_access: image.access,
-                        source_queue_family: image.queue_family,
-                        render_queue_family: self.render.queue_family,
-                    })
-                    .collect();
-                return Ok(PreparedLinuxFrame::Vulkan(PreparedVulkanFrame {
-                    images,
-                    source: frame,
-                }));
-            }
+            let images = vulkan
+                .images
+                .iter()
+                .map(|image| PreparedVulkanImage {
+                    image: image.image,
+                    format: image.format,
+                    width: image.width,
+                    height: image.height,
+                    old_layout: image.layout,
+                    old_access: image.access,
+                    source_queue_family: image.queue_family,
+                    render_queue_family: self.render.queue_family,
+                })
+                .collect();
+            return Ok(PreparedLinuxFrame::Vulkan(PreparedVulkanFrame {
+                images,
+                source: frame,
+            }));
+        }
+        if frame.format.pixel_format != PixelFormat::Nv12 {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "embedded P010 requires direct Vulkan images",
+            ));
         }
         let mut gpu_error = None;
         if self.dmabuf_import_supported && frame.dmabuf.is_some() {
@@ -598,7 +641,7 @@ impl LinuxFrameProducer {
         ))
     }
 
-    fn wait_for_decode(&self, frame: &VulkanVideoFrame) -> Result<()> {
+    fn wait_for_decode(&mut self, frame: &VulkanVideoFrame) -> Result<()> {
         let (semaphores, values): (Vec<_>, Vec<_>) = timeline_waits(frame)?
             .into_iter()
             .map(|(semaphore, value)| (vk::Semaphore::from_raw(semaphore), value))
@@ -609,28 +652,37 @@ impl LinuxFrameProducer {
         let wait = vk::SemaphoreWaitInfo::default()
             .semaphores(&semaphores)
             .values(&values);
-        let source_instance;
-        let source_device;
-        let device = if frame.device == self.render.device {
-            &self.device
-        } else {
-            source_instance = unsafe {
-                ash::Instance::load(
-                    self._entry.static_fn(),
-                    vk::Instance::from_raw(frame.instance as u64),
-                )
-            };
-            source_device = unsafe {
-                ash::Device::load(
-                    source_instance.fp_v1_0(),
-                    vk::Device::from_raw(frame.device as u64),
-                )
-            };
-            &source_device
-        };
         // Readiness was awaited by the publisher. Revalidate without waiting if
         // this public preparation API is called with a frame from another owner.
-        decode_readiness(unsafe { device.wait_semaphores(&wait, 0) })
+        let result = unsafe { self.device.wait_semaphores(&wait, 0) };
+        self.device_lost |= result == Err(vk::Result::ERROR_DEVICE_LOST);
+        decode_readiness(result)
+    }
+
+    fn enqueue_decode_wait(&mut self, frame: &VulkanVideoFrame) -> Result<()> {
+        let (semaphores, values): (Vec<_>, Vec<_>) = timeline_waits(frame)?
+            .into_iter()
+            .map(|(semaphore, value)| (vk::Semaphore::from_raw(semaphore), value))
+            .unzip();
+        if semaphores.is_empty() {
+            return Ok(());
+        }
+        let stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; semaphores.len()];
+        let mut timeline =
+            vk::TimelineSemaphoreSubmitInfo::default().wait_semaphore_values(&values);
+        let submits = [vk::SubmitInfo::default()
+            .push_next(&mut timeline)
+            .wait_semaphores(&semaphores)
+            .wait_dst_stage_mask(&stages)];
+        let result = unsafe {
+            self.device.queue_submit(
+                vk::Queue::from_raw(self.render.queue as u64),
+                &submits,
+                vk::Fence::null(),
+            )
+        };
+        self.device_lost |= result == Err(vk::Result::ERROR_DEVICE_LOST);
+        result.map_err(|error| vk_error("enqueue Qt Vulkan decoder timeline wait", error))
     }
 
     fn import_dmabuf(&mut self, source: Arc<DecodedVideoFrame>) -> Result<Arc<ImportedNv12Frame>> {
@@ -893,10 +945,10 @@ impl LinuxFrameProducer {
         height: u32,
     ) -> Result<(vk::ImageView, vk::ImageView)> {
         let resources = self.slots[slot].as_mut().expect("slot initialized");
-        resources.frame = None;
         for view in resources.owned_input_views.drain(..) {
             unsafe { self.device.destroy_image_view(view, None) };
         }
+        resources.frame = None;
         match prepared {
             PreparedLinuxFrame::Vulkan(frame) => {
                 let (luma, chroma) = direct_image_views(&self.device, &frame.images)?;
@@ -964,6 +1016,7 @@ impl LinuxFrameProducer {
         height: u32,
         color_matrix: crate::ColorMatrix,
         full_range: bool,
+        chroma_location: crate::ChromaLocation,
     ) -> Result<()> {
         let resources = self.slots[slot].as_mut().expect("slot initialized");
         let renderer = self.renderer.as_ref().expect("renderer initialized");
@@ -971,21 +1024,14 @@ impl LinuxFrameProducer {
         match prepared {
             PreparedLinuxFrame::Vulkan(frame) => {
                 acquire.extend(frame.images.iter().map(|image| {
-                    let source_family = if image.source_queue_family == self.render.queue_family {
-                        vk::QUEUE_FAMILY_IGNORED
-                    } else {
-                        image.source_queue_family
-                    };
                     vk::ImageMemoryBarrier::default()
                         .old_layout(vk::ImageLayout::from_raw(image.old_layout))
                         .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .src_queue_family_index(source_family)
-                        .dst_queue_family_index(if source_family == vk::QUEUE_FAMILY_IGNORED {
-                            vk::QUEUE_FAMILY_IGNORED
-                        } else {
-                            self.render.queue_family
-                        })
-                        .src_access_mask(vk::AccessFlags::from_raw(image.old_access as u32))
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .src_access_mask(
+                            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                        )
                         .dst_access_mask(vk::AccessFlags::SHADER_READ)
                         .image(vk::Image::from_raw(image.image))
                         .subresource_range(image_color_range())
@@ -1076,6 +1122,23 @@ impl LinuxFrameProducer {
                     crate::ColorMatrix::Bt2020 => 2,
                 },
                 full_range: u32::from(full_range),
+                sample_bits: match prepared {
+                    PreparedLinuxFrame::Vulkan(frame)
+                        if frame.source.format.pixel_format == PixelFormat::P010 =>
+                    {
+                        if vk::Format::from_raw(frame.images[0].format) == vk::Format::R16_UNORM {
+                            16
+                        } else {
+                            10
+                        }
+                    }
+                    _ => 8,
+                },
+                chroma_offset_x: if chroma_location == crate::ChromaLocation::Left {
+                    0.5 / width as f32
+                } else {
+                    0.0
+                },
             };
             let constants = std::slice::from_raw_parts(
                 (&constants as *const ConversionConstants).cast::<u8>(),
@@ -1103,23 +1166,15 @@ impl LinuxFrameProducer {
         match prepared {
             PreparedLinuxFrame::Vulkan(frame) => {
                 release.extend(frame.images.iter().map(|image| {
-                    let destination_family =
-                        if image.source_queue_family == self.render.queue_family {
-                            vk::QUEUE_FAMILY_IGNORED
-                        } else {
-                            image.source_queue_family
-                        };
                     vk::ImageMemoryBarrier::default()
                         .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                         .new_layout(vk::ImageLayout::from_raw(image.old_layout))
-                        .src_queue_family_index(if destination_family == vk::QUEUE_FAMILY_IGNORED {
-                            vk::QUEUE_FAMILY_IGNORED
-                        } else {
-                            self.render.queue_family
-                        })
-                        .dst_queue_family_index(destination_family)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                         .src_access_mask(vk::AccessFlags::SHADER_READ)
-                        .dst_access_mask(vk::AccessFlags::MEMORY_READ)
+                        .dst_access_mask(
+                            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                        )
                         .image(vk::Image::from_raw(image.image))
                         .subresource_range(image_color_range())
                 }));
@@ -1154,7 +1209,6 @@ impl LinuxFrameProducer {
     }
 
     fn destroy_slot(&self, mut resources: FrameSlotResources) {
-        resources.frame = None;
         unsafe {
             for view in resources.owned_input_views.drain(..) {
                 self.device.destroy_image_view(view, None);
@@ -1168,6 +1222,7 @@ impl LinuxFrameProducer {
             self.device.destroy_framebuffer(resources.framebuffer, None);
             destroy_gpu_image(&self.device, resources.output);
         }
+        resources.frame = None;
     }
 }
 
@@ -1176,6 +1231,8 @@ struct ConversionConstants {
     texture_scale: [f32; 2],
     color_matrix: u32,
     full_range: u32,
+    sample_bits: u32,
+    chroma_offset_x: f32,
 }
 
 impl Drop for LinuxFrameProducer {
@@ -1206,16 +1263,26 @@ fn direct_image_views(
 ) -> Result<(vk::ImageView, vk::ImageView)> {
     if images.len() == 1 {
         let image = vk::Image::from_raw(images[0].image);
+        let p010 = vk::Format::from_raw(images[0].format)
+            == vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
         let luma = create_image_view(
             device,
             image,
-            vk::Format::R8_UNORM,
+            if p010 {
+                vk::Format::R10X6_UNORM_PACK16
+            } else {
+                vk::Format::R8_UNORM
+            },
             vk::ImageAspectFlags::PLANE_0,
         )?;
         let chroma = match create_image_view(
             device,
             image,
-            vk::Format::R8G8_UNORM,
+            if p010 {
+                vk::Format::R10X6G10X6_UNORM_2PACK16
+            } else {
+                vk::Format::R8G8_UNORM
+            },
             vk::ImageAspectFlags::PLANE_1,
         ) {
             Ok(view) => view,
@@ -1598,6 +1665,95 @@ fn timeline_waits(frame: &VulkanVideoFrame) -> Result<Vec<(u64, u64)>> {
     Ok(waits)
 }
 
+fn validate_direct_frame(
+    frame: &VulkanVideoFrame,
+    format: crate::StreamFormat,
+    render: VulkanRenderDevice,
+) -> Result<()> {
+    frame.validate()?;
+    if (frame.instance, frame.physical_device, frame.device)
+        != (render.instance, render.physical_device, render.device)
+    {
+        return Err(Error::InvalidFormat(
+            "Vulkan decoded frame belongs to a different Qt device".to_owned(),
+        ));
+    }
+    let usage = vk::ImageUsageFlags::from_raw(frame.image_usage);
+    if !usage.contains(vk::ImageUsageFlags::SAMPLED)
+        || usage.contains(vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR)
+    {
+        return Err(Error::InvalidFormat(
+            "direct Vulkan output must be sampleable and separate from decoder DPB images"
+                .to_owned(),
+        ));
+    }
+    if !frame.queue_families.contains(&render.queue_family)
+        || frame.images.iter().any(|image| {
+            image.queue_family != vk::QUEUE_FAMILY_IGNORED
+                && image.queue_family != render.queue_family
+        })
+    {
+        return Err(Error::InvalidFormat(
+            "Vulkan output is not concurrently accessible by Qt's graphics family".to_owned(),
+        ));
+    }
+    if frame.images.iter().any(|image| {
+        matches!(
+            vk::ImageLayout::from_raw(image.layout),
+            vk::ImageLayout::UNDEFINED | vk::ImageLayout::PREINITIALIZED
+        )
+    }) {
+        return Err(Error::InvalidFormat(
+            "Vulkan output has no initialized image layout".to_owned(),
+        ));
+    }
+    let p010 = format.pixel_format == PixelFormat::P010;
+    let valid = match frame.images.as_slice() {
+        [image] => {
+            let expected = if p010 {
+                vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+            } else {
+                vk::Format::G8_B8R8_2PLANE_420_UNORM
+            };
+            vk::Format::from_raw(image.format) == expected
+                && image.width == format.width
+                && image.height == format.height
+                && vk::ImageCreateFlags::from_raw(frame.image_flags)
+                    .contains(vk::ImageCreateFlags::MUTABLE_FORMAT)
+        }
+        [luma, chroma] => {
+            let formats = (
+                vk::Format::from_raw(luma.format),
+                vk::Format::from_raw(chroma.format),
+            );
+            let valid_formats = if p010 {
+                formats == (vk::Format::R16_UNORM, vk::Format::R16G16_UNORM)
+                    || formats
+                        == (
+                            vk::Format::R10X6_UNORM_PACK16,
+                            vk::Format::R10X6G10X6_UNORM_2PACK16,
+                        )
+            } else {
+                formats == (vk::Format::R8_UNORM, vk::Format::R8G8_UNORM)
+            };
+            valid_formats
+                && luma.image != chroma.image
+                && luma.width == format.width
+                && luma.height == format.height
+                && chroma.width == format.width / 2
+                && chroma.height == format.height / 2
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(Error::InvalidFormat(
+            "unsupported Vulkan NV12/P010 image format, extent, or plane layout".to_owned(),
+        ));
+    }
+    timeline_waits(frame)?;
+    Ok(())
+}
+
 fn nv12_dmabuf_layout(frame: &DmaBufFrame) -> Result<(usize, DmaBufPlane, DmaBufPlane)> {
     let (luma, chroma) = if frame.layers.len() == 1
         && frame.layers[0].format == DRM_FORMAT_NV12
@@ -1824,6 +1980,12 @@ fn create_plane_view(
 }
 
 fn vk_error(context: &'static str, error: vk::Result) -> Error {
+    if error == vk::Result::ERROR_DEVICE_LOST {
+        return Error::DeviceLost {
+            subsystem: Subsystem::Vulkan,
+            reason: context.to_owned(),
+        };
+    }
     Error::backend(Subsystem::Vulkan, format!("{context}: {error:?}"))
 }
 
@@ -1915,6 +2077,7 @@ mod tests {
                         instance: instance.handle().as_raw() as usize,
                         physical_device: physical.as_raw() as usize,
                         device: device.handle().as_raw() as usize,
+                        queue: queue.as_raw() as usize,
                         queue_family: family,
                         dmabuf_import_enabled: false,
                     },
@@ -1961,6 +2124,7 @@ mod tests {
             instance: 0,
             physical_device: 0,
             device: 0,
+            queue: 0,
             queue_family: 0,
             dmabuf_import_enabled: false,
         };
@@ -2003,13 +2167,392 @@ mod tests {
         ));
         assert!(matches!(
             decode_readiness(Err(vk::Result::ERROR_DEVICE_LOST)),
-            Err(Error::Backend { .. })
+            Err(Error::DeviceLost { .. })
         ));
     }
     use crate::{DmaBufLayer, DmaBufObject, VulkanImage};
 
     fn vulkan_frame(images: Vec<VulkanImage>) -> VulkanVideoFrame {
         VulkanVideoFrame::new(1, 2, 3, vec![0], 0, 0, images, 0, None, None, Arc::new(()))
+    }
+
+    fn direct_fixture(
+        pixel_format: PixelFormat,
+    ) -> (VulkanVideoFrame, crate::StreamFormat, VulkanRenderDevice) {
+        let p010 = pixel_format == PixelFormat::P010;
+        let images = [
+            (
+                10,
+                4,
+                4,
+                if p010 {
+                    vk::Format::R16_UNORM
+                } else {
+                    vk::Format::R8_UNORM
+                },
+            ),
+            (
+                11,
+                2,
+                2,
+                if p010 {
+                    vk::Format::R16G16_UNORM
+                } else {
+                    vk::Format::R8G8_UNORM
+                },
+            ),
+        ]
+        .map(|(image, width, height, format)| VulkanImage {
+            image,
+            width,
+            height,
+            format: format.as_raw(),
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL.as_raw(),
+            access: vk::AccessFlags2::SHADER_SAMPLED_READ.as_raw(),
+            semaphore: 12,
+            semaphore_value: 1,
+            queue_family: vk::QUEUE_FAMILY_IGNORED,
+        })
+        .to_vec();
+        let mut frame = unsafe { vulkan_frame(images).with_completed_gpu_copy() };
+        frame.image_usage = vk::ImageUsageFlags::SAMPLED.as_raw();
+        let format = crate::StreamFormat {
+            pixel_format,
+            ..crate::StreamFormat::video_default(4, 4).unwrap()
+        };
+        let render = VulkanRenderDevice {
+            instance: 1,
+            physical_device: 2,
+            device: 3,
+            queue: 4,
+            queue_family: 0,
+            dmabuf_import_enabled: false,
+        };
+        (frame, format, render)
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan implementation; runs with Mesa lavapipe without /dev/dri"]
+    fn direct_gpu_conversion_retains_nv12_and_p010_until_slot_retirement() {
+        unsafe {
+            let entry = ash::Entry::load().unwrap();
+            let application = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_2);
+            let instance = entry
+                .create_instance(
+                    &vk::InstanceCreateInfo::default().application_info(&application),
+                    None,
+                )
+                .unwrap();
+            let physical = instance.enumerate_physical_devices().unwrap()[0];
+            let family = instance
+                .get_physical_device_queue_family_properties(physical)
+                .iter()
+                .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+                .unwrap() as u32;
+            let priorities = [1.0];
+            let queues = [vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(family)
+                .queue_priorities(&priorities)];
+            let mut features =
+                vk::PhysicalDeviceTimelineSemaphoreFeatures::default().timeline_semaphore(true);
+            let device = instance
+                .create_device(
+                    physical,
+                    &vk::DeviceCreateInfo::default()
+                        .queue_create_infos(&queues)
+                        .push_next(&mut features),
+                    None,
+                )
+                .unwrap();
+            let queue = device.get_device_queue(family, 0);
+            let pool = device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default()
+                        .queue_family_index(family)
+                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                    None,
+                )
+                .unwrap();
+            let commands = device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .command_pool(pool)
+                        .command_buffer_count(1),
+                )
+                .unwrap();
+            let command = commands[0];
+            let render = VulkanRenderDevice {
+                instance: instance.handle().as_raw() as usize,
+                physical_device: physical.as_raw() as usize,
+                device: device.handle().as_raw() as usize,
+                queue: queue.as_raw() as usize,
+                queue_family: family,
+                dmabuf_import_enabled: false,
+            };
+            for (pixel_format, completed_copy) in [
+                (PixelFormat::Nv12, false),
+                (PixelFormat::P010, false),
+                (PixelFormat::Nv12, true),
+                (PixelFormat::P010, true),
+            ] {
+                let formats = if pixel_format == PixelFormat::P010 {
+                    [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM]
+                } else {
+                    [vk::Format::R8_UNORM, vk::Format::R8G8_UNORM]
+                };
+                let images = [
+                    create_gpu_image(
+                        &instance,
+                        physical,
+                        &device,
+                        4,
+                        4,
+                        formats[0],
+                        vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+                    )
+                    .unwrap(),
+                    create_gpu_image(
+                        &instance,
+                        physical,
+                        &device,
+                        2,
+                        2,
+                        formats[1],
+                        vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+                    )
+                    .unwrap(),
+                ];
+                device
+                    .reset_command_buffer(command, vk::CommandBufferResetFlags::empty())
+                    .unwrap();
+                device
+                    .begin_command_buffer(command, &vk::CommandBufferBeginInfo::default())
+                    .unwrap();
+                for (index, image) in images.iter().enumerate() {
+                    let barrier = [vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .image(image.image)
+                        .subresource_range(image_color_range())];
+                    device.cmd_pipeline_barrier(
+                        command,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &barrier,
+                    );
+                    device.cmd_clear_color_image(
+                        command,
+                        image.image,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        &vk::ClearColorValue {
+                            float32: if index == 0 {
+                                [0.5; 4]
+                            } else {
+                                [128.0 / 255.0; 4]
+                            },
+                        },
+                        &[image_color_range()],
+                    );
+                    let barrier = [vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                        .image(image.image)
+                        .subresource_range(image_color_range())];
+                    device.cmd_pipeline_barrier(
+                        command,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::PipelineStageFlags::FRAGMENT_SHADER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &barrier,
+                    );
+                }
+                device.end_command_buffer(command).unwrap();
+                let mut semaphore_type = vk::SemaphoreTypeCreateInfo::default()
+                    .semaphore_type(vk::SemaphoreType::TIMELINE);
+                let semaphore = device
+                    .create_semaphore(
+                        &vk::SemaphoreCreateInfo::default().push_next(&mut semaphore_type),
+                        None,
+                    )
+                    .unwrap();
+                let semaphores = [semaphore];
+                let values = [1];
+                let mut timeline =
+                    vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&values);
+                device
+                    .queue_submit(
+                        queue,
+                        &[vk::SubmitInfo::default()
+                            .command_buffers(&commands)
+                            .signal_semaphores(&semaphores)
+                            .push_next(&mut timeline)],
+                        vk::Fence::null(),
+                    )
+                    .unwrap();
+                device.queue_wait_idle(queue).unwrap();
+                let owner = Arc::new(());
+                let weak = Arc::downgrade(&owner);
+                let source_images = images
+                    .iter()
+                    .enumerate()
+                    .map(|(index, image)| VulkanImage {
+                        image: image.image.as_raw(),
+                        format: formats[index].as_raw(),
+                        width: if index == 0 { 4 } else { 2 },
+                        height: if index == 0 { 4 } else { 2 },
+                        layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL.as_raw(),
+                        access: vk::AccessFlags2::SHADER_SAMPLED_READ.as_raw(),
+                        semaphore: semaphore.as_raw(),
+                        semaphore_value: 1,
+                        queue_family: vk::QUEUE_FAMILY_IGNORED,
+                    })
+                    .collect();
+                let vulkan = VulkanVideoFrame::new(
+                    render.instance,
+                    render.physical_device,
+                    render.device,
+                    vec![family],
+                    vk::ImageUsageFlags::SAMPLED.as_raw(),
+                    0,
+                    source_images,
+                    0,
+                    None,
+                    None,
+                    owner,
+                );
+                let vulkan = Arc::new(if completed_copy {
+                    vulkan.with_completed_gpu_copy()
+                } else {
+                    vulkan
+                });
+                let producer = LinuxGpuFrameProducer::new(1).unwrap();
+                let frame = producer
+                    .frame(DecodedVideoFrame {
+                        format: crate::StreamFormat {
+                            pixel_format,
+                            ..crate::StreamFormat::video_default(4, 4).unwrap()
+                        },
+                        planes: Vec::new(),
+                        dmabuf: None,
+                        vulkan: Some(vulkan),
+                        timestamp_us: 5,
+                    })
+                    .unwrap();
+                device
+                    .reset_command_buffer(command, vk::CommandBufferResetFlags::empty())
+                    .unwrap();
+                device
+                    .begin_command_buffer(command, &vk::CommandBufferBeginInfo::default())
+                    .unwrap();
+                let output = frame.record(render, command.as_raw() as usize, 0).unwrap();
+                assert_ne!(output.image, 0);
+                assert_eq!((output.width, output.height), (4, 4));
+                device.end_command_buffer(command).unwrap();
+                device
+                    .queue_submit(
+                        queue,
+                        &[vk::SubmitInfo::default().command_buffers(&commands)],
+                        vk::Fence::null(),
+                    )
+                    .unwrap();
+                drop(frame);
+                assert!(weak.upgrade().is_some());
+                producer.render_resources.retire().unwrap();
+                assert!(weak.upgrade().is_none());
+                device.destroy_semaphore(semaphore, None);
+                for image in images {
+                    destroy_gpu_image(&device, image);
+                }
+            }
+            device.destroy_command_pool(pool, None);
+            device.destroy_device(None);
+            instance.destroy_instance(None);
+        }
+    }
+
+    #[test]
+    fn direct_conversion_accepts_only_matching_nv12_and_p010_planes() {
+        for pixel_format in [PixelFormat::Nv12, PixelFormat::P010] {
+            let (mut frame, format, render) = direct_fixture(pixel_format);
+            validate_direct_frame(&frame, format, render).unwrap();
+            assert_eq!(timeline_waits(&frame).unwrap(), vec![(12, 1)]);
+            frame.images[1].width = format.width;
+            assert!(validate_direct_frame(&frame, format, render).is_err());
+            frame.images[1].width = format.width / 2;
+            frame.images[1].format = vk::Format::R8G8B8A8_UNORM.as_raw();
+            assert!(validate_direct_frame(&frame, format, render).is_err());
+        }
+    }
+
+    #[test]
+    fn completed_copy_still_requires_gpu_timeline_handoff() {
+        let (mut frame, format, render) = direct_fixture(PixelFormat::Nv12);
+        for image in &mut frame.images {
+            image.semaphore = 0;
+            image.semaphore_value = 0;
+        }
+        assert!(frame.completed_gpu_copy());
+        assert!(validate_direct_frame(&frame, format, render).is_err());
+    }
+
+    #[test]
+    fn direct_conversion_rejects_foreign_devices_dpb_and_exclusive_families() {
+        let (mut frame, format, render) = direct_fixture(PixelFormat::Nv12);
+        for foreign in [
+            VulkanRenderDevice {
+                instance: 9,
+                ..render
+            },
+            VulkanRenderDevice {
+                physical_device: 9,
+                ..render
+            },
+            VulkanRenderDevice {
+                device: 9,
+                ..render
+            },
+            VulkanRenderDevice {
+                queue_family: 9,
+                ..render
+            },
+        ] {
+            assert!(validate_direct_frame(&frame, format, foreign).is_err());
+        }
+        frame.image_usage |= vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR.as_raw();
+        assert!(validate_direct_frame(&frame, format, render).is_err());
+        frame.image_usage = vk::ImageUsageFlags::SAMPLED.as_raw();
+        frame.images[0].queue_family = 1;
+        assert!(validate_direct_frame(&frame, format, render).is_err());
+        frame.images[0].queue_family = vk::QUEUE_FAMILY_IGNORED;
+        frame.images[0].layout = vk::ImageLayout::UNDEFINED.as_raw();
+        assert!(validate_direct_frame(&frame, format, render).is_err());
+    }
+
+    #[test]
+    fn multiplanar_p010_requires_mutable_format_and_matching_depth() {
+        let (mut frame, format, render) = direct_fixture(PixelFormat::P010);
+        frame.images.truncate(1);
+        frame.images[0].format = vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16.as_raw();
+        assert!(validate_direct_frame(&frame, format, render).is_err());
+        frame.image_flags = vk::ImageCreateFlags::MUTABLE_FORMAT.as_raw();
+        validate_direct_frame(&frame, format, render).unwrap();
+        let nv12 = crate::StreamFormat {
+            pixel_format: PixelFormat::Nv12,
+            ..format
+        };
+        assert!(validate_direct_frame(&frame, nv12, render).is_err());
     }
 
     #[test]

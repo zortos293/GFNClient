@@ -24,6 +24,7 @@ impl VideoCodec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
     Nv12,
+    P010,
     I420,
     Bgra8,
     Rgba8,
@@ -91,8 +92,10 @@ impl StreamFormat {
                 "video dimensions exceed the Linux backend limit".to_owned(),
             ));
         }
-        if matches!(self.pixel_format, PixelFormat::Nv12 | PixelFormat::I420)
-            && (self.width % 2 != 0 || self.height % 2 != 0)
+        if matches!(
+            self.pixel_format,
+            PixelFormat::Nv12 | PixelFormat::P010 | PixelFormat::I420
+        ) && (self.width % 2 != 0 || self.height % 2 != 0)
         {
             return Err(Error::InvalidFormat(
                 "4:2:0 video dimensions must be even".to_owned(),
@@ -221,6 +224,7 @@ pub struct VulkanVideoFrame {
     lock_queue: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32)>,
     unlock_queue: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32)>,
     cpu_nv12_fallback: Option<Arc<dyn Fn() -> Result<Vec<FramePlane>> + Send + Sync>>,
+    completed_gpu_copy: bool,
     owner: Arc<dyn Send + Sync>,
 }
 
@@ -251,6 +255,7 @@ impl VulkanVideoFrame {
             lock_queue,
             unlock_queue,
             cpu_nv12_fallback: None,
+            completed_gpu_copy: false,
             owner,
         }
     }
@@ -270,6 +275,23 @@ impl VulkanVideoFrame {
                 "Vulkan frame has no CPU NV12 fallback",
             )
         })?()
+    }
+
+    /// Marks immutable presentation images whose GPU copy has completed.
+    ///
+    /// # Safety
+    ///
+    /// A fence covering all writes must have completed before this call. The
+    /// images must remain immutable and outside decoder DPB use until the last
+    /// owner is released, with their published layouts preserved. A signaled
+    /// timeline semaphore must still be provided for GPU visibility on Qt's queue.
+    pub unsafe fn with_completed_gpu_copy(mut self) -> Self {
+        self.completed_gpu_copy = true;
+        self
+    }
+
+    pub(crate) fn completed_gpu_copy(&self) -> bool {
+        self.completed_gpu_copy
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -397,14 +419,20 @@ impl DecodedVideoFrame {
         let width = self.format.width as usize;
         let height = self.format.height as usize;
         match self.format.pixel_format {
-            PixelFormat::Nv12 => {
+            PixelFormat::Nv12 | PixelFormat::P010 => {
                 if self.planes.len() != 2 {
                     return Err(Error::InvalidFormat(
-                        "NV12 frames require two planes".to_owned(),
+                        "NV12/P010 frames require two planes".to_owned(),
                     ));
                 }
-                self.planes[0].validate(width)?;
-                self.planes[1].validate(width)?;
+                let row_bytes = width
+                    * if self.format.pixel_format == PixelFormat::P010 {
+                        2
+                    } else {
+                        1
+                    };
+                self.planes[0].validate(row_bytes)?;
+                self.planes[1].validate(row_bytes)?;
                 if self.planes[0].rows < height || self.planes[1].rows < height / 2 {
                     return Err(Error::InvalidFormat(
                         "NV12 plane height is too small".to_owned(),
@@ -472,6 +500,37 @@ mod tests {
             timestamp_us: 1,
         };
         frame.validate().unwrap();
+    }
+
+    #[test]
+    fn p010_requires_even_dimensions_and_sixteen_bit_storage() {
+        let mut frame = DecodedVideoFrame {
+            format: StreamFormat {
+                pixel_format: PixelFormat::P010,
+                ..StreamFormat::video_default(4, 4).unwrap()
+            },
+            planes: vec![
+                FramePlane {
+                    data: vec![0; 32].into(),
+                    stride: 8,
+                    rows: 4,
+                },
+                FramePlane {
+                    data: vec![0; 16].into(),
+                    stride: 8,
+                    rows: 2,
+                },
+            ],
+            dmabuf: None,
+            vulkan: None,
+            timestamp_us: 0,
+        };
+        frame.validate().unwrap();
+        frame.planes[1].stride = 4;
+        assert!(frame.validate().is_err());
+        frame.planes[1].stride = 8;
+        frame.format.width = 3;
+        assert!(frame.validate().is_err());
     }
 
     #[test]

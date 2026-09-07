@@ -106,6 +106,20 @@ if(BUILD_TESTING)
         target_link_libraries(opennow-streamvideo-tests PRIVATE Vulkan::Vulkan)
     endif()
     add_dependencies(opennow-streamvideo-tests opennow-streamer-ffi-build)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        qt_add_executable(opennow-linuxvulkangraphics-tests
+            tests/tst_linuxvulkangraphics.cpp
+            src/streaming/rendering/LinuxVulkanGraphics.cpp
+            src/streaming/rendering/LinuxVulkanGraphics.h)
+        target_include_directories(opennow-linuxvulkangraphics-tests PRIVATE src)
+        target_link_libraries(opennow-linuxvulkangraphics-tests PRIVATE
+            Qt6::Test Qt6::GuiPrivate Qt6::Quick opennow-streamer-ffi Vulkan::Vulkan)
+        add_dependencies(opennow-linuxvulkangraphics-tests opennow-streamer-ffi-build)
+        add_test(NAME opennow-linuxvulkangraphics-tests
+            COMMAND opennow-linuxvulkangraphics-tests -o -,txt)
+        set_tests_properties(opennow-linuxvulkangraphics-tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    endif()
     add_test(NAME opennow-streamvideo-tests
              COMMAND opennow-streamvideo-tests -o -,txt)
     set_tests_properties(opennow-streamvideo-tests PROPERTIES

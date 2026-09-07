@@ -2,13 +2,25 @@
 
 This crate owns the Linux hardware decode, audio, and Vulkan presentation path used by the native-streamer workspace.
 
-The backend accepts H.264, HEVC/H.265, and AV1 video plus Opus audio. With the `ffmpeg` feature, automatic decode prefers CUDA/NVDEC when an NVIDIA driver is present, then Vulkan Video, and finally FFmpeg's software decoder. Native VA-API and stateful V4L2 M2M remain available for H.264. All decoder outputs are normalized to NV12. Presentation prefers a Vulkan swapchain attached to a caller-owned X11 or Wayland surface and automatically falls back to an SDL NV12 texture when Vulkan presentation is unavailable. The integrated streamer decodes Opus from its static library and sends PCM through its bundled SDL audio path; the standalone Linux-session API also exposes PipeWire and ALSA sinks.
+The backend accepts H.264, HEVC/H.265, and AV1 video plus Opus audio. The supported Qt application uses the embedded GPU frame path described below, without an SDL video window or a second presenter. It decodes Opus from its static library and sends PCM through its bundled SDL audio path; the standalone Linux-session API also exposes PipeWire and ALSA sinks.
+
+The standalone development host retains its existing decoder order: with the `ffmpeg` feature, automatic decode prefers CUDA/NVDEC when an NVIDIA driver is present, then Vulkan Video, and finally FFmpeg's software decoder. Native VA-API and stateful V4L2 M2M remain available for H.264. That standalone presentation path normalizes output to NV12, prefers a Vulkan swapchain attached to a caller-owned X11 or Wayland surface, and falls back to an SDL NV12 texture when Vulkan presentation is unavailable.
 
 Runtime probing opens the real device or service. A compiled feature or a shared library by itself is never reported as an available decoder, presenter, or audio sink.
 
 `LinuxSession` owns the bounded decode and audio workers. Submit complete encoded access units and Opus packets, drain decoded frames and typed events, and call `reconfigure` or `stop` explicitly. Queue overflow drops the oldest media, flushes video reference state, and emits `NeedKeyframe` instead of allowing corrupted prediction chains to continue. If a decoder fails, the session advances through the configured fallback order and reuses the current keyframe when possible.
 
-Presentation stays on the caller's window-system thread. Construct `NativeSurface::borrow_x11` or `NativeSurface::borrow_wayland` from handles that the caller owns, then create `VulkanPresenter` and feed it frames returned by the session. The integrated runtime obtains either pair from SDL's raw window handles: X11 is reparented into the shell-owned surface, while Wayland remains a compositor-managed top-level surface. The presenter owns its Vulkan instance, device, swapchain, and `VkSurfaceKHR`; it never destroys the borrowed X11 window, Xlib display, `wl_surface`, or `wl_display`. Its lifetime is tied to `NativeSurface`, and it is intentionally not `Send`.
+Standalone presentation stays on the caller's window-system thread. Construct `NativeSurface::borrow_x11` or `NativeSurface::borrow_wayland` from handles that the caller owns, then create `VulkanPresenter` and feed it frames returned by the session. The standalone development runtime obtains either pair from SDL's raw window handles: X11 is reparented into the host-owned surface, while Wayland remains a compositor-managed top-level surface. The presenter owns its Vulkan instance, device, swapchain, and `VkSurfaceKHR`; it never destroys the borrowed X11 window, Xlib display, `wl_surface`, or `wl_display`. Its lifetime is tied to `NativeSurface`, and it is intentionally not `Send`.
+
+## Embedded shared Vulkan decode
+
+`SharedVulkanDevice::create` creates an owned Vulkan Video device when both `ffmpeg` and `vulkan` are enabled. The Qt shell obtains it through streamer FFI ABI 5, adopts the returned instance, device, and graphics queue, and passes the opaque owner into engine creation. The runtime clones the same `Arc<SharedVulkanDevice>` into `SessionConfig::vulkan_device`; it does not open an unrelated decode device for the embedded session.
+
+Embedded capability reporting uses the attached device's codec profiles. Session creation also checks the negotiated codec, dimensions, and bit depth. Supported 4:2:0 8-bit streams use NV12; supported 4:2:0 10-bit streams use P010. Embedded 4:4:4 is rejected rather than silently converted to 4:2:0. Without a shared owner, embedded Vulkan decode remains unavailable and Auto retains the existing non-Vulkan fallback path. Standalone probe results cannot enable embedded Vulkan.
+
+The hello report carries per-codec `colorQualities` from those same profiles. Qt forwards it to the application core, which checks both Auto and manual codec choices against the user's color quality before CloudMatch allocates a seat. Main10 and 4:4:4 therefore fail at preflight when unsupported, rather than only after transport starts.
+
+Decode workers copy decoded images into bounded GPU snapshots isolated from FFmpeg's decoded-picture buffer. Only completed, immutable snapshots are published to Qt; retaining or sampling a snapshot cannot race with decoder reuse of a reference image. Qt records conversion and synchronization into its own command stream and keeps the snapshot alive until its GPU use completes. This is GPU-only presentation without CPU readback, not zero-copy. Device owners must outlive all adopted Qt resources, sessions, and outstanding frame resources; scene-graph retirement still occurs before Qt graphics teardown.
 
 ## Build requirements
 
@@ -30,3 +42,10 @@ cargo check -p opennow-streamer-platform-linux --target aarch64-unknown-linux-gn
 ```
 
 The V4L2 fallback supports both single-planar and multi-planar stateful decoder nodes used on x86_64, aarch64, and Raspberry Pi. Actual decode tests require `/dev/video*`; VA-API tests require `/dev/dri/renderD*`; Vulkan presentation requires a live X11 or Wayland surface; audio requires an SDL-supported system audio service. The ignored `local_hardware_decodes_all_required_codecs` test performs real Vulkan Video and CUDA/NVDEC decoding when the FFmpeg command-line encoder is installed. Ordinary unit tests do not claim those devices exist.
+
+The ignored shared-device HEVC tests exercise the embedded GPU-only snapshot path separately for NV12 and P010. Run them on a Vulkan Video device supporting the corresponding HEVC profiles; compilation and ordinary unit tests do not establish hardware decode support:
+
+```sh
+cargo test -p opennow-streamer-platform-linux --features ffmpeg-bundled shared_vulkan_hevc_nv12_gpu_only -- --ignored --nocapture
+cargo test -p opennow-streamer-platform-linux --features ffmpeg-bundled shared_vulkan_hevc_p010_gpu_only -- --ignored --nocapture
+```

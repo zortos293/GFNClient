@@ -990,6 +990,7 @@ impl MediaSession {
         stream: MediaStreamConfig,
         frames: crate::GraphicsFramePublisher,
         #[cfg(target_os = "linux")] linux_selection: LinuxVideoSelection,
+        #[cfg(target_os = "linux")] vulkan_device: Option<Arc<crate::SharedVulkanDevice>>,
     ) -> Result<Self, String> {
         #[cfg(target_os = "linux")]
         {
@@ -1000,6 +1001,7 @@ impl MediaSession {
                 stream,
                 frames,
                 linux_selection,
+                vulkan_device,
             );
         }
         #[cfg(target_os = "macos")]
@@ -1022,6 +1024,7 @@ impl MediaSession {
         stream: MediaStreamConfig,
         frames: crate::GraphicsFramePublisher,
         linux_selection: LinuxVideoSelection,
+        vulkan_device: Option<Arc<crate::SharedVulkanDevice>>,
     ) -> Result<Self, String> {
         let LinuxVideoPath::Hardware(decoder_preference) = linux_selection.path else {
             return Err(linux_selection.fallback_reason.unwrap_or_else(|| {
@@ -1041,12 +1044,29 @@ impl MediaSession {
         };
         config.decoder_preference = decoder_preference;
         config.embedded_presentation = true;
-        if decoder_preference == opennow_streamer_platform_linux::DecoderPreference::VulkanOnly {
-            return Err(opennow_streamer_platform_linux::DecoderBackend::Vulkan
-                .embedded_presentation_error()
-                .expect("incompatible embedded Vulkan decoder")
-                .to_owned());
+        if stream.color_quality.is_444() {
+            return Err("embedded Linux decode does not support negotiated 4:4:4 color".to_owned());
         }
+        if decoder_preference == opennow_streamer_platform_linux::DecoderPreference::VulkanOnly {
+            let device = vulkan_device.as_ref().ok_or_else(|| {
+                "embedded Vulkan decode requires an attached shared device".to_owned()
+            })?;
+            if !device.supports(
+                config.codec,
+                stream.color_quality.bit_depth() == 10,
+                stream.width,
+                stream.height,
+            ) {
+                return Err("the attached Vulkan device does not support the negotiated codec, color depth, or dimensions".to_owned());
+            }
+            if stream.color_quality.bit_depth() == 10 {
+                config.stream_format.pixel_format =
+                    opennow_streamer_platform_linux::PixelFormat::P010;
+            }
+        } else if stream.color_quality.bit_depth() == 10 {
+            return Err("negotiated 10-bit embedded Linux decode requires a compatible shared Vulkan device".to_owned());
+        }
+        config.vulkan_device = vulkan_device;
         let session = opennow_streamer_platform_linux::LinuxSession::start(config)
             .map_err(|error| error.to_string())?;
         let shared = Arc::new(SharedPipeline {
@@ -3677,6 +3697,60 @@ fn mark_macos_video_desynced(shared: &SharedPipeline, mid: &str, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn embedded_linux_rejects_color_downgrades_and_missing_vulkan_owner() {
+        use opennow_streamer_platform_linux::DecoderPreference;
+        for (color_quality, preference, expected) in [
+            (
+                MediaColorQuality::EightBit444,
+                DecoderPreference::VulkanOnly,
+                "4:4:4",
+            ),
+            (
+                MediaColorQuality::TenBit444,
+                DecoderPreference::VulkanOnly,
+                "4:4:4",
+            ),
+            (
+                MediaColorQuality::TenBit420,
+                DecoderPreference::CudaOnly,
+                "10-bit",
+            ),
+            (
+                MediaColorQuality::EightBit420,
+                DecoderPreference::VulkanOnly,
+                "attached shared device",
+            ),
+            (
+                MediaColorQuality::TenBit420,
+                DecoderPreference::VulkanOnly,
+                "attached shared device",
+            ),
+        ] {
+            let (feedback, _feedback_receiver) = std::sync::mpsc::channel();
+            let (commands, _command_receiver) = std::sync::mpsc::channel();
+            let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+            let result = MediaSession::spawn_embedded_linux(
+                Arc::new(OutputBuffers::new()),
+                feedback,
+                commands,
+                MediaStreamConfig {
+                    color_quality,
+                    ..MediaStreamConfig::default()
+                },
+                frames,
+                LinuxVideoSelection {
+                    path: LinuxVideoPath::Hardware(preference),
+                    use_vulkan_output: true,
+                    fallback_reason: None,
+                },
+                None,
+            );
+            assert!(result.err().is_some_and(|error| error.contains(expected)));
+        }
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

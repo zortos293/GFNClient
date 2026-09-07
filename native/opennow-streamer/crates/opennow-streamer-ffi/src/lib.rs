@@ -11,7 +11,7 @@ use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, EmbeddedInputCapture, EmbeddedLocalAction, GraphicsApi,
     GraphicsContext, GraphicsFramePublisher, GraphicsFrameToken, GraphicsRecordCommand,
     GraphicsRecordedFrame, GraphicsRuntimeError, GraphicsTextureFormat, RenderThreadGraphics,
-    create_embedded_runtime_with_input,
+    SharedVulkanDevice, create_embedded_runtime_with_vulkan_device,
 };
 use opennow_streamer_protocol::log;
 use opennow_streamer_protocol::{Command, error};
@@ -19,7 +19,8 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 4;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 5;
+pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
 const DEFAULT_MAX_COMMAND_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_CAPACITY: usize = 4096;
 const MAX_COMMAND_BYTES: usize = 16 * 1024 * 1024;
@@ -45,6 +46,140 @@ pub struct OpenNowStreamerConfig {
     pub frame_available_callback: OpenNowStreamerFrameAvailableCallback,
     pub cursor_callback: OpenNowStreamerCursorCallback,
     pub user_data: *mut c_void,
+    pub vulkan_device: *const OpenNowStreamerVulkanDevice,
+}
+
+pub struct OpenNowStreamerVulkanDevice {
+    device: Arc<SharedVulkanDevice>,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct OpenNowStreamerVulkanDeviceInfo {
+    pub version: u32,
+    pub struct_size: usize,
+    pub instance: *mut c_void,
+    pub physical_device: *mut c_void,
+    pub device: *mut c_void,
+    pub graphics_queue: *mut c_void,
+    pub graphics_queue_family_index: u32,
+    pub graphics_queue_index: u32,
+    pub api_version: u32,
+}
+
+#[unsafe(no_mangle)]
+/// Creates an owned device for adoption by the shell and embedded decoder.
+///
+/// # Safety
+/// `output` must point to writable storage for one handle pointer.
+pub unsafe extern "C" fn opennow_streamer_vulkan_device_create(
+    output: *mut *mut OpenNowStreamerVulkanDevice,
+) -> OpenNowStreamerStatus {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if output.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        unsafe { output.write(ptr::null_mut()) };
+        #[cfg(target_os = "linux")]
+        {
+            let device = match SharedVulkanDevice::create() {
+                Ok(device) => device,
+                Err(error) => {
+                    use std::io::Write as _;
+                    let reason: String = error
+                        .to_string()
+                        .chars()
+                        .take(512)
+                        .map(|character| {
+                            if character.is_control() {
+                                ' '
+                            } else {
+                                character
+                            }
+                        })
+                        .collect();
+                    log::log_line("WARN", "vulkan-device", &reason);
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "embedded Vulkan unavailable: {reason}"
+                    );
+                    return OpenNowStreamerStatus::GraphicsUnavailable;
+                }
+            };
+            unsafe {
+                output.write(Box::into_raw(Box::new(OpenNowStreamerVulkanDevice {
+                    device,
+                })))
+            };
+            OpenNowStreamerStatus::Ok
+        }
+        #[cfg(not(target_os = "linux"))]
+        OpenNowStreamerStatus::GraphicsUnavailable
+    })) {
+        Ok(status) => status,
+        Err(_) => OpenNowStreamerStatus::Panic,
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Returns borrowed native objects retained by the device owner.
+///
+/// # Safety
+/// `handle` must be live and must not race with destroy. `output` must point to writable
+/// storage for one complete info structure. Native objects must not outlive their owner.
+pub unsafe extern "C" fn opennow_streamer_vulkan_device_info(
+    handle: *const OpenNowStreamerVulkanDevice,
+    output: *mut OpenNowStreamerVulkanDeviceInfo,
+) -> OpenNowStreamerStatus {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() || output.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let info = unsafe { &*handle }.device.info();
+            unsafe {
+                output.write(OpenNowStreamerVulkanDeviceInfo {
+                    version: OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION,
+                    struct_size: size_of::<OpenNowStreamerVulkanDeviceInfo>(),
+                    instance: info.instance as *mut c_void,
+                    physical_device: info.physical_device as *mut c_void,
+                    device: info.device as *mut c_void,
+                    graphics_queue: info.graphics_queue as *mut c_void,
+                    graphics_queue_family_index: info.graphics_queue_family_index,
+                    graphics_queue_index: info.graphics_queue_index,
+                    api_version: info.api_version,
+                });
+            }
+            OpenNowStreamerStatus::Ok
+        }
+        #[cfg(not(target_os = "linux"))]
+        OpenNowStreamerStatus::GraphicsUnavailable
+    })) {
+        Ok(status) => status,
+        Err(_) => OpenNowStreamerStatus::Panic,
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Releases the device owner after the shell has stopped using its native objects.
+///
+/// # Safety
+/// `handle` must be a live handle returned by device creation and consumed exactly once,
+/// without concurrent access. The shell must release all adopted graphics resources first.
+pub unsafe extern "C" fn opennow_streamer_vulkan_device_destroy(
+    handle: *mut OpenNowStreamerVulkanDevice,
+) -> OpenNowStreamerStatus {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        unsafe { drop(Box::from_raw(handle)) };
+        OpenNowStreamerStatus::Ok
+    })) {
+        Ok(status) => status,
+        Err(_) => OpenNowStreamerStatus::Panic,
+    }
 }
 
 #[repr(i32)]
@@ -578,7 +713,8 @@ pub unsafe extern "C" fn opennow_streamer_set_log_file(
 ///
 /// `config` must point to a readable configuration whose first `struct_size` bytes remain valid
 /// for this call. `output` must point to writable storage for one handle pointer. Callback pointers
-/// and `user_data` must remain valid until destroy returns.
+/// and `user_data` must remain valid until destroy returns. A non-null `vulkan_device` must be
+/// live throughout this call; the engine retains its own reference before the worker starts.
 pub unsafe extern "C" fn opennow_streamer_create(
     config: *const OpenNowStreamerConfig,
     output: *mut *mut OpenNowStreamer,
@@ -598,6 +734,8 @@ pub unsafe extern "C" fn opennow_streamer_create(
             return OpenNowStreamerStatus::InvalidConfig;
         }
         let config = unsafe { config.read() };
+        let vulkan_device =
+            unsafe { config.vulkan_device.as_ref() }.map(|owner| Arc::clone(&owner.device));
         let captured_input = Arc::new(CapturedInputQueue::default());
         let runtime_input = Arc::clone(&captured_input);
         match OpenNowStreamer::create(
@@ -609,7 +747,12 @@ pub unsafe extern "C" fn opennow_streamer_create(
                 });
                 Engine::with_embedded_media_runtime(
                     events,
-                    create_embedded_runtime_with_input(frames, runtime_input, Some(cursor_update)),
+                    create_embedded_runtime_with_vulkan_device(
+                        frames,
+                        runtime_input,
+                        Some(cursor_update),
+                        vulkan_device,
+                    ),
                 )
             },
             || {},
@@ -1200,6 +1343,69 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn abi_five_appends_the_shared_vulkan_owner() {
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 5);
+        assert_eq!(OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION, 1);
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerConfig, vulkan_device),
+            std::mem::offset_of!(OpenNowStreamerConfig, user_data) + size_of::<*mut c_void>(),
+        );
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerVulkanDeviceInfo, physical_device),
+            std::mem::offset_of!(OpenNowStreamerVulkanDeviceInfo, instance)
+                + size_of::<*mut c_void>(),
+        );
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerVulkanDeviceInfo, graphics_queue_index),
+            std::mem::offset_of!(OpenNowStreamerVulkanDeviceInfo, graphics_queue_family_index)
+                + size_of::<u32>(),
+        );
+        let messages = CallbackMessages::default();
+        let mut config = test_config(&messages);
+        config.abi_version = 4;
+        assert_eq!(
+            validate_config(&config),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        config.abi_version = 5;
+        config.struct_size = std::mem::offset_of!(OpenNowStreamerConfig, vulkan_device);
+        assert_eq!(
+            validate_config(&config),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+    }
+
+    #[test]
+    fn vulkan_owner_exports_reject_null_pointers() {
+        assert_eq!(
+            unsafe { opennow_streamer_vulkan_device_create(ptr::null_mut()) },
+            OpenNowStreamerStatus::NullPointer
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_vulkan_device_info(ptr::null(), ptr::null_mut()) },
+            OpenNowStreamerStatus::NullPointer
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_vulkan_device_destroy(ptr::null_mut()) },
+            OpenNowStreamerStatus::NullPointer
+        );
+    }
+
+    #[cfg(not(all(
+        target_os = "linux",
+        any(feature = "linux-ffmpeg", feature = "linux-ffmpeg-bundled")
+    )))]
+    #[test]
+    fn unsupported_vulkan_creation_clears_the_output() {
+        let mut output = ptr::dangling_mut::<OpenNowStreamerVulkanDevice>();
+        assert_eq!(
+            unsafe { opennow_streamer_vulkan_device_create(&mut output) },
+            OpenNowStreamerStatus::GraphicsUnavailable
+        );
+        assert!(output.is_null());
+    }
+
     #[derive(Default)]
     struct CallbackMessages {
         values: Mutex<Vec<Value>>,
@@ -1255,6 +1461,7 @@ mod tests {
             frame_available_callback: Some(collect_frame_available),
             cursor_callback: None,
             user_data: ptr::from_ref(messages).cast_mut().cast(),
+            vulkan_device: ptr::null(),
         }
     }
 

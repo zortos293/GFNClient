@@ -125,6 +125,7 @@ struct NativeStreamRuntime::Private {
     }
 
     Api api;
+    const OpenNowStreamerVulkanDevice *vulkanDevice = nullptr;
     // FFI input queues and render-thread graphics state are independent and thread-safe. An
     // exclusive mutex here made every GUI input/overlay call wait behind Media Foundation and
     // D3D work performed by the render thread. Keep lifetime/scene-graph transitions exclusive,
@@ -142,7 +143,8 @@ struct NativeStreamRuntime::Private {
     QString presentationStartId;
 };
 
-NativeStreamRuntime::NativeStreamRuntime(QObject *parent)
+NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
+                                         const OpenNowStreamerVulkanDevice *vulkanDevice)
     : NativeStreamRuntime(Api{&opennow_streamer_create,
                               &opennow_streamer_send,
                               &opennow_streamer_destroy,
@@ -159,14 +161,21 @@ NativeStreamRuntime::NativeStreamRuntime(QObject *parent)
                               &opennow_streamer_submit_gamepad,
                               &opennow_streamer_submit_local_action,
                               &opennow_streamer_set_capture_active,
-                              &opennow_streamer_set_log_file}, parent)
+                              &opennow_streamer_set_log_file}, parent, vulkanDevice)
 {
 }
 
-NativeStreamRuntime::NativeStreamRuntime(Api api, QObject *parent)
+NativeStreamRuntime::NativeStreamRuntime(Api api, QObject *parent,
+                                         const OpenNowStreamerVulkanDevice *vulkanDevice)
     : QObject(parent)
     , d(std::make_unique<Private>(api))
 {
+    d->vulkanDevice = vulkanDevice;
+}
+
+const OpenNowStreamerVulkanDevice *NativeStreamRuntime::vulkanDevice() const
+{
+    return d->vulkanDevice;
 }
 
 NativeStreamRuntime::~NativeStreamRuntime()
@@ -240,6 +249,17 @@ void NativeStreamRuntime::reportPresentationError(const QString &message, quint6
     }, Qt::QueuedConnection);
 }
 
+void NativeStreamRuntime::initializeDiagnostics(Api::SetLogFile setLogFile)
+{
+    if (!setLogFile) return;
+    const auto dataRoot = coreDiagnosticsDataRoot();
+    if (dataRoot.isEmpty()) return;
+    QDir directory(dataRoot);
+    if (!directory.mkpath(u"diagnostics"_s) || !directory.cd(u"diagnostics"_s)) return;
+    const auto logPath = directory.filePath(u"native-streamer.log"_s).toUtf8();
+    setLogFile(logPath.constData());
+}
+
 bool NativeStreamRuntime::start()
 {
     handshakeLog(u"runtime.start build=diagnostics-v2 app=%1 qt=%2 arch=%3 abi=%4"_s
@@ -255,20 +275,7 @@ bool NativeStreamRuntime::start()
         if (d->handle) return true;
     }
 
-    // Point the embedded file log at the diagnostics folder before creating
-    // the engine. Packaged builds never spawn the legacy child streamer, so
-    // without this the video pipeline logs nowhere.
-    if (d->api.setLogFile) {
-        const auto dataRoot = coreDiagnosticsDataRoot();
-        if (!dataRoot.isEmpty()) {
-            QDir directory(dataRoot);
-            if (directory.mkpath(u"diagnostics"_s) && directory.cd(u"diagnostics"_s)) {
-                const auto logPath =
-                    directory.filePath(u"native-streamer.log"_s).toUtf8();
-                d->api.setLogFile(logPath.constData());
-            }
-        }
-    }
+    initializeDiagnostics(d->api.setLogFile);
 
     auto callbacks = std::make_shared<CallbackState>();
     callbacks->target = this;
@@ -284,6 +291,7 @@ bool NativeStreamRuntime::start()
     config.frame_available_callback = &NativeStreamRuntime::frameAvailableCallback;
     config.cursor_callback = &NativeStreamRuntime::cursorCallback;
     config.user_data = callbacks.get();
+    config.vulkan_device = d->vulkanDevice;
 
     OpenNowStreamer *handle = nullptr;
     const auto status = d->api.create(&config, &handle);

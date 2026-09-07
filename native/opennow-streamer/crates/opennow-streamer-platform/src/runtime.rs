@@ -94,14 +94,26 @@ pub struct MediaRuntime {
 #[derive(Clone)]
 enum MediaRuntimeMode {
     Standalone,
-    Embedded(GraphicsFramePublisher),
+    Embedded(
+        GraphicsFramePublisher,
+        Option<Arc<crate::SharedVulkanDevice>>,
+    ),
     #[cfg(feature = "test-runtime")]
     Test,
 }
 
 impl MediaRuntime {
     pub const fn is_embedded(&self) -> bool {
-        matches!(self.mode, MediaRuntimeMode::Embedded(_))
+        matches!(self.mode, MediaRuntimeMode::Embedded(..))
+    }
+
+    pub fn video_backends(&self) -> Vec<opennow_streamer_protocol::VideoBackendCapability> {
+        match &self.mode {
+            MediaRuntimeMode::Embedded(_, device) => {
+                crate::embedded_video_backends_with_device(device.as_deref())
+            }
+            _ => crate::video_backends(),
+        }
     }
 
     pub fn captured_input(&self) -> Arc<crate::CapturedInputQueue> {
@@ -127,7 +139,7 @@ impl MediaRuntime {
         #[cfg(target_os = "linux")]
         let supported = requested == "auto"
             || (matches!(requested, "vulkan" | "cuda" | "nvdec" | "vaapi" | "v4l2")
-                && crate::embedded_video_backends().iter().any(|backend| {
+                && self.video_backends().iter().any(|backend| {
                     backend.available
                         && (backend.backend == requested
                             || (requested == "nvdec" && backend.backend == "cuda"))
@@ -150,7 +162,7 @@ impl MediaRuntime {
         requested: &str,
     ) -> Result<MediaSession, String> {
         self.validate_backend(requested)?;
-        if let MediaRuntimeMode::Embedded(frames) = &self.mode {
+        if let MediaRuntimeMode::Embedded(frames, _device) = &self.mode {
             let session = MediaSession::spawn_embedded(
                 Arc::clone(&self.output),
                 feedback,
@@ -158,11 +170,13 @@ impl MediaRuntime {
                 stream,
                 frames.clone(),
                 #[cfg(target_os = "linux")]
-                if requested == "auto" {
-                    self.linux_selection.clone()
-                } else {
-                    crate::linux_backend::select_requested_video_path(requested)
-                },
+                crate::linux_backend::select_embedded_video_path(
+                    requested,
+                    _device.as_deref(),
+                    stream,
+                ),
+                #[cfg(target_os = "linux")]
+                _device.clone(),
             )?;
             if self.paused.load(Ordering::Acquire) {
                 session.set_paused(true);
@@ -865,6 +879,15 @@ pub fn create_embedded_runtime_with_input(
     captured_input: Arc<crate::CapturedInputQueue>,
     cursor_update: Option<Arc<dyn Fn(Vec<u8>) + Send + Sync>>,
 ) -> MediaRuntime {
+    create_embedded_runtime_with_vulkan_device(frames, captured_input, cursor_update, None)
+}
+
+pub fn create_embedded_runtime_with_vulkan_device(
+    frames: GraphicsFramePublisher,
+    captured_input: Arc<crate::CapturedInputQueue>,
+    cursor_update: Option<Arc<dyn Fn(Vec<u8>) + Send + Sync>>,
+    vulkan_device: Option<Arc<crate::SharedVulkanDevice>>,
+) -> MediaRuntime {
     let (commands, receiver) = mpsc::channel();
     if let Some(cursor_update) = cursor_update {
         let _ = std::thread::Builder::new()
@@ -894,7 +917,7 @@ pub fn create_embedded_runtime_with_input(
         linux_selection,
         #[cfg(target_os = "linux")]
         linux_software_fallback: Arc::new(AtomicBool::new(false)),
-        mode: MediaRuntimeMode::Embedded(frames),
+        mode: MediaRuntimeMode::Embedded(frames, vulkan_device),
     }
 }
 
@@ -1087,6 +1110,23 @@ fn ensure_macos_main_thread() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::backend_preference_allows_value;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn embedded_runtime_without_an_owner_disables_vulkan() {
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let runtime = super::create_embedded_runtime(frames);
+        let backends = runtime.video_backends();
+        let vulkan = backends
+            .iter()
+            .find(|backend| backend.backend == "vulkan")
+            .unwrap();
+        assert!(!vulkan.available);
+        assert!(vulkan.codecs.iter().all(|codec| !codec.available));
+        assert!(runtime.validate_backend("vulkan").is_err());
+        assert!(runtime.validate_backend("auto").is_ok());
+        runtime.shutdown();
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

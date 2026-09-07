@@ -335,13 +335,33 @@ impl StreamerService {
                 ),
             });
         }
+        let color = settings["colorQuality"].as_str().unwrap_or("8bit_420");
+        for backend in backends.iter_mut() {
+            let requires_profiles =
+                backend["backend"] == "vulkan" || backend["platform"] == "linux";
+            for codec in backend["codecs"].as_array_mut().into_iter().flatten() {
+                let supported = match codec.get("colorQualities") {
+                    Some(qualities) => qualities.as_array().is_some_and(|qualities| {
+                        qualities
+                            .iter()
+                            .any(|quality| quality.as_str() == Some(color))
+                    }),
+                    None => !requires_profiles || color == "8bit_420",
+                };
+                if !supported {
+                    codec["available"] = json!(false);
+                    codec["reason"] = json!(format!(
+                        "The embedded decoder does not support the requested {color} color mode"
+                    ));
+                }
+            }
+        }
         let requested = settings["codec"]
             .as_str()
             .unwrap_or("auto")
             .to_ascii_lowercase();
         let mut resolved = settings.clone();
         let codec = if requested == "auto" {
-            let color = settings["colorQuality"].as_str().unwrap_or("8bit_420");
             let candidates: &[&str] = match color {
                 "8bit_444" | "10bit_444" => &["h265"],
                 "10bit_420" => &["av1", "h265"],
@@ -1703,6 +1723,96 @@ mod tests {
             &json!({"codec":"auto"}),
         );
         assert_eq!(result.unwrap_err().code, "streamer_codec_unavailable");
+    }
+
+    #[test]
+    fn embedded_color_profiles_gate_auto_and_manual_before_allocation() {
+        let mut capabilities = json!({"protocolVersion":5,"videoBackends":[{
+            "backend":"vulkan", "platform":"linux", "available":true, "codecs":[
+                {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
+                {"codec":"h265","available":true,"colorQualities":["8bit_420"]},
+                {"codec":"av1","available":true,"colorQualities":["8bit_420"]}
+            ]
+        }]});
+        for codec in ["auto", "h265", "av1"] {
+            let settings =
+                json!({"codec":codec,"nativeVideoBackend":"auto","colorQuality":"10bit_420"});
+            let error =
+                StreamerService::embedded_session_settings(&settings, &capabilities).unwrap_err();
+            assert_eq!(error.code, "streamer_codec_unavailable");
+        }
+        capabilities["videoBackends"][0]["codecs"][1]["colorQualities"] =
+            json!(["8bit_420", "10bit_420"]);
+        let settings =
+            json!({"codec":"auto","nativeVideoBackend":"auto","colorQuality":"10bit_420"});
+        let resolved =
+            StreamerService::embedded_session_settings(&settings, &capabilities).unwrap();
+        assert_eq!(resolved["codec"], "h265");
+        assert_eq!(resolved["colorQuality"], "10bit_420");
+        assert_eq!(settings["codec"], "auto");
+        for color in ["8bit_444", "10bit_444"] {
+            for codec in ["auto", "h265"] {
+                let settings = json!({"codec":codec,"colorQuality":color});
+                assert_eq!(
+                    StreamerService::embedded_session_settings(&settings, &capabilities)
+                        .unwrap_err()
+                        .code,
+                    "streamer_codec_unavailable"
+                );
+            }
+        }
+        let settings =
+            json!({"codec":"h265","nativeVideoBackend":"vulkan","colorQuality":"10bit_420"});
+        assert!(StreamerService::embedded_session_settings(&settings, &capabilities).is_ok());
+        capabilities["videoBackends"][0]["codecs"][1]["available"] = json!(false);
+        assert!(StreamerService::embedded_session_settings(&settings, &capabilities).is_err());
+    }
+
+    #[test]
+    fn embedded_linux_advanced_color_requires_explicit_well_formed_profiles() {
+        for backend in ["vulkan", "cuda"] {
+            for profiles in [
+                None,
+                Some(Value::Null),
+                Some(json!([])),
+                Some(json!("10bit_420")),
+            ] {
+                let mut capabilities = json!({"protocolVersion":5,"videoBackends":[{
+                    "backend":backend,"platform":"linux","available":true,
+                    "codecs":[{"codec":"h265","available":true}]
+                }]});
+                if let Some(profiles) = profiles {
+                    capabilities["videoBackends"][0]["codecs"][0]["colorQualities"] = profiles;
+                }
+                for color in ["10bit_420", "8bit_444", "10bit_444"] {
+                    let settings = json!({"codec":"h265","colorQuality":color});
+                    assert_eq!(
+                        StreamerService::embedded_session_settings(&settings, &capabilities)
+                            .unwrap_err()
+                            .code,
+                        "streamer_codec_unavailable"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_color_profiles_cannot_be_borrowed_from_another_backend() {
+        let capabilities = json!({"protocolVersion":5,"videoBackends":[
+            {"backend":"vulkan","platform":"linux","available":true,
+                "codecs":[{"codec":"h265","available":true,"colorQualities":["8bit_420"]}]},
+            {"backend":"other","available":true,
+                "codecs":[{"codec":"h265","available":true,"colorQualities":["10bit_420"]}]}
+        ]});
+        let settings =
+            json!({"codec":"h265","nativeVideoBackend":"vulkan","colorQuality":"10bit_420"});
+        assert_eq!(
+            StreamerService::embedded_session_settings(&settings, &capabilities)
+                .unwrap_err()
+                .code,
+            "streamer_codec_unavailable"
+        );
     }
 
     #[test]

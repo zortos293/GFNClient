@@ -77,8 +77,12 @@ public:
     static constexpr qsizetype MaximumCallbackBytes = 1024 * 1024;
     static constexpr qsizetype MaximumPendingCallbacks = 512;
 
-    explicit NativeStreamRuntime(QObject *parent = nullptr);
-    explicit NativeStreamRuntime(Api api, QObject *parent = nullptr);
+    static void initializeDiagnostics(Api::SetLogFile setLogFile = &opennow_streamer_set_log_file);
+
+    explicit NativeStreamRuntime(QObject *parent = nullptr,
+                                 const OpenNowStreamerVulkanDevice *vulkanDevice = nullptr);
+    explicit NativeStreamRuntime(Api api, QObject *parent = nullptr,
+                                 const OpenNowStreamerVulkanDevice *vulkanDevice = nullptr);
     ~NativeStreamRuntime() override;
 
     [[nodiscard]] bool running() const;
@@ -86,6 +90,7 @@ public:
     [[nodiscard]] quint64 presentationGeneration() const;
     [[nodiscard]] bool presentationAllowed() const;
     [[nodiscard]] bool inputAllowed() const;
+    [[nodiscard]] const OpenNowStreamerVulkanDevice *vulkanDevice() const;
     // Called at most once per presentation failure from the scene-graph thread.
     void reportPresentationError(const QString &message);
     void reportPresentationError(const QString &message, quint64 generation);

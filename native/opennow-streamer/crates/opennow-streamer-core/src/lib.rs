@@ -11,8 +11,8 @@ use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, MediaCodec,
     MediaColorQuality, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl,
     MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, PushOutcome, RecordingSummary,
-    StreamShortcutAction, StreamShortcutBindings, embedded_video_backends, record_matroska,
-    supports_audio_decode, supports_audio_output, video_backends,
+    StreamShortcutAction, StreamShortcutBindings, record_matroska, supports_audio_decode,
+    supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
@@ -342,15 +342,11 @@ impl Engine {
                 format!("Native streamer requires protocol {PROTOCOL_VERSION}"),
             ));
         }
-        let backends = if self
+        let backends = self
             .media_runtime
             .as_ref()
-            .is_some_and(MediaRuntime::is_embedded)
-        {
-            embedded_video_backends()
-        } else {
-            video_backends()
-        };
+            .map(MediaRuntime::video_backends)
+            .unwrap_or_else(video_backends);
         let media_ready = self.media_runtime.is_some();
         let video_ready = media_ready && backends.iter().any(|backend| backend.available);
         opennow_streamer_protocol::log::log_line(

@@ -114,8 +114,20 @@ int runApplication(int argc, char *argv[])
     Localization localization;
     application.installTranslator(&localization);
     CoreClient coreClient;
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+    NativeStreamRuntime::initializeDiagnostics();
+    LinuxVulkanGraphics::Device vulkanDevice;
+    if (QQuickWindow::graphicsApi() == QSGRendererInterface::Vulkan
+            && !vulkanDevice.initialize())
+        qWarning("Embedded Vulkan Video is unavailable: %s Qt will use its default graphics device.",
+                 qUtf8Printable(vulkanDevice.lastError()));
+#endif
 #ifdef OPENNOW_EMBEDDED_STREAMER
-    NativeStreamRuntime nativeStreamRuntime;
+    NativeStreamRuntime nativeStreamRuntime(nullptr
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+                                           , vulkanDevice.handle()
+#endif
+    );
     if (!nativeStreamRuntime.start())
         qWarning("Could not start the embedded streamer runtime: %s",
                  qUtf8Printable(nativeStreamRuntime.lastError()));
@@ -156,6 +168,9 @@ int runApplication(int argc, char *argv[])
     }
 
     QQmlApplicationEngine engine;
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+    engine.setInitialProperties({{u"visible"_s, false}, {u"visibility"_s, QWindow::Hidden}});
+#endif
     AcceptanceSession acceptance(application, engine, controller, coreClient, arguments);
     engine.rootContext()->setContextProperty(u"AppController"_s, &controller);
     engine.rootContext()->setContextProperty(u"ControllerInput"_s, &controllerInput);
@@ -177,7 +192,19 @@ int runApplication(int argc, char *argv[])
                      &application, [] { QCoreApplication::exit(EXIT_FAILURE); },
                      Qt::QueuedConnection);
     engine.loadFromModule(u"OpenNOW"_s, u"Main"_s);
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+    auto *rootWindow = engine.rootObjects().isEmpty() ? nullptr
+        : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (vulkanDevice.handle() && !vulkanDevice.adopt(rootWindow)) {
+        qWarning("Could not adopt the embedded Vulkan device: %s",
+                 qUtf8Printable(vulkanDevice.lastError()));
+        return EXIT_FAILURE;
+    }
+#endif
     if (acceptance.prepareWindow() != EXIT_SUCCESS) return EXIT_FAILURE;
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+    if (rootWindow && !rootWindow->isVisible()) rootWindow->show();
+#endif
     const auto qmlReadyMs = startupTimer.elapsed();
     controller.handleArguments(arguments);
     QObject::connect(&controller, &AppController::activationRequested,

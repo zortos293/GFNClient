@@ -22,6 +22,11 @@ mod queue;
 mod session;
 #[cfg(target_os = "linux")]
 mod video;
+#[cfg(target_os = "linux")]
+mod vulkan_device;
+
+#[cfg(target_os = "linux")]
+pub use vulkan_device::{SharedVulkanDevice, VulkanDeviceInfo};
 
 #[cfg(target_os = "linux")]
 pub use audio::{AudioBackend, AudioBackendPreference, AudioConfig, AudioPacket};

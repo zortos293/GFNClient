@@ -7,6 +7,7 @@ set(OPENNOW_STREAM_PRESENTATION_SOURCES
     src/streaming/StreamVideoItem.cpp
     src/streaming/StreamVideoItem.h
     src/streaming/StreamVideoItemInput.cpp
+    src/streaming/rendering/LinuxVulkanGraphics.cpp
     src/streaming/rendering/LinuxVulkanGraphics.h
     src/streaming/rendering/NativeStreamRenderCallback.cpp
     src/streaming/rendering/NativeStreamRenderCallback.h

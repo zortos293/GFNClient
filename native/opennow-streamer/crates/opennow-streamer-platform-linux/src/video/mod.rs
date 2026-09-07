@@ -69,3 +69,5 @@ pub(crate) fn probe_vaapi() -> std::result::Result<String, String> {
 pub(crate) fn probe_vaapi() -> std::result::Result<String, String> {
     Err("crate was built without the vaapi feature".to_owned())
 }
+#[cfg(all(feature = "ffmpeg", feature = "vulkan"))]
+mod vulkan_copy;

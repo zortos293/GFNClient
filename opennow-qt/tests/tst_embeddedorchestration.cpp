@@ -202,6 +202,36 @@ private slots:
         QVERIFY(!main.contains(QStringLiteral("StreamSurfaceController")));
     }
 
+    void linuxVulkanOwnerOutlivesRuntimeAndHiddenRootAdoption()
+    {
+        const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
+        const auto owner = main.indexOf(QStringLiteral("LinuxVulkanGraphics::Device vulkanDevice"));
+        const auto diagnostics = main.indexOf(QStringLiteral("NativeStreamRuntime::initializeDiagnostics()"));
+        const auto runtime = main.indexOf(QStringLiteral("NativeStreamRuntime nativeStreamRuntime"));
+        const auto engine = main.indexOf(QStringLiteral("QQmlApplicationEngine engine"));
+        const auto hidden = main.indexOf(QStringLiteral("engine.setInitialProperties"));
+        const auto load = main.indexOf(QStringLiteral("engine.loadFromModule"));
+        const auto adopt = main.indexOf(QStringLiteral("vulkanDevice.adopt(rootWindow)"));
+        const auto prepare = main.indexOf(QStringLiteral("acceptance.prepareWindow()"));
+        const auto show = main.indexOf(QStringLiteral("rootWindow->show()"));
+        QVERIFY(owner >= 0);
+        QVERIFY(diagnostics >= 0);
+        QVERIFY(diagnostics < owner);
+        QVERIFY(runtime > owner);
+        QVERIFY(engine > runtime);
+        QVERIFY(hidden > engine);
+        QVERIFY(load > hidden);
+        QVERIFY(adopt > load);
+        QVERIFY(prepare > adopt);
+        QVERIFY(show > prepare);
+        const auto graphics = source(QStringLiteral("src/streaming/rendering/LinuxVulkanGraphics.cpp"));
+        QVERIFY(graphics.contains(QStringLiteral("m_instance.setVkInstance")));
+        QVERIFY(graphics.contains(QStringLiteral("QQuickGraphicsDevice::fromDeviceObjects")));
+        QVERIFY(graphics.indexOf(QStringLiteral("m_instance.destroy()"))
+                < graphics.indexOf(QStringLiteral("m_api.destroy(m_device)")));
+        QVERIFY(!graphics.contains(QStringLiteral("new QQuickWindow")));
+    }
+
     void liveScreensRenderThroughStreamVideoItem()
     {
         const QStringList screens{

@@ -10,8 +10,8 @@ mod windows;
 
 #[cfg(windows)]
 pub use windows::{
-    AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
-    D3d11TextureFormat,
+    AdoptedD3d11Context, D3d11ColorSpace, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter,
+    D3d11RecordedFrame, D3d11TextureFormat,
 };
 
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -24,7 +24,8 @@ use crate::queue::BoundedQueue;
 
 pub use format::{
     AudioFormat, BackendConfig, Bounds, EncodedVideoFrame, ExistingWindow, OwnedWindow, PcmFrame,
-    SurfaceTarget, VideoChromaFormat, VideoCodec, VideoFormat, VideoPixelFormat, WindowHandle,
+    SurfaceTarget, VideoChromaFormat, VideoChromaSiting, VideoCodec, VideoColorMatrix,
+    VideoColorPrimaries, VideoFormat, VideoPixelFormat, VideoTransferFunction, WindowHandle,
 };
 pub use queue::PushOutcome;
 
@@ -105,6 +106,8 @@ pub struct CapabilityProbe {
     pub h264_hardware_decode: bool,
     pub h265_hardware_decode: bool,
     pub av1_hardware_decode: bool,
+    pub h265_hdr: bool,
+    pub av1_hdr: bool,
     pub h264_software_decode: bool,
     pub h265_software_decode: bool,
     pub av1_software_decode: bool,
@@ -114,6 +117,15 @@ pub struct CapabilityProbe {
 }
 
 impl CapabilityProbe {
+    pub const fn supports_hdr(&self, codec: VideoCodec) -> bool {
+        self.d3d11_presentation
+            && match codec {
+                VideoCodec::H264 => false,
+                VideoCodec::H265 => self.h265_hardware_decode && self.h265_hdr,
+                VideoCodec::Av1 => self.av1_hardware_decode && self.av1_hdr,
+            }
+    }
+
     pub const fn bundled_backend_available(&self) -> bool {
         (self.h264_hardware_decode || self.h265_hardware_decode || self.av1_hardware_decode)
             && self.d3d11_presentation
@@ -253,6 +265,8 @@ impl WindowsBackend {
                 h264_hardware_decode: false,
                 h265_hardware_decode: false,
                 av1_hardware_decode: false,
+                h265_hdr: false,
+                av1_hdr: false,
                 h264_software_decode: false,
                 h265_software_decode: false,
                 av1_software_decode: false,
@@ -557,6 +571,10 @@ mod tests {
                 pixel_format: VideoPixelFormat::Nv12,
                 chroma_format: VideoChromaFormat::Cs420,
                 full_range: false,
+                chroma_siting: crate::VideoChromaSiting::Left,
+                transfer_function: crate::VideoTransferFunction::Sdr,
+                color_primaries: crate::VideoColorPrimaries::Bt709,
+                color_matrix: crate::VideoColorMatrix::Bt709,
             }),
             audio_format: Mutex::new(AudioFormat {
                 sample_rate: 48_000,
@@ -596,6 +614,10 @@ mod tests {
             assert!(!probe.h264_software_decode);
             assert!(!probe.h265_software_decode);
             assert!(!probe.av1_software_decode);
+            assert!(!probe.h265_hdr);
+            assert!(!probe.av1_hdr);
+            assert!(!probe.supports_hdr(VideoCodec::H265));
+            assert!(!probe.supports_hdr(VideoCodec::Av1));
             assert!(!probe.d3d11_presentation);
             assert!(!probe.wasapi_render);
         }
@@ -608,6 +630,8 @@ mod tests {
             h264_hardware_decode: true,
             h265_hardware_decode: true,
             av1_hardware_decode: true,
+            h265_hdr: false,
+            av1_hdr: false,
             h264_software_decode: true,
             h265_software_decode: true,
             av1_software_decode: true,
@@ -620,6 +644,36 @@ mod tests {
         probe.wasapi_render = true;
         assert!(probe.bundled_backend_available());
         assert!(probe.software_backend_available());
+    }
+
+    #[test]
+    fn hdr_capability_requires_explicit_codec_and_presentation_support() {
+        let mut probe = CapabilityProbe {
+            available: true,
+            h264_hardware_decode: true,
+            h265_hardware_decode: true,
+            av1_hardware_decode: true,
+            h265_hdr: false,
+            av1_hdr: false,
+            h264_software_decode: true,
+            h265_software_decode: true,
+            av1_software_decode: true,
+            d3d11_presentation: true,
+            wasapi_render: true,
+            reason: None,
+        };
+        assert!(!probe.supports_hdr(VideoCodec::H265));
+        assert!(!probe.supports_hdr(VideoCodec::Av1));
+        probe.h265_hdr = true;
+        assert!(probe.supports_hdr(VideoCodec::H265));
+        assert!(!probe.supports_hdr(VideoCodec::Av1));
+        probe.av1_hdr = true;
+        assert!(probe.supports_hdr(VideoCodec::Av1));
+        assert!(!probe.supports_hdr(VideoCodec::H264));
+        probe.h265_hardware_decode = false;
+        assert!(!probe.supports_hdr(VideoCodec::H265));
+        probe.d3d11_presentation = false;
+        assert!(!probe.supports_hdr(VideoCodec::Av1));
     }
 
     #[test]

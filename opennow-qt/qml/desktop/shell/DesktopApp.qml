@@ -164,6 +164,8 @@ FocusScope {
 
     Rectangle {
         anchors.top: parent.top
+        layer.enabled: HdrOutput.chromeRequired && root.streamVisible
+        layer.effect: HdrChromeEffect {}
         anchors.topMargin: 76
         anchors.horizontalCenter: parent.horizontalCenter
         width: Math.min(640, errorText.implicitWidth + 40)

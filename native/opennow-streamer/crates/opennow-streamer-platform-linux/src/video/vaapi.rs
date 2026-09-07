@@ -143,6 +143,14 @@ impl VaApiDecoder {
 
     pub fn open(format: StreamFormat) -> Result<Self> {
         format.validate()?;
+        if format.pixel_format != PixelFormat::Nv12
+            || format.color_transfer != crate::ColorTransfer::Sdr
+        {
+            return Err(Error::unavailable(
+                Subsystem::VaApi,
+                "native H.264 VAAPI decoder only supports SDR NV12; HDR requires FFmpeg VAAPI",
+            ));
+        }
         let display = Display::open().ok_or_else(|| {
             Error::unavailable(
                 Subsystem::VaApi,

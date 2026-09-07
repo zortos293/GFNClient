@@ -180,10 +180,16 @@ QString CoreClient::request(const QString &method, const QJsonObject &params, in
     const auto id = QString::number(m_nextRequestId++);
     const auto deadline = QDateTime::currentMSecsSinceEpoch() + qBound(100, timeoutMs, 300'000);
     m_pending.insert(id, PendingRequest{method, deadline});
+    auto runtimeParams = params;
+    if (method == u"session.create"_s || method == u"streamer.prepare"_s) {
+        auto capabilities = runtimeParams.value(u"runtimeCapabilities"_s).toObject();
+        capabilities.insert(u"nativeHdrSupported"_s, m_nativeHdrSupported);
+        runtimeParams.insert(u"runtimeCapabilities"_s, capabilities);
+    }
     if (!writeMessage(QJsonObject{{u"type"_s, u"request"_s},
                                   {u"id"_s, id},
                                   {u"method"_s, method},
-                                  {u"params"_s, params}})) {
+                                  {u"params"_s, runtimeParams}})) {
         m_pending.remove(id);
         emit requestFailed(id, u"core_not_writable"_s, u"Core transport is not writable"_s);
         return {};

@@ -14,6 +14,15 @@ pub enum GraphicsApi {
 pub enum GraphicsTextureFormat {
     Rgba8,
     Rgb10A2,
+    Rgba16Float,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum GraphicsColorSpace {
+    #[default]
+    Sdr709,
+    Pq2020,
+    Hlg2020,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +74,7 @@ pub struct GraphicsRecordedFrame {
     pub resource: u64,
     pub resource_view: u64,
     pub texture_format: GraphicsTextureFormat,
+    pub color_space: GraphicsColorSpace,
     pub width: u32,
     pub height: u32,
     pub frame_slot: u32,
@@ -167,7 +177,25 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
         Ok(GraphicsRecordedFrame {
             resource: frame.image,
             resource_view: frame.image_view,
-            texture_format: GraphicsTextureFormat::Rgba8,
+            texture_format: match frame.texture_format {
+                opennow_streamer_platform_linux::LinuxTextureFormat::Rgba8 => {
+                    GraphicsTextureFormat::Rgba8
+                }
+                opennow_streamer_platform_linux::LinuxTextureFormat::Rgba16Float => {
+                    GraphicsTextureFormat::Rgba16Float
+                }
+            },
+            color_space: match frame.color_space {
+                opennow_streamer_platform_linux::LinuxTextureColorSpace::Sdr709 => {
+                    GraphicsColorSpace::Sdr709
+                }
+                opennow_streamer_platform_linux::LinuxTextureColorSpace::Pq2020 => {
+                    GraphicsColorSpace::Pq2020
+                }
+                opennow_streamer_platform_linux::LinuxTextureColorSpace::Hlg2020 => {
+                    GraphicsColorSpace::Hlg2020
+                }
+            },
             width: frame.width,
             height: frame.height,
             frame_slot: frame.slot,
@@ -214,6 +242,7 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
             resource: frame.texture as usize as u64,
             resource_view: 0,
             texture_format: GraphicsTextureFormat::Rgba8,
+            color_space: GraphicsColorSpace::Sdr709,
             width: frame.width,
             height: frame.height,
             frame_slot: frame.frame_slot,
@@ -670,6 +699,7 @@ mod tests {
                 resource: 10,
                 resource_view: 11,
                 texture_format: GraphicsTextureFormat::Rgba8,
+                color_space: GraphicsColorSpace::Sdr709,
                 width: 1920,
                 height: 1080,
                 frame_slot: command.frame_slot,

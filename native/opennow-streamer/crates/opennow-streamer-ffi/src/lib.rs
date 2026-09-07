@@ -19,7 +19,7 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 5;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 6;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
 const DEFAULT_MAX_COMMAND_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_CAPACITY: usize = 4096;
@@ -209,6 +209,10 @@ pub const OPENNOW_STREAMER_GRAPHICS_API_VULKAN: u32 = 2;
 pub const OPENNOW_STREAMER_GRAPHICS_API_METAL: u32 = 3;
 pub const OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8: u32 = 1;
 pub const OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2: u32 = 2;
+pub const OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA16F: u32 = 3;
+pub const OPENNOW_STREAMER_COLOR_SPACE_SDR709: u32 = 0;
+pub const OPENNOW_STREAMER_COLOR_SPACE_PQ2020: u32 = 1;
+pub const OPENNOW_STREAMER_COLOR_SPACE_HLG2020: u32 = 2;
 pub const OPENNOW_STREAMER_LOCAL_ACTION_GUIDE: u32 = 1;
 pub const OPENNOW_STREAMER_LOCAL_ACTION_SCREENSHOT: u32 = 2;
 pub const OPENNOW_STREAMER_LOCAL_ACTION_RECORDING_TOGGLE: u32 = 3;
@@ -252,6 +256,7 @@ pub struct OpenNowStreamerRecordedFrame {
     pub resource_view: u64,
     pub graphics_api: u32,
     pub texture_format: u32,
+    pub color_space: u32,
     pub width: u32,
     pub height: u32,
     pub frame_slot: u32,
@@ -610,6 +615,11 @@ fn recorded_frame(
     if frame.resource == 0 || frame.width == 0 || frame.height == 0 {
         return Err(OpenNowStreamerStatus::RenderFailed);
     }
+    if frame.color_space != opennow_streamer_platform::GraphicsColorSpace::Sdr709
+        && frame.texture_format == GraphicsTextureFormat::Rgba8
+    {
+        return Err(OpenNowStreamerStatus::RenderFailed);
+    }
     Ok(OpenNowStreamerRecordedFrame {
         resource: frame.resource,
         resource_view: frame.resource_view,
@@ -621,6 +631,18 @@ fn recorded_frame(
         texture_format: match frame.texture_format {
             GraphicsTextureFormat::Rgba8 => OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8,
             GraphicsTextureFormat::Rgb10A2 => OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2,
+            GraphicsTextureFormat::Rgba16Float => OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA16F,
+        },
+        color_space: match frame.color_space {
+            opennow_streamer_platform::GraphicsColorSpace::Sdr709 => {
+                OPENNOW_STREAMER_COLOR_SPACE_SDR709
+            }
+            opennow_streamer_platform::GraphicsColorSpace::Pq2020 => {
+                OPENNOW_STREAMER_COLOR_SPACE_PQ2020
+            }
+            opennow_streamer_platform::GraphicsColorSpace::Hlg2020 => {
+                OPENNOW_STREAMER_COLOR_SPACE_HLG2020
+            }
         },
         width: frame.width,
         height: frame.height,
@@ -1344,8 +1366,83 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hdr_recorded_frames_preserve_color_space_and_precision() {
+        use opennow_streamer_platform::GraphicsColorSpace;
+        for (color_space, wire_color) in [
+            (
+                GraphicsColorSpace::Sdr709,
+                OPENNOW_STREAMER_COLOR_SPACE_SDR709,
+            ),
+            (
+                GraphicsColorSpace::Pq2020,
+                OPENNOW_STREAMER_COLOR_SPACE_PQ2020,
+            ),
+            (
+                GraphicsColorSpace::Hlg2020,
+                OPENNOW_STREAMER_COLOR_SPACE_HLG2020,
+            ),
+        ] {
+            for (texture_format, wire_format) in [
+                (
+                    GraphicsTextureFormat::Rgba8,
+                    OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8,
+                ),
+                (
+                    GraphicsTextureFormat::Rgb10A2,
+                    OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2,
+                ),
+                (
+                    GraphicsTextureFormat::Rgba16Float,
+                    OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA16F,
+                ),
+            ] {
+                let result = recorded_frame(
+                    GraphicsApi::Vulkan,
+                    GraphicsRecordedFrame {
+                        resource: 1,
+                        resource_view: 2,
+                        texture_format,
+                        color_space,
+                        width: 1920,
+                        height: 1080,
+                        frame_slot: 0,
+                        generation: 7,
+                        presentation_time_ns: 123456789,
+                    },
+                );
+                if color_space != GraphicsColorSpace::Sdr709
+                    && texture_format == GraphicsTextureFormat::Rgba8
+                {
+                    assert_eq!(result, Err(OpenNowStreamerStatus::RenderFailed));
+                } else {
+                    let frame = result.expect("supported color texture");
+                    assert_eq!(frame.color_space, wire_color);
+                    assert_eq!(frame.texture_format, wire_format);
+                    assert_eq!(frame.generation, 7);
+                    assert_eq!(frame.presentation_time_ns, 123456789);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hdr_abi_rejects_pre_color_metadata_clients() {
+        let messages = CallbackMessages::default();
+        let mut config = test_config(&messages);
+        config.abi_version = 5;
+        assert_eq!(
+            validate_config(&config),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerRecordedFrame, color_space),
+            std::mem::offset_of!(OpenNowStreamerRecordedFrame, texture_format) + size_of::<u32>()
+        );
+    }
+
+    #[test]
     fn abi_five_appends_the_shared_vulkan_owner() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 5);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 6);
         assert_eq!(OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION, 1);
         assert_eq!(
             std::mem::offset_of!(OpenNowStreamerConfig, vulkan_device),
@@ -1368,7 +1465,7 @@ mod tests {
             validate_config(&config),
             Err(OpenNowStreamerStatus::InvalidConfig)
         );
-        config.abi_version = 5;
+        config.abi_version = OPENNOW_STREAMER_FFI_ABI_VERSION;
         config.struct_size = std::mem::offset_of!(OpenNowStreamerConfig, vulkan_device);
         assert_eq!(
             validate_config(&config),
@@ -1524,6 +1621,7 @@ mod tests {
                 resource: 0xfeed,
                 resource_view: 0xbeef,
                 texture_format: GraphicsTextureFormat::Rgb10A2,
+                color_space: opennow_streamer_platform::GraphicsColorSpace::Sdr709,
                 width: 2560,
                 height: 1440,
                 frame_slot: command.frame_slot,

@@ -162,6 +162,8 @@ pub struct CodecCapability {
     pub available: bool,
     #[serde(rename = "colorQualities", skip_serializing_if = "Option::is_none")]
     pub color_qualities: Option<Vec<&'static str>>,
+    #[serde(rename = "hdrSupported", skip_serializing_if = "Option::is_none")]
+    pub hdr_supported: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
 }
@@ -193,8 +195,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hdr_capabilities_distinguish_unknown_supported_and_unsupported() {
+        let mut codec = CodecCapability {
+            codec: "h265",
+            available: true,
+            color_qualities: None,
+            hdr_supported: None,
+            reason: None,
+        };
+        assert!(
+            serde_json::to_value(&codec)
+                .unwrap()
+                .get("hdrSupported")
+                .is_none()
+        );
+        for supported in [false, true] {
+            codec.hdr_supported = Some(supported);
+            let value = serde_json::to_value(&codec).unwrap();
+            assert_eq!(value["hdrSupported"], supported);
+            assert!(value.get("colorQualities").is_none());
+        }
+    }
+
+    #[test]
     fn codec_color_profiles_are_additive_and_preserve_explicit_empty_support() {
         let mut codec = CodecCapability {
+            hdr_supported: None,
             codec: "h265",
             available: true,
             color_qualities: None,

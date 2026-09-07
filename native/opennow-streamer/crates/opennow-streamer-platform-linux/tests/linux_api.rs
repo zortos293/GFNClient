@@ -60,6 +60,8 @@ fn embedded_gpu_frames_keep_sequence_and_presentation_time() {
             pixel_format: PixelFormat::Nv12,
             color_range: ColorRange::Limited,
             color_matrix: ColorMatrix::Bt709,
+            color_transfer: opennow_streamer_platform_linux::ColorTransfer::Sdr,
+            color_primaries: opennow_streamer_platform_linux::ColorPrimaries::Bt709,
             chroma_location: ChromaLocation::Left,
         },
         planes: vec![

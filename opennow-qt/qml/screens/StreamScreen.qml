@@ -97,6 +97,8 @@ FocusScope {
     }
 
     StreamInputNotice {
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         message: root.streaming && streamVideo.relativeMouse ? streamVideo.inputCaptureError : ""
         z: 3
     }
@@ -109,6 +111,8 @@ FocusScope {
     }
 
     ScreenBackground {
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         visible: !root.streaming
         artwork: root.game.heroImageUrl || root.game.imageUrl || ""
         tint: "#101B2A"
@@ -117,6 +121,8 @@ FocusScope {
 
     Rectangle {
         visible: !root.streaming
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         anchors.fill: parent
         color: Qt.rgba(0.02, 0.04, 0.08, 0.38)
         z: 2
@@ -124,6 +130,8 @@ FocusScope {
 
     GlassPanel {
         visible: !root.streaming
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         anchors.centerIn: parent
         width: Math.min(980, parent.width - 160)
         height: 500
@@ -215,6 +223,8 @@ FocusScope {
 
     GlassPanel {
         MotionProgress { id: clockMotion; shown: root.sessionClockVisible }
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         visible: clockMotion.present
         z: 12
         x: 34; y: 34; width: 190; height: 58; panelRadius: 22; strong: true
@@ -228,6 +238,8 @@ FocusScope {
 
     GlassPanel {
         visible: root.streaming && AppController.overlay === ""
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         z: 12
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
@@ -254,6 +266,8 @@ FocusScope {
                 && (Boolean(ShellStore.settings.showAntiAfkIndicator) || root.antiAfkReminderVisible)
         }
         visible: afkMotion.present
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         z: 12
         x: root.width - width - 34; y: 34; width: 180; height: 58; panelRadius: 22; strong: true
         Row {
@@ -276,5 +290,5 @@ FocusScope {
 
     onStreamingChanged: if (streaming) Qt.callLater(root.forceActiveFocus)
 
-    AppChrome { visible: !root.streaming; anchors.fill: parent; title: qsTr("Live session"); currentRoute: "home"; bottomVisible: false; z: 4 }
+    AppChrome { visible: !root.streaming; anchors.fill: parent; title: qsTr("Live session"); currentRoute: "home"; bottomVisible: false; z: 4; layer.enabled: HdrOutput.chromeRequired; layer.effect: HdrChromeEffect {} }
 }

@@ -41,7 +41,7 @@ impl SettingsStore {
                                 value
                             };
                             values.insert(key, value);
-                        } else {
+                        } else if key != "nativeHdrSupported" {
                             if key == "sessionTimeRemainingDisplay"
                                 && matches!(value.as_str(), Some("stats" | "both"))
                             {
@@ -633,7 +633,7 @@ fn defaults() -> Map<String, Value> {
         "nativeCloudGsyncMode":"auto", "nativeD3dFullscreenMode":"auto",
         "nativeExternalRenderer":false, "transportMode":"nvst", "showNativeStreamerStats":false,
         "codec":"auto", "fallbackCodec":"auto", "decoderPreference":"auto",
-        "encoderPreference":"auto", "colorQuality":"8bit_420", "region":"",
+        "encoderPreference":"auto", "colorQuality":"8bit_420", "enableHdr":false, "region":"",
         "sessionProxyEnabled":false, "sessionProxyUrl":"", "clipboardPaste":false,
         "enableGyroscopeControls":false, "steamControllerCompatibilityMode":false,
         "nativeCursorOverlay":true, "mouseSensitivity":1, "mouseAcceleration":1,
@@ -728,6 +728,33 @@ mod tests {
         let persisted: Value =
             serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
         assert_eq!(persisted["unrelatedLegacySetting"], json!("preserve"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn hdr_opt_in_persists_but_runtime_output_capability_does_not() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-hdr-settings-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["enableHdr"], false);
+        assert!(store.set("nativeHdrSupported", json!(true)).is_err());
+        assert_eq!(store.set("enableHdr", json!(true)).unwrap(), true);
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["enableHdr"],
+            true
+        );
+        let path = directory.join("settings.json");
+        let mut persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        persisted["nativeHdrSupported"] = json!(true);
+        fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        let mut loaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert!(loaded.all().get("nativeHdrSupported").is_none());
+        loaded.set("enableHdr", json!(true)).unwrap();
+        let persisted: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert!(persisted.get("nativeHdrSupported").is_none());
         fs::remove_dir_all(directory).unwrap();
     }
 

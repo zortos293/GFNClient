@@ -859,6 +859,17 @@ fn open_decoder(
             ),
         )),
         DecoderBackend::VaApi => {
+            #[cfg(feature = "ffmpeg")]
+            if config.codec != VideoCodec::H264
+                || format.pixel_format == crate::PixelFormat::P010
+                || format.color_transfer != crate::ColorTransfer::Sdr
+            {
+                return Ok(Box::new(crate::video::FfmpegDecoder::open(
+                    config.codec,
+                    format,
+                    crate::video::FfmpegMode::Vaapi,
+                )?));
+            }
             if config.codec != VideoCodec::H264 {
                 return Err(Error::unavailable(
                     Subsystem::VaApi,

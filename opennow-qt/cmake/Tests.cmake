@@ -1,5 +1,15 @@
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(opennow-hdrcolor-tests tests/tst_hdrcolor.cpp
+        src/streaming/rendering/HdrChromeEffect.cpp src/streaming/rendering/HdrOutput.cpp)
+    target_include_directories(opennow-hdrcolor-tests PRIVATE src)
+    target_link_libraries(opennow-hdrcolor-tests PRIVATE Qt6::Test Qt6::GuiPrivate Qt6::Quick Qt6::QuickPrivate)
+    qt_add_shaders(opennow-hdrcolor-tests "opennow-hdrcolor-test-shaders"
+        PREFIX "/hdr-test" BASE "tests" FILES tests/hdrcolor_test.vert tests/hdrcolor_test.frag)
+    qt_add_shaders(opennow-hdrcolor-tests "opennow-hdroutput-test-shaders"
+        PREFIX "/opennow/shaders" BASE "shaders" FILES shaders/framegen.vert shaders/hdroutput.frag)
+    qt_add_shaders(opennow-hdrcolor-tests "opennow-hdrchrome-test-shaders"
+        BATCHABLE PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_CHROME_SHADERS})
     qt_add_executable(opennow-framepacer-tests tests/tst_framepacer.cpp)
     target_include_directories(opennow-framepacer-tests PRIVATE src)
     target_link_libraries(opennow-framepacer-tests PRIVATE Qt6::Test)
@@ -16,10 +26,14 @@ if(BUILD_TESTING)
         find_program(OPENNOW_XVFB_RUN xvfb-run)
     endif()
     if(OPENNOW_XVFB_RUN)
+        add_test(NAME opennow-hdrcolor-tests
+            COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-hdrcolor-tests>" -o -,txt)
+        set_tests_properties(opennow-hdrcolor-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
         add_test(NAME opennow-frameinterpolator-tests
             COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-frameinterpolator-tests>" -o -,txt)
         set_tests_properties(opennow-frameinterpolator-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
     else()
+        add_test(NAME opennow-hdrcolor-tests COMMAND opennow-hdrcolor-tests -o -,txt)
         add_test(NAME opennow-frameinterpolator-tests COMMAND opennow-frameinterpolator-tests -o -,txt)
         if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
             set_tests_properties(opennow-frameinterpolator-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -134,7 +148,7 @@ if(BUILD_TESTING)
     )
     target_link_libraries(opennow-streamvideo-tests PRIVATE
         opennow-platform-input
-        Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Qml Qt6::Quick
+        Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Qml Qt6::Quick Qt6::QuickPrivate
         opennow-streamer-ffi)
     if(WIN32)
         target_link_libraries(opennow-streamvideo-tests PRIVATE user32)
@@ -148,11 +162,12 @@ if(BUILD_TESTING)
             tests/tst_nativeframegeneration.cpp
             ${OPENNOW_STREAM_RUNTIME_SOURCES}
             src/streaming/rendering/NativeStreamRenderCallback.cpp
+            src/streaming/rendering/HdrOutput.cpp
             src/streaming/rendering/StreamFrameInterpolator.cpp
             src/streaming/rendering/LinuxVulkanGraphics.cpp)
         target_include_directories(opennow-nativeframegeneration-tests PRIVATE src)
         target_link_libraries(opennow-nativeframegeneration-tests PRIVATE
-            Qt6::Test Qt6::GuiPrivate Qt6::Quick opennow-streamer-ffi)
+            Qt6::Test Qt6::GuiPrivate Qt6::Quick Qt6::QuickPrivate opennow-streamer-ffi)
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             target_link_libraries(opennow-nativeframegeneration-tests PRIVATE Vulkan::Vulkan)
         endif()

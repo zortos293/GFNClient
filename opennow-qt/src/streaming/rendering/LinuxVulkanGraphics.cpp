@@ -4,6 +4,7 @@
 #include <QQuickGraphicsDevice>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <rhi/qrhi_platform.h>
 #include <limits>
 
 namespace LinuxVulkanGraphics {
@@ -98,6 +99,31 @@ bool Device::adopt(QQuickWindow *window)
         reinterpret_cast<VkPhysicalDevice>(m_info.physical_device),
         reinterpret_cast<VkDevice>(m_info.device), int(m_info.graphics_queue_family_index),
         int(m_info.graphics_queue_index)));
+    return true;
+}
+
+bool Device::adoptFallback(QQuickWindow *window)
+{
+    if (m_device || !window || window->isVisible() || window->isSceneGraphInitialized()
+            || window->rendererInterface()->graphicsApi() != QSGRendererInterface::Vulkan) {
+        m_lastError = QStringLiteral("The fallback Vulkan instance must be adopted before the Qt window is exposed.");
+        return false;
+    }
+    if (!m_instance.isValid()) {
+        auto extensions = QRhiVulkanInitParams::preferredInstanceExtensions();
+        extensions.append("VK_EXT_swapchain_colorspace");
+        const auto supported = m_instance.supportedExtensions();
+        extensions.removeIf([&](const QByteArray &extension) { return !supported.contains(extension); });
+        m_instance.setApiVersion(QVersionNumber(1, 1));
+        m_instance.setExtensions(extensions);
+        if (!m_instance.create()) {
+            m_lastError = QStringLiteral("Qt could not create the fallback Vulkan instance (status %1).")
+                .arg(int(m_instance.errorCode()));
+            return false;
+        }
+    }
+    window->setVulkanInstance(&m_instance);
+    m_lastError.clear();
     return true;
 }
 

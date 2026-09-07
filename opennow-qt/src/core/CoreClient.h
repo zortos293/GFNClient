@@ -34,6 +34,7 @@ public:
                                 int timeoutMs = 15'000);
     Q_INVOKABLE bool cancel(const QString &requestId);
     Q_INVOKABLE void logShellDiagnostic(const QString &message);
+    void setNativeHdrSupported(bool supported) { m_nativeHdrSupported = supported; }
 
 signals:
     void stateChanged();
@@ -81,4 +82,5 @@ private:
     QTimer m_restartTimer;
     int m_restartAttempts = 0;
     bool m_manualStop = false;
+    bool m_nativeHdrSupported = false;
 };

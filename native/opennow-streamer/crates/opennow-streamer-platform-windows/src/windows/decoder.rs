@@ -16,6 +16,12 @@ use ::windows::Win32::Graphics::Dxgi::Common::{
 };
 use ::windows::Win32::Media::MediaFoundation::{
     D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN_444, D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN10_444,
+    MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_CHROMA_SITING, MF_MT_VIDEO_PRIMARIES, MF_MT_YUV_MATRIX,
+    MFNominalRange_16_235, MFVideoChromaSubsampling_Cosited, MFVideoChromaSubsampling_MPEG2,
+    MFVideoChromaSubsampling_ProgressiveChroma, MFVideoPrimaries_BT709, MFVideoPrimaries_BT2020,
+    MFVideoTransFunc_22, MFVideoTransFunc_709, MFVideoTransFunc_2020, MFVideoTransFunc_2084,
+    MFVideoTransFunc_HLG, MFVideoTransFunc_sRGB, MFVideoTransferMatrix_BT601,
+    MFVideoTransferMatrix_BT709, MFVideoTransferMatrix_BT2020_10,
 };
 use ::windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFAttributes, IMFDXGIBuffer, IMFMediaEventGenerator, IMFMediaType, IMFSample,
@@ -47,7 +53,8 @@ use crate::aperture::VideoAperture;
 use crate::queue::BoundedQueue;
 use crate::{
     ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendEvent, EncodedVideoFrame, Subsystem, VideoChromaFormat,
-    VideoCodec, VideoFormat, VideoPixelFormat, WindowsDecoderMode,
+    VideoChromaSiting, VideoCodec, VideoColorMatrix, VideoColorPrimaries, VideoFormat,
+    VideoPixelFormat, VideoTransferFunction, WindowsDecoderMode,
 };
 
 pub(super) trait DecoderDevice {
@@ -115,7 +122,7 @@ pub(super) struct Decoder {
     input_credits: u32,
     format: VideoFormat,
     aperture: VideoAperture,
-    preferred_pixel_format: VideoPixelFormat,
+    negotiated_format: VideoFormat,
     output_provides_samples: bool,
     stopped: bool,
 }
@@ -158,10 +165,11 @@ impl Decoder {
                     input_stream,
                     output_stream,
                     output_provides_samples,
-                    pixel_format,
-                    full_range,
+                    output_format,
                     aperture,
                 )) => {
+                    let pixel_format = output_format.pixel_format;
+                    let full_range = output_format.full_range;
                     let input_credits = u32::from(events.is_none());
                     let hardware_registered =
                         activation_string(&activation, &MFT_ENUM_HARDWARE_URL_Attribute).is_some();
@@ -180,16 +188,9 @@ impl Decoder {
                         input_stream,
                         output_stream,
                         input_credits,
-                        format: VideoFormat {
-                            width: aperture.width,
-                            height: aperture.height,
-                            pixel_format,
-                            chroma_format: chroma_format(pixel_format),
-                            full_range,
-                            ..format
-                        },
+                        format: output_format,
                         aperture,
-                        preferred_pixel_format: format.pixel_format,
+                        negotiated_format: format,
                         output_provides_samples,
                         stopped: false,
                     });
@@ -333,17 +334,9 @@ impl Decoder {
                 return Ok(OutputPoll::NeedsInput);
             }
             if error.code() == MF_E_TRANSFORM_STREAM_CHANGE {
-                let pixel_format = self.select_video_output_type()?;
-                let (aperture, full_range) =
-                    output_format(&self.transform, self.output_stream, self.format)?;
-                let updated = VideoFormat {
-                    width: aperture.width,
-                    height: aperture.height,
-                    pixel_format,
-                    chroma_format: chroma_format(pixel_format),
-                    full_range,
-                    ..self.format
-                };
+                self.select_video_output_type()?;
+                let (aperture, updated) =
+                    output_format(&self.transform, self.output_stream, self.negotiated_format)?;
                 self.format = updated;
                 self.aperture = aperture;
                 let _ = event_queue.push(BackendEvent::VideoFormatChanged(updated));
@@ -390,7 +383,7 @@ impl Decoder {
         select_video_output_type(
             &self.transform,
             self.output_stream,
-            self.preferred_pixel_format,
+            self.negotiated_format.pixel_format,
         )
     }
 }
@@ -422,8 +415,7 @@ type ConfiguredTransform = (
     u32,
     u32,
     bool,
-    VideoPixelFormat,
-    bool,
+    VideoFormat,
     VideoAperture,
 );
 
@@ -464,9 +456,8 @@ fn configure_transform<G: DecoderDevice>(
         transform
             .SetInputType(input_stream, &input_type, 0)
             .map_err(|error| format!("SetInputType: {error}"))?;
-        let pixel_format =
-            select_video_output_type(&transform, output_stream, format.pixel_format)?;
-        let (aperture, full_range) = output_format(&transform, output_stream, format)?;
+        select_video_output_type(&transform, output_stream, format.pixel_format)?;
+        let (aperture, decoded_format) = output_format(&transform, output_stream, format)?;
 
         let stream_info = transform
             .GetOutputStreamInfo(output_stream)
@@ -492,14 +483,14 @@ fn configure_transform<G: DecoderDevice>(
             input_stream,
             output_stream,
             true,
-            pixel_format,
-            full_range,
+            decoded_format,
             aperture,
         ))
     }
 }
 
 fn video_input_type(format: VideoFormat) -> Result<IMFMediaType, String> {
+    format.validate_color().map_err(|error| error.to_string())?;
     unsafe {
         let input_type = MFCreateMediaType().map_err(|error| error.to_string())?;
         input_type
@@ -543,6 +534,50 @@ fn video_input_type(format: VideoFormat) -> Result<IMFMediaType, String> {
         input_type
             .SetUINT32(&MF_MT_AVG_BITRATE, format.average_bitrate)
             .map_err(|error| error.to_string())?;
+        for (key, value) in [
+            (
+                MF_MT_VIDEO_CHROMA_SITING,
+                match format.chroma_siting {
+                    VideoChromaSiting::Left => MFVideoChromaSubsampling_MPEG2.0,
+                    VideoChromaSiting::TopLeft => MFVideoChromaSubsampling_Cosited.0,
+                },
+            ),
+            (
+                MF_MT_TRANSFER_FUNCTION,
+                match format.transfer_function {
+                    VideoTransferFunction::Sdr => MFVideoTransFunc_709.0,
+                    VideoTransferFunction::Pq => MFVideoTransFunc_2084.0,
+                    VideoTransferFunction::Hlg => MFVideoTransFunc_HLG.0,
+                },
+            ),
+            (
+                MF_MT_VIDEO_PRIMARIES,
+                match format.color_primaries {
+                    VideoColorPrimaries::Bt709 => MFVideoPrimaries_BT709.0,
+                    VideoColorPrimaries::Bt2020 => MFVideoPrimaries_BT2020.0,
+                },
+            ),
+            (
+                MF_MT_YUV_MATRIX,
+                match format.color_matrix {
+                    VideoColorMatrix::Bt601 => MFVideoTransferMatrix_BT601.0,
+                    VideoColorMatrix::Bt709 => MFVideoTransferMatrix_BT709.0,
+                    VideoColorMatrix::Bt2020 => MFVideoTransferMatrix_BT2020_10.0,
+                },
+            ),
+            (
+                MF_MT_VIDEO_NOMINAL_RANGE,
+                if format.full_range {
+                    MFNominalRange_0_255.0
+                } else {
+                    MFNominalRange_16_235.0
+                },
+            ),
+        ] {
+            input_type
+                .SetUINT32(&key, value as u32)
+                .map_err(|error| format!("decoder input color metadata: {error}"))?;
+        }
         Ok(input_type)
     }
 }
@@ -830,21 +865,100 @@ fn output_format(
     transform: &IMFTransform,
     output_stream: u32,
     fallback: VideoFormat,
-) -> Result<(VideoAperture, bool), String> {
+) -> Result<(VideoAperture, VideoFormat), String> {
     unsafe {
         let media_type = transform
             .GetOutputCurrentType(output_stream)
             .map_err(|error| error.to_string())?;
         let aperture = output_aperture(&media_type, fallback)?;
-        let full_range = media_type
-            .GetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE)
-            .ok()
-            .filter(|range| *range != 0)
-            .map_or(fallback.full_range, |range| {
-                range == MFNominalRange_0_255.0 as u32
-            });
-        Ok((aperture, full_range))
+        let subtype = media_type
+            .GetGUID(&MF_MT_SUBTYPE)
+            .map_err(|error| error.to_string())?;
+        let pixel_format = pixel_format_from_subtype(subtype)
+            .ok_or("decoder output has an unsupported pixel format")?;
+        let format = output_color_format(
+            &media_type,
+            VideoFormat {
+                width: aperture.width,
+                height: aperture.height,
+                pixel_format,
+                chroma_format: chroma_format(pixel_format),
+                ..fallback
+            },
+        )?;
+        Ok((aperture, format))
     }
+}
+
+fn output_color_format(
+    media_type: &IMFMediaType,
+    fallback: VideoFormat,
+) -> Result<VideoFormat, String> {
+    let mut format = fallback;
+    for key in [
+        MF_MT_TRANSFER_FUNCTION,
+        MF_MT_VIDEO_PRIMARIES,
+        MF_MT_YUV_MATRIX,
+        MF_MT_VIDEO_NOMINAL_RANGE,
+        MF_MT_VIDEO_CHROMA_SITING,
+    ] {
+        let value = match unsafe { media_type.GetUINT32(&key) } {
+            Ok(0) => continue,
+            Ok(value) => value as i32,
+            Err(error) if error.code() == MF_E_ATTRIBUTENOTFOUND => continue,
+            Err(error) => return Err(format!("decoder output color metadata: {error}")),
+        };
+        if key == MF_MT_TRANSFER_FUNCTION {
+            format.transfer_function = match value {
+                value if value == MFVideoTransFunc_2084.0 => VideoTransferFunction::Pq,
+                value if value == MFVideoTransFunc_HLG.0 => VideoTransferFunction::Hlg,
+                value
+                    if [
+                        MFVideoTransFunc_22.0,
+                        MFVideoTransFunc_709.0,
+                        MFVideoTransFunc_sRGB.0,
+                        MFVideoTransFunc_2020.0,
+                    ]
+                    .contains(&value) =>
+                {
+                    VideoTransferFunction::Sdr
+                }
+                _ => return Err(format!("unsupported decoder transfer function {value}")),
+            };
+        } else if key == MF_MT_VIDEO_PRIMARIES {
+            format.color_primaries = match value {
+                value if value == MFVideoPrimaries_BT709.0 => VideoColorPrimaries::Bt709,
+                value if value == MFVideoPrimaries_BT2020.0 => VideoColorPrimaries::Bt2020,
+                _ => return Err(format!("unsupported decoder color primaries {value}")),
+            };
+        } else if key == MF_MT_YUV_MATRIX {
+            format.color_matrix = match value {
+                value if value == MFVideoTransferMatrix_BT601.0 => VideoColorMatrix::Bt601,
+                value if value == MFVideoTransferMatrix_BT709.0 => VideoColorMatrix::Bt709,
+                value if value == MFVideoTransferMatrix_BT2020_10.0 => VideoColorMatrix::Bt2020,
+                _ => return Err(format!("unsupported decoder YCbCr matrix {value}")),
+            };
+        } else if key == MF_MT_VIDEO_CHROMA_SITING {
+            format.chroma_siting = match value & !MFVideoChromaSubsampling_ProgressiveChroma.0 {
+                value if value == MFVideoChromaSubsampling_MPEG2.0 => VideoChromaSiting::Left,
+                value if value == MFVideoChromaSubsampling_Cosited.0 => VideoChromaSiting::TopLeft,
+                _ => return Err(format!("unsupported decoder chroma siting {value}")),
+            };
+        } else {
+            format.full_range = match value {
+                value if value == MFNominalRange_0_255.0 => true,
+                value if value == MFNominalRange_16_235.0 => false,
+                _ => return Err(format!("unsupported decoder nominal range {value}")),
+            };
+        }
+    }
+    if fallback.transfer_function != VideoTransferFunction::Sdr
+        && format.transfer_function == VideoTransferFunction::Sdr
+    {
+        return Err("decoder reported SDR output for a negotiated HDR stream".to_owned());
+    }
+    format.validate_color().map_err(|error| error.to_string())?;
+    Ok(format)
 }
 
 fn output_aperture(
@@ -934,6 +1048,159 @@ fn pack_pair(high: u32, low: u32) -> u64 {
 mod tests {
     use super::*;
 
+    fn hdr_test_format() -> VideoFormat {
+        VideoFormat {
+            codec: VideoCodec::H265,
+            width: 1920,
+            height: 1080,
+            frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
+            frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
+            average_bitrate: 20_000_000,
+            pixel_format: VideoPixelFormat::P010,
+            chroma_format: VideoChromaFormat::Cs420,
+            full_range: false,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: VideoTransferFunction::Pq,
+            color_primaries: VideoColorPrimaries::Bt2020,
+            color_matrix: VideoColorMatrix::Bt2020,
+        }
+    }
+
+    #[test]
+    fn decoder_color_defaults_and_actual_metadata_are_explicit() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let format = hdr_test_format();
+        let media_type = unsafe { MFCreateMediaType().unwrap() };
+        assert_eq!(output_color_format(&media_type, format).unwrap(), format);
+        unsafe {
+            media_type.SetUINT32(&MF_MT_TRANSFER_FUNCTION, 0).unwrap();
+            media_type.SetUINT32(&MF_MT_VIDEO_PRIMARIES, 0).unwrap();
+            media_type.SetUINT32(&MF_MT_YUV_MATRIX, 0).unwrap();
+            media_type.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, 0).unwrap();
+        }
+        assert_eq!(output_color_format(&media_type, format).unwrap(), format);
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_HLG.0 as u32)
+                .unwrap();
+            media_type
+                .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_0_255.0 as u32)
+                .unwrap();
+        }
+        let updated = output_color_format(&media_type, format).unwrap();
+        assert_eq!(updated.transfer_function, VideoTransferFunction::Hlg);
+        assert!(updated.full_range);
+        let sdr_defaults = VideoFormat {
+            transfer_function: VideoTransferFunction::Sdr,
+            color_primaries: VideoColorPrimaries::Bt709,
+            color_matrix: VideoColorMatrix::Bt709,
+            ..format
+        };
+        let actual_hdr_type = video_input_type(format).unwrap();
+        assert_eq!(
+            output_color_format(&actual_hdr_type, sdr_defaults).unwrap(),
+            format
+        );
+        for transfer_function in [VideoTransferFunction::Pq, VideoTransferFunction::Hlg] {
+            let negotiated = VideoFormat {
+                transfer_function,
+                ..format
+            };
+            assert_eq!(
+                output_color_format(&video_input_type(negotiated).unwrap(), negotiated).unwrap(),
+                negotiated
+            );
+        }
+    }
+
+    #[test]
+    fn decoder_preserves_actual_chroma_siting_or_rejects_it() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let format = hdr_test_format();
+        let media_type = unsafe { MFCreateMediaType().unwrap() };
+        for (value, expected) in [
+            (0, VideoChromaSiting::Left),
+            (MFVideoChromaSubsampling_MPEG2.0, VideoChromaSiting::Left),
+            (
+                MFVideoChromaSubsampling_Cosited.0,
+                VideoChromaSiting::TopLeft,
+            ),
+            (
+                MFVideoChromaSubsampling_MPEG2.0 | MFVideoChromaSubsampling_ProgressiveChroma.0,
+                VideoChromaSiting::Left,
+            ),
+            (
+                MFVideoChromaSubsampling_Cosited.0 | MFVideoChromaSubsampling_ProgressiveChroma.0,
+                VideoChromaSiting::TopLeft,
+            ),
+        ] {
+            unsafe {
+                media_type
+                    .SetUINT32(&MF_MT_VIDEO_CHROMA_SITING, value as u32)
+                    .unwrap();
+            }
+            assert_eq!(
+                output_color_format(&media_type, format)
+                    .unwrap()
+                    .chroma_siting,
+                expected
+            );
+            let negotiated = VideoFormat {
+                chroma_siting: expected,
+                ..format
+            };
+            assert_eq!(
+                output_color_format(&video_input_type(negotiated).unwrap(), format)
+                    .unwrap()
+                    .chroma_siting,
+                expected
+            );
+        }
+        for value in [1, 2, 4, 6, 8, 999] {
+            unsafe {
+                media_type
+                    .SetUINT32(&MF_MT_VIDEO_CHROMA_SITING, value)
+                    .unwrap();
+            }
+            assert!(output_color_format(&media_type, format).is_err());
+        }
+    }
+
+    #[test]
+    fn decoder_rejects_hdr_downgrades_and_unsupported_metadata() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let format = hdr_test_format();
+        for (key, value) in [
+            (MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0),
+            (MF_MT_TRANSFER_FUNCTION, 999),
+            (MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0),
+            (MF_MT_VIDEO_PRIMARIES, 999),
+            (MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0),
+            (MF_MT_YUV_MATRIX, 999),
+            (MF_MT_VIDEO_NOMINAL_RANGE, 3),
+        ] {
+            let media_type = unsafe { MFCreateMediaType().unwrap() };
+            unsafe {
+                media_type.SetUINT32(&key, value as u32).unwrap();
+            }
+            assert!(
+                output_color_format(&media_type, format).is_err(),
+                "metadata {key:?}={value}"
+            );
+        }
+        let media_type = unsafe { MFCreateMediaType().unwrap() };
+        assert!(
+            output_color_format(
+                &media_type,
+                VideoFormat {
+                    pixel_format: VideoPixelFormat::Nv12,
+                    ..format
+                }
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn hevc_input_types_set_the_negotiated_profile_before_decoder_configuration() {
         let _runtime = super::super::MediaRuntime::initialize().unwrap();
@@ -953,6 +1220,10 @@ mod tests {
                 pixel_format,
                 chroma_format: chroma_format(pixel_format),
                 full_range: false,
+                chroma_siting: crate::VideoChromaSiting::Left,
+                transfer_function: crate::VideoTransferFunction::Sdr,
+                color_primaries: crate::VideoColorPrimaries::Bt709,
+                color_matrix: crate::VideoColorMatrix::Bt709,
             };
             let input_type = video_input_type(format).unwrap();
             unsafe {
@@ -1021,6 +1292,10 @@ mod tests {
             pixel_format: VideoPixelFormat::Nv12,
             chroma_format: VideoChromaFormat::Cs420,
             full_range: false,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: crate::VideoTransferFunction::Sdr,
+            color_primaries: crate::VideoColorPrimaries::Bt709,
+            color_matrix: crate::VideoColorMatrix::Bt709,
         };
         let aperture = VideoAperture::new(format.width, format.height, None).unwrap();
         for (corruption, discontinuity) in [
@@ -1077,6 +1352,10 @@ mod tests {
             pixel_format: VideoPixelFormat::Nv12,
             chroma_format: VideoChromaFormat::Cs420,
             full_range: true,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: crate::VideoTransferFunction::Sdr,
+            color_primaries: crate::VideoColorPrimaries::Bt709,
+            color_matrix: crate::VideoColorMatrix::Bt709,
         };
         let media_type = unsafe { MFCreateMediaType().unwrap() };
         assert_eq!(

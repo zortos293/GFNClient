@@ -1,3 +1,4 @@
+use super::color::input_color_space;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
@@ -35,10 +36,9 @@ use ::windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12CreateDevice, ID3D12CommandQueue, ID3D12Device,
 };
 use ::windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_IGNORE, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
-    DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
-    DXGI_FORMAT, DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM,
-    DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_Y410, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+    DXGI_ALPHA_MODE_IGNORE, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_FORMAT, DXGI_FORMAT_AYUV,
+    DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+    DXGI_FORMAT_Y410, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use ::windows::Win32::Graphics::Dxgi::{
     DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT,
@@ -340,6 +340,36 @@ pub(super) struct Graphics {
 }
 
 impl Graphics {
+    pub(super) fn probe_hdr(&self, codec: VideoCodec) -> Result<(), String> {
+        if codec == VideoCodec::H264 {
+            return Err("H.264 HDR is unsupported".to_owned());
+        }
+        let format = VideoFormat {
+            codec,
+            pixel_format: VideoPixelFormat::P010,
+            chroma_format: VideoChromaFormat::Cs420,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: crate::VideoTransferFunction::Pq,
+            color_primaries: crate::VideoColorPrimaries::Bt2020,
+            color_matrix: crate::VideoColorMatrix::Bt2020,
+            full_range: false,
+            ..self.video_format
+        };
+        let mut decoder =
+            super::decoder::Decoder::new(self, format, crate::WindowsDecoderMode::Hardware)?;
+        let decoded_format = decoder.format();
+        decoder.stop();
+        unsafe {
+            super::embedded::probe_hdr_conversion(
+                super::embedded::AdoptedD3d11Context {
+                    device: self.resources.device.as_raw(),
+                    immediate_context: self.resources.context.as_raw(),
+                },
+                decoded_format,
+            )
+        }
+    }
+
     pub(super) fn probe(api: WindowsGraphicsApi) -> Result<Self, String> {
         let format = VideoFormat {
             codec: VideoCodec::H264,
@@ -351,6 +381,10 @@ impl Graphics {
             pixel_format: crate::VideoPixelFormat::Nv12,
             chroma_format: crate::VideoChromaFormat::Cs420,
             full_range: false,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: crate::VideoTransferFunction::Sdr,
+            color_primaries: crate::VideoColorPrimaries::Bt709,
+            color_matrix: crate::VideoColorMatrix::Bt709,
         };
         Self::new(
             api,
@@ -373,6 +407,7 @@ impl Graphics {
         target: SurfaceTarget,
         video_format: VideoFormat,
     ) -> Result<Self, String> {
+        validate_standalone_color(video_format)?;
         let resources = DeviceResources::new(api)?;
         let window = RenderWindow::new(target)?;
         let swap_size = window.client_size()?;
@@ -438,8 +473,12 @@ impl Graphics {
         target: SurfaceTarget,
         video_format: VideoFormat,
     ) -> Result<(), String> {
+        validate_standalone_color(video_format)?;
         if self.window.can_update(target) {
             self.window.update(target)?;
+            if self.video_format != video_format {
+                self.processor = None;
+            }
             self.video_format = video_format;
             self.resize_if_needed()?;
             return self.ensure_processor(video_format.width, video_format.height);
@@ -468,6 +507,7 @@ impl Graphics {
     }
 
     pub(super) fn reconfigure_video(&mut self, format: VideoFormat) -> Result<(), String> {
+        validate_standalone_color(format)?;
         self.video_format = format;
         self.processor = None;
         self.resize_if_needed()?;
@@ -730,7 +770,7 @@ impl Graphics {
                 .CreateVideoProcessor(&enumerator, 0)
                 .map_err(|error| error.to_string())?;
             if let Some(video_context) = self.resources.video_context_1.as_ref() {
-                let input_color_space = input_color_space(self.video_format);
+                let input_color_space = input_color_space(self.video_format)?;
                 video_context.VideoProcessorSetStreamColorSpace1(&processor, 0, input_color_space);
                 video_context.VideoProcessorSetOutputColorSpace1(
                     &processor,
@@ -854,6 +894,14 @@ fn create_swap_chain(
     }
 }
 
+fn validate_standalone_color(format: VideoFormat) -> Result<(), String> {
+    if format.transfer_function != crate::VideoTransferFunction::Sdr {
+        return Err("HDR requires the embedded Qt HDR presenter; the standalone Windows swapchain is SDR-only".to_owned());
+    }
+    input_color_space(format)?;
+    Ok(())
+}
+
 fn swap_chain_format(format: VideoFormat, ten_bit_output_supported: bool) -> DXGI_FORMAT {
     if format.pixel_format.bit_depth() > 8 && ten_bit_output_supported {
         DXGI_FORMAT_R10G10B10A2_UNORM
@@ -890,16 +938,6 @@ fn chroma_format(format: VideoPixelFormat) -> VideoChromaFormat {
     }
 }
 
-fn input_color_space(
-    format: VideoFormat,
-) -> ::windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_TYPE {
-    if format.full_range {
-        DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
-    } else {
-        DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
-    }
-}
-
 fn validate_video_processor_conversion(
     enumerator: &ID3D11VideoProcessorEnumerator,
     input: VideoFormat,
@@ -920,7 +958,7 @@ fn validate_video_processor_conversion(
             let supported = enumerator_1
                 .CheckVideoProcessorFormatConversion(
                     dxgi_format(input.pixel_format),
-                    input_color_space(input),
+                    input_color_space(input)?,
                     output_format,
                     DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
                 )
@@ -1124,6 +1162,30 @@ mod tests {
             pixel_format,
             chroma_format: chroma_format(pixel_format),
             full_range: false,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: crate::VideoTransferFunction::Sdr,
+            color_primaries: crate::VideoColorPrimaries::Bt709,
+            color_matrix: crate::VideoColorMatrix::Bt709,
+        }
+    }
+
+    #[test]
+    fn standalone_presenter_rejects_hdr_instead_of_labeling_it_sdr() {
+        let format = video_format(VideoPixelFormat::P010);
+        assert!(validate_standalone_color(format).is_ok());
+        for transfer_function in [
+            crate::VideoTransferFunction::Pq,
+            crate::VideoTransferFunction::Hlg,
+        ] {
+            assert!(
+                validate_standalone_color(VideoFormat {
+                    transfer_function,
+                    color_primaries: crate::VideoColorPrimaries::Bt2020,
+                    color_matrix: crate::VideoColorMatrix::Bt2020,
+                    ..format
+                })
+                .is_err()
+            );
         }
     }
 

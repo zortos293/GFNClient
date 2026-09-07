@@ -339,10 +339,14 @@ FocusScope {
                 ? ["8bit_444", "10bit_420", "10bit_444"]
                 : selectedCodec === "av1" ? ["8bit_444", "10bit_444"] : []
             const frameGeneration = String(settings.frameGeneration || "off") === "2x"
+            const hdrAvailable = HdrOutput.supported && ShellStore.hdrDecoderAvailable()
+            const hdrDescription = HdrOutput.supported && !ShellStore.hdrDecoderAvailable()
+                ? qsTr("HDR requires a supported 10-bit H.265 or AV1 hardware decoder.") : HdrOutput.status
             return [
                 {t:"Codec", d:"Auto prefers AV1, then H.264, then H.265", v:root.titleCase(settings.codec || "auto"), key:"codec", values:codecValues, labels:codecLabels, segmentLabels:["Auto","AV1","H.264","H.265"], control:"segments", selectedIndex:["auto","av1","h264","h265"].indexOf(String(settings.codec || "auto"))},
                 choice("Fallback codec", "Used when the preferred codec isn't offered by the rig", "fallbackCodec", codecValues, codecLabels),
                 choice("Color quality", "10-bit needs H.265 or AV1; 4:4:4 needs H.265", "colorQuality", ["8bit_420","8bit_444","10bit_420","10bit_444"], ["8-bit, YUV 4:2:0","8-bit, YUV 4:4:4","10-bit, YUV 4:2:0","10-bit, YUV 4:4:4"], "segments", colorDisabled),
+                {t:qsTr("HDR"), d:hdrDescription, v:Boolean(settings.enableHdr) ? qsTr("On") : qsTr("Off"), key:"enableHdr", values:[false,true], labels:[qsTr("Off"),qsTr("On")], control:"segments", selectedIndex:Boolean(settings.enableHdr) ? 1 : 0, disabledValues:hdrAvailable ? [] : [true]},
                 {t:"Max bitrate", d:"Maximum requested stream bitrate", v:Number(settings.maxBitrateMbps || 75) + " Mbps", key:"maxBitrateMbps", values:[25,50,75,100,150,200], labels:["25 Mbps","50 Mbps","75 Mbps","100 Mbps","150 Mbps","200 Mbps"], control:"slider", sliderPercent:Number(settings.maxBitrateMbps || 75) / 106},
                 {t:qsTr("Frame generation (Experimental)"), d:qsTr("Targets 120 displayed FPS from a 60 FPS stream. Requires a fast GPU and 120 Hz display; adds latency and artifacts."), v:frameGeneration ? qsTr("2×") : qsTr("Off"), key:"frameGeneration", values:["off","2x"], labels:[qsTr("Off"),qsTr("2×")], control:"segments", selectedIndex:frameGeneration ? 1 : 0},
                 toggle("Cloud G-Sync", "Variable refresh on G-Sync and FreeSync displays", "enableCloudGsync"),

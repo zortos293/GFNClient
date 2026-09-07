@@ -216,6 +216,58 @@ codec on resume; it never changes the codec of an already allocated stream. Olde
 this optional object retain the external-streamer probe path. The additive fields do not change
 the JSON protocol version or native FFI ABI.
 
+### HDR session contract
+
+`settings.enableHdr` is a persisted boolean with default `false`; HDR requires explicit user
+opt-in. Qt adds `nativeHdrSupported: boolean` to `params.runtimeCapabilities` on each
+`session.create` and `streamer.prepare` request. It must describe the actual stream window's
+current HDR output, including the active monitor, compositor/OS HDR state, and presentation
+surface support, not merely a GPU or decoder capability. Missing, false, or malformed values
+deny HDR. This value is transient: `settings.set` rejects `nativeHdrSupported`, the settings
+loader discards legacy copies, and the core never saves runtime capability results.
+
+With HDR enabled, the core requires an available hardware HEVC or AV1 decoder whose
+`colorQualities` explicitly includes `10bit_420`, or whose optional per-codec
+`hdrSupported` is `true` when `colorQualities` is absent. Windows reports `hdrSupported`
+from its actual 10-bit decoder probe without changing its existing unknown SDR profiles;
+Linux omits that field and uses explicit color-quality profiles. An explicit false or
+malformed `hdrSupported` denies HDR even if 10-bit profiles exist. A true value never
+overrides an explicit empty or incompatible `colorQualities` array. Neither setting
+changes SDR capability filtering. Auto prefers HEVC then AV1. HDR constrains the
+session-local color quality to `10bit_420` without changing the saved
+SDR color preference; 4:4:4 HDR is not negotiated. Explicit H.264, software decoding, missing
+output support, and unavailable 10-bit profiles fail before allocating a seat. Without HDR,
+the existing codec and color selection policy is unchanged. Callers without embedded runtime
+capabilities cannot request HDR through the external-streamer probe path.
+
+CloudMatch receives `sessionRequestData.sdrHdrMode=1`, monitor `sdrHdrMode=1`, and
+`requestedStreamingFeatures.trueHdr=true` only for this validated HDR request. CloudMatch
+uses bit-depth/chroma enums `1/0` for 10-bit 4:2:0. For HDR, monitor `displayData` requests
+maximum luminance 1000 nits, minimum luminance 0, and maximum frame-average luminance 400 nits,
+matching the Mac native session payload. These are fixed requested-content defaults, not
+measurements of the physical display; no caller-supplied luminance is accepted in this
+contract. SDR luminance values and all display primaries remain zero protocol defaults.
+
+The normalized server response carries `negotiatedStreamProfile.enableHdr: boolean`. It
+comes from the returned session's `sdrHdrMode`, then the returned monitor's mode, then the
+returned session-request mode; missing or unsupported modes mean SDR. An explicit server
+SDR response wins over saved HDR intent. `trueHdr` is not used to infer accepted dynamic
+range. Resume preserves that returned mode rather than renegotiating from current settings.
+The claim request intentionally omits monitor settings and requested streaming features, so
+its only copied dynamic-range field is the accepted session `sdrHdrMode`. The initial
+compatibility RESUME carries the full request and updates its session mode, monitor mode,
+requested-content luminance, and `trueHdr` consistently when the server has returned a mode.
+Attachment revalidates the accepted HDR codec/color profile and current window output, so
+moving to an SDR display cannot silently resume an HDR stream as SDR.
+
+The native context preserves the accepted profile, and `MediaStreamConfig.hdr` follows its
+`enableHdr` alone (missing means false). Invalid accepted HDR profiles are rejected before
+stream startup. NVST ANNOUNCE sends `x-nv-video[0].dynamicRangeMode=1` for HDR and `0` for
+SDR, with literal bit depth `10` or `8`. Its `chromaFormat` uses chroma_format_idc (`1` for
+4:2:0, `3` for 4:4:4), unlike CloudMatch's enum. The captured Mac native ANNOUNCE confirms
+10-bit 4:2:0 as `bitDepth:10` / `chromaFormat:1`; its seat control notification `0x010e`
+reports a separate runtime mode and must not be confused with CloudMatch's `trueHdr` field.
+
 After an update check, `updater.highlights.get` returns the latest published
 release notes for the selected channel, even when that release is equal to or
 older than the installed app. Its `version` and `title` identify that published

@@ -2716,6 +2716,12 @@ impl WindowsOutput {
                         },
                         // Official GFN SDR sessions report limited-range BT.709.
                         full_range: false,
+                        chroma_siting: opennow_streamer_platform_windows::VideoChromaSiting::Left,
+                        transfer_function:
+                            opennow_streamer_platform_windows::VideoTransferFunction::Sdr,
+                        color_primaries:
+                            opennow_streamer_platform_windows::VideoColorPrimaries::Bt709,
+                        color_matrix: opennow_streamer_platform_windows::VideoColorMatrix::Bt709,
                     },
                     audio: AudioFormat {
                         sample_rate: AUDIO_SAMPLE_RATE as u32,

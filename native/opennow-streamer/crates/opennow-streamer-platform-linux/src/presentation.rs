@@ -405,6 +405,7 @@ impl VulkanPresenter {
     /// down the media session.
     pub fn present(&mut self, frame: &DecodedVideoFrame) -> Result<bool> {
         frame.validate()?;
+        validate_standalone_color(frame.format)?;
         if frame.format.pixel_format != PixelFormat::Nv12
             || (frame.vulkan.is_none() && frame.dmabuf.is_none() && frame.planes.len() != 2)
         {
@@ -2243,6 +2244,18 @@ fn clamp_u8(value: f32) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
 
+fn validate_standalone_color(format: crate::StreamFormat) -> Result<()> {
+    if format.color_transfer != crate::ColorTransfer::Sdr
+        || format.color_primaries != crate::ColorPrimaries::Bt709
+    {
+        return Err(Error::unavailable(
+            Subsystem::Vulkan,
+            "standalone Vulkan presentation supports only SDR BT.709; use the HDR-capable embedded presenter",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_presentation_extent(width: u32, height: u32) -> Result<()> {
     if width == 0 || height == 0 {
         return Err(Error::InvalidFormat(
@@ -2293,6 +2306,17 @@ mod tests {
     }
 
     #[test]
+    fn standalone_rejects_hdr_instead_of_tagging_it_as_sdr() {
+        let mut format = crate::StreamFormat::video_default(1920, 1080).unwrap();
+        validate_standalone_color(format).unwrap();
+        for transfer in [crate::ColorTransfer::Pq, crate::ColorTransfer::Hlg] {
+            format.color_transfer = transfer;
+            format.color_primaries = crate::ColorPrimaries::Bt2020;
+            assert!(validate_standalone_color(format).is_err());
+        }
+    }
+
+    #[test]
     fn gpu_conversion_constants_preserve_range_matrix_and_letterboxing() {
         use std::sync::Arc;
 
@@ -2305,6 +2329,8 @@ mod tests {
                 pixel_format: PixelFormat::Nv12,
                 color_range: ColorRange::Full,
                 color_matrix: ColorMatrix::Bt2020,
+                color_transfer: crate::ColorTransfer::Sdr,
+                color_primaries: crate::ColorPrimaries::Bt709,
                 chroma_location: ChromaLocation::Left,
             },
             planes: vec![

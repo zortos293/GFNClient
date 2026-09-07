@@ -38,6 +38,7 @@ int AcceptanceSession::prepareWindow()
                     {u"desktopSidebarHover"_s, false}, {u"desktopRailCollapsed"_s, true},
                     {u"resolution"_s, u"2560x1440"_s}, {u"fps"_s, 120},
                     {u"codec"_s, u"av1"_s}, {u"colorQuality"_s, u"10bit_420"_s},
+                    {u"enableHdr"_s, false},
                     {u"maxBitrateMbps"_s, 75}, {u"enableCloudGsync"_s, true}});
                 // Visual fixtures stay in the smoke-only QML store. The core is
                 // not started, so no account state or preferences are persisted.

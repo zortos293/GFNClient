@@ -1,4 +1,5 @@
 #include "streaming/rendering/NativeStreamRenderCallback.h"
+#include "streaming/rendering/HdrOutput.h"
 
 #include "streaming/NativeStreamRuntime.h"
 #include "streaming/rendering/LinuxVulkanGraphics.h"
@@ -38,7 +39,7 @@ private:
 
 class NativeStreamRenderCallback final : public StreamVideoRenderCallback
 {
-    enum class FrameGenerationState { Off, WarmingUp, Active, DisplayTooSlow, Overloaded, Unavailable, Discontinuity, SourceRateLimit };
+    enum class FrameGenerationState { Off, WarmingUp, Active, DisplayTooSlow, Overloaded, Unavailable, Discontinuity, SourceRateLimit, HdrUnsupported };
 public:
     explicit NativeStreamRenderCallback(NativeStreamRuntime *runtime)
         : m_runtime(runtime)
@@ -139,6 +140,8 @@ public:
             resetFrameGeneration();
             m_resetFrameGeneration = false;
         }
+        const auto output = HdrOutput::renderState();
+        m_textures.setColorSpace(m_sourceColorSpace, output.mode, output.whiteNits, output.supported);
         if (!m_textures.prepare(commandBuffer)) {
             reportFailure(QStringLiteral("Could not create the video shaders or GPU resources. Check the packaged shaders and GPU driver."));
             return;
@@ -203,13 +206,21 @@ public:
         if (status != OPENNOW_STREAMER_OK || !frame || recorded.resource == 0
             || recorded.width == 0 || recorded.height == 0
             || (recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8
-                && recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2)) {
+                && recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2
+                && recorded.texture_format != OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA16F)
+            || (recorded.color_space != OPENNOW_STREAMER_COLOR_SPACE_SDR709
+                && recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8)
+            || recorded.color_space > OPENNOW_STREAMER_COLOR_SPACE_HLG2020) {
             if (frame) m_runtime->releaseFrame(frame);
             reportFailure(QStringLiteral("Could not present the decoded GPU frame (status %1). Check native-streamer.log for decoder or device errors.").arg(int(status)));
             return;
         }
         m_preparedFrame = frame;
-
+        if (m_sourceColorSpace != int(recorded.color_space)) {
+            resetFrameGeneration();
+            m_sourceColorSpace = int(recorded.color_space);
+            m_textures.updateColorSpace(commandBuffer, m_sourceColorSpace);
+        }
 
         QRhiTexture::NativeTexture texture{};
         texture.object = recorded.resource;
@@ -219,13 +230,19 @@ public:
 #endif
         if (!m_textures.importFrame(command.frame_slot, texture,
             recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2
-                ? QRhiTexture::RGB10A2 : QRhiTexture::RGBA8,
+                ? QRhiTexture::RGB10A2
+                : recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA16F
+                    ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8,
             QSize(int(recorded.width), int(recorded.height)))) {
             reportFailure(QStringLiteral("Could not import the decoded video texture into Qt. The decoder and graphics backend must use compatible GPU resources."));
             return;
         }
         m_outputDirty = true;
         m_outputKind = 1;
+        if (m_sourceColorSpace != OPENNOW_STREAMER_COLOR_SPACE_SDR709) {
+            m_frameGenerationStatus.store(m_frameGeneration ? FrameGenerationState::HdrUnsupported : FrameGenerationState::Off);
+            return;
+        }
         if (!m_frameGeneration || m_frameGenerationFailed) return;
 
         const auto now = clockNs();
@@ -313,7 +330,7 @@ public:
         const QString states[] = {QStringLiteral("off"), QStringLiteral("warming-up"),
             QStringLiteral("active"), QStringLiteral("display-refresh"),
             QStringLiteral("overloaded"), QStringLiteral("unavailable"), QStringLiteral("discontinuity"),
-            QStringLiteral("source-rate-limit")};
+            QStringLiteral("source-rate-limit"), QStringLiteral("hdr-unavailable")};
         const QString timing[] = {QStringLiteral("none"), QStringLiteral("source-timestamps"),
                                   QStringLiteral("arrival-cadence")};
         const QString rejections[] = {QStringLiteral("none"), QStringLiteral("sequence-gap"),
@@ -387,6 +404,7 @@ private:
     NativeStreamRuntime *m_runtime;
     QRhi *m_rhi = nullptr;
     StreamVideoTextureRenderer m_textures;
+    int m_sourceColorSpace = OPENNOW_STREAMER_COLOR_SPACE_SDR709;
     StreamFrameInterpolator m_interpolator;
     StreamFramePacer m_pacer;
     QSize m_historySize;

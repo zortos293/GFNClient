@@ -119,6 +119,14 @@ pub(crate) struct V4l2Decoder {
 
 impl V4l2Decoder {
     pub fn open(format: StreamFormat, requested: Option<PathBuf>) -> Result<Self> {
+        if format.pixel_format != PixelFormat::Nv12
+            || format.color_transfer != crate::ColorTransfer::Sdr
+        {
+            return Err(Error::unavailable(
+                Subsystem::V4l2,
+                "V4L2 decoder supports only SDR NV12",
+            ));
+        }
         format.validate()?;
         let devices = probe_v4l2_devices();
         let device = match requested {

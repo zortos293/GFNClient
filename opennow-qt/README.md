@@ -174,6 +174,29 @@ input latency, scene cuts, reconnects, resize/display changes, and overlays open
 FPS must remain near 60, LOCAL OUTPUT FPS should approach 120 only when the hardware sustains
 it, and fallback must not accumulate delay. Repeat on D3D11, Vulkan, and Metal hardware.
 
+### HDR presentation
+
+`HdrOutput` owns render-thread swapchain format changes and fail-closed display capability.
+It prefers scRGB, probes the current surface again after display changes, and uses SDR if HDR
+output or the required resources are unavailable. `CoreClient` injects the transient
+`runtimeCapabilities.nativeHdrSupported` flag into session creation and stream preparation;
+the core owns the final decoder/backend gate and persisted `enableHdr` preference.
+
+ABI 6 imported frames carry their PQ/HLG/SDR color space explicitly. The video shader converts
+PQ and HLG BT.2020 to linear scRGB, or performs luminance-based SDR tone mapping after HDR
+output is lost. SDR chrome uses bounded QML layers and `HdrChromeEffect` to decode sRGB before
+composition; the normal SDR path has no additional layers. HDR10-only surfaces require one
+window-sized RGBA16F scene target (bounded to 8K) and a final PQ-encoding GPU pass so translucent
+chrome blends in linear light. scRGB keeps the direct video path. Neither path creates another
+window, copies frames to the CPU, or restarts media for overlays. Experimental frame generation
+is explicitly unavailable for HDR sources.
+
+Run `opennow-hdrcolor-tests`, `opennow-linuxvulkangraphics-tests`, and the backend-availability
+QML workload. The GPU tests check shader luminance/gamut math, tone-map monotonicity, actual
+linear alpha blending through the HDR10 output pass, and chrome-layer resizing/fullscreen.
+These tests do not establish that a physical HDR monitor received HDR. The live Windows/Linux
+display and reconnect matrix is in [HDR validation](../docs/hdr.md).
+
 ### Native input acceptance
 
 Run the controller, stream video, native runtime and Wayland pointer unit tests first:

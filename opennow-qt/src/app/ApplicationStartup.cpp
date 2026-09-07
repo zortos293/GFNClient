@@ -6,6 +6,8 @@
 #include "input/InputModeTracker.h"
 #include "localization/Localization.h"
 #include "streaming/rendering/LinuxVulkanGraphics.h"
+#include "streaming/rendering/HdrOutput.h"
+#include "streaming/rendering/HdrChromeEffect.h"
 #ifdef OPENNOW_EMBEDDED_STREAMER
 #include "streaming/NativeStreamRuntime.h"
 #endif
@@ -167,16 +169,21 @@ int runApplication(int argc, char *argv[])
         controller.setReducedMotion(true);
     }
 
+    HdrOutput hdrOutput;
+    QObject::connect(&localization, &Localization::localeChanged, &hdrOutput, &HdrOutput::changed);
+    QObject::connect(&hdrOutput, &HdrOutput::changed, &coreClient, [&] {
+        coreClient.setNativeHdrSupported(hdrOutput.supported());
+    });
+    qmlRegisterType<HdrChromeEffect>("OpenNOW", 1, 0, "HdrChromeEffect");
     QQmlApplicationEngine engine;
-#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     engine.setInitialProperties({{u"visible"_s, false}, {u"visibility"_s, QWindow::Hidden}});
-#endif
     AcceptanceSession acceptance(application, engine, controller, coreClient, arguments);
     engine.rootContext()->setContextProperty(u"AppController"_s, &controller);
     engine.rootContext()->setContextProperty(u"ControllerInput"_s, &controllerInput);
     engine.rootContext()->setContextProperty(u"ThumbnailGenerator"_s, &thumbnailGenerator);
     engine.rootContext()->setContextProperty(u"I18n"_s, &localization);
     engine.rootContext()->setContextProperty(u"CoreClient"_s, &coreClient);
+    engine.rootContext()->setContextProperty(u"HdrOutput"_s, &hdrOutput);
 #ifdef OPENNOW_EMBEDDED_STREAMER
     engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s,
                                              &nativeStreamRuntime);
@@ -192,19 +199,24 @@ int runApplication(int argc, char *argv[])
                      &application, [] { QCoreApplication::exit(EXIT_FAILURE); },
                      Qt::QueuedConnection);
     engine.loadFromModule(u"OpenNOW"_s, u"Main"_s);
-#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     auto *rootWindow = engine.rootObjects().isEmpty() ? nullptr
         : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    hdrOutput.attach(rootWindow);
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     if (vulkanDevice.handle() && !vulkanDevice.adopt(rootWindow)) {
         qWarning("Could not adopt the embedded Vulkan device: %s",
                  qUtf8Printable(vulkanDevice.lastError()));
         return EXIT_FAILURE;
     }
+    if (!vulkanDevice.handle() && rootWindow
+            && rootWindow->rendererInterface()->graphicsApi() == QSGRendererInterface::Vulkan
+            && !vulkanDevice.adoptFallback(rootWindow)) {
+        qWarning("Could not adopt the fallback Vulkan instance: %s", qUtf8Printable(vulkanDevice.lastError()));
+        return EXIT_FAILURE;
+    }
 #endif
     if (acceptance.prepareWindow() != EXIT_SUCCESS) return EXIT_FAILURE;
-#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     if (rootWindow && !rootWindow->isVisible()) rootWindow->show();
-#endif
     const auto qmlReadyMs = startupTimer.elapsed();
     controller.handleArguments(arguments);
     QObject::connect(&controller, &AppController::activationRequested,

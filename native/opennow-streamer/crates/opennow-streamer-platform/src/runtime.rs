@@ -162,6 +162,22 @@ impl MediaRuntime {
         requested: &str,
     ) -> Result<MediaSession, String> {
         self.validate_backend(requested)?;
+        if stream.hdr {
+            if stream.codec == crate::MediaVideoCodec::H264
+                || stream.color_quality.bit_depth() != 10
+            {
+                return Err("HDR requires a negotiated 10-bit HEVC or AV1 stream".to_owned());
+            }
+            if !cfg!(any(target_os = "windows", target_os = "linux")) {
+                return Err(
+                    "HDR is supported only by the Windows and Linux embedded stream view"
+                        .to_owned(),
+                );
+            }
+            if matches!(self.mode, MediaRuntimeMode::Standalone) {
+                return Err("HDR requires the color-managed embedded Qt stream view".to_owned());
+            }
+        }
         if let MediaRuntimeMode::Embedded(frames, _device) = &self.mode {
             let session = MediaSession::spawn_embedded(
                 Arc::clone(&self.output),
@@ -1110,6 +1126,58 @@ fn ensure_macos_main_thread() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::backend_preference_allows_value;
+
+    #[test]
+    fn hdr_rejects_h264_and_eight_bit_before_decoder_start() {
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let runtime = super::create_embedded_runtime(frames);
+        for (codec, color_quality) in [
+            (
+                crate::MediaVideoCodec::H264,
+                crate::MediaColorQuality::TenBit420,
+            ),
+            (
+                crate::MediaVideoCodec::H265,
+                crate::MediaColorQuality::EightBit420,
+            ),
+            (
+                crate::MediaVideoCodec::Av1,
+                crate::MediaColorQuality::EightBit444,
+            ),
+        ] {
+            let (feedback, _) = std::sync::mpsc::channel();
+            let result = runtime.start(
+                feedback,
+                crate::MediaStreamConfig {
+                    codec,
+                    color_quality,
+                    hdr: true,
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(result, Err(message) if message.contains("10-bit HEVC or AV1")));
+        }
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn standalone_output_never_presents_hdr_as_sdr() {
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let mut runtime = super::create_embedded_runtime(frames);
+        runtime.mode = super::MediaRuntimeMode::Standalone;
+        let (feedback, _) = std::sync::mpsc::channel();
+        let result = runtime.start(
+            feedback,
+            crate::MediaStreamConfig {
+                codec: crate::MediaVideoCodec::H265,
+                color_quality: crate::MediaColorQuality::TenBit420,
+                hdr: true,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(result, Err(message) if message.contains("embedded")));
+        runtime.shutdown();
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

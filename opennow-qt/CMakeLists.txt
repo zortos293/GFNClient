@@ -25,6 +25,9 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui Network Multim
 if(NOT TARGET Qt6::GuiPrivate)
     find_package(Qt6GuiPrivate ${Qt6_VERSION} EXACT REQUIRED CONFIG)
 endif()
+if(NOT TARGET Qt6::QuickPrivate)
+    find_package(Qt6QuickPrivate ${Qt6_VERSION} EXACT REQUIRED CONFIG)
+endif()
 find_package(SDL3 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -74,6 +77,7 @@ target_link_libraries(opennow-qt PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::GuiPrivate
+    Qt6::QuickPrivate
     Qt6::Network
     Qt6::Multimedia
     SDL3::SDL3

@@ -124,6 +124,23 @@ private slots:
         }
     }
 
+    void fallbackInstanceEnablesAdvertisedHdrColorspace()
+    {
+        if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
+            QSKIP("The offscreen platform has no Vulkan surface");
+        Device device;
+        QQuickWindow window;
+        QVERIFY(device.adoptFallback(&window));
+        QVERIFY(!device.handle());
+        auto *instance = window.vulkanInstance();
+        QVERIFY(instance);
+        QVERIFY(instance->isValid());
+        QVERIFY(instance->apiVersion() >= QVersionNumber(1, 1));
+        const QByteArray extension("VK_EXT_swapchain_colorspace");
+        QCOMPARE(instance->extensions().contains(extension), instance->supportedExtensions().contains(extension));
+        QVERIFY(!window.isVisible());
+    }
+
     void rejectsDifferentQtGraphicsDevice()
     {
         const auto info = deviceInfo();

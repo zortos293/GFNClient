@@ -179,7 +179,8 @@ NativeStreamRuntime::Api producerApi()
         if (!adoptedDevice) return OPENNOW_STREAMER_GRAPHICS_UNAVAILABLE;
         producer->recorded = frame->info;
         *output = {native.object, 0, OPENNOW_STREAMER_GRAPHICS_API_D3D11,
-                   OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, frame->info.width, frame->info.height,
+                   OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, OPENNOW_STREAMER_COLOR_SPACE_SDR709,
+                   frame->info.width, frame->info.height,
                    command->frame_slot, 1, frame->info.presentation_time_ns};
         return OPENNOW_STREAMER_OK;
 #else
@@ -205,7 +206,8 @@ NativeStreamRuntime::Api producerApi()
             producer->sourceTexture->setNativeLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             producer->recorded = frame->info;
             *output = {native.object, 0, OPENNOW_STREAMER_GRAPHICS_API_VULKAN,
-                       OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, frame->info.width, frame->info.height,
+                       OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, OPENNOW_STREAMER_COLOR_SPACE_SDR709,
+                       frame->info.width, frame->info.height,
                        command->frame_slot, 1, frame->info.presentation_time_ns};
             return OPENNOW_STREAMER_OK;
         }
@@ -241,7 +243,8 @@ NativeStreamRuntime::Api producerApi()
         image.initialized = true;
         producer->recorded = frame->info;
         *output = {quint64(image.image), 0, OPENNOW_STREAMER_GRAPHICS_API_VULKAN,
-                   OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, frame->info.width, frame->info.height,
+                   OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, OPENNOW_STREAMER_COLOR_SPACE_SDR709,
+                   frame->info.width, frame->info.height,
                    command->frame_slot, 1, frame->info.presentation_time_ns};
         return OPENNOW_STREAMER_OK;
 #endif

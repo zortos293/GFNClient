@@ -37,6 +37,8 @@ FocusScope {
     }
     Rectangle {
         anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 24
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         width: sessionClock.implicitWidth + 24; height: 36; radius: 18; z: 4
         color: Qt.rgba(Theme.shell.r,Theme.shell.g,Theme.shell.b,0.85)
         visible: root.streaming && ShellStore.settings.sessionCounterEnabled === true
@@ -110,6 +112,8 @@ FocusScope {
     }
 
     StreamInputNotice {
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         message: root.streaming && streamVideo.relativeMouse ? streamVideo.inputCaptureError : ""
         z: 3
     }
@@ -130,6 +134,8 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         visible: root.statusVisible
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         color: "#04060A"
         z: 1
 
@@ -154,6 +160,8 @@ FocusScope {
 
     Column {
         id: statusContent
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         visible: root.statusVisible
         width: Math.min(560, root.width - 64)
         x: Math.round((root.width - width) / 2)
@@ -221,6 +229,8 @@ FocusScope {
 
     Text {
         visible: root.statusVisible
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         anchors.left: parent.left
         anchors.bottom: parent.bottom
         anchors.margins: 32
@@ -237,6 +247,8 @@ FocusScope {
 
     Rectangle {
         anchors.horizontalCenter: parent.horizontalCenter
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 24
         width: liveHints.implicitWidth + 28

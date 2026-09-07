@@ -9,9 +9,9 @@ use ffmpeg::software::scaling::{context::Context as Scaler, flag::Flags as Scale
 use ffmpeg_next as ffmpeg;
 
 use crate::{
-    ChromaLocation, ColorMatrix, ColorRange, DecodedVideoFrame, DmaBufFrame, DmaBufLayer,
-    DmaBufObject, DmaBufPlane, EncodedVideoFrame, Error, FramePlane, PixelFormat, Result,
-    StreamFormat, Subsystem, VideoCodec, VulkanImage, VulkanVideoFrame,
+    ChromaLocation, ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, DecodedVideoFrame,
+    DmaBufFrame, DmaBufLayer, DmaBufObject, DmaBufPlane, EncodedVideoFrame, Error, FramePlane,
+    PixelFormat, Result, StreamFormat, Subsystem, VideoCodec, VulkanImage, VulkanVideoFrame,
 };
 
 use super::VideoDecoder;
@@ -20,6 +20,7 @@ use super::VideoDecoder;
 pub(crate) enum FfmpegMode {
     Vulkan,
     Cuda,
+    Vaapi,
     Software,
 }
 
@@ -28,6 +29,7 @@ impl FfmpegMode {
         match self {
             Self::Vulkan => "FFmpeg Vulkan Video",
             Self::Cuda => "FFmpeg CUDA/NVDEC",
+            Self::Vaapi => "FFmpeg VAAPI",
             Self::Software => "FFmpeg software",
         }
     }
@@ -36,6 +38,7 @@ impl FfmpegMode {
         match self {
             Self::Vulkan => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN),
             Self::Cuda => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA),
+            Self::Vaapi => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI),
             Self::Software => None,
         }
     }
@@ -50,6 +53,7 @@ pub(crate) struct FfmpegDecoder {
     codec: VideoCodec,
     mode: FfmpegMode,
     configured_format: StreamFormat,
+    negotiated_format: StreamFormat,
     pending_format_change: Option<StreamFormat>,
     last_timestamp_us: u64,
     zero_copy_active: bool,
@@ -66,6 +70,15 @@ struct HardwareFormatSelection {
 }
 
 impl FfmpegDecoder {
+    pub(crate) fn supports_vaapi_ten_bit(codec: VideoCodec) -> bool {
+        initialize_ffmpeg().is_ok()
+            && ffmpeg::decoder::find_by_name(native_decoder_name(codec)).is_some_and(|decoder| {
+                hardware_pixel_format(decoder, ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI)
+                    .is_some()
+            })
+            && super::vaapi_probe::ten_bit_device(codec).is_some()
+    }
+
     pub(crate) fn open(codec: VideoCodec, format: StreamFormat, mode: FfmpegMode) -> Result<Self> {
         Self::open_internal(codec, format, mode, None)
     }
@@ -96,6 +109,15 @@ impl FfmpegDecoder {
         mode: FfmpegMode,
         shared_device: Option<Arc<crate::SharedVulkanDevice>>,
     ) -> Result<Self> {
+        format.validate()?;
+        if (format.color_transfer != ColorTransfer::Sdr || format.pixel_format == PixelFormat::P010)
+            && matches!(mode, FfmpegMode::Cuda | FfmpegMode::Software)
+        {
+            return Err(Error::unavailable(
+                Subsystem::Ffmpeg,
+                "HDR/10-bit requires Vulkan Video or VAAPI zero-copy decoding",
+            ));
+        }
         initialize_ffmpeg()?;
         let decoder_definition = if mode == FfmpegMode::Software {
             ffmpeg::decoder::find(codec_id(codec))
@@ -117,6 +139,20 @@ impl FfmpegDecoder {
         }
 
         let mut wanted_hw_format = None;
+        let vaapi_device = if mode == FfmpegMode::Vaapi && format.pixel_format == PixelFormat::P010
+        {
+            Some(super::vaapi_probe::ten_bit_device(codec).ok_or_else(|| {
+                Error::unavailable(
+                    Subsystem::VaApi,
+                    "no VAAPI decode profile supports the requested 10-bit 4:2:0 format",
+                )
+            })?)
+        } else {
+            None
+        };
+        let device_path = vaapi_device
+            .as_ref()
+            .map_or(ptr::null(), |path| path.as_ptr());
         if let Some(device_type) = mode.device_type() {
             let pixel_format =
                 hardware_pixel_format(decoder_definition, device_type).ok_or_else(|| {
@@ -153,12 +189,12 @@ impl FfmpegDecoder {
                 if device.is_null() { -12 } else { 0 }
             } else {
                 unsafe {
-                    ffi::av_hwdevice_ctx_create(&mut device, device_type, ptr::null(), options, 0)
+                    ffi::av_hwdevice_ctx_create(&mut device, device_type, device_path, options, 0)
                 }
             };
             #[cfg(not(feature = "vulkan"))]
             let create_result = unsafe {
-                ffi::av_hwdevice_ctx_create(&mut device, device_type, ptr::null(), options, 0)
+                ffi::av_hwdevice_ctx_create(&mut device, device_type, device_path, options, 0)
             };
             unsafe { ffi::av_dict_free(&mut options) };
             if create_result < 0 || device.is_null() {
@@ -208,6 +244,7 @@ impl FfmpegDecoder {
             codec,
             mode,
             configured_format: format,
+            negotiated_format: format,
             pending_format_change: None,
             last_timestamp_us: 0,
             zero_copy_active: false,
@@ -257,6 +294,7 @@ impl FfmpegDecoder {
     }
 
     fn convert_frame(&mut self, decoded: &frame::Video) -> Result<DecodedVideoFrame> {
+        let metadata = decoded_metadata(decoded, self.negotiated_format)?;
         #[cfg(feature = "vulkan")]
         if let Some(device) = self.shared_device.as_ref() {
             if decoded.format() != Pixel::VULKAN {
@@ -287,44 +325,90 @@ impl FfmpegDecoder {
                     "decoded Vulkan format differs from the supported negotiated profile",
                 ));
             }
-            output.format.color_range = map_color_range(decoded);
-            output.format.color_matrix = map_color_matrix(decoded);
-            output.format.chroma_location = map_chroma_location(decoded);
+            output.format = StreamFormat {
+                width: output.format.width,
+                height: output.format.height,
+                pixel_format: output.format.pixel_format,
+                ..metadata
+            };
             if output.format != self.configured_format {
                 self.configured_format = output.format;
                 self.pending_format_change = Some(output.format);
             }
             return Ok(output);
         }
-        if self.mode == FfmpegMode::Vulkan
-            && self
-                .wanted_hw_format
-                .as_deref()
-                .is_some_and(|selection| Pixel::from(selection.pixel_format) == decoded.format())
-        {
-            let direct_vulkan = map_vulkan_frame_direct(decoded, self.last_timestamp_us)
-                .ok()
-                .and_then(|frame| frame.vulkan);
-            match map_vulkan_frame_to_dmabuf(decoded, self.last_timestamp_us) {
-                Ok(mut frame) => {
-                    frame.vulkan = direct_vulkan.clone();
-                    if !self.zero_copy_active {
-                        eprintln!(
-                            "Vulkan Video frames expose same-device and DRM PRIME/DMA-BUF paths"
-                        );
-                        self.zero_copy_active = true;
+        let selected_hardware = self
+            .wanted_hw_format
+            .as_deref()
+            .is_some_and(|selection| Pixel::from(selection.pixel_format) == decoded.format());
+        let actual_pixel = if selected_hardware {
+            decoded_hardware_software_format(decoded)?
+        } else {
+            decoded.format()
+        };
+        let allow_cpu_conversion = cpu_conversion_allowed(metadata, actual_pixel);
+        if matches!(self.mode, FfmpegMode::Vulkan | FfmpegMode::Vaapi) && selected_hardware {
+            let output = if self.mode == FfmpegMode::Vulkan && allow_cpu_conversion {
+                let direct_vulkan =
+                    map_vulkan_frame_direct(decoded, self.last_timestamp_us, metadata)
+                        .ok()
+                        .and_then(|frame| frame.vulkan);
+                match map_hardware_frame_to_dmabuf(decoded, self.last_timestamp_us, metadata) {
+                    Ok(mut frame) => {
+                        frame.vulkan = direct_vulkan;
+                        if !self.zero_copy_active {
+                            eprintln!(
+                                "Vulkan Video frames expose same-device and DRM PRIME/DMA-BUF paths"
+                            );
+                            self.zero_copy_active = true;
+                        }
+                        Some(frame)
                     }
-                    return Ok(frame);
-                }
-                Err(error) => {
-                    if !self.zero_copy_unavailable_reported {
-                        eprintln!(
-                            "Vulkan Video DMA-BUF export unavailable; using bounded CPU transfer: {error}"
-                        );
-                        self.zero_copy_unavailable_reported = true;
+                    Err(error) => {
+                        if !self.zero_copy_unavailable_reported {
+                            eprintln!(
+                                "Vulkan Video DMA-BUF export unavailable; using bounded CPU transfer: {error}"
+                            );
+                            self.zero_copy_unavailable_reported = true;
+                        }
+                        None
                     }
                 }
+            } else if self.mode == FfmpegMode::Vulkan {
+                Some(map_vulkan_frame_direct(
+                    decoded,
+                    self.last_timestamp_us,
+                    metadata,
+                )?)
+            } else {
+                Some(map_hardware_frame_to_dmabuf(
+                    decoded,
+                    self.last_timestamp_us,
+                    metadata,
+                )?)
+            };
+            if let Some(output) = output {
+                if self.mode == FfmpegMode::Vaapi
+                    && output.format.pixel_format != self.negotiated_format.pixel_format
+                {
+                    return Err(Error::unavailable(
+                        Subsystem::VaApi,
+                        "VAAPI output depth differs from the negotiated decode format",
+                    ));
+                }
+                output.format.validate()?;
+                if output.format != self.configured_format {
+                    self.configured_format = output.format;
+                    self.pending_format_change = Some(output.format);
+                }
+                return Ok(output);
             }
+        }
+        if !allow_cpu_conversion || self.mode == FfmpegMode::Vaapi {
+            return Err(Error::unavailable(
+                Subsystem::Ffmpeg,
+                "HDR/10-bit frame has no supported zero-copy decode path",
+            ));
         }
         let software_frame;
         let source = if self
@@ -403,9 +487,7 @@ impl FfmpegDecoder {
             width,
             height,
             pixel_format: PixelFormat::Nv12,
-            color_range: map_color_range(source),
-            color_matrix: map_color_matrix(source),
-            chroma_location: map_chroma_location(source),
+            ..metadata
         };
         output_format.validate()?;
         if output_format != self.configured_format {
@@ -440,6 +522,7 @@ impl FfmpegDecoder {
 fn map_vulkan_frame_direct(
     decoded: &frame::Video,
     fallback_timestamp_us: u64,
+    metadata: StreamFormat,
 ) -> Result<DecodedVideoFrame> {
     let (vulkan_frame, vulkan_frames, device_context, vulkan_device) = unsafe {
         let raw = decoded.as_ptr();
@@ -516,7 +599,6 @@ fn map_vulkan_frame_direct(
             "failed to retain Vulkan Video frame for presentation",
         ));
     }
-    let cpu_fallback = vulkan_cpu_nv12_fallback(decoded)?;
     let device = unsafe {
         VulkanVideoFrame::new(
             (*vulkan_device).inst as usize,
@@ -541,15 +623,19 @@ fn map_vulkan_frame_direct(
             }),
             Arc::new(retained),
         )
-    }
-    .with_cpu_nv12_fallback(cpu_fallback);
+    };
+    let device = if metadata.color_transfer == ColorTransfer::Sdr
+        && decoded_hardware_pixel_format(decoded)? == PixelFormat::Nv12
+    {
+        device.with_cpu_nv12_fallback(vulkan_cpu_nv12_fallback(decoded)?)
+    } else {
+        device
+    };
     let output_format = StreamFormat {
         width,
         height,
-        pixel_format: PixelFormat::Nv12,
-        color_range: map_color_range(decoded),
-        color_matrix: map_color_matrix(decoded),
-        chroma_location: map_chroma_location(decoded),
+        pixel_format: decoded_hardware_pixel_format(decoded)?,
+        ..metadata
     };
     let timestamp_us = decoded
         .pts()
@@ -634,9 +720,10 @@ fn vulkan_cpu_nv12_fallback(
     }))
 }
 
-fn map_vulkan_frame_to_dmabuf(
+fn map_hardware_frame_to_dmabuf(
     decoded: &frame::Video,
     fallback_timestamp_us: u64,
+    metadata: StreamFormat,
 ) -> Result<DecodedVideoFrame> {
     let mut mapped = frame::Video::empty();
     mapped.set_format(Pixel::DRM_PRIME);
@@ -644,7 +731,7 @@ fn map_vulkan_frame_to_dmabuf(
         ffi::av_hwframe_map(
             mapped.as_mut_ptr(),
             decoded.as_ptr(),
-            ffi::AV_HWFRAME_MAP_READ as i32,
+            ffi::AV_HWFRAME_MAP_READ as i32 | ffi::AV_HWFRAME_MAP_DIRECT as i32,
         )
     };
     if map_result < 0 {
@@ -718,10 +805,8 @@ fn map_vulkan_frame_to_dmabuf(
     let output_format = StreamFormat {
         width,
         height,
-        pixel_format: PixelFormat::Nv12,
-        color_range: map_color_range(decoded),
-        color_matrix: map_color_matrix(decoded),
-        chroma_location: map_chroma_location(decoded),
+        pixel_format: decoded_hardware_pixel_format(decoded)?,
+        ..metadata
     };
     let timestamp_us = decoded
         .pts()
@@ -907,26 +992,95 @@ fn ffmpeg_error(operation: String, code: i32) -> Error {
     )
 }
 
-fn map_color_range(frame: &frame::Video) -> ColorRange {
-    match frame.color_range() {
-        ffmpeg::color::Range::JPEG => ColorRange::Full,
-        _ => ColorRange::Limited,
+fn decoded_hardware_software_format(frame: &frame::Video) -> Result<Pixel> {
+    unsafe {
+        let frames = (*frame.as_ptr()).hw_frames_ctx;
+        if frames.is_null() || (*frames).data.is_null() {
+            return Err(Error::backend(
+                Subsystem::Ffmpeg,
+                "hardware frame has no software format metadata",
+            ));
+        }
+        Ok(Pixel::from(
+            (*(*frames).data.cast::<ffi::AVHWFramesContext>()).sw_format,
+        ))
     }
 }
 
-fn map_color_matrix(frame: &frame::Video) -> ColorMatrix {
-    match frame.color_space() {
-        ffmpeg::color::Space::BT2020NCL | ffmpeg::color::Space::BT2020CL => ColorMatrix::Bt2020,
-        ffmpeg::color::Space::BT470BG | ffmpeg::color::Space::SMPTE170M => ColorMatrix::Bt601,
-        _ => ColorMatrix::Bt709,
+fn decoded_hardware_pixel_format(frame: &frame::Video) -> Result<PixelFormat> {
+    let pixel = decoded_hardware_software_format(frame)?;
+    match pixel {
+        Pixel::NV12 => Ok(PixelFormat::Nv12),
+        Pixel::P010LE => Ok(PixelFormat::P010),
+        _ => Err(Error::unavailable(
+            Subsystem::Ffmpeg,
+            format!("unsupported zero-copy hardware pixel format {pixel:?}"),
+        )),
     }
 }
 
-fn map_chroma_location(frame: &frame::Video) -> ChromaLocation {
-    match frame.chroma_location() {
+fn cpu_conversion_allowed(metadata: StreamFormat, pixel: Pixel) -> bool {
+    if metadata.color_transfer != ColorTransfer::Sdr || metadata.pixel_format == PixelFormat::P010 {
+        return false;
+    }
+    let descriptor = unsafe { ffi::av_pix_fmt_desc_get(pixel.into()) };
+    !descriptor.is_null()
+        && unsafe {
+            (*descriptor).nb_components != 0
+                && (*descriptor)
+                    .comp
+                    .iter()
+                    .all(|component| component.depth <= 8)
+        }
+}
+
+fn decoded_metadata(frame: &frame::Video, defaults: StreamFormat) -> Result<StreamFormat> {
+    use ffmpeg::color::{Primaries, Range, Space, TransferCharacteristic as Transfer};
+    let unsupported =
+        || Error::unavailable(Subsystem::Ffmpeg, "unsupported decoded color metadata");
+    let color_range = match frame.color_range() {
+        Range::Unspecified => defaults.color_range,
+        Range::JPEG => ColorRange::Full,
+        Range::MPEG => ColorRange::Limited,
+    };
+    let color_matrix = match frame.color_space() {
+        Space::Unspecified => defaults.color_matrix,
+        Space::BT709 => ColorMatrix::Bt709,
+        Space::BT470BG | Space::SMPTE170M => ColorMatrix::Bt601,
+        Space::BT2020NCL => ColorMatrix::Bt2020,
+        _ => return Err(unsupported()),
+    };
+    let color_transfer = match frame.color_transfer_characteristic() {
+        Transfer::Unspecified => defaults.color_transfer,
+        Transfer::SMPTE2084 => ColorTransfer::Pq,
+        Transfer::ARIB_STD_B67 => ColorTransfer::Hlg,
+        Transfer::BT709
+        | Transfer::SMPTE170M
+        | Transfer::IEC61966_2_1
+        | Transfer::BT2020_10
+        | Transfer::BT2020_12 => ColorTransfer::Sdr,
+        _ => return Err(unsupported()),
+    };
+    let color_primaries = match frame.color_primaries() {
+        Primaries::Unspecified => defaults.color_primaries,
+        Primaries::BT709 => ColorPrimaries::Bt709,
+        Primaries::BT2020 => ColorPrimaries::Bt2020,
+        _ => return Err(unsupported()),
+    };
+    let chroma_location = match frame.chroma_location() {
+        ffmpeg::chroma::Location::Unspecified => defaults.chroma_location,
         ffmpeg::chroma::Location::Center => ChromaLocation::Center,
-        _ => ChromaLocation::Left,
-    }
+        ffmpeg::chroma::Location::Left => ChromaLocation::Left,
+        _ => return Err(unsupported()),
+    };
+    Ok(StreamFormat {
+        color_range,
+        color_matrix,
+        color_transfer,
+        color_primaries,
+        chroma_location,
+        ..defaults
+    })
 }
 
 #[cfg(test)]
@@ -934,6 +1088,74 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+
+    #[test]
+    fn unspecified_metadata_uses_negotiation_but_explicit_sdr_overrides_hdr() {
+        let defaults = StreamFormat {
+            pixel_format: PixelFormat::P010,
+            color_transfer: ColorTransfer::Pq,
+            color_primaries: ColorPrimaries::Bt2020,
+            color_matrix: ColorMatrix::Bt2020,
+            color_range: ColorRange::Full,
+            ..StreamFormat::video_default(1920, 1080).unwrap()
+        };
+        let mut frame = frame::Video::new(Pixel::P010LE, 2, 2);
+        assert_eq!(decoded_metadata(&frame, defaults).unwrap(), defaults);
+        frame.set_color_transfer_characteristic(ffmpeg::color::TransferCharacteristic::BT709);
+        frame.set_color_primaries(ffmpeg::color::Primaries::BT709);
+        frame.set_color_space(ffmpeg::color::Space::BT709);
+        frame.set_color_range(ffmpeg::color::Range::MPEG);
+        let metadata = decoded_metadata(&frame, defaults).unwrap();
+        assert_eq!(metadata.color_transfer, ColorTransfer::Sdr);
+        assert_eq!(metadata.color_primaries, ColorPrimaries::Bt709);
+        assert_eq!(metadata.color_matrix, ColorMatrix::Bt709);
+        assert_eq!(metadata.color_range, ColorRange::Limited);
+        frame
+            .set_color_transfer_characteristic(ffmpeg::color::TransferCharacteristic::ARIB_STD_B67);
+        frame.set_color_primaries(ffmpeg::color::Primaries::BT2020);
+        assert_eq!(
+            decoded_metadata(&frame, defaults).unwrap().color_transfer,
+            ColorTransfer::Hlg
+        );
+        frame.set_color_space(ffmpeg::color::Space::BT2020CL);
+        assert!(decoded_metadata(&frame, defaults).is_err());
+        frame.set_color_space(ffmpeg::color::Space::BT2020NCL);
+        unsafe {
+            (*frame.as_mut_ptr()).chroma_location = ffmpeg::chroma::Location::TopLeft.into();
+        }
+        assert!(decoded_metadata(&frame, defaults).is_err());
+    }
+
+    #[test]
+    fn standalone_cpu_recovery_is_limited_to_actual_eight_bit_sdr() {
+        let mut metadata = StreamFormat::video_default(1920, 1080).unwrap();
+        assert!(cpu_conversion_allowed(metadata, Pixel::NV12));
+        assert!(cpu_conversion_allowed(metadata, Pixel::YUV420P));
+        assert!(!cpu_conversion_allowed(metadata, Pixel::P010LE));
+        assert!(!cpu_conversion_allowed(metadata, Pixel::YUV420P10LE));
+        for transfer in [ColorTransfer::Pq, ColorTransfer::Hlg] {
+            metadata.color_transfer = transfer;
+            assert!(!cpu_conversion_allowed(metadata, Pixel::NV12));
+            assert!(!cpu_conversion_allowed(metadata, Pixel::P010LE));
+        }
+        metadata.color_transfer = ColorTransfer::Sdr;
+        metadata.pixel_format = PixelFormat::P010;
+        assert!(!cpu_conversion_allowed(metadata, Pixel::NV12));
+    }
+
+    #[test]
+    fn hdr_and_ten_bit_never_open_cpu_conversion_decoders() {
+        for transfer in [ColorTransfer::Sdr, ColorTransfer::Pq, ColorTransfer::Hlg] {
+            let format = StreamFormat {
+                pixel_format: PixelFormat::P010,
+                color_transfer: transfer,
+                ..StreamFormat::video_default(1920, 1080).unwrap()
+            };
+            for mode in [FfmpegMode::Cuda, FfmpegMode::Software] {
+                assert!(FfmpegDecoder::open(VideoCodec::H265, format, mode).is_err());
+            }
+        }
+    }
 
     #[test]
     fn cpu_output_has_no_foreign_gpu_metadata() {

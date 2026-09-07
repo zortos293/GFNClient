@@ -46,6 +46,7 @@ Item {
         case "active": return qsTr("Active")
         case "display-refresh": return qsTr("Display refresh")
         case "source-rate-limit": return qsTr("120 FPS generation limit")
+        case "hdr-unavailable": return qsTr("Unavailable with HDR")
         case "overloaded": return qsTr("Overloaded")
         case "discontinuity": return qsTr("Discontinuity")
         default: return qsTr("Unavailable")

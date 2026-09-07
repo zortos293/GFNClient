@@ -44,6 +44,19 @@ pub enum ColorMatrix {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorTransfer {
+    Sdr,
+    Pq,
+    Hlg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorPrimaries {
+    Bt709,
+    Bt2020,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromaLocation {
     Left,
     Center,
@@ -56,6 +69,8 @@ pub struct StreamFormat {
     pub pixel_format: PixelFormat,
     pub color_range: ColorRange,
     pub color_matrix: ColorMatrix,
+    pub color_transfer: ColorTransfer,
+    pub color_primaries: ColorPrimaries,
     pub chroma_location: ChromaLocation,
 }
 
@@ -72,6 +87,8 @@ impl StreamFormat {
                 ColorMatrix::Bt601
             },
             chroma_location: ChromaLocation::Left,
+            color_transfer: ColorTransfer::Sdr,
+            color_primaries: ColorPrimaries::Bt709,
         };
         format.validate()?;
         Ok(format)
@@ -82,6 +99,11 @@ impl StreamFormat {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.color_transfer != ColorTransfer::Sdr && self.pixel_format != PixelFormat::P010 {
+            return Err(Error::InvalidFormat(
+                "HDR requires actual P010 decode output".to_owned(),
+            ));
+        }
         if self.width == 0 || self.height == 0 {
             return Err(Error::InvalidFormat(
                 "video dimensions must be non-zero".to_owned(),
@@ -478,6 +500,26 @@ impl DecodedVideoFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hdr_rejects_eight_bit_decode_downgrades() {
+        let mut format = StreamFormat::video_default(1920, 1080).unwrap();
+        format.color_primaries = ColorPrimaries::Bt2020;
+        for transfer in [ColorTransfer::Pq, ColorTransfer::Hlg] {
+            format.color_transfer = transfer;
+            for pixel_format in [
+                PixelFormat::Nv12,
+                PixelFormat::I420,
+                PixelFormat::Bgra8,
+                PixelFormat::Rgba8,
+            ] {
+                format.pixel_format = pixel_format;
+                assert!(format.validate().is_err());
+            }
+            format.pixel_format = PixelFormat::P010;
+            format.validate().unwrap();
+        }
+    }
 
     #[test]
     fn accepts_padded_nv12_planes() {

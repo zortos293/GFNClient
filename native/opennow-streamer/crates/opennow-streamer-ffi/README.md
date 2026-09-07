@@ -13,7 +13,15 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
-### Shared Vulkan device (ABI 5)
+### HDR texture metadata (ABI 6)
+
+ABI 6 adds `color_space` to `OpenNowStreamerRecordedFrame` and rejects clients compiled for earlier ABI versions. Rebuild the native runtime and Qt shell together. `texture_format` now accepts `RGBA16F` in addition to `RGBA8` and `RGB10A2`.
+
+The color-space constants identify the encoded RGB signal: `SDR709` is the existing SDR output, `PQ2020` is ST 2084 with BT.2020 primaries, and `HLG2020` is HLG with BT.2020 primaries. A 10-bit texture does not imply HDR. Windows converts HDR decoder surfaces to PQ BT.2020 RGB10A2; Linux preserves PQ/HLG BT.2020 in RGBA16F. HDR in RGBA8 is rejected at the FFI boundary. The shell must transform the signal to its actual swapchain color space, or explicitly tone-map HDR for SDR output.
+
+Color metadata belongs to each retained frame, so HDR/SDR transitions cannot reuse a previous frame's color interpretation. The texture ownership, bounded slots, generation, and sender presentation timestamps keep the same lifecycle.
+
+### Shared Vulkan device (introduced in ABI 5)
 
 ABI 5 appends `const OpenNowStreamerVulkanDevice *vulkan_device` to the engine config and rejects older config versions. Initialize this field to `NULL` on platforms that do not adopt a shared device.
 
@@ -25,7 +33,7 @@ Qt adopts these exact graphics objects and passes the owner in `OpenNowStreamerC
 
 Embedded Vulkan capabilities come from the attached logical device's codec profiles rather than the standalone device probe. Session startup also validates the negotiated codec, dimensions, and color depth: 4:2:0 8-bit uses NV12, supported 4:2:0 10-bit uses P010, and 4:4:4 is rejected instead of silently downgraded. A null owner keeps embedded Vulkan decode unavailable and preserves the existing non-Vulkan fallback. Standalone backend selection and other operating systems are unchanged.
 
-The protocol-5 hello report includes `videoBackends[].codecs[].colorQualities` for embedded Linux codecs. Vulkan lists only the attached device's supported `8bit_420`/`10bit_420` profiles, and other Linux codecs list only `8bit_420`. Qt forwards that report intact to core `session.create`, where both Auto and manual codec choices are checked against the requested color mode before CloudMatch allocation. A missing Main10 profile or an unsupported 4:4:4 request fails before acquiring a seat; the media-start check remains a second guard.
+The protocol-5 hello report includes `videoBackends[].codecs[].colorQualities` for embedded Linux codecs. Vulkan lists only the attached device's supported `8bit_420`/`10bit_420` profiles. VAAPI lists `10bit_420` for HEVC/AV1 only when FFmpeg supports that decoder and a render node reports the corresponding decode profile and 10-bit render-target format. Other Linux paths remain 8-bit only. Windows reports additive `hdrSupported` flags from actual P010 decoder and PQ video-processor conversion probes without changing its existing SDR color-profile contract. Qt adds the current window's `nativeHdrSupported` to the transient runtime capabilities sent to core. Both Auto and manual codec choices are checked before CloudMatch allocation; the media-start check remains a second guard.
 
 The shared decoder copies decoded images into bounded GPU snapshots isolated from FFmpeg's reference-picture pool. Completed snapshots remain immutable while Qt samples them. This path is GPU-only, with no CPU readback, but it is not zero-copy and does not advertise a zero-copy mode.
 
@@ -37,7 +45,7 @@ The graphics API is GPU-only. It exposes no window, swap chain, `QWindow`, CPU i
 
 1. On the QQuick render thread, call `opennow_streamer_set_graphics_context` with the versioned native objects borrowed from the current QRhi.
 2. When `frame_available_callback` schedules a frame, call `opennow_streamer_acquire_latest_frame`. The bounded mailbox contains one pending frame: publishing a newer frame releases the stale pending frame. A successful acquisition transfers one retained reference into the opaque token.
-3. After QRhi has opened the frame and provided its native command buffer, but **before** `QQuickRhiItem` calls `beginPass`, call `opennow_streamer_record_frame`. Conversion and synchronization are encoded into that exact command stream. The function never creates, submits, commits, or waits for another command buffer. It returns one producer-owned RGBA8 or RGB10A2 GPU texture for the selected in-flight slot, preserving a negotiated 10-bit stream on supported paths.
+3. After QRhi has opened the frame and provided its native command buffer, but **before** the Qt scene pass begins, call `opennow_streamer_record_frame`. Conversion and synchronization are encoded into that exact command stream. The function never creates, submits, commits, or waits for another command buffer. It returns one producer-owned RGBA8, RGB10A2, or RGBA16F GPU texture with explicit color-space metadata for the selected in-flight slot.
 4. Import and sample that texture inside the item's render pass. Keep the token until QRhi has finished every GPU use of the slot, then call `opennow_streamer_release_frame`. A token records at most once and must be released exactly once.
 5. At session-generation changes and scene-graph invalidation, call `QRhi::finish()` outside a render pass to submit and drain commands, release tokens and imported Qt texture wrappers, and drain Qt's deferred releases. Then call `opennow_streamer_scene_graph_shutdown` on the bound render thread before QRhi destroys its native objects. This explicitly retires the Linux producer's in-flight slots and imported resources even when the decoder/publisher still holds that producer. A session worker may clear the mailbox and stop decoding but never destroys the render-owned resource lease. Destroy rejects a still-active scene graph instead of dropping GPU state from the wrong thread.
 

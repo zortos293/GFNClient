@@ -1628,6 +1628,25 @@ mod tests {
     }
 
     #[test]
+    fn launch_mode_defaults_to_normal_and_maps_explicit_requests() {
+        for (mode, expected) in [
+            (Value::Null, 1),
+            (json!("default"), 1),
+            (json!("gamepadFriendly"), 2),
+            (json!("touchFriendly"), 3),
+            (json!("unknown"), 1),
+        ] {
+            let body = build_create_body(
+                "12345",
+                &json!({"appLaunchMode": mode}),
+                &json!({"controllerMode":true,"launchInConsoleMode":true}),
+                "device-id",
+            );
+            assert_eq!(body["sessionRequestData"]["appLaunchMode"], expected);
+        }
+    }
+
+    #[test]
     fn automatic_codec_delegates_selection_to_cloudmatch() {
         assert_eq!(codec_wire("auto"), 0);
         assert_eq!(codec_wire("unknown"), 0);

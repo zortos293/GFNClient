@@ -13,7 +13,7 @@ AbstractButton {
 
     background: Rectangle {
         radius: height / 2
-        color: control.checked ? Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, control.down ? 0.65 : 0.45)
+        color: control.checked ? (control.down ? Qt.darker(Theme.focus, 1.1) : Theme.focus)
                                : DesktopTokens.raisedStrong
         border.width: control.activeFocus ? 2 : 0
         border.color: DesktopTokens.focus
@@ -26,7 +26,7 @@ AbstractButton {
         radius: width / 2
         y: DesktopTokens.px(3)
         x: control.checked ? control.width - width - DesktopTokens.px(3) : DesktopTokens.px(3)
-        color: control.checked ? "#FFFFFF" : Qt.rgba(1, 1, 1, 0.58)
+        color: control.checked ? Theme.focusText : Theme.textMuted
         Behavior on x {
             NumberAnimation {
                 duration: AppController.reducedMotion ? 0 : 150

@@ -1,5 +1,29 @@
 include(CTest)
 if(BUILD_TESTING)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-theme-tests tests/tst_theme.cpp)
+    target_link_libraries(opennow-theme-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-theme-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    add_test(NAME opennow-theme-tests COMMAND opennow-theme-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/theme")
+    set_tests_properties(opennow-theme-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    qt_add_resources(opennow-qt "theme-settings-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ThemeSettingsAcceptance.qml)
+    foreach(width 960 1440)
+        foreach(mode dark light)
+            set(theme_mode_args)
+            if(mode STREQUAL "light")
+                list(APPEND theme_mode_args --smoke-light-theme)
+            endif()
+            add_test(NAME "qml-theme-settings-${width}-${mode}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                    --route settings-themes --smoke-theme-settings --reduced-motion
+                    --smoke-width ${width} ${theme_mode_args})
+            set_tests_properties("qml-theme-settings-${width}-${mode}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+        endforeach()
+    endforeach()
     qt_add_executable(opennow-framepacer-tests tests/tst_framepacer.cpp)
     target_include_directories(opennow-framepacer-tests PRIVATE src)
     target_link_libraries(opennow-framepacer-tests PRIVATE Qt6::Test)

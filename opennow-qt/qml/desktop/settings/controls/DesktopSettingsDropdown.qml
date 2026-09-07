@@ -215,7 +215,7 @@ Item {
                     Rectangle {
                         width: parent.width
                         height: 1
-                        color: "#14FFFFFF"
+                        color: DesktopTokens.raised
                     }
 
                     Text {

@@ -300,6 +300,14 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
             let mut event = json!({"key":key, "value":applied});
             if key == "launchInConsoleMode" && applied == json!(false) {
                 event["changes"] = json!({"switchToConsoleOnPad": false});
+            } else if key == "themePack" {
+                let values = settings.all();
+                event["changes"] = json!({
+                    "appTheme": values["appTheme"],
+                    "themeAccentOverride": values["themeAccentOverride"]
+                });
+            } else if key == "appAccentColor" {
+                event["changes"] = json!({"themeAccentOverride": true});
             }
             Ok((event.clone(), Some(("settings.changed", event))))
         }

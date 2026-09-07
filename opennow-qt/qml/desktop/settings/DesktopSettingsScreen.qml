@@ -63,10 +63,6 @@ FocusScope {
     }
 
     function setChoice(key, value) {
-        if (key === "appAccentColor")
-            root.setSetting("themeAccentOverride", true)
-        if (key === "themePack")
-            root.setSetting("themeAccentOverride", false)
         const normalized = String(value || "").toLowerCase()
         const codec = String(root.valueSetting("codec", "auto")).toLowerCase()
         if (key === "colorQuality") {
@@ -501,8 +497,8 @@ FocusScope {
                             Rectangle {
                                 visible: !root.compactNavigation
                                 Layout.preferredWidth: 40; Layout.preferredHeight: 40
-                                radius: 12; color: root.selectedGroup === index ? Theme.face : DesktopTokens.raised
-                                DesktopSettingsIcon { anchors.centerIn: parent; width: 20; height: 20; glyph: modelData.icon; ink: root.selectedGroup === index ? Theme.faceText : Theme.label }
+                                radius: 12; color: root.selectedGroup === index ? Theme.focus : DesktopTokens.raised
+                                DesktopSettingsIcon { anchors.centerIn: parent; width: 20; height: 20; glyph: modelData.icon; ink: root.selectedGroup === index ? Theme.focusText : Theme.label }
                             }
                             ColumnLayout {
                                 Layout.fillWidth: true

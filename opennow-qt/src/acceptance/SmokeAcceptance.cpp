@@ -28,8 +28,12 @@ int AcceptanceSession::startSmokeWorkload()
         return startStreamExitWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation-stats"_s))
         return startFrameGenerationStatsWorkload();
-    if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation"_s)) {
-        QQmlComponent component(&m_engine, QUrl(u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s));
+    if (m_smokeTest && (m_arguments.contains(u"--smoke-frame-generation"_s)
+                       || m_arguments.contains(u"--smoke-theme-settings"_s))) {
+        const auto fixtureUrl = m_arguments.contains(u"--smoke-theme-settings"_s)
+            ? u"qrc:/acceptance/ThemeSettingsAcceptance.qml"_s
+            : u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s;
+        QQmlComponent component(&m_engine, QUrl(fixtureUrl));
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);

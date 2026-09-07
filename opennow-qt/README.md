@@ -113,6 +113,10 @@ boundary, not twice the stream FPS and not unrelated overlay redraws. It is a pr
 measurement, not a hardware scanout measurement; generated slots rejected by the scene-cut or
 confidence checks can contain the actual source image. The frame-generation status reports
 warmup, insufficient refresh, overload, discontinuities, and unavailable resources.
+Both desktop and console routes pass the active video item's snapshot to the top-level statistics
+overlay and clipboard report. Sampled state changes are logged on the GUI thread to
+`diagnostics/native-streamer.log` as `shell-mode frame-generation state=... outputFps=...`;
+FPS-only updates do not produce log entries, and no file I/O is added to the render thread.
 
 Run the focused checks with:
 
@@ -127,6 +131,11 @@ Xvfb. Without Xvfb, the offscreen platform can skip Vulkan coverage. Set
 resource use. The tests cover translated images versus a crossfade, cut fallback, 10-bit values,
 resource recreation, pacing, and the settings-to-surface bindings. Software Vulkan correctness
 does not establish a physical GPU's 8.33 ms presentation budget.
+The `qml-frame-generation-stats-desktop` and `qml-frame-generation-stats-console` acceptance tests
+feed controlled snapshots through the render-callback boundary and the real item's timer, route
+facade, top-level overlay, and clipboard report. They check FPS-only changes, fallback/recovery,
+compact/expanded/hidden overlays, fullscreen transitions, and clearing stats after leaving a stream;
+they do not inject values into the statistics component.
 
 Before treating a GPU/backend as performance-validated, test a real 1080p60 stream on a 120 Hz+
 display with Off and 2× in both windowed and fullscreen modes. Check output cadence, GPU time,

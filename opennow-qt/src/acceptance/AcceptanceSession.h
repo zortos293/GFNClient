@@ -25,6 +25,7 @@ public:
 
 private:
     [[nodiscard]] int startSmokeWorkload();
+    [[nodiscard]] int startFrameGenerationStatsWorkload();
 
     QGuiApplication &m_application;
     QQmlApplicationEngine &m_engine;

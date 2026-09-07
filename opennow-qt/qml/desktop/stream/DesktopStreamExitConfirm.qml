@@ -16,6 +16,14 @@ FocusScope {
     signal cancelRequested()
     signal confirmRequested()
 
+    Shortcut {
+        sequences: ["Return", "Enter"]
+        enabled: root.opened
+        context: Qt.WindowShortcut
+        autoRepeat: false
+        onActivated: root.confirmRequested()
+    }
+
     Rectangle {
         anchors.fill: parent
         color: "#A6000000"
@@ -75,6 +83,7 @@ FocusScope {
                 spacing: 10
                 DesktopButton {
                     id: keepPlayingButton
+                    objectName: "streamExitKeepPlaying"
                     text: qsTr("Keep playing")
                     shortcutText: qsTr("Esc")
                     primary: true
@@ -83,6 +92,7 @@ FocusScope {
                 }
                 DesktopButton {
                     id: endButton
+                    objectName: "streamExitEndSession"
                     text: qsTr("End session")
                     shortcutText: qsTr("Enter")
                     danger: true

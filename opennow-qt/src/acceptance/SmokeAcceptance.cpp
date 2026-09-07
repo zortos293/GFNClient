@@ -22,6 +22,8 @@ using namespace Qt::StringLiterals;
 int AcceptanceSession::startSmokeWorkload()
 {
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
+    if (m_smokeTest && m_arguments.contains(u"--smoke-stream-exit"_s))
+        return startStreamExitWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation-stats"_s))
         return startFrameGenerationStatsWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation"_s)) {

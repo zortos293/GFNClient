@@ -456,6 +456,18 @@ if(BUILD_TESTING)
         set_tests_properties("qml-${surface}-input-capture-error" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
     endforeach()
+    foreach(surface desktop console)
+        foreach(mode windowed fullscreen)
+            foreach(key return enter tab-space)
+                add_test(NAME "qml-stream-exit-${surface}-${mode}-${key}"
+                    COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                        --${surface} --route stream --smoke-stream-exit
+                        --smoke-exit-${key} --smoke-exit-${mode} --reduced-motion)
+                set_tests_properties("qml-stream-exit-${surface}-${mode}-${key}" PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+            endforeach()
+        endforeach()
+    endforeach()
     add_test(NAME qml-fullscreen-stream-stats-shortcut
              COMMAND opennow-qt --smoke-test --allow-multiple-instances
                      --desktop --route stream --smoke-fullscreen-stats-shortcut --reduced-motion)

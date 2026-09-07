@@ -14,10 +14,16 @@ FocusScope {
     readonly property string route: AppController.route
     // Game details are modal on desktop. Keep the route beneath the modal so
     // opening a Home or Store tile does not silently swap in the Library page.
-    readonly property string contentRoute: route === "game-detail"
+    property string contentRoute: "home"
+    readonly property string requestedContentRoute: route === "game-detail"
         ? (AppController.backRoute || "library") : route
+    onRequestedContentRouteChanged: {
+        if (requestedContentRoute !== "inserting" && requestedContentRoute !== "stream")
+            contentRoute = requestedContentRoute
+    }
     readonly property bool signInVisible: !ShellStore.authRestorePending && (!ShellStore.signedIn || route === "sign-in")
-    readonly property bool sessionStartingVisible: !signInVisible && route === "inserting"
+    readonly property bool sessionStartingVisible: !signInVisible
+        && (route === "inserting" || (streamVisible && !desktopStream.videoReady))
     readonly property bool streamVisible: !signInVisible && route === "stream"
     readonly property bool streamPointerLocked: streamVisible && desktopStream.streamPointerLocked
     readonly property var frameGenerationStats: streamVisible ? desktopStream.frameGenerationStats : ({})
@@ -100,7 +106,8 @@ FocusScope {
     DesktopShell {
         id: shell
         anchors.fill: parent
-        visible: root.shellVisible
+        visible: root.shellVisible || (root.route === "inserting" && launchReveal.progress < 1)
+        enabled: root.shellVisible
         route: root.contentRoute
         title: root.titleForRoute(root.contentRoute)
         subtitle: root.subtitleForRoute(root.contentRoute)
@@ -126,24 +133,34 @@ FocusScope {
         }
     }
 
+    MotionProgress {
+        id: launchReveal
+        objectName: "sessionLaunchMotion"
+        shown: root.sessionStartingVisible
+        enterDuration: 280
+        exitDuration: 420
+    }
+
     DesktopSessionStarting {
         anchors.fill: parent
-        visible: root.sessionStartingVisible
-        focus: visible
-        z: 80
-        onVisibleChanged: if (visible) forceActiveFocus()
-        onCancelRequested: ShellStore.stopStreamingSession()
+        visible: launchReveal.present && !root.signInVisible
+            && (root.route === "inserting" || root.streamVisible)
+        opacity: launchReveal.progress
+        enabled: root.sessionStartingVisible && AppController.overlay === ""
+        focus: enabled
+        z: 90
+        onCancelRequested: ShellStore.requestStreamExitConfirmation()
+        onRetryRequested: ShellStore.retryNativeStreamer()
     }
 
     DesktopStreamScreen {
         id: desktopStream
         anchors.fill: parent
         visible: root.streamVisible
-        focus: visible
+        launchCovered: launchReveal.present
+        focus: visible && !launchCovered
         z: 85
         onStopRequested: ShellStore.requestStreamExitConfirmation()
-        onRetryRequested: ShellStore.retryNativeStreamer()
-        onMenuRequested: AppController.showOverlay("desktop-stream-menu")
     }
 
     DesktopGameModal {
@@ -264,6 +281,8 @@ FocusScope {
         // deferred call may fire after a surface switch destroyed it (method
         // calls on dead wrappers throw; property reads just yield undefined).
         root.updateUiScale()
+        if (root.requestedContentRoute !== "inserting" && root.requestedContentRoute !== "stream")
+            root.contentRoute = root.requestedContentRoute
         Qt.callLater(() => {
             if (root.signInVisible)
                 desktopSignIn.forceActiveFocus()

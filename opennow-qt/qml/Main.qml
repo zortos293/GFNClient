@@ -84,7 +84,7 @@ ApplicationWindow {
         "diagnostics", "feedback", "theme-store"].indexOf(activeRoute) < 0
     readonly property bool targetDesktopSurface: streamSurfaceLocked
         ? lockedStreamDesktopSurface : desktopRequested && desktopEligibleRoute
-    readonly property bool streamQmlOverlayActive: activeRoute === "stream"
+    readonly property bool streamQmlOverlayActive: (activeRoute === "stream" || activeRoute === "inserting")
         && (AppController.overlay.startsWith("desktop-stream-")
             || AppController.overlay.startsWith("stream-stats"))
     readonly property bool consoleOverlayFallbackActive: desktopSurfaceActive
@@ -580,7 +580,7 @@ ApplicationWindow {
         overlay: AppController.overlay
         inputBlocking: ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         visible: window.streamQmlOverlayActive
-            || (window.activeRoute === "stream" && desktopStreamOverlay.present)
+            || ((window.activeRoute === "stream" || window.activeRoute === "inserting") && desktopStreamOverlay.present)
         z: 1100
         onVisibleChanged: if (visible && inputBlocking) forceActiveFocus()
         onInputBlockingChanged: if (visible && inputBlocking) forceActiveFocus()

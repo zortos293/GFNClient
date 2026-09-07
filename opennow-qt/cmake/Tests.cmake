@@ -46,6 +46,15 @@ if(BUILD_TESTING)
     set_tests_properties(opennow-streamcolor-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/SteamBigPictureAcceptance.qml)
+    qt_add_resources(opennow-qt "custom-background-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/CustomBackgroundAcceptance.qml)
+    foreach(width 960 1600)
+        add_test(NAME qml-custom-background-${width}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route settings-themes --smoke-custom-background --smoke-width ${width} --reduced-motion)
+        set_tests_properties(qml-custom-background-${width} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
     add_test(NAME qml-steam-big-picture
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-steam-big-picture --reduced-motion)

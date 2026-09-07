@@ -47,7 +47,6 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
-      source_sha: ${{ steps.version.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v4
       - name: Test release metadata and artifact inventory
@@ -61,7 +60,7 @@ jobs:
           version=$(python3 opennow-qt/packaging/nightly_release.py version \
             --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT")
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
 
   localization:
     runs-on: ubuntu-24.04
@@ -129,7 +128,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.metadata.outputs.source_sha }}
+          ref: ${{ github.sha }}
 
       - name: Enable Windows Media Foundation
         if: runner.os == 'Windows'
@@ -468,11 +467,11 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-      SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+      SOURCE_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.metadata.outputs.source_sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
           pattern: opennow-qt-*-unsigned
@@ -503,7 +502,7 @@ jobs:
       contents: write
     env:
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-      SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+      SOURCE_SHA: ${{ github.sha }}
     steps:
       - uses: actions/download-artifact@v4
         with:

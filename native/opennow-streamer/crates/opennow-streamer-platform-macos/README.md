@@ -6,9 +6,10 @@ This isolated crate implements the macOS media path without GStreamer or FFmpeg:
   temporal units, are copied into CoreMedia sample buffers and decoded asynchronously by
   VideoToolbox. AV1 starts only after a keyframe supplies a valid sequence-header OBU from which
   the `av1C` codec configuration can be derived.
-- VideoToolbox is asked for Metal-compatible, IOSurface-backed NV12 (`420v`) pixel buffers. A
-  `CVMetalTextureCache` maps both planes into Metal without a CPU pixel copy, and a
-  `CAMetalLayer` presents them through a small BT.601/BT.709 conversion shader.
+- VideoToolbox is asked for Metal-compatible, IOSurface-backed NV12 (`420v`) or ten-bit P010
+  (`x420`) pixel buffers. A `CVMetalTextureCache` maps both planes into Metal without a CPU
+  pixel copy. The embedded Qt path records conversion into Qt's Metal command buffer; the
+  standalone `CAMetalLayer` presenter remains limited to eight-bit NV12.
 - Opus packets are decoded to interleaved `f32` PCM by the reference libopus decoder. The
   dependency builds libopus statically on macOS, so it adds no runtime media-framework
   dependency. A default-output Audio Unit pulls PCM from a fixed-size SPSC ring in its real-time
@@ -87,6 +88,32 @@ the pending keyframe plus the same bounded H.264/Opus queues to the OpenH264/sof
 HEVC and AV1 have no bundled macOS software decoder, so initialization or fatal decode failure for
 either codec stops that media path and disables that codec in later capability replies instead of
 silently mis-negotiating a fallback.
+
+## Embedded SDR color precision
+
+H.264/H.265 callers pass negotiated precision with
+`with_bit_depth(VideoBitDepth::Ten)` on initial configuration and reconfiguration. Their existing
+constructors default to eight-bit. AV1 reads precision from its `av1C` record. CoreMedia's
+`BitsPerComponent` metadata can raise the requested output to ten-bit but cannot lower a
+ten-bit request. Unsupported bit depths fail configuration, and a decoder that returns an
+eight-bit buffer for a ten-bit request reports a fatal VideoToolbox failure.
+
+The embedded converter maps NV12 to `MetalFrameFormat::Rgba8Unorm` and P010 to
+`MetalFrameFormat::Rgb10a2Unorm`; `MetalRecordedFrame.format` tells Qt which texture format to
+import. The output format does not select HDR or a wide-gamut color space. Conversion honors
+BT.601/BT.709 YCbCr matrix attachments on each decoded buffer; when the attachment is absent,
+it uses the explicitly configured `VideoColorSpace` (the streamer supplies BT.709). Other
+matrix attachments are rejected instead of being treated as BT.709. The pixel-buffer format
+determines full versus video range, independently of bit depth and matrix. This path performs
+SDR matrix conversion, not transfer-function conversion, HDR tone mapping, or gamut mapping.
+
+P010's high-aligned ten-bit values are normalized from R16Unorm before applying the exact
+luma endpoints, chroma midpoint, and range-specific chroma gain. The output pool retains at
+most eight frame slots and two format-specific pipelines. Reusing a slot requires Qt to
+retire its previous GPU work. Slot textures are
+reused only when both dimensions and pixel format match; changing depth does not release
+other slots' in-flight resources. RGB10A2 allocation or pipeline failure is returned as an
+error, never silently retried as RGBA8. Qt owns the final SDR display conversion.
 
 ## Queue and lifecycle behavior
 

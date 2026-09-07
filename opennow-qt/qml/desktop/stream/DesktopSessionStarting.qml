@@ -2,118 +2,92 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Effects
 import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "desktopSessionStarting"
     width: 1440
     height: 900
-    focus: true
     Accessible.role: Accessible.Pane
     Accessible.name: qsTr("Starting session")
 
     signal cancelRequested()
+    signal retryRequested()
 
     readonly property var game: ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
-    readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
+    readonly property var streamer: ShellStore.streamer || ({})
+    readonly property bool connecting: AppController.route === "stream"
     readonly property string phase: String(ShellStore.streamState || "preparing")
-    readonly property bool failed: phase === "failed" || phase === "error"
-    readonly property int activeStep: phase === "checking" ? 0
-        : phase === "requesting" || phase === "resuming" ? 1
-        : phase === "ready" || phase === "streaming" ? 3 : 2
-    readonly property real progressValue: phase === "checking" ? 0.16
-        : phase === "requesting" ? 0.34
-        : phase === "resuming" ? 0.48
-        : phase === "ready" || phase === "streaming" ? 1.0 : 0.665
-    readonly property string region: String(session.regionName || session.region || session.serverRegionId || ShellStore.settings.region || "").toUpperCase()
-    readonly property int latency: Math.max(0, Number(session.latencyMs || session.pingMs || 0))
-    readonly property int widthPx: Number(profile.width || ShellStore.settings.resolutionWidth || 0)
-    readonly property int heightPx: Number(profile.height || ShellStore.settings.resolutionHeight || 0)
-    readonly property int fps: Number(profile.fps || profile.frameRate || ShellStore.settings.fps || ShellStore.settings.frameRate || 0)
-    readonly property string codec: String(profile.codec || ShellStore.settings.codec || "").toUpperCase()
-    readonly property int bitrate: Math.round(Number(profile.bitrateMbps || ShellStore.settings.maxBitrateMbps || 0))
-    readonly property string membershipTier: String(ShellStore.subscription
-        && ShellStore.subscription.membershipTier || "").toUpperCase()
-    readonly property string rigName: String(session.rigName || session.gpuName || "").toUpperCase()
-    readonly property string sessionArtwork: DesktopTokens.decodeArtworkUrl(
-        String(root.game.heroImageUrl || root.game.imageUrl || ""))
-    // The launch card is centred, so the corner footers only fit once the window
-    // leaves them clear room below it.
-    readonly property bool footerVisible: root.height - launchContent.y - launchContent.height > 104
+    readonly property bool stopping: phase === "stopping"
+    readonly property bool failed: !stopping && (phase === "failed" || phase === "error"
+        || (connecting && (streamer.status === "error" || streamer.status === "stopped")))
+    readonly property bool reconnecting: phase === "reconnecting"
+        || ShellStore.streamerRestartAttempts > 0 || ShellStore.sessionReconnectAttempts > 0
+    readonly property int queuePosition: Math.max(0, Number(session.queuePosition || 0))
+    readonly property string statusText: {
+        if (stopping) return qsTr("Closing your session")
+        if (failed) return qsTr("Session could not start")
+        if (reconnecting) return qsTr("Reconnecting to your session")
+        if (connecting) return qsTr("Connecting to your game")
+        if (queuePosition > 0) return qsTr("Queue position %1").arg(queuePosition)
+        if (phase === "checking") return qsTr("Checking session availability")
+        if (phase === "requesting") return qsTr("Requesting your session")
+        if (phase === "resuming") return qsTr("Resuming your session")
+        return qsTr("Preparing your game")
+    }
+    readonly property string detailText: {
+        if (stopping) return qsTr("Waiting for your session to close.")
+        if (failed) return String((connecting && streamer.message) || ShellStore.streamMessage
+            || qsTr("Please try again or return to your library."))
+        if (reconnecting) return qsTr("Your stream will return when the connection is restored.")
+        if (connecting) return qsTr("Your game will appear here as soon as the video is ready.")
+        if (queuePosition > 0) return qsTr("Waiting for an available rig. Your session will start automatically.")
+        return qsTr("Your session will start automatically when it is ready.")
+    }
+
+    function restoreFocus() {
+        if (root.visible && root.enabled
+                && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay))
+            cancelButton.forceActiveFocus()
+    }
 
     ArtworkSource {
-        id: sessionArtworkSource
-        sourceUrl: root.sessionArtwork
+        id: artwork
+        sourceUrl: DesktopTokens.decodeArtworkUrl(String(root.game.heroImageUrl || root.game.imageUrl || ""))
         active: root.visible
     }
 
-    function resolutionLabel() {
-        if (heightPx >= 2160) return "2160P"
-        if (heightPx >= 1440) return "1440P"
-        if (heightPx >= 1080) return "1080P"
-        if (heightPx > 0) return heightPx + "P"
-        return ""
-    }
-
-    function streamChips() {
-        const chips = []
-        if (root.region)
-            chips.push(root.latency > 0 ? root.region + " · " + root.latency + " MS" : root.region)
-        const res = root.resolutionLabel()
-        if (res && root.fps > 0)
-            chips.push(res + " · " + root.fps + " FPS")
-        else if (res)
-            chips.push(res)
-        else if (root.fps > 0)
-            chips.push(root.fps + " FPS")
-        if (root.codec && root.bitrate > 0)
-            chips.push(root.codec + " · " + root.bitrate + " MBPS")
-        else if (root.codec)
-            chips.push(root.codec)
-        return chips
-    }
-
     Rectangle { anchors.fill: parent; color: "#04060A" }
-
     Image {
         anchors.fill: parent
-        source: sessionArtworkSource.resolvedUrl
+        source: artwork.resolvedUrl
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         cache: true
-        opacity: status === Image.Ready ? 0.32 : 0
+        opacity: status === Image.Ready ? 0.36 : 0
         Behavior on opacity { NumberAnimation { duration: DesktopTokens.revealDuration; easing.type: Easing.OutCubic } }
     }
     Rectangle {
         anchors.fill: parent
         gradient: Gradient {
-            GradientStop { position: 0; color: "#CF04060A" }
-            GradientStop { position: 0.48; color: "#B804060A" }
+            GradientStop { position: 0; color: "#C004060A" }
+            GradientStop { position: 0.5; color: "#AC04060A" }
             GradientStop { position: 1; color: "#F204060A" }
         }
-    }
-    Rectangle {
-        anchors.fill: parent
-        color: "transparent"
-        border.width: 1
-        border.color: "#0AFFFFFF"
     }
 
     Row {
         anchors.left: parent.left
         anchors.top: parent.top
-        anchors.leftMargin: 32
-        anchors.topMargin: 28
+        anchors.margins: 32
         spacing: 10
         Image {
             anchors.verticalCenter: parent.verticalCenter
-            width: 22
-            height: 12
+            width: 22; height: 12
             source: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
             fillMode: Image.PreserveAspectFit
-            smooth: true
         }
         Text {
             text: "OpenNOW"
@@ -121,21 +95,17 @@ FocusScope {
             font.family: DesktopTokens.displayFont
             font.pixelSize: 16
             font.weight: Font.Black
-            font.letterSpacing: -0.3
         }
     }
 
     Column {
-        id: launchContent
-        x: Math.round((root.width - width) / 2)
-        y: Math.max(76, Math.round((root.height - height) / 2))
-        width: Math.min(620, root.width - 64)
+        anchors.centerIn: parent
+        width: Math.min(560, root.width - 64)
         spacing: 0
-        opacity: reveal.progress
-        transform: Translate { y: AppController.reducedMotion ? 0 : 10 * (1 - reveal.progress) }
 
         Text {
-            text: root.failed ? qsTr("SESSION INTERRUPTED") : qsTr("STARTING SESSION")
+            text: root.stopping ? qsTr("ENDING SESSION")
+                : root.failed ? qsTr("SESSION INTERRUPTED") : qsTr("STARTING SESSION")
             color: root.failed ? DesktopTokens.danger : DesktopTokens.focus
             font.family: DesktopTokens.monoFont
             font.pixelSize: 11
@@ -144,259 +114,92 @@ FocusScope {
         }
         Text {
             width: parent.width
-            topPadding: 5
+            topPadding: 10
             text: String(root.game.title || qsTr("GeForce NOW"))
             color: DesktopTokens.text
             font.family: DesktopTokens.displayFont
-            font.pixelSize: 44
+            font.pixelSize: root.width < 800 ? 34 : 44
             font.weight: Font.Black
             font.letterSpacing: -1.2
+            maximumLineCount: 2
+            wrapMode: Text.WordWrap
             elide: Text.ElideRight
+        }
+        Item { width: 1; height: 32 }
+        Row {
+            width: parent.width
+            spacing: 12
+            Item {
+                width: 20; height: 26
+                visible: !root.failed
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: 18; height: 18; radius: 9
+                    color: "transparent"
+                    border.width: 2
+                    border.color: "#35FFFFFF"
+                    Rectangle {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        y: -1
+                        width: 6; height: 6; radius: 3
+                        color: DesktopTokens.focus
+                    }
+                    RotationAnimation on rotation {
+                        from: 0; to: 360; duration: 1400; loops: Animation.Infinite
+                        running: root.visible && !root.failed && !AppController.reducedMotion
+                    }
+                }
+            }
+            Text {
+                objectName: "sessionLaunchStatus"
+                width: parent.width - (root.failed ? 0 : 32)
+                text: root.statusText
+                color: root.failed ? DesktopTokens.danger : DesktopTokens.text
+                font.family: DesktopTokens.bodyFont
+                font.pixelSize: 19
+                font.weight: Font.DemiBold
+                wrapMode: Text.WordWrap
+            }
         }
         Text {
             width: parent.width
-            topPadding: 4
-            text: root.failed
-                ? (ShellStore.streamMessage || qsTr("The cloud rig could not finish preparing. Your library is safe."))
-                : qsTr("No queue. Your rig is being handed over now.")
+            topPadding: 10
+            text: root.detailText
             color: DesktopTokens.textBody
             font.family: DesktopTokens.bodyFont
             font.pixelSize: 14
-            font.weight: Font.Medium
+            lineHeight: 1.4
             wrapMode: Text.WordWrap
+            maximumLineCount: 5
+            elide: Text.ElideRight
         }
-
-        Item { width: 1; height: 29 }
-        Rectangle {
-            width: parent.width
-            height: 5
-            radius: 2.5
-            color: "#21FFFFFF"
-            clip: true
-            Rectangle {
-                width: parent.width * root.progressValue
-                height: parent.height
-                radius: parent.radius
-                color: root.failed ? DesktopTokens.danger : DesktopTokens.focus
-                Behavior on width { NumberAnimation { duration: DesktopTokens.motionDuration; easing.type: Easing.OutCubic } }
-            }
-        }
-        Item {
-            width: parent.width
-            height: 31
-            Text {
-                anchors.left: parent.left
-                anchors.top: parent.top
-                anchors.topMargin: 8
-                text: root.failed ? qsTr("LAUNCH PAUSED")
-                    : root.activeStep < 2 ? qsTr("RESERVING YOUR RIG")
-                    : root.activeStep === 2 ? qsTr("WARMING UP SHADERS") : qsTr("OPENING STREAM")
-                color: DesktopTokens.textMuted
-                font.family: DesktopTokens.monoFont
-                font.pixelSize: 9
-                font.weight: Font.Bold
-                font.letterSpacing: 1.2
-            }
-            Text {
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.topMargin: 8
-                text: root.failed ? qsTr("ACTION NEEDED")
-                    : root.activeStep >= 3 ? qsTr("OPENING STREAM") : qsTr("IN PROGRESS")
-                color: DesktopTokens.textFaint
-                font.family: DesktopTokens.monoFont
-                font.pixelSize: 9
-                font.weight: Font.DemiBold
-                font.letterSpacing: 0.9
-            }
-        }
-
-        Rectangle {
-            width: parent.width
-            height: 174
-            radius: 16
-            color: "#B804060A"
-            border.width: 1
-            border.color: "#17FFFFFF"
-
-            Column {
-                x: 16
-                y: 14
-                width: parent.width - 32
-                spacing: 0
-                Repeater {
-                    model: [
-                        { label: root.region ? qsTr("Requesting a machine in %1").arg(root.region) : qsTr("Requesting a machine"), meta: qsTr("LIVE") },
-                        { label: qsTr("Preparing your library session"), meta: qsTr("LIVE") },
-                        { label: qsTr("Applying stream settings"), meta: qsTr("RUNNING") },
-                        { label: qsTr("Opening the stream transport"), meta: qsTr("QUEUED") }
-                    ]
-                    delegate: Item {
-                        id: stepRow
-                        required property var modelData
-                        required property int index
-                        width: parent.width
-                        height: 36
-                        readonly property bool done: index < root.activeStep
-                        readonly property bool active: index === root.activeStep && !root.failed
-
-                        Rectangle {
-                            x: 0
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 18
-                            height: 18
-                            radius: 9
-                            color: stepRow.done ? "#2856E6A5" : stepRow.active ? "#237FD4FF" : "#0FFFFFFF"
-                            border.width: 1
-                            border.color: stepRow.done ? DesktopTokens.green : stepRow.active ? DesktopTokens.focus : "#29FFFFFF"
-                            DesktopGlyph {
-                                visible: stepRow.done
-                                anchors.centerIn: parent
-                                width: 10
-                                height: 8
-                                icon: "desktop-check-mint.svg"
-                            }
-                            Rectangle {
-                                visible: stepRow.active && !stepRow.done
-                                anchors.centerIn: parent
-                                width: 6
-                                height: 6
-                                radius: 3
-                                color: DesktopTokens.focus
-                            }
-                        }
-                        Text {
-                            x: 30
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: parent.width - 118
-                            text: stepRow.modelData.label
-                            color: stepRow.done || stepRow.active ? DesktopTokens.textHigh : DesktopTokens.textFaint
-                            font.family: DesktopTokens.bodyFont
-                            font.pixelSize: 12
-                            font.weight: stepRow.active ? Font.Bold : Font.DemiBold
-                            elide: Text.ElideRight
-                        }
-                        Text {
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: stepRow.index === 2 && stepRow.active ? qsTr("RUNNING")
-                                : stepRow.index === 3 && stepRow.active ? qsTr("RUNNING")
-                                : stepRow.modelData.meta
-                            color: stepRow.active ? DesktopTokens.focus : stepRow.done ? DesktopTokens.textMuted : DesktopTokens.textFaint
-                            font.family: DesktopTokens.monoFont
-                            font.pixelSize: 9
-                            font.weight: Font.Bold
-                            font.letterSpacing: 0.7
-                        }
-                    }
-                }
-            }
-        }
-
-        Item { width: 1; height: 14 }
+        Item { width: 1; height: 32 }
         Row {
-            width: parent.width
-            spacing: 8
-            Repeater {
-                model: root.streamChips()
-                delegate: Rectangle {
-                    id: metaChip
-                    required property string modelData
-                    required property int index
-                    width: metaText.implicitWidth + 18
-                    height: 25
-                    radius: 12.5
-                    color: index === 3 ? "#279F7AEA" : "#10FFFFFF"
-                    border.width: 1
-                    border.color: index === 3 ? "#669F7AEA" : "#20FFFFFF"
-                    Text {
-                        id: metaText
-                        anchors.centerIn: parent
-                        text: metaChip.modelData
-                        color: metaChip.index === 3 ? "#CDBDFF" : DesktopTokens.textMuted
-                        font.family: DesktopTokens.monoFont
-                        font.pixelSize: 9
-                        font.weight: Font.Bold
-                        font.letterSpacing: 0.6
-                    }
-                }
+            spacing: 12
+            DesktopButton {
+                visible: root.failed && root.connecting
+                text: qsTr("Retry connection")
+                primary: true
+                onClicked: root.retryRequested()
+            }
+            DesktopButton {
+                id: cancelButton
+                enabled: !root.stopping
+                text: qsTr("Cancel session")
+                shortcutText: qsTr("Esc")
+                onClicked: root.cancelRequested()
             }
         }
-
-        Item { width: 1; height: 16 }
-        DesktopButton {
-            id: cancelButton
-            width: parent.width
-            height: 36
-            text: root.failed ? qsTr("Back to game details") : qsTr("Cancel launch")
-            shortcutText: "Esc"
-            danger: root.failed
-            onClicked: root.cancelRequested()
-        }
     }
 
-    Item {
-        anchors.left: parent.left
-        anchors.bottom: parent.bottom
-        anchors.leftMargin: 32
-        anchors.bottomMargin: 32
-        width: Math.min(340, Math.round(root.width / 3))
-        height: 64
-        visible: root.footerVisible
-        Text {
-            text: qsTr("WHILE YOU WAIT")
-            color: DesktopTokens.textFaint
-            font.family: DesktopTokens.monoFont
-            font.pixelSize: 9
-            font.weight: Font.Bold
-            font.letterSpacing: 1.2
-        }
-        Text {
-            y: 22
-            width: parent.width
-            text: qsTr("Press F3 any time to cycle compact and detailed stream stats.")
-            color: DesktopTokens.textMuted
-            font.family: DesktopTokens.bodyFont
-            font.pixelSize: 11
-            wrapMode: Text.WordWrap
-        }
+    onVisibleChanged: if (visible) Qt.callLater(root.restoreFocus)
+    onEnabledChanged: if (enabled) Qt.callLater(root.restoreFocus)
+    Connections {
+        target: AppController
+        function onOverlayChanged() { Qt.callLater(root.restoreFocus) }
     }
-
-    Column {
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        anchors.rightMargin: 32
-        anchors.bottomMargin: 32
-        spacing: 5
-        visible: root.footerVisible
-        Text {
-            anchors.right: parent.right
-            text: root.session.sessionId
-                ? qsTr("SESSION %1").arg(String(root.session.sessionId).slice(0, 9).toUpperCase())
-                : qsTr("SESSION PENDING")
-            color: DesktopTokens.textFaint
-            font.family: DesktopTokens.monoFont
-            font.pixelSize: 9
-            font.weight: Font.Bold
-            font.letterSpacing: 0.8
-        }
-        Text {
-            anchors.right: parent.right
-            text: root.membershipTier && root.rigName
-                ? root.membershipTier + " · " + root.rigName
-                : root.membershipTier || root.rigName || qsTr("WAITING FOR RIG ASSIGNMENT")
-            color: DesktopTokens.textMuted
-            font.family: DesktopTokens.monoFont
-            font.pixelSize: 9
-            font.weight: Font.DemiBold
-            font.letterSpacing: 0.6
-        }
-    }
-
-    MotionProgress { id: reveal; shown: root.visible }
-
     Keys.onPressed: event => {
-        if (event.isAutoRepeat)
+        if (event.isAutoRepeat || root.stopping)
             return
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
             root.cancelRequested()

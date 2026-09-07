@@ -614,6 +614,7 @@ jobs:
           otool -D build/opennow-qt-release/OpenNOW.app/Contents/MacOS/libopennow_streamer_ffi.dylib \
             | grep -Fx '@rpath/libopennow_streamer_ffi.dylib'
           test -f "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES"
+          test -f "$app/Contents/PlugIns/imageformats/libqsvg.dylib"
           restore() {
             for path in "$PWD/build/opennow-qt-release" "$QT_ROOT_DIR" "$RUNNER_TEMP/SDL-install"; do
               if [[ -d "$path.unavailable" ]]; then mv "$path.unavailable" "$path"; fi

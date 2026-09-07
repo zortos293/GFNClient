@@ -94,7 +94,7 @@ ctest --test-dir build/opennow-qt --output-on-failure
 ### macOS
 
 Use Xcode command-line tools, CMake 3.24+, Rust, Qt 6.8+ (including Quick,
-Multimedia, ShaderTools, and the Gui private headers), and a shared SDL3 build.
+Multimedia, ShaderTools, Svg, and the Gui private headers), and a shared SDL3 build.
 Point `CMAKE_PREFIX_PATH` at Qt and SDL3 if they are not already discoverable.
 Build one architecture at a time; universal Qt bundles are not supported.
 
@@ -117,6 +117,8 @@ CMake selects the matching Rust target; an explicitly supplied
 the core, acceptance verifier, standalone capability probe, embedded streamer
 dylib, and deployed Qt/SDL3 libraries. The FFI dylib uses an `@rpath` install name
 so it can load outside the build tree.
+The app explicitly links Qt Svg so macdeployqt includes the SVG image plugin used
+by the QML icons; the relocated-bundle check requires that plugin to be present.
 
 The separate `macos-validate` CI job builds and tests the native Apple Silicon
 stack, then checks a relocated ZIP with the development dependencies hidden.

@@ -11,6 +11,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QTimer>
+#include <QTemporaryFile>
 #include <QVariantMap>
 
 #include <cstdio>
@@ -31,27 +32,50 @@ int AcceptanceSession::startSmokeWorkload()
     if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation-stats"_s))
         return startFrameGenerationStatsWorkload();
     if (m_smokeTest && (m_arguments.contains(u"--smoke-frame-generation"_s)
-                       || m_arguments.contains(u"--smoke-controller-metadata"_s))) {
+                       || m_arguments.contains(u"--smoke-controller-metadata"_s)
+                       || m_arguments.contains(u"--smoke-custom-background"_s))) {
         const bool controllerMetadata = m_arguments.contains(u"--smoke-controller-metadata"_s);
+        const bool customBackground = m_arguments.contains(u"--smoke-custom-background"_s);
         QQmlComponent component(&m_engine, QUrl(controllerMetadata
             ? u"qrc:/acceptance/ControllerMetadataAcceptance.qml"_s
+            : customBackground
+            ? u"qrc:/acceptance/CustomBackgroundAcceptance.qml"_s
             : u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s));
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
         if (controllerMetadata)
             m_engine.rootContext()->setContextProperty(u"ControllerInput"_s, fixture->property("input").value<QObject *>());
-        QTimer::singleShot(150, this, [this, fixture] {
+        if (customBackground) {
+            QFile image(u":/qt/qml/OpenNOW/res/brand/desktop-renew.jpg"_s);
+            auto *localImage = new QTemporaryFile(&m_engine);
+            if (!image.open(QIODevice::ReadOnly) || !localImage->open()) return EXIT_FAILURE;
+            const auto data = image.readAll();
+            if (localImage->write(data) != data.size() || !localImage->flush()) return EXIT_FAILURE;
+            fixture->setProperty("imageUrl", QUrl::fromLocalFile(localImage->fileName()).toString());
+            localImage->close();
+        }
+        QTimer::singleShot(150, this, [this, fixture, customBackground] {
             auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
             QVariant passed;
             const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && passed.toBool() && !m_qmlWarningOccurred;
             if (!ok) { m_application.exit(EXIT_FAILURE); return; }
-            QTimer::singleShot(150, this, [this, window] {
-                const auto shot = m_arguments.indexOf(u"--screenshot"_s);
-                const bool saved = shot < 0 || (shot + 1 < m_arguments.size()
-                    && window->grabWindow().save(m_arguments.at(shot + 1)));
-                m_application.exit(saved && !m_qmlWarningOccurred ? EXIT_SUCCESS : EXIT_FAILURE);
+            QTimer::singleShot(150, this, [this, window, fixture, customBackground] {
+                if (customBackground) {
+                    QVariant verified;
+                    if (!QMetaObject::invokeMethod(fixture, "verify", Q_RETURN_ARG(QVariant, verified))
+                        || !verified.toBool() || m_qmlWarningOccurred) {
+                        m_application.exit(EXIT_FAILURE);
+                        return;
+                    }
+                }
+                QTimer::singleShot(150, this, [this, window] {
+                    const auto shot = m_arguments.indexOf(u"--screenshot"_s);
+                    const bool saved = shot < 0 || (shot + 1 < m_arguments.size()
+                        && window->grabWindow().save(m_arguments.at(shot + 1)));
+                    m_application.exit(saved && !m_qmlWarningOccurred ? EXIT_SUCCESS : EXIT_FAILURE);
+                });
             });
         });
     } else if (m_smokeTest && m_arguments.contains(u"--smoke-input-capture-error"_s)) {

@@ -50,6 +50,15 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-input --smoke-controller-metadata --reduced-motion)
     set_tests_properties(qml-controller-metadata PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "custom-background-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/CustomBackgroundAcceptance.qml)
+    foreach(width 960 1600)
+        add_test(NAME qml-custom-background-${width}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route settings-themes --smoke-custom-background --smoke-width ${width} --reduced-motion)
+        set_tests_properties(qml-custom-background-${width} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
     add_test(NAME qml-steam-big-picture
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-steam-big-picture --reduced-motion)

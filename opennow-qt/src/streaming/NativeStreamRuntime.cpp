@@ -468,6 +468,10 @@ OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(
     status = d->api.recordFrame(d->handle, *frame, &command, recorded);
     if (status != OPENNOW_STREAMER_OK) {
         d->api.releaseFrame(std::exchange(*frame, nullptr));
+    } else {
+        info->width = recorded->width;
+        info->height = recorded->height;
+        info->presentation_time_ns = recorded->presentation_time_ns;
     }
     return status;
 }

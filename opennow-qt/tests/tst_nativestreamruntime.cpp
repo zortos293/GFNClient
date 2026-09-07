@@ -1,4 +1,5 @@
 #include "streaming/NativeStreamRuntime.h"
+#include "streaming/rendering/StreamFramePacer.h"
 
 #include <QElapsedTimer>
 #include <QFile>
@@ -140,6 +141,51 @@ class NativeStreamRuntimeTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void recordedFrameMetadataReplacesProvisionalNotificationMetadata()
+    {
+        static std::uint64_t sequence;
+        sequence = 0;
+        auto api = fakeApi();
+        api.acquireLatestFrame = [](const OpenNowStreamer *handle,
+                                     OpenNowStreamerFrame **frame,
+                                     OpenNowStreamerFrameInfo *info) {
+            const auto status = fakeAcquireLatestFrame(handle, frame, info);
+            if (status == OPENNOW_STREAMER_OK)
+                *info = {1920, 1088, ++sequence, 1'000'000'000};
+            return status;
+        };
+        api.recordFrame = [](const OpenNowStreamer *, const OpenNowStreamerFrame *,
+                               const OpenNowStreamerRecordCommand *,
+                               OpenNowStreamerRecordedFrame *recorded) {
+            *recorded = {1, 0, OPENNOW_STREAMER_GRAPHICS_API_D3D11,
+                         OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, 1920, 1080, 0,
+                         sequence, 1'000'000'000 + (sequence - 1) * 16'666'667};
+            return OPENNOW_STREAMER_OK;
+        };
+        api.releaseFrame = &fakeReleaseFrame;
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamFramePacer pacer;
+        for (std::uint64_t index = 1; index <= 10; ++index) {
+            OpenNowStreamerRecordCommand command{};
+            OpenNowStreamerFrameInfo info{};
+            OpenNowStreamerRecordedFrame recorded{};
+            OpenNowStreamerFrame *frame = nullptr;
+            QCOMPARE(runtime.recordLatestFrame(command, &info, &recorded, &frame),
+                     OPENNOW_STREAMER_OK);
+            const auto release = qScopeGuard([&] { runtime.releaseFrame(frame); });
+            QVERIFY(frame);
+            QCOMPARE(info.width, 1920U);
+            QCOMPARE(info.height, 1080U);
+            QCOMPARE(info.sequence, index);
+            QCOMPARE(info.presentation_time_ns, recorded.presentation_time_ns);
+            QCOMPARE(pacer.source(info.sequence, info.presentation_time_ns,
+                                  (index - 1) * 16'666'667, 144),
+                     index == 1 ? StreamFramePacer::Result::WarmingUp
+                                : StreamFramePacer::Result::Interpolate);
+        }
+    }
+
     void bootstrapAndRuntimeShareTheInjectedDiagnosticsSink()
     {
         QTemporaryDir data;

@@ -1522,6 +1522,13 @@ struct RtpPacket {
     index: u64,
     header: RtpHeader,
     plaintext: Vec<u8>,
+    origin: RtpPacketOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RtpPacketOrigin {
+    Authenticated,
+    RecoveredData,
 }
 
 #[derive(Clone)]
@@ -1685,6 +1692,7 @@ impl SrtpReceiver {
             index: packet_index,
             header,
             plaintext,
+            origin: RtpPacketOrigin::Authenticated,
         })
     }
 }
@@ -2976,6 +2984,7 @@ impl FecBlock {
                 index: self.base_index + index as u64,
                 header,
                 plaintext: std::mem::take(plaintext),
+                origin: RtpPacketOrigin::RecoveredData,
             };
             // Do not validate the reconstructed FEC word. NVIDIA's reference-compatible
             // receivers explicitly exclude fecInfo from recovered-packet validation because
@@ -3479,7 +3488,13 @@ impl NvstVideoReceiver {
             if layout.shard_index >= layout.data_shards {
                 self.fec_packets += 1;
             }
-            self.fec_reorder.push(packet, layout, now)
+            let result = self.fec_reorder.push(packet, layout, now);
+            if layout.shard_index < layout.data_shards
+                && matches!(result.dropped, Some(NvstDropReason::Unsupported(_)))
+            {
+                self.invalidate_picture();
+            }
+            result
         } else {
             self.reorder.push(packet, now)
         };
@@ -3498,37 +3513,34 @@ impl NvstVideoReceiver {
         }
         if let Some(recovery) = result.recovery {
             self.packet_gap_recoveries += 1;
-            self.assembler.reset();
-            self.next_frame_contiguous = false;
+            self.invalidate_picture();
             self.config.feedback.clear_nacks();
-            // A sequence gap breaks the decoder's reference chain; ask (via the
-            // bundle's rtcp1 channel) for a fresh keyframe to recover.
-            self.config.feedback.request_keyframe();
             events.push(NvstReceiveEvent::RecoveryNeeded(recovery));
         }
         for packet in result.ready {
             let payload = match packet.header.payload(&packet.plaintext) {
                 Ok(payload) => payload,
                 Err(error) => {
+                    self.invalidate_picture();
                     events.push(NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
                         error,
                     )));
                     continue;
                 }
             };
-            let (nv_packet, media) = match NvVideoPacket::parse(&packet.header, payload) {
+            let (mut nv_packet, media) = match NvVideoPacket::parse(&packet.header, payload) {
                 Ok(value) => value,
                 Err(error) => {
-                    self.assembler.reset();
-                    self.last_stream_packet_index = None;
-                    self.next_frame_contiguous = false;
-                    self.config.feedback.request_keyframe();
+                    self.invalidate_picture();
                     events.push(NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
                         error,
                     )));
                     continue;
                 }
             };
+            if packet.origin == RtpPacketOrigin::RecoveredData {
+                nv_packet.is_fec = false;
+            }
             if nv_packet.is_fec {
                 self.fec_packets += 1;
                 events.push(NvstReceiveEvent::Dropped(NvstDropReason::Unsupported(
@@ -3545,11 +3557,8 @@ impl NvstVideoReceiver {
                 // A new SOF before EOF means the previous reference frame was
                 // incomplete even when RTP sequence numbers were continuous.
                 // Never let the following P-frame look contiguous to the decoder.
-                self.assembler.reset();
-                self.last_stream_packet_index = None;
-                self.next_frame_contiguous = false;
+                self.invalidate_picture();
                 self.config.feedback.clear_nacks();
-                self.config.feedback.request_keyframe();
                 events.push(NvstReceiveEvent::Dropped(
                     NvstDropReason::FrameDiscontinuity,
                 ));
@@ -3561,10 +3570,7 @@ impl NvstVideoReceiver {
                     last.wrapping_add(1) & STREAM_PACKET_INDEX_MASK != nv_packet.stream_packet_index
                 })
             {
-                self.assembler.reset();
-                self.last_stream_packet_index = Some(nv_packet.stream_packet_index);
-                self.next_frame_contiguous = false;
-                self.config.feedback.request_keyframe();
+                self.invalidate_picture();
                 events.push(NvstReceiveEvent::Dropped(
                     NvstDropReason::FrameDiscontinuity,
                 ));
@@ -3584,19 +3590,19 @@ impl NvstVideoReceiver {
                 }
                 Ok(None) => {}
                 Err(reason) => {
-                    if matches!(
-                        reason,
-                        NvstDropReason::FrameDiscontinuity
-                            | NvstDropReason::InvalidLastPacketPayloadLength { .. }
-                    ) {
-                        self.next_frame_contiguous = false;
-                        self.config.feedback.request_keyframe();
-                    }
+                    self.invalidate_picture();
                     events.push(NvstReceiveEvent::Dropped(reason));
                 }
             }
         }
         events
+    }
+
+    fn invalidate_picture(&mut self) {
+        self.assembler.reset();
+        self.last_stream_packet_index = None;
+        self.next_frame_contiguous = false;
+        self.config.feedback.request_keyframe();
     }
 
     /// Returns an SRTCP Receiver Report to send to the video peer, at most once per
@@ -5971,6 +5977,9 @@ fn forward_receive_event(
 
 #[cfg(test)]
 mod tests {
+    mod recovery_tests {
+        include!("nvst_recovery_tests.rs");
+    }
     use super::*;
     use serde_json::json;
 
@@ -7719,6 +7728,7 @@ mod tests {
             index: base_index + shard_index as u64,
             header: RtpHeader::parse(&expected_middle).expect("template header"),
             plaintext,
+            origin: RtpPacketOrigin::Authenticated,
         };
         let mut block = FecBlock::new(layout(0), base_index);
         assert_eq!(block.insert(layout(0), packet(0, data[0].clone())), None);
@@ -7812,6 +7822,7 @@ mod tests {
             index: base_index + shard_index as u64,
             header: RtpHeader::parse(&plaintext).expect("parity RTP header"),
             plaintext,
+            origin: RtpPacketOrigin::Authenticated,
         };
         let mut block = FecBlock::new(layout(0), base_index);
         assert_eq!(block.insert(layout(1), packet(1, parity[0].clone())), None);
@@ -7868,6 +7879,7 @@ mod tests {
                 index,
                 header: RtpHeader::parse(&plaintext).expect("RTP header"),
                 plaintext,
+                origin: RtpPacketOrigin::Authenticated,
             }
         }
         fn layout(block_index: u8, shard_index: usize) -> FecPacketLayout {
@@ -7958,6 +7970,7 @@ mod tests {
                     gs_video_header: None,
                 },
                 plaintext: vec![0; RTP_FIXED_HEADER_LEN],
+                origin: RtpPacketOrigin::Authenticated,
             }
         }
 

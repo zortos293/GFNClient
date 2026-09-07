@@ -27,10 +27,10 @@ use ::windows::Win32::Media::MediaFoundation::{
     MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MF_SA_D3D11_AWARE,
     MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateAttributes, MFCreateMediaType,
     MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFNominalRange_0_255,
-    MFSampleExtension_CleanPoint, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG,
-    MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
-    MFT_ENUM_FLAG_SYNCMFT, MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute,
-    MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFSampleExtension_CleanPoint, MFSampleExtension_FrameCorruption, MFT_CATEGORY_VIDEO_DECODER,
+    MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE,
+    MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_ENUM_HARDWARE_URL_Attribute,
+    MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
     MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
     MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
     MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
@@ -75,6 +75,14 @@ impl DecodedVideoFrame {
         format: VideoFormat,
         aperture: VideoAperture,
     ) -> Result<Self, String> {
+        match unsafe { sample.GetUINT32(&MFSampleExtension_FrameCorruption) } {
+            Ok(corrupted) if corrupted != 0 => {
+                return Err("Media Foundation decoder reported a corrupted output frame".to_owned());
+            }
+            Ok(_) => {}
+            Err(error) if error.code() == MF_E_ATTRIBUTENOTFOUND => {}
+            Err(error) => return Err(format!("read decoder output corruption flag: {error}")),
+        }
         let (texture, subresource) = dxgi_surface(&sample)?;
         let timestamp_100ns = unsafe { sample.GetSampleTime().unwrap_or(0) };
         let duration_100ns = unsafe {
@@ -906,6 +914,62 @@ fn pack_pair(high: u32, low: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_samples_reject_reported_corruption_before_surface_extraction() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let format = VideoFormat {
+            codec: VideoCodec::H264,
+            width: 2560,
+            height: 1440,
+            frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
+            frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
+            average_bitrate: 78_000_000,
+            pixel_format: VideoPixelFormat::Nv12,
+            chroma_format: VideoChromaFormat::Cs420,
+            full_range: false,
+        };
+        let aperture = VideoAperture::new(format.width, format.height, None).unwrap();
+        for (corruption, discontinuity) in [
+            (None, false),
+            (Some(0), false),
+            (None, true),
+            (Some(0), true),
+            (Some(1), false),
+            (Some(1), true),
+        ] {
+            let sample = unsafe {
+                let sample = MFCreateSample().unwrap();
+                sample.AddBuffer(&MFCreateMemoryBuffer(1).unwrap()).unwrap();
+                if let Some(corruption) = corruption {
+                    sample
+                        .SetUINT32(&MFSampleExtension_FrameCorruption, corruption)
+                        .unwrap();
+                }
+                if discontinuity {
+                    sample
+                        .SetUINT32(
+                            &::windows::Win32::Media::MediaFoundation::MFSampleExtension_Discontinuity,
+                            1,
+                        )
+                        .unwrap();
+                }
+                sample
+            };
+            let error = DecodedVideoFrame::from_sample(sample, format, aperture)
+                .err()
+                .expect("system-memory output cannot be published as a decoded GPU frame");
+            assert_eq!(
+                error,
+                if corruption == Some(1) {
+                    "Media Foundation decoder reported a corrupted output frame"
+                } else {
+                    "hardware decoder returned a system-memory buffer instead of a D3D11 surface"
+                },
+                "corruption={corruption:?} discontinuity={discontinuity}"
+            );
+        }
+    }
 
     #[test]
     fn media_type_apertures_handle_padding_defaults_precedence_and_invalid_offsets() {

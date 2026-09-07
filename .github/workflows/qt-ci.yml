@@ -445,7 +445,9 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           QT_QPA_PLATFORM: offscreen
         run: |
-          build/qt-packages/OpenNOW-Qt-*.AppImage \
+          appimages=(build/qt-packages/OpenNOW-Qt-*.AppImage)
+          [[ ${#appimages[@]} -eq 1 && -f "${appimages[0]}" ]]
+          "${appimages[0]}" \
             --smoke-test --allow-multiple-instances --route home --reduced-motion
 
       - name: Upload unsigned validation package

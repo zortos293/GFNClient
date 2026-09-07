@@ -249,7 +249,7 @@ QtObject {
     property string streamControlMessage: ""
     property rect streamCaptureRect: Qt.rect(0, 0, 0, 0)
     property bool nativeRuntimeReady: false
-    readonly property int nativeProtocolVersion: 5
+    readonly property int nativeProtocolVersion: 6
     property var nativeRuntimeCapabilities: ({})
     property int nativeRequestSequence: 0
     property var nativeRequests: ({})
@@ -299,10 +299,33 @@ QtObject {
         }
         return null
     }
-    readonly property string microphoneState: "unavailable"
-    readonly property bool microphoneEnabled: false
-    readonly property string microphoneLabel: qsTr("Unavailable")
-    readonly property string microphoneDescription: qsTr("Microphone upstream is unavailable for NVST sessions")
+    property string sessionMicrophoneMode: "disabled"
+    property string microphoneRequestId: ""
+    property string microphoneRecoverySessionId: ""
+    property bool microphoneRecoveryEnabled: false
+    readonly property bool microphoneCaptureSupported: nativeRuntimeReady
+        && nativeRuntimeCapabilities.supportsMicrophone === true
+    readonly property bool microphoneSessionActive: Boolean(activeSession && streamer
+        && streamer.status === "streaming")
+    readonly property bool microphoneSessionSupported: microphoneSessionActive
+        && Boolean(streamer.capabilities && streamer.capabilities.supportsMicrophone === true)
+    readonly property bool microphoneToggleAvailable: microphoneSessionSupported
+        && sessionMicrophoneMode === "voice-activity"
+    readonly property bool microphoneCanToggle: microphoneToggleAvailable && microphoneRequestId === ""
+    readonly property string microphoneState: !microphoneSessionActive ? "disabled"
+        : String(streamer.microphoneState || (sessionMicrophoneMode === "disabled" ? "disabled"
+            : microphoneSessionSupported ? "muted" : "unavailable"))
+    readonly property bool microphoneEnabled: microphoneSessionActive
+        && microphoneState === "ready" && streamer.microphoneEnabled === true
+    readonly property string microphoneLabel: microphoneState === "ready" && microphoneEnabled
+        ? qsTr("Open microphone") : microphoneState === "muted" ? qsTr("Muted")
+        : microphoneState === "error" ? qsTr("Microphone error")
+        : microphoneState === "unavailable" ? qsTr("Unavailable") : qsTr("Disabled")
+    readonly property string microphoneActionLabel: microphoneEnabled
+        ? qsTr("Mute microphone") : qsTr("Unmute microphone")
+    readonly property string microphoneDescription: microphoneSessionActive && streamer.microphoneMessage
+        ? String(streamer.microphoneMessage)
+        : qsTr("Uses the system default microphone. Open microphone sends audio continuously during supported sessions. Changes apply to the next session.")
 
     property Timer devicePollTimer: Timer {
         interval: root.authChallenge ? Math.max(1000, Number(root.authChallenge.intervalSeconds || 5) * 1000) : 5000
@@ -1191,6 +1214,8 @@ QtObject {
             recordingStopCount: 0,
             queueDropCount: 0
         }
+        microphoneRequestId = ""
+        sessionMicrophoneMode = "disabled"
         streamInputStateKnown = false
         streamerStopExpected = false
         if (!nativeRuntimeReady) {
@@ -1457,6 +1482,35 @@ QtObject {
         }
     }
 
+    function setMicrophoneEnabled(enabled) {
+        if (!microphoneCanToggle)
+            return
+        if (!enabled)
+            microphoneRecoveryEnabled = false
+        microphoneRequestId = sendNativeCommand("microphone-set", {
+            enabled: Boolean(enabled)
+        }, "microphone")
+        if (microphoneRequestId === "") {
+            streamControlMessage = lastError
+            accessibilityMessage = lastError
+        }
+    }
+
+    function toggleMicrophone() {
+        setMicrophoneEnabled(!microphoneEnabled)
+    }
+
+    function prepareMicrophoneStart(sessionId, mode) {
+        sessionMicrophoneMode = String(mode || "disabled")
+        if (microphoneRecoverySessionId !== String(sessionId)) {
+            microphoneRecoverySessionId = String(sessionId)
+            microphoneRecoveryEnabled = sessionMicrophoneMode === "voice-activity"
+        }
+        if (sessionMicrophoneMode !== "voice-activity")
+            microphoneRecoveryEnabled = false
+        return microphoneRecoveryEnabled
+    }
+
     function inspectStreamerOverlayRequest(value) {
         const generation = Number(value && value.overlayRequestGeneration || 0)
         if (generation <= overlayRequestGeneration)
@@ -1505,7 +1559,8 @@ QtObject {
             "toggle-fullscreen": [String(settings.shortcutToggleFullscreen || "F11")],
             "stop-stream": [String(settings.shortcutStopStream || "Ctrl+Shift+Q")],
             "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk || "Ctrl+Shift+K")],
-            "toggle-microphone": [String(settings.shortcutToggleMicrophone || "Ctrl+Shift+M")],
+            "toggle-microphone": microphoneToggleAvailable
+                ? [String(settings.shortcutToggleMicrophone || "Ctrl+Shift+M")] : [],
             "screenshot": [String(settings.shortcutScreenshot || "Ctrl+F11")],
             "toggle-recording": [String(settings.shortcutToggleRecording || "F12")]
         }
@@ -1564,6 +1619,8 @@ QtObject {
             captureStreamScreenshot()
         } else if (action === "toggle-recording") {
             toggleStreamRecording()
+        } else if (action === "toggle-microphone") {
+            toggleMicrophone()
         }
     }
 
@@ -1771,6 +1828,13 @@ QtObject {
                 streamControlRequestId = ""
                 streamControlAction = ""
                 streamControlMessage = message
+            } else if (pending.operation === "microphone") {
+                if (requestId === microphoneRequestId) {
+                    microphoneRequestId = ""
+                    microphoneRecoveryEnabled = false
+                }
+                streamControlMessage = message
+                accessibilityMessage = message
             } else if (pending.operation === "recording-start") {
                 streamRecordingStartRequestId = ""
                 mediaMessage = message
@@ -1804,13 +1868,18 @@ QtObject {
                 message: qsTr("Native-owned NVST media transport is active"),
                 transport: String(response.transport || "nvst"),
                 capabilities: Object.assign({}, nativeRuntimeCapabilities,
-                                            response.capabilities || ({})),
+                                            response.capabilities || ({}),
+                                            {supportsMicrophone: Boolean(response.capabilities
+                                                && response.capabilities.supportsMicrophone === true)}),
                 errorCode: null
             })
         } else if (pending.operation === "stop") {
             streamerStopRequestId = ""
+            microphoneRequestId = ""
+            sessionMicrophoneMode = "disabled"
             updateStreamerFields({status: "stopped", message: pending.reason || qsTr("Stream stopped"),
-                                  sessionId: null, transport: null, inputReady: false})
+                                  sessionId: null, transport: null, inputReady: false,
+                                  microphoneState: "disabled", microphoneEnabled: false, microphoneMessage: ""})
             if (sessionRecoveryPending) {
                 streamerStartRequestId = ""
                 discoverRecoverySession()
@@ -1829,6 +1898,11 @@ QtObject {
             streamControlRequestId = ""
             streamControlAction = ""
             streamControlMessage = qsTr("Stream control applied")
+        } else if (pending.operation === "microphone") {
+            if (requestId === microphoneRequestId) {
+                microphoneRequestId = ""
+                microphoneRecoveryEnabled = pending.enabled === true && pending.microphoneFailed !== true
+            }
         } else if (pending.operation === "recording-start") {
             streamRecordingStartRequestId = ""
             streamRecordingActive = true
@@ -1918,6 +1992,23 @@ QtObject {
         } else if (type === "input-unavailable") {
             fields.inputReady = false
             fields.inputUnavailableReason = String(event.reason || "")
+        } else if (type === "microphone-state") {
+            fields.microphoneState = ["disabled", "muted", "ready", "unavailable", "error"]
+                .indexOf(String(event.state)) >= 0 ? String(event.state) : "error"
+            fields.microphoneEnabled = fields.microphoneState === "ready" && event.enabled === true
+            fields.microphoneMessage = String(event.message || "")
+            if (["muted", "unavailable", "error"].indexOf(fields.microphoneState) >= 0)
+                microphoneRecoveryEnabled = false
+            if (["unavailable", "error"].indexOf(fields.microphoneState) >= 0
+                    && nativeRequests[microphoneRequestId]) {
+                const requests = Object.assign({}, nativeRequests)
+                requests[microphoneRequestId] = Object.assign({}, requests[microphoneRequestId],
+                    {microphoneFailed: true})
+                nativeRequests = requests
+            }
+            accessibilityMessage = fields.microphoneMessage || qsTr("Microphone state changed")
+            if (fields.microphoneState === "error" || fields.microphoneState === "unavailable")
+                streamControlMessage = fields.microphoneMessage || qsTr("Microphone error")
         } else if (type === "recording-state") {
             if (event.state === "saved" || event.state === "failed") {
                 streamRecordingActive = false
@@ -1969,6 +2060,8 @@ QtObject {
             root.streamerStopRequestId = ""
             root.streamInputPauseRequestId = ""
             root.streamControlRequestId = ""
+            root.microphoneRequestId = ""
+            root.sessionMicrophoneMode = "disabled"
             root.streamRecordingStartRequestId = ""
             root.streamRecordingStopRequestId = ""
             if (root.streamer && root.streamer.status !== "stopped"
@@ -2293,6 +2386,8 @@ QtObject {
                     return
                 }
                 const preparedSettings = result.context.settings || ({})
+                const initialMicrophoneEnabled = root.prepareMicrophoneStart(
+                    root.activeSession.sessionId, preparedSettings.microphoneMode)
                 root.runtimeStreamProfile = {
                     codec: String(preparedSettings.codec || "").toUpperCase(),
                     width: Number(preparedSettings.width || root.negotiatedStreamProfile.width || 0),
@@ -2306,7 +2401,8 @@ QtObject {
                     outputFps: root.runtimeStreamProfile.fps
                 }))
                 root.streamerStartRequestId = root.sendNativeCommand("start", {
-                    context: result.context
+                    context: result.context,
+                    microphoneEnabled: initialMicrophoneEnabled
                 }, "start")
                 if (root.streamerStartRequestId === "")
                     root.acceptStreamerSnapshot(Object.assign({}, root.streamer || ({}), {

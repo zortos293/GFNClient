@@ -74,9 +74,12 @@ int AcceptanceSession::startSmokeWorkload()
             });
         });
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-backend-availability"_s)
+                     || m_arguments.contains(u"--smoke-microphone"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
-        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-idle-mode"_s)
+        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-microphone"_s)
+            ? u"qrc:/acceptance/MicrophoneAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-idle-mode"_s)
             ? u"qrc:/acceptance/IdleModeAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-stream-recovery"_s)
             ? u"qrc:/acceptance/StreamRecoveryAcceptance.qml"_s
@@ -84,6 +87,11 @@ int AcceptanceSession::startSmokeWorkload()
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
+        if (m_arguments.contains(u"--smoke-microphone"_s)) {
+            auto *runtime = fixture->property("runtime").value<QObject *>();
+            if (!runtime) return EXIT_FAILURE;
+            m_engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s, runtime);
+        }
         if (m_arguments.contains(u"--smoke-stream-recovery"_s)) {
             auto *client = fixture->property("client").value<QObject *>();
             if (!client) return EXIT_FAILURE;

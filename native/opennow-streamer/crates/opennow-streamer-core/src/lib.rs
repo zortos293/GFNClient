@@ -25,7 +25,10 @@ use opennow_streamer_transport::{
 };
 use serde_json::{Value, json};
 
+mod microphone;
 mod nvst_rtsp;
+
+use microphone::MicrophoneController;
 
 use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
 
@@ -158,6 +161,7 @@ pub struct Engine {
     media_feedback: Option<Receiver<MediaFeedback>>,
     feedback_worker: Option<JoinHandle<()>>,
     recording_worker: Option<JoinHandle<Result<RecordingSummary, String>>>,
+    microphone: Option<MicrophoneController>,
 }
 
 #[derive(Debug)]
@@ -192,6 +196,7 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            microphone: None,
         }
     }
 
@@ -226,6 +231,7 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            microphone: None,
         }
     }
 
@@ -256,6 +262,7 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            microphone: None,
         }
     }
 
@@ -299,6 +306,7 @@ impl Engine {
             "anti-afk-pulse" => self.anti_afk_pulse(command),
             "recording-start" => self.start_recording(command),
             "recording-stop" => self.stop_recording(command),
+            "microphone-set" | "microphone-toggle" => self.set_microphone(command),
             "bitrate" | "update-shortcuts" => Err(error(
                 Some(&id),
                 "unsupported-command",
@@ -365,6 +373,7 @@ impl Engine {
             supports_video_present: video_ready,
             supports_audio_decode: media_ready && supports_audio_decode(),
             supports_audio_output: media_ready && supports_audio_output(),
+            supports_microphone: media_ready,
             supports_owned_nvst_negotiation: media_ready,
             video_backends: backends,
         };
@@ -602,7 +611,19 @@ impl Engine {
         let nvst_audio_negotiated = nvst_config
             .as_ref()
             .is_some_and(|config| config.audio_track().is_some());
+        let microphone_requested =
+            context.settings["microphoneMode"].as_str() == Some("voice-activity");
+        let microphone_available = microphone_requested
+            && self.media_runtime.is_some()
+            && nvst_config
+                .as_ref()
+                .is_some_and(|config| config.microphone_available());
+        let microphone_device = context.settings["microphoneDeviceId"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
 
+        self.microphone = None;
         if let Some(transport) = self.nvst_transport.take() {
             transport.stop();
         }
@@ -851,6 +872,30 @@ impl Engine {
                 }
             }
         }
+        if microphone_available {
+            let mut microphone = MicrophoneController::new(
+                self.media_runtime
+                    .as_ref()
+                    .expect("microphone requires media runtime")
+                    .clone(),
+                self.nvst_transport
+                    .as_ref()
+                    .expect("microphone requires bundle")
+                    .control(),
+                microphone_device,
+                self.events.clone(),
+                self.lifecycle.clone(),
+                generation,
+            );
+            let _ = microphone.set_enabled(command.microphone_enabled.unwrap_or(true));
+            self.microphone = Some(microphone);
+        } else {
+            let _ = self.events.send(event("microphone-state", json!({
+                "state":if microphone_requested { "unavailable" } else { "disabled" },
+                "enabled":false,
+                "message":if microphone_requested { Some("The server did not offer microphone audio on the native bundle") } else { None }
+            })));
+        }
         let _ = self.events.send(event(
             "status",
             json!({
@@ -864,8 +909,43 @@ impl Engine {
             "supportsInput": nvst_bundle_available,
             "supportsAudioDecode": nvst_audio_negotiated && supports_audio_decode(),
             "supportsAudioOutput": nvst_audio_negotiated && supports_audio_output(),
+            "supportsMicrophone": microphone_available,
         });
         Ok(vec![start_response])
+    }
+
+    fn set_microphone(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        let state = lock_lifecycle(&self.lifecycle).state;
+        if state != State::Connected {
+            return Err(invalid_state(
+                &command.id,
+                &command.kind,
+                state,
+                "Connected",
+            ));
+        }
+        let microphone = self.microphone.as_mut().ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "microphone-unavailable",
+                "Microphone audio was not enabled and negotiated for this session",
+            )
+        })?;
+        let enabled = if command.kind == "microphone-toggle" {
+            !microphone.enabled()
+        } else {
+            command.enabled.ok_or_else(|| {
+                error(
+                    Some(&command.id),
+                    "invalid-command",
+                    "microphone-set requires a boolean enabled value",
+                )
+            })?
+        };
+        microphone
+            .set_enabled(enabled)
+            .map_err(|message| error(Some(&command.id), "microphone-failed", message))?;
+        Ok(vec![response(command.id, "ok")])
     }
 
     fn set_paused(&self, command: Command) -> Result<Vec<Value>, Value> {
@@ -964,6 +1044,10 @@ impl Engine {
         self.stop_media_resources();
         if was_active {
             let _ = self.events.send(event(
+                "microphone-state",
+                json!({"state":"disabled", "enabled":false}),
+            ));
+            let _ = self.events.send(event(
                 "status",
                 json!({ "status": "stopped", "message": reason }),
             ));
@@ -971,6 +1055,7 @@ impl Engine {
     }
 
     fn stop_media_resources(&mut self) {
+        self.microphone = None;
         let _ = self.stop_recording_inner();
         if self.media_runtime.is_some() {
             self.media_consumer = None;
@@ -1408,6 +1493,10 @@ fn forward_nvst_event<R: NvstSessionResources>(
     }
 
     match nvst_event {
+        NvstReceiveEvent::MicrophoneError(message) => {
+            opennow_streamer_protocol::log::log_line("WARN", "microphone", &message);
+            false
+        }
         NvstReceiveEvent::RecoveryNeeded(NvstRecovery::PacketGap {
             first_missing_index,
             last_missing_index,
@@ -2832,6 +2921,42 @@ mod tests {
                 .is_none()
         );
         assert_eq!(responses[0]["capabilities"]["supportsVideoPresent"], false);
+    }
+
+    #[test]
+    fn microphone_commands_require_an_active_negotiated_session() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        for kind in ["microphone-set", "microphone-toggle"] {
+            let (responses, keep_running) = engine.handle(command(json!({
+                "id":"mic", "type":kind, "enabled":true
+            })));
+            assert!(keep_running);
+            assert_eq!(responses[0]["type"], "error");
+            assert_eq!(lifecycle_state(&engine), State::Idle);
+        }
+        lock_lifecycle(&engine.lifecycle).state = State::Connected;
+        let (responses, _) = engine.handle(command(json!({
+            "id":"mic", "type":"microphone-set", "enabled":true
+        })));
+        assert_eq!(responses[0]["code"], "microphone-unavailable");
+        assert_eq!(lifecycle_state(&engine), State::Connected);
+    }
+
+    #[test]
+    fn microphone_capability_is_not_advertised_without_capture_runtime() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let (responses, _) = engine.handle(command(json!({
+            "id":"hello", "type":"hello", "protocolVersion":PROTOCOL_VERSION
+        })));
+        assert_eq!(responses[0]["capabilities"]["supportsMicrophone"], false);
+        assert!(
+            serde_json::from_value::<Command>(json!({
+                "id":"mic", "type":"microphone-set", "enabled":"true"
+            }))
+            .is_err()
+        );
     }
 
     #[test]

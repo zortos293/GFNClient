@@ -208,6 +208,15 @@ the desktop shell and `--screenshot /absolute/path.png` to save visual evidence.
 Offscreen and nested compositor tests do not replace live Windows/X11/Wayland
 controller and mouse acceptance on real streaming sessions.
 
+Microphone fixtures never open capture hardware: `--smoke-test --desktop --route
+settings-audio --smoke-microphone-supported` renders the default-disabled opt-in,
+and `--smoke-test --desktop --route stream --overlay desktop-stream-menu
+--smoke-microphone-muted` renders a supported, muted session. Add
+`--screenshot /absolute/path.png` for visual evidence. For console fixtures use
+`--console`, `settings-input`, and `guide-session` respectively. The
+`--smoke-microphone` acceptance workload checks state, commands and reconnect mute
+preservation against a mock runtime.
+
 If one controller appears as both a physical device and a remapper's virtual device,
 open Settings → Controls → Controller input source (Controllers in the console
 settings) and select one device before starting the stream. The selected device is
@@ -248,7 +257,7 @@ The versioned Rust core owns settings, NVIDIA device login and token refresh,
 OS-protected accounts, PINs, catalogs, subscriptions, regions and latency tests,
 account connections, persistent storage, CloudMatch lifecycle/recovery/ads,
 NVST session orchestration, diagnostics, media listing, Discord, telemetry,
-feedback and update discovery. The protocol-v5 native streamer is linked into
+feedback and update discovery. The protocol-v6 native streamer is linked into
 the Qt executable as an in-process Rust library. It owns NVST RTSPS negotiation,
 Mjolnir video, the ICE/DTLS/SCTP control bundle, decode, audio and native input.
 Qt/QML owns stream status, stats, menus, recovery, failure and fullscreen
@@ -262,8 +271,11 @@ in process through the runtime library, not in the probe executable. CI produces
 the platform packages from that layout.
 The screenshot shortcut captures the exact stream region, and F12 records the
 negotiated H.264/H.265/AV1 source stream plus Opus audio atomically into Matroska
-before generating a media thumbnail. Microphone capture is not part of the
-native NVST runtime. Live multi-OS streaming, GPU interop and
+before generating a media thumbnail. Microphone capture defaults to disabled;
+Audio settings offers an explicit Open microphone opt-in using the system default
+input. The setting applies to the next session, and supported sessions expose live
+mute/unmute through the stream menu or Ctrl+Shift+M without restarting media.
+Build support and negotiated session support are checked independently. Live multi-OS streaming, GPU interop and
 hardware validation plus production signing/notarization remain release gates.
 The legacy Electron application has been removed; it is not a fallback in this tree.
 

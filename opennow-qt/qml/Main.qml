@@ -187,6 +187,14 @@ ApplicationWindow {
             && ShellStore.isStreamStatsOverlay(AppController.overlay)
         onActivated: desktopStreamOverlay.copyStatsToClipboard()
     }
+    Shortcut {
+        objectName: "streamMicrophoneShortcut"
+        sequence: String(ShellStore.settings.shortcutToggleMicrophone || "Ctrl+Shift+M")
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: window.activeRoute === "stream" && ShellStore.microphoneToggleAvailable
+        onActivated: ShellStore.toggleMicrophone()
+    }
 
     function isGuideShortcut(event) {
         const keyboardModifiers = event.modifiers

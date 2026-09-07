@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 
 pub mod log;
 
-pub const PROTOCOL_VERSION: u64 = 5;
+pub const PROTOCOL_VERSION: u64 = 6;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +17,10 @@ pub struct Command {
     pub context: Option<Value>,
     #[serde(default)]
     pub paused: Option<bool>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub microphone_enabled: Option<bool>,
     #[serde(default)]
     pub surface: Option<RenderSurface>,
     #[serde(default)]
@@ -140,6 +144,7 @@ pub struct Capabilities {
     pub supports_video_present: bool,
     pub supports_audio_decode: bool,
     pub supports_audio_output: bool,
+    pub supports_microphone: bool,
     pub supports_owned_nvst_negotiation: bool,
     pub video_backends: Vec<VideoBackendCapability>,
 }

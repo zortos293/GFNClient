@@ -11,6 +11,7 @@ mod linux_xinput;
 #[cfg(target_os = "macos")]
 mod macos_backend;
 mod media;
+mod microphone;
 mod native_surface;
 mod output;
 mod queue;
@@ -34,6 +35,10 @@ pub use media::{
     MediaCodec, MediaColorQuality, MediaControl, MediaFeedback, MediaSession, MediaSink,
     MediaStreamConfig, MediaVideoCodec, PushOutcome, ShortcutChord, StreamShortcutAction,
     StreamShortcutBindings,
+};
+pub use microphone::{
+    EncodedMicrophoneFrame, MICROPHONE_FRAME_SAMPLES, MICROPHONE_SAMPLE_RATE, MicrophoneReceiver,
+    MicrophoneSession, MicrophoneStatus,
 };
 #[cfg(target_os = "linux")]
 pub use opennow_streamer_platform_linux::{

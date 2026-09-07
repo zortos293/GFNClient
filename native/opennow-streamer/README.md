@@ -1,6 +1,6 @@
 # OpenNOW native streamer
 
-This workspace implements the native GeForce NOW NVST runtime. It owns RTSPS negotiation, the dedicated Mjolnir SRTP video socket, the NVST ICE/DTLS/SCTP bundle used for audio, RTCP and input, bounded media queues, platform decode/audio output, source-stream Matroska recording and GPU frame publication. It does not implement the browser WebRTC offer/answer or trickle-ICE protocol and it has no microphone upstream path.
+This workspace implements the native GeForce NOW NVST runtime. It owns RTSPS negotiation, the dedicated Mjolnir SRTP video socket, the NVST ICE/DTLS/SCTP bundle used for audio, microphone, RTCP and input, bounded media queues, platform decode/audio output, source-stream Matroska recording and GPU frame publication. It does not implement the browser WebRTC offer/answer or trickle-ICE protocol.
 
 The Qt application loads `opennow-streamer-ffi` as an in-process shared library. Qt supplies one complete CloudMatch session context; the embedded engine reserves its bundle and Mjolnir sockets and performs OPTIONS, DESCRIBE, SETUP, ANNOUNCE, PLAY, keepalive and TEARDOWN. The runtime does not load or redistribute NVIDIA client libraries.
 
@@ -71,6 +71,50 @@ The standalone `opennow-streamer` binary remains a development host and is not e
   and Qt drawing remain on the same graphics command stream.
 
 ## Checks
+
+### Microphone upstream
+
+Microphone capture defaults off. The `voice-activity` settings value is exposed as
+**Open microphone**: it sends continuous audio, not a voice-activity detector or
+push-to-talk implementation. Select it before starting a session; NVST does not
+renegotiate microphone support during a stream. Capture uses the system default
+input device. A nonempty `microphoneDeviceId` is rejected rather than silently
+capturing a different device.
+
+The native RTSP path requires the server's DESCRIBE to advertise
+`x-nv-general.rtcMicOnNativeBundle:1`. Only then, and with microphone opt-in,
+ANNOUNCE includes that flag and `x-nv-mic.micSsrcConfig.senderSsrc:1`. The existing
+str0m bundle sends Opus payload type 111 on SSRC 1, independently of downlink
+audio. This follows the native bundle findings documented in OpenNOW-Mac's
+`docs/StreamTransportArchitecture.md` (reference revision `88a09bd68598651b367aa4744e7528da9c074d28`).
+Legacy RTSP/UDP microphone carriage is not implemented.
+
+Capture produces mono 48 kHz PCM and an off-callback encoder produces 20 ms Opus
+frames at 32 kbps. PCM, encoded audio, and transport queues each hold at most five
+frames and drop old data under load. Mute closes capture and clears pending audio;
+unmute preserves the RTP clock and transport sequence lifetime. Capture or uplink
+failure disables only the microphone, not game audio/video. Session termination
+also closes capture. Queue drops are reported in microphone diagnostics without
+logging audio contents.
+
+The local JSON protocol is version 6; the C ABI is unchanged. `hello` exposes
+`supportsMicrophone` for runtime capture support, while the `start` response
+reports the negotiated session capability. `microphone-set` requires a boolean
+`enabled`; `microphone-toggle` toggles the current capture state. Both require an
+active, opted-in, negotiated session. `microphone-state` events contain `state`
+(`disabled`, `muted`, `ready`, `unavailable`, or `error`), `enabled`, and an optional
+`message`. `ready` confirms local capture/queueing, not that a remote game has
+selected the microphone.
+
+The `start` command accepts an optional boolean `microphoneEnabled`. Setting it
+to false reserves negotiated microphone support but does not open capture; Qt
+uses this to retain mute during same-session recovery. It cannot override a
+disabled microphone mode or a server that does not support bundle capture.
+
+Live release acceptance must confirm remote voice reception and uninterrupted
+game audio, then mute/unmute, disconnect the input device, end/restart the session,
+and deny OS permission. Use headphones: acoustic echo cancellation and noise
+suppression are not provided by this capture path.
 
 ### Embedded session diagnostics
 

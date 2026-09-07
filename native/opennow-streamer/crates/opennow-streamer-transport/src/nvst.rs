@@ -27,6 +27,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
+use super::nvst_microphone::{MICROPHONE_QUEUE_CAPACITY, MicrophoneQueue};
 use str0m::channel::ChannelId;
 use str0m::config::Fingerprint;
 use str0m::format::{Codec, FormatParams};
@@ -696,6 +697,7 @@ pub struct NvstVideoConfig {
     mjolnir_udp_port: Option<u16>,
     codec: NvstVideoCodec,
     audio_track: Option<NvstAudioTrack>,
+    microphone_available: bool,
     expected_payload_type: Option<u8>,
     expected_ssrc: Option<u32>,
     reorder_window_packets: usize,
@@ -1024,6 +1026,10 @@ impl NvstVideoConfig {
             });
         }
 
+        let microphone_available = object.get("microphoneOnBundle").and_then(Value::as_bool)
+            == Some(true)
+            && remote_dtls_fingerprint.is_some()
+            && stun_credentials.is_some();
         Ok(Self {
             client_udp_port,
             video_peer: SocketAddr::new(peer_ip, video_peer_port),
@@ -1037,6 +1043,7 @@ impl NvstVideoConfig {
             mjolnir_udp_port,
             codec,
             audio_track,
+            microphone_available,
             expected_payload_type,
             expected_ssrc,
             reorder_window_packets,
@@ -1071,6 +1078,10 @@ impl NvstVideoConfig {
 
     pub fn audio_track(&self) -> Option<&NvstAudioTrack> {
         self.audio_track.as_ref()
+    }
+
+    pub fn microphone_available(&self) -> bool {
+        self.microphone_available
     }
 
     pub fn srtp_profile(&self) -> NvstSrtpProfile {
@@ -1426,6 +1437,7 @@ pub enum NvstReceiveEvent {
     TransportReady(&'static str),
     InputReady(u16),
     InputUnavailable(String),
+    MicrophoneError(String),
     Cursor(Vec<u8>),
     Dropped(NvstDropReason),
     RecoveryNeeded(NvstRecovery),
@@ -3908,12 +3920,14 @@ pub struct NvstUdpReceiverSession {
     commands: Sender<UdpReceiverCommand>,
     join: Option<JoinHandle<()>>,
     input_ready: Arc<AtomicBool>,
+    microphone: Arc<Mutex<MicrophoneQueue>>,
 }
 
 #[derive(Clone)]
 pub struct NvstUdpReceiverControl {
     commands: Sender<UdpReceiverCommand>,
     input_ready: Arc<AtomicBool>,
+    microphone: Arc<Mutex<MicrophoneQueue>>,
 }
 
 #[derive(Debug, Error)]
@@ -3928,6 +3942,12 @@ pub enum NvstUdpReceiverError {
     Closed,
     #[error("failed to prepare NVST control/audio bundle: {0}")]
     WebrtcBundle(String),
+    #[error("the server did not negotiate native bundled microphone audio")]
+    MicrophoneUnavailable,
+    #[error("microphone transmission is disabled")]
+    MicrophoneDisabled,
+    #[error("microphone Opus payload must contain 1 to 1275 bytes")]
+    InvalidMicrophoneFrame,
 }
 
 impl NvstUdpReceiverSession {
@@ -3935,6 +3955,7 @@ impl NvstUdpReceiverSession {
         NvstUdpReceiverControl {
             commands: self.commands.clone(),
             input_ready: Arc::clone(&self.input_ready),
+            microphone: Arc::clone(&self.microphone),
         }
     }
 
@@ -3959,6 +3980,9 @@ impl NvstUdpReceiverSession {
     }
 
     pub fn stop(mut self) {
+        if let Ok(mut queue) = self.microphone.lock() {
+            queue.close();
+        }
         let _ = self.commands.send(UdpReceiverCommand::Stop);
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -3967,6 +3991,28 @@ impl NvstUdpReceiverSession {
 }
 
 impl NvstUdpReceiverControl {
+    pub fn set_microphone_enabled(&self, enabled: bool) -> Result<(), NvstUdpReceiverError> {
+        self.microphone
+            .lock()
+            .map_err(|_| NvstUdpReceiverError::Closed)?
+            .set_enabled(enabled)
+    }
+
+    pub fn send_microphone_opus(
+        &self,
+        payload: Vec<u8>,
+        rtp_timestamp: u32,
+    ) -> Result<(), NvstUdpReceiverError> {
+        self.microphone
+            .lock()
+            .map_err(|_| NvstUdpReceiverError::Closed)?
+            .push(payload, rtp_timestamp, Instant::now())
+    }
+
+    pub fn microphone_dropped_frames(&self) -> u64 {
+        self.microphone.lock().map_or(0, |queue| queue.dropped())
+    }
+
     pub fn pause(&self) -> Result<(), NvstUdpReceiverError> {
         self.send(UdpReceiverCommand::Pause)
     }
@@ -4017,6 +4063,10 @@ impl NvstUdpReceiverControl {
     }
 
     pub fn stop(&self) -> Result<(), NvstUdpReceiverError> {
+        self.microphone
+            .lock()
+            .map_err(|_| NvstUdpReceiverError::Closed)?
+            .close();
         self.send(UdpReceiverCommand::Stop)
     }
 
@@ -4029,6 +4079,9 @@ impl NvstUdpReceiverControl {
 
 impl Drop for NvstUdpReceiverSession {
     fn drop(&mut self) {
+        if let Ok(mut queue) = self.microphone.lock() {
+            queue.close();
+        }
         let _ = self.commands.send(UdpReceiverCommand::Stop);
     }
 }
@@ -4160,7 +4213,9 @@ fn create_nvst_bundle_rtc(socket: &UdpSocket) -> Result<Rtc, NvstUdpReceiverErro
     let _ = socket;
     // Official GenerateIceCredentials() is 4-char ufrag / 22-char password.
     // str0m's default 16-char ufrag is rejected by Bifrost length checks.
-    let mut rtc_config = RtcConfig::new().set_rtp_mode(true);
+    let mut rtc_config = RtcConfig::new()
+        .set_rtp_mode(true)
+        .set_send_buffer_audio(MICROPHONE_QUEUE_CAPACITY);
     rtc_config.codec_config().add_config(
         GFN_RED_PAYLOAD_TYPE.into(),
         None,
@@ -4553,6 +4608,7 @@ struct NvstReceiverOutputs {
     media_consumer: MediaConsumer,
     event_sender: Sender<NvstReceiveEvent>,
     input_ready: Arc<AtomicBool>,
+    microphone: Arc<Mutex<MicrophoneQueue>>,
 }
 
 fn spawn_receiver_thread(
@@ -4569,6 +4625,10 @@ fn spawn_receiver_thread(
     let (commands, receiver) = mpsc::channel();
     let input_ready = Arc::new(AtomicBool::new(false));
     let worker_input_ready = input_ready.clone();
+    let microphone = Arc::new(Mutex::new(MicrophoneQueue::new(
+        config.microphone_available() && rtc.is_some(),
+    )));
+    let worker_microphone = microphone.clone();
     let transport_origin = Instant::now();
     let join = thread::Builder::new()
         .name(name.to_owned())
@@ -4581,17 +4641,22 @@ fn spawn_receiver_thread(
                     media_consumer,
                     event_sender,
                     input_ready: worker_input_ready.clone(),
+                    microphone: worker_microphone.clone(),
                 },
                 transport_origin,
                 rtc,
             );
             worker_input_ready.store(false, Ordering::Release);
+            if let Ok(mut queue) = worker_microphone.lock() {
+                queue.close();
+            }
         })
         .map_err(NvstUdpReceiverError::Spawn)?;
     Ok(NvstUdpReceiverSession {
         commands,
         join: Some(join),
         input_ready,
+        microphone,
     })
 }
 
@@ -4635,6 +4700,10 @@ fn prepare_nvst_webrtc_bundle(
         api.set_remote_fingerprint(remote_fingerprint);
         if let Some(audio) = config.audio_track() {
             api.declare_media(Mid::from(audio.mid.as_str()), MediaKind::Audio);
+        }
+        if config.microphone_available() {
+            api.declare_media(Mid::from("2"), MediaKind::Audio);
+            api.declare_stream_tx(Ssrc::from(1), None, Mid::from("2"), None);
         }
         api.start_dtls(true)
             .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
@@ -4809,6 +4878,7 @@ fn run_nvst_webrtc_bundle(
         media_consumer,
         event_sender,
         input_ready,
+        microphone,
     } = outputs;
     let bundle_peer = config.bundle_peer();
     let local_port = socket.local_addr().map_or(0, |addr| addr.port());
@@ -4843,6 +4913,8 @@ fn run_nvst_webrtc_bundle(
     let mut last_hole_punch = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
     let mut seen_ssrcs = HashSet::new();
     let mut dtls_ready = false;
+    let mut microphone_generation = 0;
+    let mut microphone_sequence = 0_u64;
     // RTCP-over-SCTP (`rtcp1`) feedback channel state.
     let mut sctp_started = false;
     let mut rtcp_channel: Option<ChannelId> = None;
@@ -5243,6 +5315,25 @@ fn run_nvst_webrtc_bundle(
             );
         }
 
+        let mut microphone_queue = microphone.lock().unwrap_or_else(|error| error.into_inner());
+        if microphone_generation != microphone_queue.generation {
+            microphone_generation = microphone_queue.generation;
+            rtc.direct_api().remove_stream_tx(Ssrc::from(1));
+        }
+        if dtls_ready {
+            while let Some(frame) = microphone_queue.pop(Instant::now()) {
+                rtc.direct_api()
+                    .declare_stream_tx(Ssrc::from(1), None, Mid::from("2"), None)
+                    .write_rtp(str0m::rtp::RtpWrite::new(
+                        GFN_OPUS_PAYLOAD_TYPE.into(),
+                        microphone_sequence.into(),
+                        frame.timestamp,
+                        frame.queued_at,
+                        frame.payload,
+                    ));
+                microphone_sequence += 1;
+            }
+        }
         let timeout = loop {
             match rtc.poll_output() {
                 Ok(Output::Timeout(timeout)) => break timeout,
@@ -5265,6 +5356,14 @@ fn run_nvst_webrtc_bundle(
                         );
                     }
                     if let Err(error) = socket.send_to(&transmit.contents, bundle_peer) {
+                        if peek_rtp_ssrc(&transmit.contents) == Some(1) {
+                            microphone_queue.close();
+                            microphone_generation = microphone_queue.generation;
+                            rtc.direct_api().remove_stream_tx(Ssrc::from(1));
+                            let _ = event_sender
+                                .send(NvstReceiveEvent::MicrophoneError(error.to_string()));
+                            continue;
+                        }
                         eprintln!("NVST WebRTC send failed: {error}");
                         forward_optional(&event_sender, receiver.stop());
                         return;
@@ -5590,6 +5689,7 @@ fn run_nvst_webrtc_bundle(
             }
         };
 
+        drop(microphone_queue);
         let wait = timeout
             .saturating_duration_since(Instant::now())
             .min(CONTROL_RECEIVE_POLL_INTERVAL);
@@ -6439,6 +6539,165 @@ mod tests {
         assert_eq!(config.ping_version, Some(6));
         assert!(config.stun_credentials.is_some());
         assert!(!format!("{config:?}").contains("local-password-value-01"));
+    }
+
+    #[test]
+    fn microphone_requires_explicit_bundle_negotiation_and_dtls() {
+        let mut handoff = legacy_handoff();
+        assert!(
+            !NvstVideoConfig::from_legacy_handoff(&handoff, None)
+                .unwrap()
+                .microphone_available()
+        );
+        handoff["microphoneOnBundle"] = json!(true);
+        assert!(
+            !NvstVideoConfig::from_legacy_handoff(&handoff, None)
+                .unwrap()
+                .microphone_available()
+        );
+        handoff["pingVersion"] = json!(6);
+        handoff["localIceUsernameFragment"] = json!("loc1");
+        handoff["localIcePassword"] = json!("local-password-value-01");
+        handoff["remoteIceUsernameFragment"] = json!("remote01");
+        handoff["remoteIcePassword"] = json!("remote-password-with-36-byte-value-001");
+        handoff["remoteDtlsFingerprint"] = json!("AA:BB");
+        assert!(
+            NvstVideoConfig::from_legacy_handoff(&handoff, None)
+                .unwrap()
+                .microphone_available()
+        );
+        handoff["microphoneOnBundle"] = json!(false);
+        assert!(
+            !NvstVideoConfig::from_legacy_handoff(&handoff, None)
+                .unwrap()
+                .microphone_available()
+        );
+    }
+
+    #[test]
+    fn microphone_direct_rtp_preserves_downlink_and_sequence_rollover() {
+        fn exchange(
+            from: &mut Rtc,
+            to: &mut Rtc,
+            now: Instant,
+            received: &mut Vec<str0m::rtp::RtpPacket>,
+        ) {
+            loop {
+                match from.poll_output().unwrap() {
+                    Output::Timeout(_) => break,
+                    Output::Transmit(packet) => {
+                        to.handle_input(Input::Receive(
+                            now,
+                            Receive {
+                                proto: packet.proto,
+                                source: packet.source,
+                                destination: packet.destination,
+                                contents: packet.contents.as_ref().try_into().unwrap(),
+                            },
+                        ))
+                        .unwrap();
+                    }
+                    Output::Event(Event::RtpPacket(packet)) => received.push(packet),
+                    _ => {}
+                }
+            }
+        }
+
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut local = create_nvst_bundle_rtc(&socket).unwrap();
+        let mut remote = create_nvst_bundle_rtc(&socket).unwrap();
+        let local_candidate = Candidate::host("192.0.2.1:1000".parse().unwrap(), "udp").unwrap();
+        let remote_candidate = Candidate::host("192.0.2.2:2000".parse().unwrap(), "udp").unwrap();
+        local.add_local_candidate(local_candidate.clone());
+        local.add_remote_candidate(remote_candidate.clone());
+        remote.add_local_candidate(remote_candidate);
+        remote.add_remote_candidate(local_candidate);
+        let local_identity = local.direct_api().local_dtls_fingerprint().clone();
+        let remote_identity = remote.direct_api().local_dtls_fingerprint().clone();
+        let local_ice = local.direct_api().local_ice_credentials();
+        let remote_ice = remote.direct_api().local_ice_credentials();
+        local.direct_api().set_remote_fingerprint(remote_identity);
+        remote.direct_api().set_remote_fingerprint(local_identity);
+        local.direct_api().set_remote_ice_credentials(remote_ice);
+        remote.direct_api().set_remote_ice_credentials(local_ice);
+        local.direct_api().set_ice_controlling(true);
+        remote.direct_api().set_ice_controlling(false);
+        local.direct_api().start_dtls(true).unwrap();
+        remote.direct_api().start_dtls(false).unwrap();
+        for rtc in [&mut local, &mut remote] {
+            rtc.direct_api()
+                .declare_media(Mid::from("0"), MediaKind::Audio);
+            rtc.direct_api()
+                .declare_media(Mid::from("2"), MediaKind::Audio);
+        }
+        local
+            .direct_api()
+            .expect_stream_rx(1.into(), None, Mid::from("0"), None);
+        remote
+            .direct_api()
+            .expect_stream_rx(1.into(), None, Mid::from("2"), None);
+        let origin = Instant::now();
+        let mut microphone_packets = Vec::new();
+        let mut downlink_packets = Vec::new();
+        for tick in 0..2000 {
+            let now = origin + Duration::from_millis(tick);
+            local.handle_input(Input::Timeout(now)).unwrap();
+            remote.handle_input(Input::Timeout(now)).unwrap();
+            if tick == 1250 {
+                local
+                    .direct_api()
+                    .stream_tx(&Ssrc::from(1))
+                    .unwrap()
+                    .write_rtp(str0m::rtp::RtpWrite::new(
+                        111.into(),
+                        65536_u64.into(),
+                        0,
+                        now,
+                        vec![0x00],
+                    ));
+                local.direct_api().remove_stream_tx(1.into());
+            }
+            if tick == 1000 || tick == 1500 {
+                assert!(local.is_connected() && remote.is_connected());
+                let sequence = if tick == 1000 { 65535_u64 } else { 65537_u64 };
+                let timestamp = if tick == 1000 { u32::MAX - 959 } else { 0 };
+                local.direct_api().remove_stream_tx(1.into());
+                local
+                    .direct_api()
+                    .declare_stream_tx(1.into(), None, Mid::from("2"), None)
+                    .write_rtp(str0m::rtp::RtpWrite::new(
+                        111.into(),
+                        sequence.into(),
+                        timestamp,
+                        now,
+                        vec![0xf8, 0xff, 0xfe],
+                    ));
+                remote
+                    .direct_api()
+                    .declare_stream_tx(1.into(), None, Mid::from("0"), None)
+                    .write_rtp(str0m::rtp::RtpWrite::new(
+                        111.into(),
+                        sequence.into(),
+                        timestamp,
+                        now,
+                        vec![0xf8, 0xff, 0xfe],
+                    ));
+            }
+            exchange(&mut local, &mut remote, now, &mut downlink_packets);
+            exchange(&mut remote, &mut local, now, &mut microphone_packets);
+        }
+        for packets in [&microphone_packets, &downlink_packets] {
+            assert_eq!(packets.len(), 2);
+            assert_eq!(packets[0].header.sequence_number, 65535);
+            assert_eq!(packets[1].header.sequence_number, 1);
+            assert_eq!(packets[0].header.timestamp, u32::MAX - 959);
+            assert_eq!(packets[1].header.timestamp, 0);
+            for packet in packets {
+                assert_eq!(*packet.header.ssrc, 1);
+                assert_eq!(*packet.header.payload_type, 111);
+                assert_eq!(packet.payload.as_ref(), &[0xf8, 0xff, 0xfe]);
+            }
+        }
     }
 
     #[test]

@@ -35,6 +35,11 @@ pub(crate) enum MacH264Configuration {
 }
 
 pub(crate) enum HostCommand {
+    StartMicrophone {
+        device_id: String,
+        shared: Arc<crate::microphone::MicrophoneShared>,
+        reply: Sender<Result<(), String>>,
+    },
     Start {
         reply: Sender<Result<(), String>>,
         feedback: Sender<MediaFeedback>,
@@ -120,6 +125,29 @@ impl MediaRuntime {
         self.output.captured_input()
     }
 
+    pub fn start_microphone(&self, device_id: &str) -> Result<crate::MicrophoneSession, String> {
+        self.output.stop_microphone();
+        let shared = crate::microphone::MicrophoneShared::new();
+        let mut session = crate::MicrophoneSession::from_shared(Arc::clone(&shared));
+        self.output.set_microphone(&shared);
+        if matches!(self.mode, MediaRuntimeMode::Embedded(..)) {
+            session.start_capture(device_id, self.output.microphone_clock())?;
+            return Ok(session);
+        }
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(HostCommand::StartMicrophone {
+                device_id: device_id.to_owned(),
+                shared,
+                reply,
+            })
+            .map_err(|_| "native media host is no longer running".to_owned())?;
+        response
+            .recv_timeout(HOST_START_TIMEOUT)
+            .map_err(|_| "native media host did not start microphone capture".to_owned())??;
+        Ok(session)
+    }
+
     pub fn start(
         &self,
         feedback: Sender<MediaFeedback>,
@@ -162,6 +190,8 @@ impl MediaRuntime {
         requested: &str,
     ) -> Result<MediaSession, String> {
         self.validate_backend(requested)?;
+        self.output.stop_microphone();
+        self.output.reset_microphone_clock();
         if let MediaRuntimeMode::Embedded(frames, _device) = &self.mode {
             let session = MediaSession::spawn_embedded(
                 Arc::clone(&self.output),
@@ -293,6 +323,7 @@ impl MediaRuntime {
     }
 
     pub fn shutdown(&self) {
+        self.output.stop_microphone();
         let _ = self.commands.send(HostCommand::Shutdown);
     }
 }
@@ -313,6 +344,7 @@ pub struct MainThreadHost {
 impl MainThreadHost {
     pub fn run(self) {
         let mut active: Option<ActiveOutput> = None;
+        let mut microphone: Option<crate::microphone::MicrophoneCapture> = None;
         let mut surface: Option<RenderSurface> = None;
         let mut paused = false;
         let mut feedback: Option<Sender<MediaFeedback>> = None;
@@ -320,12 +352,30 @@ impl MainThreadHost {
         let mut active_stream = MediaStreamConfig::default();
         loop {
             match self.commands.recv_timeout(HOST_POLL_INTERVAL) {
+                Ok(HostCommand::StartMicrophone {
+                    device_id,
+                    shared,
+                    reply,
+                }) => {
+                    microphone = None;
+                    let result = crate::microphone::MicrophoneCapture::start(
+                        &device_id,
+                        shared,
+                        self.output.microphone_clock(),
+                    )
+                    .map(|capture| microphone = Some(capture));
+                    if reply.send(result).is_err() {
+                        microphone = None;
+                    }
+                }
                 Ok(HostCommand::Start {
                     reply,
                     feedback: session_feedback,
                     stream,
                 }) => {
                     active_stream = stream;
+                    self.output.stop_microphone();
+                    microphone = None;
                     if let Some(output) = active.as_mut() {
                         output.stop();
                     }
@@ -610,6 +660,8 @@ impl MainThreadHost {
                     }
                 }
                 Ok(HostCommand::Stop) => {
+                    self.output.stop_microphone();
+                    microphone = None;
                     if let Some(output) = active.as_mut() {
                         output.stop();
                     }
@@ -618,12 +670,20 @@ impl MainThreadHost {
                     software_playback_started = false;
                 }
                 Ok(HostCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.output.stop_microphone();
+                    drop(microphone);
                     if let Some(output) = active.as_mut() {
                         output.stop();
                     }
                     return;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if let Some(capture) = microphone.as_mut() {
+                capture.poll();
+                if capture.stopped() {
+                    microphone = None;
+                }
             }
             if let Some(output) = active.as_mut() {
                 let output_event = output.pump();
@@ -953,6 +1013,12 @@ pub fn create_test_runtime() -> (TestMediaRuntimeHost, MediaRuntime) {
         .spawn(move || {
             while let Ok(command) = receiver.recv() {
                 match command {
+                    HostCommand::StartMicrophone { reply, .. } => {
+                        let _ =
+                            reply
+                                .send(Err("test media runtime has no microphone capture device"
+                                    .to_owned()));
+                    }
                     HostCommand::Start { reply, .. } => {
                         let _ = reply.send(Err(
                             "test media runtime does not start media sessions".to_owned()
@@ -1110,6 +1176,40 @@ fn ensure_macos_main_thread() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::backend_preference_allows_value;
+
+    #[cfg(feature = "test-runtime")]
+    #[test]
+    fn terminal_media_stop_synchronously_disables_microphone_receiver() {
+        let (host, runtime) = super::create_test_runtime();
+        let (feedback, _) = std::sync::mpsc::channel();
+        let media = runtime
+            .start(feedback, crate::MediaStreamConfig::default())
+            .unwrap();
+        let shared = crate::microphone::MicrophoneShared::new();
+        let session = crate::MicrophoneSession::from_shared(std::sync::Arc::clone(&shared));
+        runtime.output.set_microphone(&shared);
+        let receiver = session.receiver();
+        assert!(receiver.status().enabled);
+        media.control().stop();
+        assert!(!receiver.status().enabled);
+        assert_eq!(receiver.try_recv(), Ok(None));
+        drop(media);
+        runtime.shutdown();
+        host.join().unwrap();
+    }
+
+    #[cfg(feature = "test-runtime")]
+    #[test]
+    fn test_runtime_reports_no_capture_device_instead_of_enabled() {
+        let (host, runtime) = super::create_test_runtime();
+        let error = runtime
+            .start_microphone("")
+            .err()
+            .expect("test host has no device");
+        assert!(error.contains("no microphone capture device"));
+        runtime.shutdown();
+        host.join().unwrap();
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

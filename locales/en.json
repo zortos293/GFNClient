@@ -2931,6 +2931,11 @@
     "s_qt_controller_source_hint": "Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting.",
     "s_qt_controller_source_all": "All controllers (multiplayer)",
     "s_qt_controller_source_device": "Device %1 · %2",
-    "s_qt_controller_source_disconnected": "Selected controller disconnected"
+    "s_qt_controller_source_disconnected": "Selected controller disconnected",
+    "s_qt_microphone_build_unavailable": "Microphone capture is unavailable in this build.",
+    "s_qt_microphone_error": "Microphone error",
+    "s_qt_microphone_muted": "Muted",
+    "s_qt_microphone_open": "Open microphone",
+    "s_qt_microphone_opt_in_hint": "Uses the system default microphone. Open microphone sends audio continuously during supported sessions. Changes apply to the next session."
   }
 }

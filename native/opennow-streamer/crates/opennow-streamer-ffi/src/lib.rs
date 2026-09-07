@@ -2026,7 +2026,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-1",
             "type": "hello",
-            "protocolVersion": 5
+            "protocolVersion": 6
         }))
         .expect("hello command");
 
@@ -2057,7 +2057,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-production",
             "type": "hello",
-            "protocolVersion": 5
+            "protocolVersion": 6
         }))
         .expect("hello command");
         assert_eq!(

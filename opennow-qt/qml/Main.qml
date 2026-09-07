@@ -353,6 +353,12 @@ ApplicationWindow {
         ShellStore.desktopUiActive = window.desktopSurfaceActive
         syncInputOwnership()
         Qt.callLater(() => window.showConfiguredStreamStats())
+        Qt.callLater(() => {
+            if (window.streamQmlOverlayActive && desktopStreamOverlay.inputBlocking)
+                desktopStreamOverlay.forceActiveFocus()
+            else
+                window.restorePassiveStreamInput()
+        })
     }
 
     HoverHandler {

@@ -88,8 +88,15 @@ FocusScope {
         function onSettingsChanged() { root.updateUiScale() }
     }
     function resynchronizeStreamInput() {
-        if (root.streamVisible)
+        if (root.sessionStartingVisible)
+            sessionStarting.restoreFocus()
+        else if (root.streamVisible)
             desktopStream.resynchronizeStreamInput()
+    }
+    function restoreShellFocus() {
+        if (root.shellVisible && root.route !== "game-detail" && !root.commandOpen
+                && AppController.overlay === "" && pageLoader.item)
+            pageLoader.item.forceActiveFocus()
     }
 
     DesktopSignInScreen {
@@ -127,8 +134,7 @@ FocusScope {
             PageEntrance { id: pageEntrance; objectName: "desktopPageEntrance" }
             onLoaded: {
                 pageEntrance.restart()
-                if (shell.visible && root.route !== "game-detail" && !root.commandOpen && item && item.forceActiveFocus)
-                    Qt.callLater(() => item.forceActiveFocus())
+                Qt.callLater(root.restoreShellFocus)
             }
         }
     }
@@ -142,11 +148,13 @@ FocusScope {
     }
 
     DesktopSessionStarting {
+        id: sessionStarting
         anchors.fill: parent
         visible: launchReveal.present && !root.signInVisible
             && (root.route === "inserting" || root.streamVisible)
         opacity: launchReveal.progress
-        enabled: root.sessionStartingVisible && AppController.overlay === ""
+        enabled: root.sessionStartingVisible
+            && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         focus: enabled
         z: 90
         onCancelRequested: ShellStore.requestStreamExitConfirmation()
@@ -255,8 +263,7 @@ FocusScope {
         function onRouteChanged() {
             root.commandOpen = false
             root.searchText = ""
-            if (root.route !== "game-detail" && shell.visible && pageLoader.item)
-                Qt.callLater(() => pageLoader.item.forceActiveFocus())
+            Qt.callLater(root.restoreShellFocus)
         }
     }
     Connections {
@@ -271,11 +278,10 @@ FocusScope {
     onSignInVisibleChanged: Qt.callLater(() => {
         if (root.signInVisible)
             desktopSignIn.forceActiveFocus()
-        else if (shell.visible && pageLoader.item)
-            pageLoader.item.forceActiveFocus()
+        else
+            root.restoreShellFocus()
     })
-    onCommandOpenChanged: if (!commandOpen && shell.visible && pageLoader.item)
-        Qt.callLater(() => pageLoader.item.forceActiveFocus())
+    onCommandOpenChanged: if (!commandOpen) Qt.callLater(root.restoreShellFocus)
     Component.onCompleted: {
         // Synchronous: onCompleted always runs on a live instance, while a
         // deferred call may fire after a surface switch destroyed it (method

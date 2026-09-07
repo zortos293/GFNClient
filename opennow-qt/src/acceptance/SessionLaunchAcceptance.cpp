@@ -1,5 +1,7 @@
 #include "acceptance/AcceptanceSession.h"
 #include "app/AppController.h"
+#include "streaming/StreamVideoItem.h"
+#include "streaming/rendering/StreamVideoTextureRenderer.h"
 
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -11,9 +13,62 @@
 #include <QVariantMap>
 
 #include <cstdlib>
+#include <atomic>
 #include <memory>
 
 using namespace Qt::StringLiterals;
+
+namespace {
+class LaunchVideoFixture final : public StreamVideoRenderCallback
+{
+public:
+    void initialize(QRhi *rhi, QRhiCommandBuffer *, QRhiRenderTarget *target) override
+    {
+        if (m_rhi != rhi) releaseResources();
+        m_rhi = rhi;
+        m_renderer.initialize(rhi, target);
+    }
+    ~LaunchVideoFixture() override { releaseResources(); }
+    void setComposition(const QMatrix4x4 &matrix, const QRectF &bounds,
+                        const QRectF &viewport, float opacity) override
+    {
+        m_renderer.setComposition(matrix, bounds, viewport, opacity);
+    }
+    void prepareFrame(QRhiCommandBuffer *cb) override
+    {
+        if (!m_renderer.prepare(cb)) return;
+        if (!m_texture) {
+            m_texture.reset(m_rhi->newTexture(QRhiTexture::RGBA8, QSize(4, 4)));
+            if (!m_texture->create()) return;
+            QImage image(4, 4, QImage::Format_RGBA8888);
+            image.fill(QColor(24, 112, 160));
+            auto *updates = m_rhi->nextResourceUpdateBatch();
+            updates->uploadTexture(m_texture.get(), image);
+            cb->resourceUpdate(updates);
+        }
+        if (m_renderer.importFrame(m_rhi->currentFrameSlot(), m_texture->nativeTexture(),
+                QRhiTexture::RGBA8, QSize(4, 4)))
+            m_renderer.selectTexture(m_texture.get());
+    }
+    void recordFrame(QRhiCommandBuffer *cb, const QRect &) override
+    {
+        m_renderer.render(cb, false, 0);
+        rendered.store(true);
+    }
+    void finishFrame() override {}
+    void releaseResources() override
+    {
+        m_renderer.release();
+        m_texture.reset();
+        m_rhi = nullptr;
+    }
+    std::atomic_bool rendered = false;
+private:
+    QRhi *m_rhi = nullptr;
+    StreamVideoTextureRenderer m_renderer;
+    std::unique_ptr<QRhiTexture> m_texture;
+};
+}
 
 int AcceptanceSession::startSessionLaunchWorkload()
 {
@@ -32,6 +87,13 @@ int AcceptanceSession::startSessionLaunchWorkload()
     const QVariantMap starting{{u"sessionId"_s, u"launch-fixture"_s}, {u"status"_s, u"starting"_s}};
     store->setProperty("streamer", starting);
     m_controller.navigate(u"library"_s);
+    const auto video = m_arguments.contains(u"--smoke-session-launch-video"_s)
+        ? std::make_shared<LaunchVideoFixture>() : nullptr;
+    if (video) {
+        auto *surface = window->findChild<StreamVideoItem *>(u"streamSurfaceHost"_s);
+        if (!surface) return EXIT_FAILURE;
+        surface->setRenderCallback(video);
+    }
 
     struct State {
         int tick = 0;
@@ -42,11 +104,20 @@ int AcceptanceSession::startSessionLaunchWorkload()
     };
     const auto state = std::make_shared<State>();
     auto *timer = new QTimer(this);
-    timer->setInterval(20);
-    connect(timer, &QTimer::timeout, this, [this, window, store, fullscreen, session, starting, state, timer] {
-        const auto require = [this, state, timer](bool ok, const char *message) {
+    timer->setInterval(30);
+    connect(timer, &QTimer::timeout, this, [this, window, store, fullscreen, session, starting, video, state, timer] {
+        const auto require = [this, window, state, timer](bool ok, const char *message) {
             if (!ok) {
                 qCritical("Session launch tick %d: %s", state->tick, message);
+                qCritical() << "route" << m_controller.route() << "overlay" << m_controller.overlay()
+                            << "focus" << window->activeFocusItem();
+                auto *cover = window->findChild<QQuickItem *>(u"desktopSessionStarting"_s);
+                auto *motion = window->findChild<QObject *>(u"sessionLaunchMotion"_s);
+                auto *surface = window->findChild<QQuickItem *>(u"streamSurfaceHost"_s);
+                qCritical() << "cover" << (cover && cover->isVisible())
+                            << "progress" << (motion ? motion->property("progress") : QVariant{})
+                            << "status" << (cover ? cover->property("statusText") : QVariant{})
+                            << "surface enabled" << (surface && surface->isEnabled());
                 timer->stop();
                 m_application.exit(EXIT_FAILURE);
             }
@@ -115,6 +186,8 @@ int AcceptanceSession::startSessionLaunchWorkload()
                     && !surface->isEnabled() && !surface->hasActiveFocus()
                     && cover->property("statusText").toString() == u"Connecting to your game"_s,
                     "receiver readiness exposed video before its first frame")) return;
+            if (video && !require(window->grabWindow().pixelColor(window->width() / 2,
+                    window->height() / 4).blue() < 100, "video showed through the waiting cover")) return;
         }
         if (tick == 70 || tick == 160) {
             if (!require(event({{u"type"_s, u"status"_s}, {u"status"_s, u"streaming"_s},
@@ -125,6 +198,10 @@ int AcceptanceSession::startSessionLaunchWorkload()
                     && surface->isEnabled(), "first-frame handoff did not finish")) return;
             if (!m_controller.reducedMotion()
                 && !require(state->entered && state->exited, "missing intermediate fade frames")) return;
+            if (video && tick == 105
+                && !require(video->rendered.load() && window->grabWindow().pixelColor(
+                    window->width() / 2, window->height() / 4) == QColor(24, 112, 160),
+                    "handoff did not reveal the GPU video fixture")) return;
         }
         if (tick == 110) m_controller.showOverlay(u"desktop-stream-stats"_s);
         if (tick == 120) {

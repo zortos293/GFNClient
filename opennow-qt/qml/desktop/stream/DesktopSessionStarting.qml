@@ -48,7 +48,8 @@ FocusScope {
     }
 
     function restoreFocus() {
-        if (root.visible && root.enabled && AppController.overlay === "")
+        if (root.visible && root.enabled
+                && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay))
             cancelButton.forceActiveFocus()
     }
 

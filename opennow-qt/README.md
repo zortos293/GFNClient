@@ -94,6 +94,8 @@ The fixture exercises queue updates, entry/first-frame fades, reconnects, failur
 confirmation, and interrupted transitions while checking that the same video item survives.
 Receiver readiness alone must not dismiss the launch screen. These tests inject native status
 and first-frame events; they do not establish live network or decoder behavior.
+When Xvfb is available, the video variants also render a synthetic GPU texture through the
+production video material and check that it stays covered until the first-frame handoff.
 
 Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-session-fullscreen-'`
 to verify that F11 can leave and re-enter fullscreen after confirming session exit,

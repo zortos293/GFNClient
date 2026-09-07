@@ -14,6 +14,9 @@ Item {
     property string valueLabel: ""
     property bool expanded: false
     property bool showDivider: true
+    property int maximumColumns: 0
+    property real maximumOptionsHeight: DesktopTokens.px(260)
+    property string filterPlaceholder: qsTr("Filter options…")
     signal selected(var value)
     readonly property var current: items.find(item => item.kind !== "heading" && String(item.value) === String(root.value))
     readonly property var groups: {
@@ -28,7 +31,7 @@ Item {
         return groups.filter(group => group.items.length)
     }
     readonly property real revealProgress: reveal.progress
-    readonly property real optionsHeight: Math.min(DesktopTokens.px(260), grid.implicitHeight + 12)
+    readonly property real optionsHeight: Math.min(maximumOptionsHeight, grid.implicitHeight + 12)
     implicitHeight: header.height + (search.height + optionsHeight + 28) * reveal.progress
     clip: true
     MotionProgress { id: reveal; shown: root.expanded; enterDuration: 200; exitDuration: 160 }
@@ -65,7 +68,8 @@ Item {
         enabled: root.expanded
         opacity: reveal.progress
         x: 20; y: header.height; width: parent.width - 40
-        placeholderText: qsTr("Filter options…")
+        placeholderText: root.filterPlaceholder
+        onTextChanged: scroll.contentY = 0
         Accessible.name: root.title + ": " + placeholderText
         Keys.onEscapePressed: event => { root.expanded = false; event.accepted = true }
     }
@@ -78,11 +82,11 @@ Item {
         height: root.optionsHeight
         contentWidth: width; contentHeight: grid.implicitHeight
         clip: true; boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        ScrollBar.vertical: ScrollBar { policy: scroll.contentHeight > scroll.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
         Keys.onEscapePressed: event => { root.expanded = false; event.accepted = true }
         Column {
             id: grid
-            width: parent.width; spacing: 14
+            width: parent.width - 12; spacing: 14
             Repeater {
                 model: root.groups
                 delegate: Column {
@@ -96,7 +100,7 @@ Item {
                     }
                     Flow {
                         width: parent.width; spacing: 8
-                        readonly property int columns: Math.max(1, Math.floor((width+8)/(DesktopTokens.px(200)+8)))
+                        readonly property int columns: Math.max(1, Math.min(root.maximumColumns || 1000, Math.floor((width+8)/(DesktopTokens.px(200)+8))))
                         Repeater {
                             model: modelData.items
                             delegate: AbstractButton {

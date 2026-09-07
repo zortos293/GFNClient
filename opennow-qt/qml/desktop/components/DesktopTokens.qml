@@ -4,6 +4,26 @@ import OpenNOW
 
 QtObject {
     id: tokens
+
+    function relativeLastPlayed(raw, nowMs) {
+        const timestamp = Date.parse(String(raw || ""))
+        if (isNaN(timestamp))
+            return ""
+        const seconds = Math.max(0, Math.floor((nowMs - timestamp) / 1000))
+        if (seconds < 1)
+            return qsTr("Just now")
+        if (seconds < 60)
+            return seconds === 1 ? qsTr("1 second ago") : qsTr("%1 seconds ago").arg(seconds)
+        const minutes = Math.floor(seconds / 60)
+        if (minutes < 60)
+            return minutes === 1 ? qsTr("1 minute ago") : qsTr("%1 minutes ago").arg(minutes)
+        const hours = Math.floor(minutes / 60)
+        if (hours < 24)
+            return hours === 1 ? qsTr("1 hour ago") : qsTr("%1 hours ago").arg(hours)
+        const days = Math.floor(hours / 24)
+        return days === 1 ? qsTr("1 day ago") : qsTr("%1 days ago").arg(days)
+    }
+
     readonly property color shell: Theme.shell
     readonly property color rail: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.90)
     readonly property color topBar: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.66)

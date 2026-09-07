@@ -22,6 +22,8 @@ using namespace Qt::StringLiterals;
 int AcceptanceSession::startSmokeWorkload()
 {
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
+    if (m_smokeTest && m_arguments.contains(u"--smoke-session-launch"_s))
+        return startSessionLaunchWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-session-fullscreen"_s))
         return startSessionFullscreenWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-stream-exit"_s))
@@ -80,9 +82,12 @@ int AcceptanceSession::startSmokeWorkload()
             });
         });
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-backend-availability"_s)
+                     || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
-        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-idle-mode"_s)
+        QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-steam-big-picture"_s)
+            ? u"qrc:/acceptance/SteamBigPictureAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-idle-mode"_s)
             ? u"qrc:/acceptance/IdleModeAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-stream-recovery"_s)
             ? u"qrc:/acceptance/StreamRecoveryAcceptance.qml"_s
@@ -90,7 +95,8 @@ int AcceptanceSession::startSmokeWorkload()
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
-        if (m_arguments.contains(u"--smoke-stream-recovery"_s)) {
+        if (m_arguments.contains(u"--smoke-stream-recovery"_s)
+            || m_arguments.contains(u"--smoke-steam-big-picture"_s)) {
             auto *client = fixture->property("client").value<QObject *>();
             if (!client) return EXIT_FAILURE;
             m_engine.rootContext()->setContextProperty(u"CoreClient"_s, client);

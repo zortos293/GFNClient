@@ -19,6 +19,18 @@ pub enum VideoColorSpace {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VideoBitDepth {
+    Eight,
+    Ten,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MetalFrameFormat {
+    Rgba8Unorm,
+    Rgb10a2Unorm,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameTiming {
     pub presentation_value: i64,
     pub duration_value: i64,
@@ -75,6 +87,7 @@ impl H264ParameterSets {
 pub struct H264Format {
     pub parameter_sets: H264ParameterSets,
     pub color_space: VideoColorSpace,
+    pub bit_depth: VideoBitDepth,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,6 +127,7 @@ impl H265ParameterSets {
 pub struct H265Format {
     pub parameter_sets: H265ParameterSets,
     pub color_space: VideoColorSpace,
+    pub bit_depth: VideoBitDepth,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,6 +135,7 @@ pub struct Av1Format {
     codec_configuration: Vec<u8>,
     width: i32,
     height: i32,
+    bit_depth: VideoBitDepth,
     pub color_space: VideoColorSpace,
 }
 
@@ -138,6 +153,12 @@ impl Av1Format {
         {
             return Err(FormatError::InvalidAv1Configuration);
         }
+        let bit_depth = match codec_configuration[2] & 0x60 {
+            0 => VideoBitDepth::Eight,
+            0x40 => VideoBitDepth::Ten,
+            0x60 => return Err(FormatError::UnsupportedVideoBitDepth(12)),
+            _ => return Err(FormatError::InvalidAv1Configuration),
+        };
         let width = i32::try_from(width)
             .ok()
             .filter(|value| *value > 0)
@@ -150,6 +171,7 @@ impl Av1Format {
             codec_configuration: codec_configuration.to_vec(),
             width,
             height,
+            bit_depth,
             color_space,
         })
     }
@@ -165,6 +187,10 @@ impl Av1Format {
     pub const fn height(&self) -> i32 {
         self.height
     }
+
+    pub const fn bit_depth(&self) -> VideoBitDepth {
+        self.bit_depth
+    }
 }
 
 impl H265Format {
@@ -172,7 +198,13 @@ impl H265Format {
         Self {
             parameter_sets,
             color_space,
+            bit_depth: VideoBitDepth::Eight,
         }
+    }
+
+    pub const fn with_bit_depth(mut self, bit_depth: VideoBitDepth) -> Self {
+        self.bit_depth = bit_depth;
+        self
     }
 }
 
@@ -184,6 +216,25 @@ pub enum VideoFormat {
 }
 
 impl VideoFormat {
+    pub(crate) fn destination_bit_depth(
+        &self,
+        bitstream_depth: Option<i32>,
+    ) -> Result<VideoBitDepth, FormatError> {
+        match bitstream_depth {
+            Some(10) => Ok(VideoBitDepth::Ten),
+            Some(8) | None => Ok(self.bit_depth()),
+            Some(depth) => Err(FormatError::UnsupportedVideoBitDepth(depth)),
+        }
+    }
+
+    pub const fn bit_depth(&self) -> VideoBitDepth {
+        match self {
+            Self::H264(format) => format.bit_depth,
+            Self::H265(format) => format.bit_depth,
+            Self::Av1(format) => format.bit_depth(),
+        }
+    }
+
     pub const fn color_space(&self) -> VideoColorSpace {
         match self {
             Self::H264(format) => format.color_space,
@@ -216,7 +267,13 @@ impl H264Format {
         Self {
             parameter_sets,
             color_space,
+            bit_depth: VideoBitDepth::Eight,
         }
+    }
+
+    pub const fn with_bit_depth(mut self, bit_depth: VideoBitDepth) -> Self {
+        self.bit_depth = bit_depth;
+        self
     }
 }
 
@@ -528,6 +585,8 @@ pub enum FormatError {
     NalUnitTooLarge,
     #[error("AV1 codec configuration is not a bounded version-1 av1C record")]
     InvalidAv1Configuration,
+    #[error("unsupported video bit depth {0}")]
+    UnsupportedVideoBitDepth(i32),
     #[error("encoded video dimensions must fit positive signed 32-bit values")]
     InvalidVideoDimensions,
     #[error("frame timescale must be positive")]
@@ -761,6 +820,71 @@ mod tests {
             Av1Format::new([0x81, 0, 0, 0], 0, 1080, VideoColorSpace::Bt709),
             Err(FormatError::InvalidVideoDimensions)
         );
+    }
+
+    #[test]
+    fn av1_depth_comes_from_configuration_and_rejects_twelve_bit() {
+        for (flags, expected) in [(0x0c, VideoBitDepth::Eight), (0x4c, VideoBitDepth::Ten)] {
+            let format =
+                Av1Format::new([0x81, 0x0d, flags, 0], 1920, 1080, VideoColorSpace::Bt709).unwrap();
+            assert_eq!(format.bit_depth(), expected);
+            assert_eq!(VideoFormat::Av1(format).bit_depth(), expected);
+        }
+        assert_eq!(
+            Av1Format::new([0x81, 0x4d, 0x6c, 0], 1920, 1080, VideoColorSpace::Bt709),
+            Err(FormatError::UnsupportedVideoBitDepth(12))
+        );
+        assert_eq!(
+            Av1Format::new([0x81, 0x0d, 0x2c, 0], 1920, 1080, VideoColorSpace::Bt709),
+            Err(FormatError::InvalidAv1Configuration)
+        );
+    }
+
+    #[test]
+    fn h26x_depth_is_explicit_and_bitstream_metadata_cannot_downgrade_it() {
+        let h264 = H264Format::new(
+            H264ParameterSets::new([0x67, 0x64, 0x00], [0x68, 0xee]).unwrap(),
+            VideoColorSpace::Bt709,
+        );
+        let h265 = H265Format::new(
+            H265ParameterSets::new([0x40, 0x01], [0x42, 0x01], [0x44, 0x01]).unwrap(),
+            VideoColorSpace::Bt709,
+        );
+        for format in [
+            VideoFormat::H264(h264.clone()),
+            VideoFormat::H265(h265.clone()),
+        ] {
+            assert_eq!(format.bit_depth(), VideoBitDepth::Eight);
+            assert_eq!(format.destination_bit_depth(None), Ok(VideoBitDepth::Eight));
+            assert_eq!(
+                format.destination_bit_depth(Some(8)),
+                Ok(VideoBitDepth::Eight)
+            );
+            assert_eq!(
+                format.destination_bit_depth(Some(10)),
+                Ok(VideoBitDepth::Ten)
+            );
+            assert_eq!(
+                format.destination_bit_depth(Some(12)),
+                Err(FormatError::UnsupportedVideoBitDepth(12))
+            );
+        }
+        for format in [
+            VideoFormat::H264(h264.with_bit_depth(VideoBitDepth::Ten)),
+            VideoFormat::H265(h265.with_bit_depth(VideoBitDepth::Ten)),
+        ] {
+            assert_eq!(format.bit_depth(), VideoBitDepth::Ten);
+            for metadata in [None, Some(8), Some(10)] {
+                assert_eq!(
+                    format.destination_bit_depth(metadata),
+                    Ok(VideoBitDepth::Ten)
+                );
+            }
+            assert_eq!(
+                format.destination_bit_depth(Some(12)),
+                Err(FormatError::UnsupportedVideoBitDepth(12))
+            );
+        }
     }
 
     #[test]

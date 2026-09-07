@@ -28,6 +28,7 @@ private:
     [[nodiscard]] int startFrameGenerationStatsWorkload();
     [[nodiscard]] int startStreamExitWorkload();
     [[nodiscard]] int startSessionFullscreenWorkload();
+    [[nodiscard]] int startSessionLaunchWorkload();
 
     QGuiApplication &m_application;
     QQmlApplicationEngine &m_engine;

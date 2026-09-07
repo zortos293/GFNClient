@@ -544,6 +544,7 @@ jobs:
         with:
           key: qt-ci-macos-arm64
           cache-bin: false
+          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target

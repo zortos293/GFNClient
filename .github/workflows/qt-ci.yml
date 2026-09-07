@@ -392,9 +392,28 @@ jobs:
         run: cmake --build build/opennow-qt-release --config Release --parallel "${{ matrix.build-parallel }}"
 
       - name: Test Qt shell
+        id: qt-tests
         if: matrix.label != 'windows-arm64'
         shell: bash
         run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4
+
+      - name: Diagnose Windows HDR test failure
+        if: failure() && matrix.label == 'windows-x64' && steps.qt-tests.outcome == 'failure'
+        timeout-minutes: 6
+        shell: pwsh
+        run: .github/scripts/diagnose-windows-hdr-test.ps1
+
+      - name: Preserve Windows HDR failure diagnostics
+        if: failure() && matrix.label == 'windows-x64' && steps.qt-tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-hdr-test-failure
+          retention-days: 7
+          path: |
+            build/windows-hdr-diagnostics/
+            build/opennow-qt-release/Testing/Temporary/LastTest.log
+            build/opennow-qt-release/Release/opennow-hdrcolor-tests.exe
+            build/opennow-qt-release/Release/opennow-hdrcolor-tests.pdb
 
       - name: Create unsigned validation package
         shell: bash

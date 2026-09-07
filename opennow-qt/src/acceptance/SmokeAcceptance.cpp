@@ -4,6 +4,7 @@
 #include "acceptance/MotionAcceptance.h"
 
 #include <QGuiApplication>
+#include <QDeadlineTimer>
 #include <QQmlComponent>
 #include <QFileInfo>
 #include <QQmlApplicationEngine>
@@ -63,7 +64,7 @@ int AcceptanceSession::startSmokeWorkload()
             const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && passed.toBool() && !m_qmlWarningOccurred;
             if (!ok) { m_application.exit(EXIT_FAILURE); return; }
-            QTimer::singleShot(150, this, [this, window, fixture, customBackground] {
+            const auto finish = [this, window, fixture, customBackground] {
                 if (customBackground) {
                     QVariant verified;
                     if (!QMetaObject::invokeMethod(fixture, "verify", Q_RETURN_ARG(QVariant, verified))
@@ -78,7 +79,32 @@ int AcceptanceSession::startSmokeWorkload()
                         && window->grabWindow().save(m_arguments.at(shot + 1)));
                     m_application.exit(saved && !m_qmlWarningOccurred ? EXIT_SUCCESS : EXIT_FAILURE);
                 });
-            });
+            };
+            if (customBackground) {
+                auto *readiness = new QTimer(this);
+                readiness->setInterval(25);
+                connect(readiness, &QTimer::timeout, this,
+                        [this, fixture, readiness, finish, deadline = QDeadlineTimer(5'000)] {
+                    QVariant ready;
+                    const bool ok = QMetaObject::invokeMethod(fixture, "ready", Q_RETURN_ARG(QVariant, ready))
+                        && !m_qmlWarningOccurred;
+                    if (!ok || (!ready.toBool() && deadline.hasExpired())) {
+                        readiness->stop();
+                        readiness->deleteLater();
+                        qCritical("Custom background image failed to load before the acceptance deadline");
+                        m_application.exit(EXIT_FAILURE);
+                        return;
+                    }
+                    if (ready.toBool()) {
+                        readiness->stop();
+                        readiness->deleteLater();
+                        finish();
+                    }
+                });
+                readiness->start();
+            } else {
+                QTimer::singleShot(150, this, finish);
+            }
         });
     } else if (m_smokeTest && m_arguments.contains(u"--smoke-input-capture-error"_s)) {
         auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);

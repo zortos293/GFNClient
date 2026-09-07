@@ -1,6 +1,7 @@
 mod audio_playout;
 mod embedded_input;
 mod graphics;
+mod h264;
 #[cfg(target_os = "linux")]
 mod linux_backend;
 #[cfg(target_os = "linux")]

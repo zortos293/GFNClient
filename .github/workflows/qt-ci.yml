@@ -358,6 +358,11 @@ jobs:
           cargo test --manifest-path native/opennow-core/Cargo.toml
           cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace
 
+      - name: Windows decoder regression tests
+        if: matrix.label == 'windows-x64'
+        shell: bash
+        run: cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-platform-windows --lib
+
       - name: Configure Qt release
         shell: bash
         run: |

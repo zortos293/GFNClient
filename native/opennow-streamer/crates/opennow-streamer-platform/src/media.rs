@@ -2270,6 +2270,7 @@ impl Drop for MediaSession {
 
 struct H264Decoder {
     decoder: OpenH264Decoder,
+    parameter_sets: crate::h264::H264ParameterSets,
 }
 
 impl H264Decoder {
@@ -2278,16 +2279,33 @@ impl H264Decoder {
             OpenH264API::from_source(),
             DecoderConfig::new().debug(false),
         )
-        .map(|decoder| Self { decoder })
+        .map(|decoder| Self {
+            decoder,
+            parameter_sets: crate::h264::H264ParameterSets::default(),
+        })
         .map_err(|error| format!("OpenH264 decoder initialization failed: {error}"))
     }
 
+    fn reset(&mut self) -> Result<(), String> {
+        let mut replacement = Self::new()?;
+        let parameter_sets = self.parameter_sets.replay();
+        if !parameter_sets.is_empty() {
+            replacement
+                .decoder
+                .decode(&parameter_sets)
+                .map_err(|error| format!("H.264 parameter-set replay failed: {error}"))?;
+        }
+        self.decoder = replacement.decoder;
+        Ok(())
+    }
+
     fn decode(&mut self, encoded: &[u8]) -> Result<Option<DecodedVideoFrame>, String> {
-        let Some(yuv) = self
+        let yuv = self
             .decoder
             .decode(encoded)
-            .map_err(|error| error.to_string())?
-        else {
+            .map_err(|error| error.to_string())?;
+        self.parameter_sets.retain(encoded)?;
+        let Some(yuv) = yuv else {
             return Ok(None);
         };
         let (width, height) = yuv.dimensions();
@@ -2370,12 +2388,15 @@ fn run_video_decoder_from(
         if shared.paused.load(Ordering::Acquire) {
             continue;
         }
+        if !frame.contiguous {
+            shared.video_desynced.store(true, Ordering::Release);
+        }
         if shared.video_desynced.load(Ordering::Acquire) {
             if !frame.keyframe {
                 continue;
             }
-            match H264Decoder::new() {
-                Ok(new_decoder) => decoder = new_decoder,
+            match decoder.reset() {
+                Ok(()) => {}
                 Err(message) => {
                     let _ = shared.feedback.send(MediaFeedback::DecoderError {
                         codec: "h264",
@@ -3152,7 +3173,9 @@ fn run_macos_h264_video(
                 }
             }
         } else if let Some(ref parameter_sets) = parameter_sets
-            && configured_parameter_sets.as_ref() != Some(parameter_sets)
+            && (configured_parameter_sets.as_ref() != Some(parameter_sets)
+                || !frame.contiguous
+                || shared.video_desynced.load(Ordering::Acquire))
             && frame.keyframe
         {
             let format = H264Format::new(parameter_sets.clone(), VideoColorSpace::Bt709);
@@ -3989,6 +4012,40 @@ mod tests {
     }
 
     #[test]
+    fn software_recovery_replays_parameter_sets_for_an_idr_only_access_unit() {
+        let rgb = vec![96_u8; 32 * 32 * 3];
+        let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
+        let mut encoder = Encoder::new().unwrap();
+        let initial = encoder.encode(&yuv).unwrap().to_vec();
+        encoder.force_intra_frame();
+        let recovery = encoder.encode(&yuv).unwrap().to_vec();
+        let idr_only: Vec<u8> = openh264::nal_units(&recovery)
+            .filter(|nal| nal.get(3).is_some_and(|header| header & 0x1f == 5))
+            .flatten()
+            .copied()
+            .collect();
+        assert!(!idr_only.is_empty());
+        assert!(H264Decoder::new().unwrap().decode(&idr_only).is_err());
+
+        let mut reference = H264Decoder::new().unwrap();
+        reference.decode(&initial).unwrap();
+        let expected = reference.decode(&idr_only).unwrap().unwrap();
+        let mut decoder = H264Decoder::new().unwrap();
+        assert!(decoder.decode(&initial).unwrap().is_some());
+        let parameter_sets = decoder.parameter_sets.replay();
+        assert!(!parameter_sets.is_empty());
+        assert!(decoder.decode(&[0, 0, 1, 0x67, 0xff]).is_err());
+        assert_eq!(decoder.parameter_sets.replay(), parameter_sets);
+        decoder.reset().unwrap();
+        let recovered = decoder.decode(&idr_only).unwrap().unwrap();
+        assert_eq!((recovered.width, recovered.height), (32, 32));
+        assert_eq!(recovered.rgb.len(), 32 * 32 * 3);
+        assert_eq!(recovered.rgb, expected.rgb);
+        decoder.reset().unwrap();
+        assert!(decoder.decode(&idr_only).unwrap().is_some());
+    }
+
+    #[test]
     fn captured_input_queue_preserves_raw_motion_and_fails_closed_on_control_overflow() {
         let queue = CapturedInputQueue::default();
         for _ in 0..3 {
@@ -4025,20 +4082,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn software_handoff_decodes_the_pending_h264_keyframe() {
-        let width = 32;
-        let height = 32;
-        let rgb = vec![96_u8; width * height * 3];
-        let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (width, height)));
-        let mut encoder = Encoder::new().expect("encoder");
-        let encoded: Arc<[u8]> = encoder.encode(&yuv).expect("encode").to_vec().into();
-        let output = Arc::new(OutputBuffers::new());
-        let (feedback, _receiver) = std::sync::mpsc::channel();
+    fn software_test_pipeline() -> (Arc<SharedPipeline>, Receiver<MediaFeedback>) {
+        let (feedback, receiver) = std::sync::mpsc::channel();
         let shared = Arc::new(SharedPipeline {
             video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
-            output: Arc::clone(&output),
+            output: Arc::new(OutputBuffers::new()),
             feedback,
             paused: AtomicBool::new(false),
             video_desynced: AtomicBool::new(true),
@@ -4061,6 +4110,19 @@ mod tests {
             #[cfg(target_os = "linux")]
             linux_codec: MediaVideoCodec::H264,
         });
+        (shared, receiver)
+    }
+
+    #[test]
+    fn software_handoff_decodes_the_pending_h264_keyframe() {
+        let width = 32;
+        let height = 32;
+        let rgb = vec![96_u8; width * height * 3];
+        let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (width, height)));
+        let mut encoder = Encoder::new().expect("encoder");
+        let encoded: Arc<[u8]> = encoder.encode(&yuv).expect("encode").to_vec().into();
+        let (shared, _receiver) = software_test_pipeline();
+        let output = Arc::clone(&shared.output);
         shared.video.close();
         run_video_decoder_from(
             shared,
@@ -4081,6 +4143,89 @@ mod tests {
             (decoded.width, decoded.height),
             (width as u32, height as u32)
         );
+    }
+
+    #[test]
+    fn software_worker_recovers_an_idr_without_repeated_parameter_sets() {
+        let rgb = vec![96_u8; 32 * 32 * 3];
+        let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
+        let mut encoder = Encoder::new().unwrap();
+        let initial = encoder.encode(&yuv).unwrap().to_vec();
+        encoder.force_intra_frame();
+        let recovery = encoder.encode(&yuv).unwrap().to_vec();
+        let idr_only: Vec<u8> = openh264::nal_units(&recovery)
+            .filter(|nal| nal.get(3).is_some_and(|header| header & 0x1f == 5))
+            .flatten()
+            .copied()
+            .collect();
+        let mut decoder = H264Decoder::new().unwrap();
+        assert!(decoder.decode(&initial).unwrap().is_some());
+        assert!(decoder.decode(&[0, 0, 1, 0x67, 0xff]).is_err());
+        let (shared, feedback) = software_test_pipeline();
+        let output = Arc::clone(&shared.output);
+        shared.video.close();
+        run_video_decoder_from(
+            shared,
+            decoder,
+            Some(EncodedFrame {
+                mid: "video".to_owned(),
+                codec: MediaCodec::H264,
+                data: idr_only.into(),
+                frame_index: Some(71),
+                timestamp: 4500,
+                clock_rate_hz: 90_000,
+                keyframe: true,
+                contiguous: false,
+            }),
+        );
+        let decoded = output.take_video().expect("recovered IDR");
+        assert_eq!((decoded.width, decoded.height), (32, 32));
+        assert!(matches!(
+            feedback.try_recv(),
+            Ok(MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(71),
+                timestamp: 4500,
+                keyframe: true,
+                ..
+            })
+        ));
+        assert!(feedback.try_recv().is_err());
+    }
+
+    #[test]
+    fn software_worker_does_not_decode_a_discontinuous_delta_frame() {
+        let rgb = vec![96_u8; 32 * 32 * 3];
+        let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
+        let mut encoder = Encoder::new().unwrap();
+        let initial = encoder.encode(&yuv).unwrap().to_vec();
+        let delta = encoder.encode(&yuv).unwrap().to_vec();
+        assert!(!delta.is_empty());
+        assert!(
+            !openh264::nal_units(&delta)
+                .any(|nal| nal.get(3).is_some_and(|header| header & 0x1f == 5))
+        );
+        let mut decoder = H264Decoder::new().unwrap();
+        assert!(decoder.decode(&initial).unwrap().is_some());
+        let (shared, feedback) = software_test_pipeline();
+        shared.video_desynced.store(false, Ordering::Release);
+        shared.video.close();
+        run_video_decoder_from(
+            Arc::clone(&shared),
+            decoder,
+            Some(EncodedFrame {
+                mid: "video".to_owned(),
+                codec: MediaCodec::H264,
+                data: delta.into(),
+                frame_index: Some(72),
+                timestamp: 5250,
+                clock_rate_hz: 90_000,
+                keyframe: false,
+                contiguous: false,
+            }),
+        );
+        assert!(shared.video_desynced.load(Ordering::Acquire));
+        assert!(shared.output.take_video().is_none());
+        assert!(feedback.try_recv().is_err());
     }
 
     #[test]

@@ -32,14 +32,20 @@ int AcceptanceSession::startSmokeWorkload()
     if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation-stats"_s))
         return startFrameGenerationStatsWorkload();
     if (m_smokeTest && (m_arguments.contains(u"--smoke-frame-generation"_s)
+                       || m_arguments.contains(u"--smoke-controller-metadata"_s)
                        || m_arguments.contains(u"--smoke-custom-background"_s))) {
+        const bool controllerMetadata = m_arguments.contains(u"--smoke-controller-metadata"_s);
         const bool customBackground = m_arguments.contains(u"--smoke-custom-background"_s);
-        QQmlComponent component(&m_engine, QUrl(customBackground
+        QQmlComponent component(&m_engine, QUrl(controllerMetadata
+            ? u"qrc:/acceptance/ControllerMetadataAcceptance.qml"_s
+            : customBackground
             ? u"qrc:/acceptance/CustomBackgroundAcceptance.qml"_s
             : u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s));
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
+        if (controllerMetadata)
+            m_engine.rootContext()->setContextProperty(u"ControllerInput"_s, fixture->property("input").value<QObject *>());
         if (customBackground) {
             QFile image(u":/qt/qml/OpenNOW/res/brand/desktop-renew.jpg"_s);
             auto *localImage = new QTemporaryFile(&m_engine);

@@ -1,4 +1,13 @@
 {
+  "controllerStatus": {
+    "chargingPercent": "Charging · %1%",
+    "charging": "Charging",
+    "charged": "Fully charged",
+    "wired": "Wired power",
+    "batteryPercent": "Battery %1%",
+    "onBattery": "On battery",
+    "unavailable": "Battery unavailable"
+  },
   "customBackground": {
     "chooseTitle": "Choose a background image",
     "imageFilter": "Images (*.png *.jpg *.jpeg *.webp *.bmp)",

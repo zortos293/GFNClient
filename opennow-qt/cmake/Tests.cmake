@@ -68,6 +68,7 @@ if(BUILD_TESTING)
         endif()
     endif()
     if(WIN32)
+        target_link_libraries(opennow-hdrcolor-tests PRIVATE user32)
         set_tests_properties(opennow-hdrcolor-tests PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_FORCE_STDERR_LOGGING=1")
     endif()

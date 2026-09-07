@@ -3,6 +3,10 @@ $PSNativeCommandUseErrorActionPreference = $false
 $output = (New-Item -ItemType Directory -Force "build/windows-hdr-diagnostics").FullName
 $executable = (Resolve-Path "build/opennow-qt-release/Release/opennow-hdrcolor-tests.exe").Path
 $runtime = Split-Path $executable
+[pscustomobject]@{
+    UserInteractive = [Environment]::UserInteractive
+    SessionId = (Get-Process -Id $PID).SessionId
+} | ConvertTo-Json | Tee-Object -FilePath "$output/desktop-session.json"
 
 Get-ChildItem $runtime -Filter "Qt6*.dll" | ForEach-Object {
     [pscustomobject]@{ Path = $_.FullName; Version = $_.VersionInfo.FileVersion }
@@ -17,7 +21,7 @@ Get-ChildItem "$runtime/platforms", "$env:QT_PLUGIN_PATH/platforms" -Filter "*.d
 $env:QT_QPA_PLATFORM = "windows"
 $env:QT_FORCE_STDERR_LOGGING = "1"
 $env:QT_DEBUG_PLUGINS = "1"
-$env:QT_LOGGING_RULES = "qt.rhi.*=true;qt.scenegraph.*=true"
+$env:QT_LOGGING_RULES = "qt.rhi.*=true;qt.scenegraph.*=true;qt.qpa.*=true"
 $env:QSG_INFO = "1"
 Remove-Item Env:QT_LOGGING_TO_CONSOLE -ErrorAction SilentlyContinue
 

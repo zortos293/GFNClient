@@ -13,6 +13,9 @@
 #include <rhi/qrhi_platform.h>
 #include <cmath>
 #include <memory>
+#if defined(Q_OS_WIN)
+#include <QtCore/qt_windows.h>
+#endif
 
 class HdrColorTest final : public QObject
 {
@@ -261,6 +264,10 @@ private slots:
         QVERIFY2(root, qPrintable(component.errorString()));
         root->setParentItem(window.contentItem());
         window.show();
+#if defined(Q_OS_WIN)
+        QVERIFY(RedrawWindow(reinterpret_cast<HWND>(window.winId()), nullptr, nullptr,
+                             RDW_INVALIDATE | RDW_UPDATENOW));
+#endif
         QVERIFY(QTest::qWaitForWindowExposed(&window));
         QImage image;
         QTRY_VERIFY(!(image = window.grabWindow()).isNull());

@@ -21,6 +21,7 @@ FocusScope {
         return String(streamer.status || ShellStore.streamState || "starting")
     }
     readonly property bool streaming: status === "streaming"
+    property var frameGenerationStats: streamVideo.frameGenerationStats || ({})
     readonly property bool failed: status === "error"
     property double nowMs: Date.now()
     readonly property int elapsedSeconds: ShellStore.streamStartedAtMs > 0
@@ -90,6 +91,7 @@ FocusScope {
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         shortcutBindings: ShellStore.streamShortcutBindings()
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
+        frameGeneration: String(ShellStore.settings.frameGeneration || 'off') === '2x'
         z: 0
         onLocalShortcutRequested: action => ShellStore.applyStreamShortcutAction(action)
     }

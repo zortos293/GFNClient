@@ -260,10 +260,12 @@ jobs:
             libxrandr-dev \
             libxrender-dev \
             libxss-dev \
+            mesa-vulkan-drivers \
             make \
             nasm \
             pkg-config \
-            wayland-protocols
+            wayland-protocols \
+            xvfb
 
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6

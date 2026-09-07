@@ -28,6 +28,16 @@ Column {
             }
         }
         DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "speed"; title: qsTr("Frame generation (Experimental)")
+            description: qsTr("Targets 120 displayed FPS from a 60 FPS stream. Requires a fast GPU and 120 Hz display; adds latency and artifacts.")
+            DesktopSettingsSegmented {
+                readonly property string current: String(page.settingsScreen.valueSetting("frameGeneration", "off")) === "2x" ? "2x" : "off"
+                options: [{label: qsTr("Off"), value: "off"}, {label: qsTr("2×"), value: "2x"}]
+                optionWidth: 64; selectedIndex: options.findIndex(item => item.value === current)
+                onSelected: (index,item) => page.settingsScreen.setSetting("frameGeneration", item.value)
+            }
+        }
+        DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("HDR")
             description: qsTr("HDR cannot currently be selected by the native session API")
             DesktopSettingsToggle { checked: false; enabled: false; opacity: 0.45; Accessible.name: qsTr("HDR unavailable") }

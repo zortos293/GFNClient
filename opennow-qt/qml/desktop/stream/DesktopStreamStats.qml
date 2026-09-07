@@ -10,6 +10,7 @@ Item {
     objectName: "desktopStreamStats"
     property bool expanded: false
     property bool pointerLocked: false
+    property var frameGenerationStats: ({})
     // A HUD must never compete with gameplay for hover, taps or wheel input.
     // Shortcut-driven cycling/copy remains available while pointer input is off.
     enabled: !pointerLocked
@@ -27,6 +28,7 @@ Item {
     readonly property color surface: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b,
         Math.max(0.4, Math.min(1, Number(ShellStore.settings.statsOverlayOpacity || 85) / 100)))
     readonly property bool telemetryActive: live.status === "streaming"
+    readonly property bool frameGenerationEnabled: String(ShellStore.settings.frameGeneration || "off") === "2x"
     readonly property var cards: metricCards()
     readonly property var compactMetrics: compactItems()
     property var history: ({})
@@ -36,6 +38,22 @@ Item {
         return value === undefined || value === null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value)
     }
     function read(key) { return telemetryActive ? numeric(live[key]) : null }
+    function frameGenerationOutputFps() { return numeric(frameGenerationStats.outputFps) }
+    function frameGenerationState() {
+        switch (String(frameGenerationStats.status || "unavailable")) {
+        case "off": return qsTr("Off")
+        case "warming-up": return qsTr("Warming up")
+        case "active": return qsTr("Active")
+        case "display-refresh": return qsTr("Display refresh")
+        case "overloaded": return qsTr("Overloaded")
+        case "discontinuity": return qsTr("Discontinuity")
+        default: return qsTr("Unavailable")
+        }
+    }
+    function sample(card) {
+        return card.field === "frameGenerationOutputFps"
+            ? frameGenerationOutputFps() : read(card.field)
+    }
     function format(value, decimals) { return numeric(value) === null ? qsTr("N/A") : Number(value).toFixed(decimals || 0) }
     function elapsedText() {
         const start = Number(ShellStore.streamStartedAtMs || 0)
@@ -59,7 +77,7 @@ Item {
     function metricCards() {
         // A negotiated target is not measured FPS. Discovery ping is not
         // stream RTT. Unsupported measurements are explicitly unavailable.
-        return [
+        const cards = [
             {key:"Ping", label:qsTr("PING"), value:read("pingMs"), unit:"ms", field:"pingMs"},
             {key:"Fps", label:qsTr("STREAM FPS"), value:read("framesPerSecond"), unit:"fps", field:"framesPerSecond"},
             {key:"Bitrate", label:qsTr("BITRATE"), value:read("bitrateMbps"), unit:"Mbps", field:"bitrateMbps", decimals:1},
@@ -68,16 +86,23 @@ Item {
             {key:"PacketLoss", label:qsTr("PACKET LOSS"), value:read("packetLossPercent"), unit:"%", field:"packetLossPercent", decimals:1},
             {key:"Decode", label:qsTr("DECODE"), value:read("decodeTimeMs"), unit:"ms", field:"decodeTimeMs", decimals:1},
             {key:"Latency", label:qsTr("LATENCY"), value:read("latencyMs"), unit:"ms", field:"latencyMs"}
-        ].filter(item => shown(item.key))
+        ]
+        if (frameGenerationEnabled)
+            cards.push({key:"LocalOutputFps", label:qsTr("LOCAL OUTPUT FPS"), value:frameGenerationOutputFps(), unit:"fps", field:"frameGenerationOutputFps"})
+        return cards.filter(item => shown(item.key))
     }
     function compactItems() {
         const items = cards.map(item => ({text:item.label + " " + format(item.value, item.decimals) + " " + item.unit}))
+        if (frameGenerationEnabled)
+            items.push({text:qsTr("FRAME GENERATION") + " " + frameGenerationState()})
         if (shown("Video")) items.push({text:videoText})
         if (shown("Region")) items.push({text:region})
         return items
     }
     function report() {
         const lines = cards.map(item => item.label + ": " + format(item.value, item.decimals) + " " + item.unit)
+        if (frameGenerationEnabled)
+            lines.push(qsTr("FRAME GENERATION") + ": " + frameGenerationState())
         if (shown("Region")) lines.unshift(region + (rig ? " · " + rig : ""))
         if (shown("Video")) lines.push(videoText)
         if (shown("Clock")) lines.push(qsTr("Session: ") + elapsedText())
@@ -94,7 +119,7 @@ Item {
             const next = ({})
             for (const card of root.cards) {
                 const values = (root.history[card.field] || []).slice(-59)
-                values.push(root.read(card.field)); next[card.field] = values
+                values.push(root.sample(card)); next[card.field] = values
             }
             root.history = next
         }

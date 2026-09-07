@@ -88,14 +88,51 @@ public:
             if (!entry.bindings->create()) { entry.bindings.reset(); return false; }
         }
         m_currentSlot = slot;
+        m_externalSlot = -1;
         ensurePipelines();
         return m_pipelines[0] && m_pipelines[1];
+    }
+
+    QRhiTexture *importedTexture() const { return m_imports[m_currentSlot].texture.get(); }
+
+    bool selectTexture(QRhiTexture *texture)
+    {
+        if (!texture) return false;
+        for (size_t slot = 0; slot < m_external.size(); ++slot) {
+            auto &entry = m_external[slot];
+            if (entry.texture && entry.texture != texture) continue;
+            if (!entry.bindings) {
+                entry.bindings.reset(m_rhi->newShaderResourceBindings());
+                entry.bindings->setBindings({
+                    QRhiShaderResourceBinding::uniformBuffer(
+                        0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage,
+                        m_uniforms.get()),
+                    QRhiShaderResourceBinding::sampledTexture(
+                        1, QRhiShaderResourceBinding::FragmentStage, texture, m_sampler.get())
+                });
+                if (!entry.bindings->create()) { entry.bindings.reset(); return false; }
+                entry.texture = texture;
+            }
+            m_externalSlot = int(slot);
+            return true;
+        }
+        return false;
+    }
+
+    void clearExternalTextures()
+    {
+        for (auto &entry : m_external) {
+            entry.bindings.reset();
+            entry.texture = nullptr;
+        }
+        m_externalSlot = -1;
     }
 
     void render(QRhiCommandBuffer *cb, bool stencil, int reference)
     {
         auto *pipeline = m_pipelines[stencil ? 1 : 0].get();
-        auto *bindings = m_imports[m_currentSlot].bindings.get();
+        auto *bindings = m_externalSlot >= 0 ? m_external[m_externalSlot].bindings.get()
+                                           : m_imports[m_currentSlot].bindings.get();
         if (!pipeline || !bindings) return;
         cb->setGraphicsPipeline(pipeline);
         cb->setShaderResources(bindings);
@@ -117,6 +154,7 @@ public:
     // Render-thread only. Preserve shaders/composition but discard every session's imports.
     void clearFrames()
     {
+        clearExternalTextures();
         for (auto &entry : m_imports) {
             entry.bindings.reset();
             entry.texture.reset();
@@ -177,14 +215,20 @@ private:
         quint64 resource = 0;
         QRhiTexture::Format format = QRhiTexture::UnknownFormat;
     };
+    struct ExternalFrame {
+        QRhiTexture *texture = nullptr;
+        std::unique_ptr<QRhiShaderResourceBindings> bindings;
+    };
     QRhi *m_rhi = nullptr;
     QRhiRenderTarget *m_target = nullptr;
     std::array<ImportedFrame, 8> m_imports;
+    std::array<ExternalFrame, 3> m_external;
     std::array<std::unique_ptr<QRhiGraphicsPipeline>, 2> m_pipelines;
     std::unique_ptr<QRhiSampler> m_sampler;
     std::unique_ptr<QRhiBuffer> m_uniforms;
     std::array<float, 28> m_composition{};
     QVector<quint32> m_passFormat;
     size_t m_currentSlot = 0;
+    int m_externalSlot = -1;
     int m_sampleCount = 1;
 };

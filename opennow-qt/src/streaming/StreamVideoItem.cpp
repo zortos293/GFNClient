@@ -33,6 +33,9 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
     setAcceptedMouseButtons(Qt::AllButtons);
     setKeepMouseGrab(true);
     setAcceptHoverEvents(true);
+    m_frameStatsTimer.setInterval(1000);
+    connect(&m_frameStatsTimer, &QTimer::timeout,
+            this, &StreamVideoItem::frameGenerationStatsChanged);
     if (s_nativeRuntime) {
         connect(s_nativeRuntime, &NativeStreamRuntime::inputAllowedChanged,
                 this, &StreamVideoItem::syncCaptureState);
@@ -57,6 +60,7 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
         });
     }
     connect(this, &QQuickItem::windowChanged, this, [this](QQuickWindow *currentWindow) {
+        connectFrameSwaps();
         if (currentWindow) {
             connect(currentWindow, &QWindow::activeChanged,
                     this, &StreamVideoItem::syncCaptureState, Qt::UniqueConnection);
@@ -77,6 +81,8 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
 
 StreamVideoItem::~StreamVideoItem()
 {
+    disconnect(m_frameSwapConnection);
+    disconnect(m_frameUpdateConnection);
     releaseInput();
     if (s_nativeRuntime && s_nativeRuntime->running()) {
         bool rawInput = false;
@@ -158,8 +164,45 @@ void StreamVideoItem::setRenderCallback(std::shared_ptr<StreamVideoRenderCallbac
     if (m_renderCallback == callback) return;
     const auto wasAvailable = renderCallbackAvailable();
     m_renderCallback = std::move(callback);
+    connectFrameSwaps();
     if (wasAvailable != renderCallbackAvailable()) emit renderCallbackAvailableChanged();
     update();
+}
+
+bool StreamVideoItem::frameGeneration() const
+{
+    return m_frameGeneration;
+}
+
+void StreamVideoItem::setFrameGeneration(bool enabled)
+{
+    if (m_frameGeneration == enabled) return;
+    m_frameGeneration = enabled;
+    if (enabled) m_frameStatsTimer.start();
+    else m_frameStatsTimer.stop();
+    emit frameGenerationChanged();
+    emit frameGenerationStatsChanged();
+    update();
+}
+
+QVariantMap StreamVideoItem::frameGenerationStats() const
+{
+    return m_renderCallback ? m_renderCallback->frameGenerationStats() : QVariantMap{};
+}
+
+void StreamVideoItem::connectFrameSwaps()
+{
+    disconnect(m_frameSwapConnection);
+    disconnect(m_frameUpdateConnection);
+    if (!window() || !m_renderCallback) return;
+    const std::weak_ptr<StreamVideoRenderCallback> callback = m_renderCallback;
+    m_frameSwapConnection = connect(window(), &QQuickWindow::frameSwapped, this, [callback] {
+        if (auto renderer = callback.lock()) renderer->frameSwapped();
+    }, Qt::DirectConnection);
+    m_frameUpdateConnection = connect(window(), &QQuickWindow::frameSwapped, this, [this] {
+        if (m_frameGeneration && isVisible() && m_renderCallback && m_renderCallback->needsFrame())
+            update();
+    }, Qt::QueuedConnection);
 }
 
 void StreamVideoItem::setNativeStreamRuntime(NativeStreamRuntime *runtime)

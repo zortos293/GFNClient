@@ -10,8 +10,12 @@ qt_add_resources(opennow-qt "opennow-locales"
     FILES ${OPENNOW_LOCALE_FILES}
 )
 
+set(OPENNOW_STREAM_SHADERS
+    shaders/streamvideo.vert shaders/streamvideo.frag
+    shaders/framegen.vert shaders/framegen_copy.frag shaders/framegen_cut.frag
+    shaders/framegen_motion.frag shaders/framegen_reduce.frag shaders/framegen_synthesize.frag)
 qt_add_shaders(opennow-qt "opennow-stream-shaders"
     PREFIX "/opennow/shaders"
     BASE "shaders"
-    FILES shaders/streamvideo.vert shaders/streamvideo.frag
+    FILES ${OPENNOW_STREAM_SHADERS}
 )

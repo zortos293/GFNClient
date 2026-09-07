@@ -82,6 +82,58 @@ Useful development switches are `--route <name>`, `--overlay <name>`,
 `--reduced-motion`, `--core <path>` and `--screenshot <png-path>`. The test suite
 opens every route and overlay with QML warnings treated as failures.
 
+### Local frame generation (experimental)
+
+The desktop Streaming settings and console Video settings offer **Off** (default) or **2×**.
+This is local video interpolation, not a higher GeForce NOW tier or a change to the negotiated
+stream FPS. A 60 FPS stream targets 120 displayed FPS only with a sufficiently fast local GPU
+and a display running at approximately 120 Hz or higher. Input and game simulation remain at
+the source rate. Interpolation adds presentation latency and can artifact around fast motion,
+thin geometry, transparency, repeated textures, and the game's HUD.
+
+The Qt render-thread helper samples native GPU textures into two retained histories, estimates
+bidirectional motion through three reduced-resolution pyramids, and synthesizes one midpoint.
+Unreliable regions and detected scene cuts use the actual current image. OpenNOW's overlays
+are composed afterward on the existing video surface. There is no CPU image readback, separate
+presenter, neural model, or additional runtime dependency. The Off path allocates no interpolation
+resources. Source frame identifiers, protocol feedback, audio, and source-stream recording are
+unchanged.
+
+The helper accepts single-sample RGBA8 and RGB10A2 textures with renderable RGBA16F flow targets,
+up to 4096 pixels per axis and 4096×2160 pixels total. Owned texture storage is approximately
+25 MiB at 1080p and 104 MiB at the maximum area. The motion grid is capped at 320×180. The pacer
+rejects missing, reordered, stalled, or substantially discontinuous sources; insufficient display
+refresh bypasses interpolation. An undrained original frame triggers a two-second cooldown
+instead of growing a queue. Device/surface changes and toggling the mode clear interpolation
+history. Unsupported GPU resources leave normal streaming active.
+
+The statistics overlay keeps **STREAM FPS** as the source measurement and adds **LOCAL OUTPUT
+FPS** when 2× is selected. The latter counts newly selected video outputs at Qt's `frameSwapped`
+boundary, not twice the stream FPS and not unrelated overlay redraws. It is a presentation-submit
+measurement, not a hardware scanout measurement; generated slots rejected by the scene-cut or
+confidence checks can contain the actual source image. The frame-generation status reports
+warmup, insufficient refresh, overload, discontinuities, and unavailable resources.
+
+Run the focused checks with:
+
+```sh
+ctest --test-dir build/opennow-qt --output-on-failure \
+  -R 'framepacer|frameinterpolator|frame-generation|streamvideo'
+```
+
+On Linux, installing `xvfb` and Mesa Vulkan drivers lets CTest run the actual shader tests through
+Xvfb. Without Xvfb, the offscreen platform can skip Vulkan coverage. Set
+`OPENNOW_FRAMEGEN_VALIDATION=1` with the Khronos validation layer installed to check Vulkan
+resource use. The tests cover translated images versus a crossfade, cut fallback, 10-bit values,
+resource recreation, pacing, and the settings-to-surface bindings. Software Vulkan correctness
+does not establish a physical GPU's 8.33 ms presentation budget.
+
+Before treating a GPU/backend as performance-validated, test a real 1080p60 stream on a 120 Hz+
+display with Off and 2× in both windowed and fullscreen modes. Check output cadence, GPU time,
+input latency, scene cuts, reconnects, resize/display changes, and overlays open/closed. STREAM
+FPS must remain near 60, LOCAL OUTPUT FPS should approach 120 only when the hardware sustains
+it, and fallback must not accumulate delay. Repeat on D3D11, Vulkan, and Metal hardware.
+
 ### Native input acceptance
 
 Run the controller, stream video, native runtime and Wayland pointer unit tests first:

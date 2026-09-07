@@ -200,6 +200,7 @@ impl SettingsStore {
             &["8bit_420", "10bit_420", "8bit_444", "10bit_444"],
             "8bit_420",
         );
+        normalize_choice(&mut self.values, "frameGeneration", &["off", "2x"], "off");
         for key in ["decoderPreference", "encoderPreference"] {
             normalize_choice(
                 &mut self.values,
@@ -626,7 +627,7 @@ fn legacy_data_dirs(primary: &Path) -> Vec<PathBuf> {
 fn defaults() -> Map<String, Value> {
     json!({
         "resolution":"1920x1080", "aspectRatio":"16:9", "posterSizeScale":1.05,
-        "fps":60, "maxBitrateMbps":75, "recordingBitrateMbps":null,
+        "fps":60, "frameGeneration":"off", "maxBitrateMbps":75, "recordingBitrateMbps":null,
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
         "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"",
         "nativeCloudGsyncMode":"auto", "nativeD3dFullscreenMode":"auto",
@@ -869,6 +870,39 @@ mod tests {
                 .unwrap(),
             json!(["game-a", "game-b"])
         );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn frame_generation_is_limited_to_off_or_2x() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-frame-generation-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+
+        assert_eq!(store.all()["frameGeneration"], json!("off"));
+        assert_eq!(
+            store.set("frameGeneration", json!("2x")).unwrap(),
+            json!("2x")
+        );
+        assert_eq!(
+            store.set("frameGeneration", json!("3x")).unwrap(),
+            json!("off")
+        );
+        assert_eq!(
+            store.set("frameGeneration", json!(true)).unwrap(),
+            json!("off")
+        );
+
+        fs::write(
+            directory.join("settings.json"),
+            serde_json::to_vec(&json!({"frameGeneration": "invalid"})).unwrap(),
+        )
+        .unwrap();
+        let store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["frameGeneration"], json!("off"));
         let _ = fs::remove_dir_all(directory);
     }
 

@@ -78,6 +78,7 @@ public:
 class TextureRenderCallback final : public StreamVideoRenderCallback
 {
 public:
+    explicit TextureRenderCallback(bool externalTexture = false) : m_externalTexture(externalTexture) {}
     void initialize(QRhi *rhi, QRhiCommandBuffer *, QRhiRenderTarget *target) override
     {
         if (m_rhi != rhi) releaseResources();
@@ -116,6 +117,8 @@ public:
         imported.store(renderer.importFrame(m_rhi->currentFrameSlot(), texture->nativeTexture(),
                                             QRhiTexture::RGBA8, QSize(4, 4)));
         importedSlots.store(int(renderer.importedSlotCount()));
+        if (m_externalTexture)
+            imported.store(imported.load() && renderer.selectTexture(texture.get()));
     }
     void setClip(bool enabled, int reference) override { stencil = enabled; stencilReference = reference; }
     void recordFrame(QRhiCommandBuffer *cb, const QRect &) override
@@ -140,6 +143,7 @@ public:
     std::atomic_bool showVideo = true;
     std::atomic_int releases = 0;
 private:
+    bool m_externalTexture = false;
     QRhi *m_rhi = nullptr;
     StreamVideoTextureRenderer renderer;
     std::unique_ptr<QRhiTexture> texture;
@@ -382,6 +386,60 @@ private slots:
         QVERIFY(item.flags().testFlag(QQuickItem::ItemHasContents));
         // Direct scene-graph rendering must not reintroduce an offscreen color target.
         QCOMPARE(item.metaObject()->indexOfProperty("colorBufferFormat"), -1);
+    }
+
+    void frameGenerationIsOptInAndDoesNotReplaceThePresenter()
+    {
+        StreamVideoItem item;
+        const auto callback = std::make_shared<TestRenderCallback>();
+        item.setRenderCallback(callback);
+        QSignalSpy changes(&item, &StreamVideoItem::frameGenerationChanged);
+        QSignalSpy stats(&item, &StreamVideoItem::frameGenerationStatsChanged);
+        QVERIFY(!item.frameGeneration());
+        QVERIFY(!item.m_frameStatsTimer.isActive());
+        item.setFrameGeneration(true);
+        QVERIFY(item.frameGeneration());
+        QVERIFY(item.m_frameStatsTimer.isActive());
+        QCOMPARE(changes.size(), 1);
+        QCOMPARE(stats.size(), 1);
+        item.setFrameGeneration(true);
+        QCOMPARE(changes.size(), 1);
+        QCOMPARE(item.renderCallback(), callback);
+        item.setFrameGeneration(false);
+        QVERIFY(!item.m_frameStatsTimer.isActive());
+        QCOMPARE(changes.size(), 2);
+        QCOMPARE(item.renderCallback(), callback);
+    }
+
+    void generatedTextureBindingsPreserveFullscreenAndOverlays()
+    {
+        if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
+            QSKIP("The offscreen platform plugin does not create a QRhi.");
+        const auto callback = std::make_shared<TextureRenderCallback>(true);
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback(callback);
+        auto *overlay = new WhiteOverlay(window.contentItem());
+        overlay->setSize(QSizeF(40, 40));
+        overlay->setZ(10);
+        for (const bool fullscreen : {false, true}) {
+            if (fullscreen) window.showFullScreen();
+            else window.showNormal();
+            QTRY_VERIFY(window.isExposed());
+            item->setSize(window.size());
+            item->setVideoSize(window.size());
+            for (const bool overlayVisible : {false, true}) {
+                overlay->setVisible(overlayVisible);
+                item->requestFrame();
+                QTRY_VERIFY(callback->imported.load());
+                const auto image = window.grabWindow();
+                QVERIFY(!image.isNull());
+                QCOMPARE(image.pixelColor(image.width() / 2, image.height() / 4), QColor(Qt::red));
+                QCOMPARE(image.pixelColor(image.width() / 2, image.height() * 3 / 4), QColor(Qt::green));
+                QCOMPARE(image.pixelColor(10, 10), QColor(overlayVisible ? Qt::white : Qt::red));
+            }
+        }
     }
 
     void createsRenderCallbackFromTheSharedNativeRuntime()

@@ -30,6 +30,7 @@ qt_add_executable(opennow-qt
     src/acceptance/SmokeAcceptance.cpp
     src/acceptance/SmokeFixtures.cpp
     src/acceptance/FrameGenerationStatsAcceptance.cpp
+    src/acceptance/StreamExitAcceptance.cpp
     src/app/AppController.cpp
     src/app/AppController.h
     src/app/ApplicationStartup.cpp

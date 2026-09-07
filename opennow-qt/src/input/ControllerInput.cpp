@@ -116,12 +116,39 @@ void ControllerInput::refreshControllerMetadata()
         if (!slot.gamepad) continue;
         int batteryPercent = -1;
         const auto power = SDL_GetGamepadPowerInfo(slot.gamepad, &batteryPercent);
+        QString family = QStringLiteral("generic");
+        switch (SDL_GetRealGamepadType(slot.gamepad)) {
+        case SDL_GAMEPAD_TYPE_PS3:
+        case SDL_GAMEPAD_TYPE_PS4:
+        case SDL_GAMEPAD_TYPE_PS5:
+            family = QStringLiteral("playstation");
+            break;
+        case SDL_GAMEPAD_TYPE_XBOX360:
+        case SDL_GAMEPAD_TYPE_XBOXONE:
+            family = QStringLiteral("xbox");
+            break;
+        default:
+            break;
+        }
+        QString powerState = QStringLiteral("unknown");
+        switch (power) {
+        case SDL_POWERSTATE_ON_BATTERY: powerState = QStringLiteral("onBattery"); break;
+        case SDL_POWERSTATE_NO_BATTERY: powerState = QStringLiteral("noBattery"); break;
+        case SDL_POWERSTATE_CHARGING: powerState = QStringLiteral("charging"); break;
+        case SDL_POWERSTATE_CHARGED: powerState = QStringLiteral("charged"); break;
+        default: break;
+        }
+        if (power == SDL_POWERSTATE_UNKNOWN || power == SDL_POWERSTATE_ERROR
+            || power == SDL_POWERSTATE_NO_BATTERY || batteryPercent < 0 || batteryPercent > 100)
+            batteryPercent = -1;
         const auto *name = SDL_GetGamepadName(slot.gamepad);
         QVariantMap metadata{
             {QStringLiteral("slot"), index + 1},
             {QStringLiteral("instanceId"), static_cast<qulonglong>(slot.instanceId)},
             {QStringLiteral("name"), name ? QString::fromUtf8(name)
                                            : QStringLiteral("Game controller")},
+            {QStringLiteral("family"), family},
+            {QStringLiteral("powerState"), powerState},
             {QStringLiteral("batteryPercent"), batteryPercent},
             {QStringLiteral("charging"), power == SDL_POWERSTATE_CHARGING},
         };

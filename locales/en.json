@@ -1,4 +1,27 @@
 {
+  "controllerStatus": {
+    "chargingPercent": "Charging · %1%",
+    "charging": "Charging",
+    "charged": "Fully charged",
+    "wired": "Wired power",
+    "batteryPercent": "Battery %1%",
+    "onBattery": "On battery",
+    "unavailable": "Battery unavailable"
+  },
+  "customBackground": {
+    "chooseTitle": "Choose a background image",
+    "imageFilter": "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+    "description": "Game art, a custom image, gradient or solid color",
+    "custom": "Custom",
+    "image": "Custom image",
+    "unavailable": "Image unavailable. Choose another file or remove it.",
+    "keepLocation": "Keep the image in its original location",
+    "formats": "Choose a local PNG, JPEG, WebP or BMP image",
+    "choose": "Choose image…",
+    "remove": "Remove",
+    "opacity": "Image opacity",
+    "opacityDescription": "0% hides the image · 100% shows the full image"
+  },
   "sessionLaunch": {
     "ending": "ENDING SESSION",
     "closing": "Closing your session",

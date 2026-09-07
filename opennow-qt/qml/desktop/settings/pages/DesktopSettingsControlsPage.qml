@@ -5,10 +5,28 @@ import OpenNOW
 
 Column {
     id: controlsRoot
+    objectName: "desktopControllerSettings"
     required property real availableWidth
     required property var settingsScreen
     required property Component controllersPageComponent
     required property Component shortcutsPageComponent
+
+    function controllerGlyph(controller) {
+        return controller && (controller.family === "playstation" || controller.family === "xbox")
+            ? controller.family : "controller"
+    }
+
+    function batteryLabel(controller) {
+        const percent = Number(controller.batteryPercent)
+        const hasPercent = Number.isFinite(percent) && percent >= 0 && percent <= 100
+        switch (controller.powerState) {
+        case "charging": return hasPercent ? qsTr("Charging · %1%").arg(percent) : qsTr("Charging")
+        case "charged": return qsTr("Fully charged")
+        case "noBattery": return qsTr("Wired power")
+        case "onBattery": return hasPercent ? qsTr("Battery %1%").arg(percent) : qsTr("On battery")
+        default: return qsTr("Battery unavailable")
+        }
+    }
 
     property bool shortcutsOpen: controlsRoot.settingsScreen.selectedSection === 10
     width: controlsRoot.availableWidth; spacing: 20
@@ -16,14 +34,17 @@ Column {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("CONTROLLERS") }
         DesktopSettingsChoice {
+            objectName: "controllerSourceChoice"
             width: parent.width
             title: qsTr("Controller input source")
             description: qsTr("Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting.")
-            glyph: "controller"
+            glyph: current ? current.glyph || "controller" : "controller"
             items: [{value: 0, label: qsTr("All controllers (multiplayer)")}].concat(
                 ControllerInput.availableControllers.map(controller => ({
                     value: controller.instanceId,
-                    label: qsTr("Device %1 · %2").arg(controller.slot).arg(controller.name)
+                    label: qsTr("Device %1 · %2").arg(controller.slot).arg(controller.name),
+                    glyph: controlsRoot.controllerGlyph(controller),
+                    detail: controlsRoot.batteryLabel(controller)
                 })))
             value: ControllerInput.inputControllerId
             valueLabel: current ? current.label : qsTr("Selected controller disconnected")
@@ -33,8 +54,10 @@ Column {
             model: ControllerInput.controllers
             delegate: DesktopSettingsRow {
                 required property var modelData
-                width: parent.width; paperStyle: true; glyph: "controller"; title: modelData.name
-                description: qsTr("Player %1").arg(modelData.slot) + (modelData.batteryPercent >= 0 ? " · " + modelData.batteryPercent + "%" : "")
+                objectName: "controllerRow-" + modelData.instanceId
+                width: parent.width; paperStyle: true
+                glyph: controlsRoot.controllerGlyph(modelData); title: modelData.name
+                description: qsTr("Player %1").arg(modelData.slot) + " · " + controlsRoot.batteryLabel(modelData)
                 DesktopSettingsButton { text: "P" + modelData.slot; onClicked: AppController.navigate("joining") }
             }
         }

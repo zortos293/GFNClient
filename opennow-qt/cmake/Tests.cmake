@@ -69,7 +69,20 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(opennow-streamcolor-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/SteamBigPictureAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/ControllerMetadataAcceptance.qml)
+    add_test(NAME qml-controller-metadata
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-input --smoke-controller-metadata --reduced-motion)
+    set_tests_properties(qml-controller-metadata PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "custom-background-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/CustomBackgroundAcceptance.qml)
+    foreach(width 960 1600)
+        add_test(NAME qml-custom-background-${width}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route settings-themes --smoke-custom-background --smoke-width ${width} --reduced-motion)
+        set_tests_properties(qml-custom-background-${width} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
     add_test(NAME qml-steam-big-picture
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-steam-big-picture --reduced-motion)
@@ -333,6 +346,20 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 20
     )
+    qt_add_executable(opennow-controllermetadata-tests
+        tests/tst_controllermetadata.cpp
+        src/input/ControllerInput.cpp
+        src/input/ControllerInput.h
+    )
+    target_include_directories(opennow-controllermetadata-tests PRIVATE src)
+    target_link_libraries(opennow-controllermetadata-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui SDL3::SDL3)
+    add_test(NAME opennow-controllermetadata-tests
+             COMMAND opennow-controllermetadata-tests -o -,txt)
+    set_tests_properties(opennow-controllermetadata-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 30
+    )
     if(WIN32)
         add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-test-runtime)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
@@ -350,6 +377,7 @@ if(BUILD_TESTING)
             opennow-thumbnail-tests
             opennow-controllerinput-tests
             opennow-controllersources-tests
+            opennow-controllermetadata-tests
             PROPERTIES WIN32_EXECUTABLE FALSE)
 
         # windeployqt follows the application graph and therefore does not copy
@@ -393,7 +421,8 @@ if(BUILD_TESTING)
                 opennow-singleinstance-tests
                 opennow-thumbnail-tests
                 opennow-controllerinput-tests
-                opennow-controllersources-tests)
+                opennow-controllersources-tests
+                opennow-controllermetadata-tests)
             add_dependencies(${test_target} opennow-qt-test-runtime)
         endforeach()
     endif()

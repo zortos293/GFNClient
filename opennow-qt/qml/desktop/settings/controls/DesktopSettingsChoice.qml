@@ -121,8 +121,19 @@ Item {
                                     border.width: tile.activeFocus ? 2 : 1
                                     border.color: tile.activeFocus ? Theme.focus : DesktopTokens.seamSoft
                                 }
+                                DesktopSettingsIcon {
+                                    id: optionIcon
+                                    visible: !!tile.modelData.glyph
+                                    anchors.left: parent.left; anchors.leftMargin: 12
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 20; height: 20
+                                    glyph: tile.modelData.glyph || "controller"
+                                    ink: tile.chosen ? Theme.focusText : Theme.label
+                                }
                                 Column {
-                                    anchors.centerIn: parent; width: parent.width-24; spacing: 2
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    x: optionIcon.visible ? 42 : 12
+                                    width: parent.width - x - 12; spacing: 2
                                     Text { width: parent.width; text: tile.modelData.label; color: tile.chosen ? Theme.focusText : Theme.label; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.px(13); font.weight: Font.ExtraBold; elide: Text.ElideRight }
                                     Text { visible: text !== ""; width: parent.width; text: tile.modelData.detail || ""; color: tile.chosen ? Theme.focusText : tile.modelData.detailColor || Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.px(12); elide: Text.ElideRight }
                                 }

@@ -103,7 +103,11 @@ The helper accepts single-sample RGBA8 and RGB10A2 textures with renderable RGBA
 up to 4096 pixels per axis and 4096×2160 pixels total. Owned texture storage is approximately
 25 MiB at 1080p and 104 MiB at the maximum area. The motion grid is capped at 320×180. The pacer
 rejects missing, reordered, stalled, or substantially discontinuous sources; insufficient display
-refresh bypasses interpolation. An undrained original frame triggers a two-second cooldown
+refresh bypasses interpolation. Missing or grouped decoder timestamps alone are not missing
+frames: consecutive frame IDs can use the median of the last eight local source-arrival intervals
+when per-frame timestamps are unusable. Zero-duration arrivals remain in that bounded window;
+bursts without a usable cadence fall back rather than inventing a rate. Raw source timestamps and
+IDs are never rewritten. An undrained original frame triggers a two-second cooldown
 instead of growing a queue. Device/surface changes and toggling the mode clear interpolation
 history. Unsupported GPU resources leave normal streaming active.
 
@@ -116,13 +120,16 @@ warmup, insufficient refresh, overload, discontinuities, and unavailable resourc
 Both desktop and console routes pass the active video item's snapshot to the top-level statistics
 overlay and clipboard report. Sampled state changes are logged on the GUI thread to
 `diagnostics/native-streamer.log` as `shell-mode frame-generation state=... outputFps=...`;
-FPS-only updates do not produce log entries, and no file I/O is added to the render thread.
+The entries include the timing source, rejection reason, raw timestamp/arrival deltas, sequence
+delta, inferred interval, and Qt's display refresh rate. Changes to the timing source, rejection
+reason, or display refresh also produce an entry; FPS-only updates do not. `scope=acceptance`
+distinguishes smoke fixtures from `scope=stream`. No file I/O is added to the render thread.
 
 Run the focused checks with:
 
 ```sh
 ctest --test-dir build/opennow-qt --output-on-failure \
-  -R 'framepacer|frameinterpolator|frame-generation|streamvideo'
+  -R 'framepacer|frameinterpolator|nativeframegeneration|frame-generation|streamvideo'
 ```
 
 On Linux, installing `xvfb` and Mesa Vulkan drivers lets CTest run the actual shader tests through
@@ -131,6 +138,11 @@ Xvfb. Without Xvfb, the offscreen platform can skip Vulkan coverage. Set
 resource use. The tests cover translated images versus a crossfade, cut fallback, 10-bit values,
 resource recreation, pacing, and the settings-to-surface bindings. Software Vulkan correctness
 does not establish a physical GPU's 8.33 ms presentation budget.
+The Linux `opennow-nativeframegeneration-tests` target drives the production native render
+callback with injected FFI frames and real adopted-device Vulkan textures. It checks absent,
+repeated, and grouped PTS, generated/original scheduling across `frameSwapped`, pixel readback,
+Off, discontinuity diagnostics, metadata preservation, and resource release. It is not a network
+session, D3D11 integration test, or sustained output-FPS benchmark.
 The `qml-frame-generation-stats-desktop` and `qml-frame-generation-stats-console` acceptance tests
 feed controlled snapshots through the render-callback boundary and the real item's timer, route
 facade, top-level overlay, and clipboard report. They check FPS-only changes, fallback/recovery,

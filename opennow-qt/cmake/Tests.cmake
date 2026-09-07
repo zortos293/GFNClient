@@ -144,6 +144,27 @@ if(BUILD_TESTING)
     endif()
     add_dependencies(opennow-streamvideo-tests opennow-streamer-ffi-build)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        qt_add_executable(opennow-nativeframegeneration-tests
+            tests/tst_nativeframegeneration.cpp
+            ${OPENNOW_STREAM_RUNTIME_SOURCES}
+            src/streaming/rendering/NativeStreamRenderCallback.cpp
+            src/streaming/rendering/StreamFrameInterpolator.cpp
+            src/streaming/rendering/LinuxVulkanGraphics.cpp)
+        target_include_directories(opennow-nativeframegeneration-tests PRIVATE src)
+        target_link_libraries(opennow-nativeframegeneration-tests PRIVATE
+            Qt6::Test Qt6::GuiPrivate Qt6::Quick opennow-streamer-ffi Vulkan::Vulkan)
+        add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-build)
+        qt_add_shaders(opennow-nativeframegeneration-tests "opennow-native-framegen-test-shaders"
+            PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_STREAM_SHADERS})
+        if(OPENNOW_XVFB_RUN)
+            add_test(NAME opennow-nativeframegeneration-tests
+                COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-nativeframegeneration-tests>" -o -,txt)
+            set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
+        else()
+            add_test(NAME opennow-nativeframegeneration-tests COMMAND opennow-nativeframegeneration-tests -o -,txt)
+            set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
+        set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES TIMEOUT 60)
         qt_add_executable(opennow-linuxvulkangraphics-tests
             tests/tst_linuxvulkangraphics.cpp
             src/streaming/rendering/LinuxVulkanGraphics.cpp

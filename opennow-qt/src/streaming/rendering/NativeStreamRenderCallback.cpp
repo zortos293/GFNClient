@@ -230,6 +230,7 @@ public:
 
         const auto now = clockNs();
         const auto decision = m_pacer.source(info.sequence, info.presentation_time_ns, now, m_refreshRate);
+        updateTimingStats();
         if (decision == StreamFramePacer::Result::Duplicate) {
             m_outputDirty = false;
             if (m_pacer.pending())
@@ -282,6 +283,7 @@ public:
             m_resetFrameGeneration = true;
         m_frameGeneration = enabled;
         m_refreshRate = refreshRate;
+        m_reportedRefreshRate.store(refreshRate);
     }
 
     bool needsFrame() const override
@@ -310,7 +312,19 @@ public:
         const QString states[] = {QStringLiteral("off"), QStringLiteral("warming-up"),
             QStringLiteral("active"), QStringLiteral("display-refresh"),
             QStringLiteral("overloaded"), QStringLiteral("unavailable"), QStringLiteral("discontinuity")};
+        const QString timing[] = {QStringLiteral("none"), QStringLiteral("source-timestamps"),
+                                  QStringLiteral("arrival-cadence")};
+        const QString rejections[] = {QStringLiteral("none"), QStringLiteral("sequence-gap"),
+            QStringLiteral("timestamp-regression"), QStringLiteral("timestamp-jump"),
+            QStringLiteral("arrival-gap"), QStringLiteral("cadence-unavailable")};
         return {{QStringLiteral("status"), states[int(m_frameGenerationStatus.load())]},
+                {QStringLiteral("timingSource"), timing[int(m_timingSource.load())]},
+                {QStringLiteral("rejectionReason"), rejections[int(m_rejection.load())]},
+                {QStringLiteral("sourceIntervalMs"), double(m_sourceInterval.load()) / 1.0e6},
+                {QStringLiteral("timestampDeltaMs"), double(m_timestampDelta.load()) / 1.0e6},
+                {QStringLiteral("arrivalDeltaMs"), double(m_arrivalDelta.load()) / 1.0e6},
+                {QStringLiteral("sequenceDelta"), qulonglong(m_sequenceDelta.load())},
+                {QStringLiteral("refreshRateHz"), m_reportedRefreshRate.load()},
                 {QStringLiteral("outputFps"), clockNs() - m_sampleStart.load() < 2'000'000'000
                     ? m_outputFps.load() : 0.0}};
     }
@@ -351,6 +365,7 @@ public:
         m_textures.release();
         m_interpolator.release();
         m_pacer.reset();
+        updateTimingStats();
         m_needsFrame.store(false);
         m_submittedKind.store(0);
         m_outputCount.store(0);
@@ -387,6 +402,13 @@ private:
     std::atomic_uint64_t m_outputCount = 0;
     std::atomic_int64_t m_sampleStart = 0;
     std::atomic<double> m_outputFps = 0;
+    std::atomic<StreamFramePacer::TimingSource> m_timingSource = StreamFramePacer::TimingSource::None;
+    std::atomic<StreamFramePacer::Rejection> m_rejection = StreamFramePacer::Rejection::None;
+    std::atomic_uint64_t m_sourceInterval = 0;
+    std::atomic_uint64_t m_timestampDelta = 0;
+    std::atomic_uint64_t m_sequenceDelta = 0;
+    std::atomic_int64_t m_arrivalDelta = 0;
+    std::atomic<double> m_reportedRefreshRate = 0;
     OpenNowStreamerFrame *m_preparedFrame = nullptr;
     int m_stencilReference = 0;
     bool m_stencil = false;
@@ -399,11 +421,22 @@ private:
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
+    void updateTimingStats()
+    {
+        m_timingSource.store(m_pacer.timingSource());
+        m_rejection.store(m_pacer.rejection());
+        m_sourceInterval.store(m_pacer.interval());
+        m_timestampDelta.store(m_pacer.timestampDelta());
+        m_sequenceDelta.store(m_pacer.sequenceDelta());
+        m_arrivalDelta.store(m_pacer.arrivalDelta());
+    }
+
     void resetFrameGeneration()
     {
         m_textures.clearExternalTextures();
         m_interpolator.release();
         m_pacer.reset();
+        updateTimingStats();
         m_needsFrame.store(false);
         m_submittedKind.store(0);
         m_midpointSwapped.store(false);
@@ -417,6 +450,7 @@ private:
         m_textures.clearExternalTextures();
         m_interpolator.release();
         m_pacer.reset();
+        updateTimingStats();
         m_needsFrame.store(false);
         m_frameGenerationFailed = true;
         m_frameGenerationStatus.store(FrameGenerationState::Unavailable);

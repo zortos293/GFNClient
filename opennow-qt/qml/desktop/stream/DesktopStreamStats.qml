@@ -181,6 +181,13 @@ Item {
                         Layout.fillWidth: true; spacing: 2
                         Text { text: root.telemetryActive ? qsTr("Stream statistics") : qsTr("Waiting for stream"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14 * root.overlayScale; font.weight: Font.Bold }
                         Text { visible: root.shown("Region"); Layout.fillWidth: true; text: root.region + (root.rig ? " · " + root.rig : ""); elide: Text.ElideRight; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 12 * root.overlayScale }
+                        Text {
+                            objectName: "expandedFrameGenerationState"
+                            visible: root.frameGenerationEnabled; Layout.fillWidth: true
+                            text: qsTr("FRAME GENERATION") + " · " + root.frameGenerationState()
+                            wrapMode: Text.WordWrap; color: Theme.textMuted
+                            font.family: Theme.bodyFont; font.pixelSize: 12 * root.overlayScale
+                        }
                     }
                     Text { visible: root.shown("Clock"); text: root.elapsedText(); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 12 * root.overlayScale }
                 }

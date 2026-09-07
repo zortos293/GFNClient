@@ -32,6 +32,13 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-frame-generation --reduced-motion)
     set_tests_properties(qml-frame-generation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    foreach(surface desktop console)
+        add_test(NAME qml-frame-generation-stats-${surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                --route stream --smoke-frame-generation-stats --reduced-motion)
+        set_tests_properties(qml-frame-generation-stats-${surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+    endforeach()
     add_test(NAME qml-idle-mode
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-idle-mode --reduced-motion)

@@ -3,11 +3,13 @@ import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "desktopStreamOverlayHost"
     width: 1440
     height: 900
     property string overlay: ""
     property bool inputBlocking: false
     property bool pointerLocked: false
+    property var frameGenerationStats: ({})
     focus: visible && inputBlocking
     readonly property bool present: menuView.present || exitView.present || statsVisible
 
@@ -70,6 +72,7 @@ FocusScope {
         id: statsView
         anchors.fill: parent
         visible: root.statsVisible
+        frameGenerationStats: root.frameGenerationStats
         pointerLocked: root.pointerLocked
         focus: false
         expanded: root.overlay === "desktop-stream-stats-expanded"

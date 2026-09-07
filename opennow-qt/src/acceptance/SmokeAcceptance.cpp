@@ -22,6 +22,8 @@ using namespace Qt::StringLiterals;
 int AcceptanceSession::startSmokeWorkload()
 {
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
+    if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation-stats"_s))
+        return startFrameGenerationStatsWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-frame-generation"_s)) {
         QQmlComponent component(&m_engine, QUrl(u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s));
         auto *fixture = component.create();

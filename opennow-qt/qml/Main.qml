@@ -14,6 +14,14 @@ ApplicationWindow {
     title: qsTr("OpenNOW")
 
     property string activeRoute: AppController.route
+    readonly property var frameGenerationStats: activeRoute === "stream" && routeLoader.item
+        ? (routeLoader.item.frameGenerationStats || ({})) : ({})
+    readonly property string frameGenerationStatus: String(frameGenerationStats.status || "")
+    onFrameGenerationStatusChanged: {
+        if (frameGenerationStatus !== "")
+            CoreClient.logShellDiagnostic("frame-generation state=" + frameGenerationStatus
+                + " outputFps=" + Number(frameGenerationStats.outputFps || 0).toFixed(1))
+    }
     property bool geometryRestored: false
     readonly property bool settingsLoaded: Object.keys(ShellStore.settings || {}).length > 0
     property bool consoleHeldByPad: false
@@ -547,6 +555,7 @@ ApplicationWindow {
     DesktopStreamOverlayHost {
         id: desktopStreamOverlay
         anchors.fill: parent
+        frameGenerationStats: window.frameGenerationStats
         pointerLocked: window.activeRoute === "stream" && routeLoader.item
             && routeLoader.item.streamPointerLocked === true
         overlay: AppController.overlay

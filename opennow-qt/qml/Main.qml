@@ -17,10 +17,21 @@ ApplicationWindow {
     readonly property var frameGenerationStats: activeRoute === "stream" && routeLoader.item
         ? (routeLoader.item.frameGenerationStats || ({})) : ({})
     readonly property string frameGenerationStatus: String(frameGenerationStats.status || "")
-    onFrameGenerationStatusChanged: {
+    readonly property string frameGenerationDiagnosticKey: [frameGenerationStatus,
+        frameGenerationStats.timingSource || "none", frameGenerationStats.rejectionReason || "none",
+        frameGenerationStats.refreshRateHz || 0].join(":")
+    onFrameGenerationDiagnosticKeyChanged: {
         if (frameGenerationStatus !== "")
             CoreClient.logShellDiagnostic("frame-generation state=" + frameGenerationStatus
-                + " outputFps=" + Number(frameGenerationStats.outputFps || 0).toFixed(1))
+                + " outputFps=" + Number(frameGenerationStats.outputFps || 0).toFixed(1)
+                + " timing=" + String(frameGenerationStats.timingSource || "none")
+                + " rejection=" + String(frameGenerationStats.rejectionReason || "none")
+                + " intervalMs=" + Number(frameGenerationStats.sourceIntervalMs || 0).toFixed(3)
+                + " ptsDeltaMs=" + Number(frameGenerationStats.timestampDeltaMs || 0).toFixed(3)
+                + " arrivalDeltaMs=" + Number(frameGenerationStats.arrivalDeltaMs || 0).toFixed(3)
+                + " sequenceDelta=" + Number(frameGenerationStats.sequenceDelta || 0)
+                + " refreshHz=" + Number(frameGenerationStats.refreshRateHz || 0).toFixed(2)
+                + " scope=" + (SmokeTestMode ? "acceptance" : "stream"))
     }
     property bool geometryRestored: false
     readonly property bool settingsLoaded: Object.keys(ShellStore.settings || {}).length > 0

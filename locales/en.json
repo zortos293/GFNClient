@@ -10,6 +10,49 @@
     "failed": "Could not list audio output devices",
     "timeout": "Audio device discovery timed out. Try refreshing again."
   },
+  "customCollections": {
+    "duplicateName": "A collection with this name already exists.",
+    "name": "Collection name",
+    "create": "Create collection",
+    "firstCollection": "Create your first collection with +",
+    "delete": "Delete collection",
+    "confirmDelete": "Delete “%1”? Your games will stay in your library.",
+    "missingName": "Enter a collection name.",
+    "description": "Keep your games together in a folder of your own.",
+    "newCollection": "New collection",
+    "emptyView": "No games in this view",
+    "addHint": "Open All games, right-click a game, and choose Add to collection. Games can belong to more than one collection.",
+    "rename": "Rename",
+    "renameCollection": "Rename collection",
+    "saving": "Saving…",
+    "disconnected": "The collection could not be saved. Reconnect and try again.",
+    "searchHint": "Try a different search or filter.",
+    "nameTooLong": "Use 80 characters or fewer.",
+    "limit": "You can create up to 100 collections."
+  },
+  "controllerStatus": {
+    "chargingPercent": "Charging · %1%",
+    "charging": "Charging",
+    "charged": "Fully charged",
+    "wired": "Wired power",
+    "batteryPercent": "Battery %1%",
+    "onBattery": "On battery",
+    "unavailable": "Battery unavailable"
+  },
+  "customBackground": {
+    "chooseTitle": "Choose a background image",
+    "imageFilter": "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+    "description": "Game art, a custom image, gradient or solid color",
+    "custom": "Custom",
+    "image": "Custom image",
+    "unavailable": "Image unavailable. Choose another file or remove it.",
+    "keepLocation": "Keep the image in its original location",
+    "formats": "Choose a local PNG, JPEG, WebP or BMP image",
+    "choose": "Choose image…",
+    "remove": "Remove",
+    "opacity": "Image opacity",
+    "opacityDescription": "0% hides the image · 100% shows the full image"
+  },
   "sessionLaunch": {
     "ending": "ENDING SESSION",
     "closing": "Closing your session",
@@ -2970,6 +3013,8 @@
     "s_qt_controller_source_hint": "Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting.",
     "s_qt_controller_source_all": "All controllers (multiplayer)",
     "s_qt_controller_source_device": "Device %1 · %2",
-    "s_qt_controller_source_disconnected": "Selected controller disconnected"
+    "s_qt_controller_source_disconnected": "Selected controller disconnected",
+    "s_qt_theme_pack_applies_palette": "Applies the pack's appearance, accent and surfaces",
+    "s_qt_theme_sky_glass": "SKY GLASS"
   }
 }

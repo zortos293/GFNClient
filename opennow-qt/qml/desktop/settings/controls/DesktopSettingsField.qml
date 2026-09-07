@@ -9,7 +9,7 @@ TextField {
     color: Theme.label
     placeholderTextColor: Theme.textMuted
     selectionColor: Theme.focus
-    selectedTextColor: Theme.faceText
+    selectedTextColor: Theme.focusText
     font.family: Theme.bodyFont
     font.pixelSize: DesktopTokens.px(13)
     leftPadding: DesktopTokens.px(14)

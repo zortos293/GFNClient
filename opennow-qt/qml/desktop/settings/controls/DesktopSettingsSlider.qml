@@ -58,7 +58,7 @@ Row {
             width: DesktopTokens.px(22)
             height: DesktopTokens.px(22)
             radius: DesktopTokens.px(11)
-            color: "#FFFFFF"
+            color: Theme.label
             border.width: slider.activeFocus ? 2 : 0
             border.color: DesktopTokens.focus
         }

@@ -3,6 +3,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use ed25519_dalek::{Signature, VerifyingKey};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT, USER_AGENT};
+use semver::Version;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -295,12 +296,7 @@ impl UpdaterService {
         let manifest = serde_json::from_slice::<UpdateManifest>(&manifest_bytes)
             .map_err(|_| "Signed update metadata is invalid JSON".to_owned())?;
         verify_manifest(&manifest, &key)?;
-        if manifest.version.trim_start_matches('v') != available.version
-            || manifest.asset != available.asset.name
-            || manifest.size != available.asset.size
-            || manifest.size == 0
-            || manifest.size > MAXIMUM_UPDATE_BYTES
-        {
+        if !manifest_matches_release(&manifest, available) {
             return Err(
                 "Signed update metadata does not match the selected release asset".to_owned(),
             );
@@ -362,10 +358,12 @@ fn state_json(state: &State) -> Value {
 fn select_release<'a>(
     releases: &'a [Release],
     channel: &str,
-    current: (u64, u64, u64),
+    current: Version,
 ) -> Option<&'a Release> {
-    select_latest_release(releases, channel)
-        .filter(|release| parse_version(&release.tag_name).is_some_and(|version| version > current))
+    select_latest_release(releases, channel).filter(|release| {
+        parse_version(&release.tag_name)
+            .is_some_and(|version| version.cmp_precedence(&current).is_gt())
+    })
 }
 
 fn select_latest_release<'a>(releases: &'a [Release], channel: &str) -> Option<&'a Release> {
@@ -373,7 +371,8 @@ fn select_latest_release<'a>(releases: &'a [Release], channel: &str) -> Option<&
         .iter()
         .filter(|release| !release.draft && (channel == "nightly" || !release.prerelease))
         .filter_map(|release| parse_version(&release.tag_name).map(|version| (release, version)))
-        .max_by_key(|(_, version)| *version)
+        .filter(|(_, version)| channel == "nightly" || version.pre.is_empty())
+        .max_by(|(_, left), (_, right)| left.cmp_precedence(right))
         .map(|(release, _)| release)
 }
 
@@ -449,6 +448,15 @@ fn decode_verifying_key(encoded: &str) -> Result<VerifyingKey, String> {
         .try_into()
         .map_err(|_| "Pinned update signing key has the wrong length".to_owned())?;
     VerifyingKey::from_bytes(&bytes).map_err(|_| "Pinned update signing key is invalid".to_owned())
+}
+
+fn manifest_matches_release(manifest: &UpdateManifest, available: &AvailableUpdate) -> bool {
+    parse_version(&manifest.version)
+        .is_some_and(|version| Some(version) == parse_version(&available.version))
+        && manifest.asset == available.asset.name
+        && manifest.size == available.asset.size
+        && manifest.size > 0
+        && manifest.size <= MAXIMUM_UPDATE_BYTES
 }
 
 fn verify_manifest(manifest: &UpdateManifest, key: &VerifyingKey) -> Result<(), String> {
@@ -676,16 +684,8 @@ fn safe_asset_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let value = value.trim().trim_start_matches('v');
-    let core = value.split(['-', '+']).next()?;
-    let mut parts = core.split('.');
-    let version = (
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-    );
-    parts.next().is_none().then_some(version)
+fn parse_version(value: &str) -> Option<Version> {
+    Version::parse(value.strip_prefix('v').unwrap_or(value)).ok()
 }
 
 fn trusted_release_url(value: &str) -> bool {
@@ -768,20 +768,23 @@ mod tests {
     fn versions_and_channels_are_selected_without_lexical_ordering() {
         let releases = vec![release("v0.9.0", false), release("v0.10.0-beta", true)];
         assert_eq!(
-            select_release(&releases, "stable", (0, 8, 0))
+            select_release(&releases, "stable", Version::new(0, 8, 0))
                 .unwrap()
                 .tag_name,
             "v0.9.0"
         );
         assert_eq!(
-            select_release(&releases, "nightly", (0, 8, 0))
+            select_release(&releases, "nightly", Version::new(0, 8, 0))
                 .unwrap()
                 .tag_name,
             "v0.10.0-beta"
         );
-        assert_eq!(parse_version("v10.2.3-beta.1"), Some((10, 2, 3)));
-        assert!(select_release(&releases, "stable", (0, 9, 0)).is_none());
-        assert!(select_release(&releases, "nightly", (0, 10, 0)).is_none());
+        assert_eq!(
+            parse_version("v10.2.3-beta.1"),
+            Some(Version::parse("10.2.3-beta.1").unwrap())
+        );
+        assert!(select_release(&releases, "stable", Version::new(0, 9, 0)).is_none());
+        assert!(select_release(&releases, "nightly", Version::new(0, 10, 0)).is_none());
     }
 
     fn notes_state() -> State {
@@ -799,11 +802,203 @@ mod tests {
     }
 
     #[test]
+    fn nightly_runs_and_attempts_are_ordered_numerically() {
+        let releases = vec![
+            release("v1.0.0-nightly.10.2", true),
+            release("v1.0.0-nightly.9.10", true),
+            release("v1.0.0-nightly.10.10", true),
+        ];
+        for current in ["1.0.0-nightly.9.10", "1.0.0-nightly.10.2"] {
+            assert_eq!(
+                select_release(&releases, "nightly", parse_version(current).unwrap())
+                    .unwrap()
+                    .tag_name,
+                "v1.0.0-nightly.10.10"
+            );
+        }
+        for current in ["1.0.0-nightly.10.10", "1.0.0-nightly.11.1", "1.0.0"] {
+            assert!(
+                select_release(&releases, "nightly", parse_version(current).unwrap()).is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn stable_promotes_the_same_base_nightly_on_both_channels() {
+        let releases = vec![
+            release("v1.0.0", false),
+            release("v1.0.0-nightly.999.1", true),
+        ];
+        for channel in ["stable", "nightly"] {
+            assert_eq!(
+                select_release(
+                    &releases,
+                    channel,
+                    parse_version("1.0.0-nightly.999.1").unwrap()
+                )
+                .unwrap()
+                .tag_name,
+                "v1.0.0"
+            );
+            assert!(select_release(&releases, channel, Version::new(1, 0, 0)).is_none());
+        }
+        let mislabeled = [release("v1.1.0-nightly.1.1", false)];
+        assert!(select_latest_release(&mislabeled, "stable").is_none());
+    }
+
+    #[test]
+    fn build_metadata_does_not_offer_an_update() {
+        let releases = [release("v1.0.0-nightly.10.1+z", true)];
+        assert!(
+            select_release(
+                &releases,
+                "nightly",
+                parse_version("1.0.0-nightly.10.1+a").unwrap()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn invalid_semver_suffixes_and_prefixes_are_rejected() {
+        for version in [
+            "1.0.0-nightly.01.1",
+            "1.0.0-nightly..1",
+            "1.0.0-",
+            "1.0.0+",
+            "01.0.0",
+            "vv1.0.0",
+            "1.0.0\n",
+        ] {
+            assert!(parse_version(version).is_none(), "{version:?}");
+        }
+    }
+
+    #[test]
+    fn manifest_identity_preserves_prerelease_and_build_metadata() {
+        let available = AvailableUpdate {
+            version: "1.0.0-nightly.10.2+build".to_owned(),
+            asset: Asset {
+                name: "OpenNOW-Qt-1.0.0-nightly.10.2-Linux-x64.deb".to_owned(),
+                browser_download_url: String::new(),
+                size: 123,
+            },
+            manifest_url: String::new(),
+        };
+        let mut manifest = UpdateManifest {
+            schema_version: 1,
+            version: format!("v{}", available.version),
+            asset: available.asset.name.clone(),
+            size: available.asset.size,
+            sha256: "ab".repeat(32),
+            signature: String::new(),
+        };
+        assert!(manifest_matches_release(&manifest, &available));
+        for version in [
+            "1.0.0-nightly.10.1+build",
+            "1.0.0-nightly.10.2+other",
+            "1.0.0-nightly.10.2",
+            "1.0.0",
+            "invalid",
+        ] {
+            manifest.version = version.to_owned();
+            assert!(
+                !manifest_matches_release(&manifest, &available),
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn nightly_manifests_require_valid_signatures() {
+        let signing = SigningKey::from_bytes(&[7_u8; 32]);
+        let mut manifest = UpdateManifest {
+            schema_version: 1,
+            version: "1.0.0-nightly.10.2".to_owned(),
+            asset: "OpenNOW-Qt-1.0.0-nightly.10.2-Linux-x64.deb".to_owned(),
+            size: 123,
+            sha256: "ab".repeat(32),
+            signature: String::new(),
+        };
+        let key = signing.verifying_key();
+        assert!(verify_manifest(&manifest, &key).is_err());
+        manifest.signature = BASE64.encode(
+            signing
+                .sign(signature_payload(&manifest).as_bytes())
+                .to_bytes(),
+        );
+        verify_manifest(&manifest, &key).unwrap();
+        let original_version = manifest.version.clone();
+        for version in ["1.0.0-nightly.10.3", "1.0.0"] {
+            manifest.version = version.to_owned();
+            assert!(verify_manifest(&manifest, &key).is_err());
+        }
+        manifest.version = original_version;
+        assert!(
+            verify_manifest(
+                &manifest,
+                &SigningKey::from_bytes(&[8_u8; 32]).verifying_key()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn builds_without_a_pinned_key_cannot_download_updates() {
+        if option_env!("OPENNOW_UPDATE_ED25519_PUBLIC_KEY")
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return;
+        }
+        let path =
+            std::env::temp_dir().join(format!("opennow-update-no-key-{}", rand::random::<u64>()));
+        let updater = UpdaterService::new(&path).unwrap();
+        updater.state.lock().unwrap().available = Some(AvailableUpdate {
+            version: "1.0.0-nightly.10.2".to_owned(),
+            asset: Asset {
+                name: "OpenNOW-Qt-1.0.0-nightly.10.2-Linux-x64.deb".to_owned(),
+                browser_download_url: String::new(),
+                size: 123,
+            },
+            manifest_url: String::new(),
+        });
+        updater.state.lock().unwrap().status = "available";
+        assert_eq!(updater.state()["canDownload"], false);
+        assert_eq!(
+            updater.state()["signaturePolicy"],
+            "unconfigured-fail-closed"
+        );
+        assert_eq!(
+            updater.download().unwrap_err(),
+            "This build has no pinned update signing key"
+        );
+        assert!(updater.state()["downloadedVersion"].is_null());
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nightly_debian_package_matches_the_platform() {
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        };
+        let name = format!("OpenNOW-Qt-1.0.0-nightly.10.2-Linux-{arch}.deb");
+        let assets = [Asset {
+            browser_download_url: format!("{RELEASE_ASSET_PREFIX}v1.0.0-nightly.10.2/{name}"),
+            name,
+            size: 123,
+        }];
+        assert!(compatible_asset(&assets).is_some());
+    }
+
+    #[test]
     fn current_and_ahead_builds_keep_published_notes_without_offering_a_downgrade() {
         let mut published = release("v0.5.4", false);
         published.body = Some("# Changes\n\n- **Fixed** release notes".to_owned());
         let releases = vec![published];
-        for current in [(0, 5, 4), (1, 0, 0)] {
+        for current in [Version::new(0, 5, 4), Version::new(1, 0, 0)] {
             assert!(select_release(&releases, "stable", current).is_none());
             let mut state = notes_state();
             update_highlights(&mut state, select_latest_release(&releases, "stable"));
@@ -834,7 +1029,7 @@ mod tests {
         update_highlights(&mut state, select_latest_release(&releases, "stable"));
         assert_eq!(state.notes_version.as_deref(), Some("1.0.0"));
         assert_eq!(
-            select_release(&releases, "stable", (0, 9, 0))
+            select_release(&releases, "stable", Version::new(0, 9, 0))
                 .unwrap()
                 .tag_name,
             "v1.0.0"

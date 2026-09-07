@@ -7,6 +7,7 @@ endif()
 project(OpenNOWQt VERSION 1.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
+include(cmake/BuildMetadata.cmake)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,12 +38,6 @@ else()
     set(OPENNOW_SDL3_RUNTIME_TARGET SDL3::SDL3)
 endif()
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
-set(OPENNOW_BUILD_VERSION "${PROJECT_VERSION}" CACHE STRING
-    "Numeric OpenNOW release version embedded in Qt, Rust, bundles, and packages")
-if(NOT OPENNOW_BUILD_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
-    message(FATAL_ERROR
-        "OPENNOW_BUILD_VERSION must be a numeric semantic version such as 0.5.4")
-endif()
 set(OPENNOW_UPDATE_ED25519_PUBLIC_KEY "" CACHE STRING
     "Base64 Ed25519 public key pinned into release builds for update manifests")
 set(OPENNOW_RUST_TARGET "" CACHE STRING
@@ -110,8 +105,8 @@ set_target_properties(opennow-qt PROPERTIES
     MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_BUNDLE_NAME "OpenNOW"
     MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.opencloudgaming.OpenNOW"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "${OPENNOW_BUILD_VERSION}"
-    MACOSX_BUNDLE_BUNDLE_VERSION "${OPENNOW_BUILD_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${OPENNOW_NUMERIC_VERSION}"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${OPENNOW_NUMERIC_VERSION}"
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/Info.plist.in"
 )
 
@@ -1212,13 +1207,15 @@ set(CPACK_PACKAGE_CONTACT "OpenCloudGaming <support@opennow.app>")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Controller-first GeForce NOW client")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/OpenCloudGaming/OpenNOW")
 set(CPACK_PACKAGE_VERSION "${OPENNOW_BUILD_VERSION}")
-string(REPLACE "." ";" OPENNOW_BUILD_VERSION_PARTS "${OPENNOW_BUILD_VERSION}")
+string(REPLACE "." ";" OPENNOW_BUILD_VERSION_PARTS "${OPENNOW_NUMERIC_VERSION}")
 list(GET OPENNOW_BUILD_VERSION_PARTS 0 CPACK_PACKAGE_VERSION_MAJOR)
 list(GET OPENNOW_BUILD_VERSION_PARTS 1 CPACK_PACKAGE_VERSION_MINOR)
 list(GET OPENNOW_BUILD_VERSION_PARTS 2 CPACK_PACKAGE_VERSION_PATCH)
-set(CPACK_PACKAGE_FILE_NAME "OpenNOW-Qt-${OPENNOW_BUILD_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_PACKAGE_FILE_NAME "${OPENNOW_PACKAGE_FILE_NAME}")
 set(CPACK_STRIP_FILES TRUE)
 if(WIN32)
+    set(CPACK_PACKAGE_VERSION "${OPENNOW_NUMERIC_VERSION}")
+    set(CPACK_WIX_ARCHITECTURE "${OPENNOW_PACKAGE_ARCH}")
     set(CPACK_STRIP_FILES FALSE)
     set(CPACK_GENERATOR "WIX;ZIP")
     set(CPACK_WIX_UPGRADE_GUID "6E81F7AE-B19D-4E87-A94A-2B2F01EBF762")
@@ -1230,7 +1227,8 @@ else()
     # assembly uses linuxdeploy in release CI so plugin selection is explicit.
     set(CPACK_GENERATOR "DEB")
     set(CPACK_DEBIAN_PACKAGE_SECTION "games")
-    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+    set(CPACK_DEBIAN_FILE_NAME "${OPENNOW_PACKAGE_FILE_NAME}.deb")
+    set(CPACK_DEBIAN_PACKAGE_VERSION "${OPENNOW_DEBIAN_VERSION}")
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS TRUE)
     get_target_property(OPENNOW_SDL3_RUNTIME_LOCATION
         ${OPENNOW_SDL3_RUNTIME_TARGET} IMPORTED_LOCATION_RELEASE)
@@ -1246,10 +1244,6 @@ else()
     endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS
         "libqt6core6 (>= 6.8) | libqt6core6t64 (>= 6.8), libqt6gui6 (>= 6.8), libqt6network6 (>= 6.8), libqt6qml6 (>= 6.8), libqt6quick6 (>= 6.8), libqt6quickcontrols2-6 (>= 6.8), libqt6multimedia6 (>= 6.8), qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-dialogs, qml6-module-qtquick-effects, qml6-module-qtmultimedia, libsdl3-0 | libsdl3-0.0, libva2, libva-drm2")
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
-        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
-    endif()
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${OPENNOW_DEBIAN_ARCH}")
 endif()
 include(CPack)

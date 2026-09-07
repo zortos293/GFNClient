@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Numeric release version (for example 0.6.0)
+        description: Numeric signed-candidate version (for example 1.0.0; use qt-ci for unsigned nightlies)
         required: true
         type: string
       source_commit:
@@ -35,7 +35,7 @@ jobs:
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
-      - name: Validate release inputs and protected secrets
+      - name: Validate release inputs
         shell: bash
         env:
           RELEASE_VERSION: ${{ inputs.version }}

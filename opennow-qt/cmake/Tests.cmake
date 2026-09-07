@@ -39,6 +39,11 @@ if(BUILD_TESTING)
             set_tests_properties(opennow-frameinterpolator-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         endif()
     endif()
+    if(WIN32)
+        set_tests_properties(opennow-hdrcolor-tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_LOGGING_TO_CONSOLE=1")
+    endif()
+    set_tests_properties(opennow-hdrcolor-tests PROPERTIES TIMEOUT 60)
     set_tests_properties(opennow-frameinterpolator-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml)

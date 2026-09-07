@@ -4,6 +4,7 @@
 #include <QQmlEngine>
 #include <QQmlComponent>
 #include <QQuickWindow>
+#include <QQuickGraphicsConfiguration>
 #include <QGuiApplication>
 #include <QTest>
 #include <QVector3D>
@@ -84,7 +85,7 @@ private slots:
 #if defined(Q_OS_WIN)
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
         QRhiD3D11InitParams params;
-        m_rhi.reset(QRhi::create(QRhi::D3D11, &params));
+        m_rhi.reset(QRhi::create(QRhi::D3D11, &params, QRhi::PreferSoftwareRenderer));
 #elif QT_CONFIG(metal)
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Metal);
         QRhiMetalInitParams params;
@@ -224,6 +225,11 @@ private slots:
     {
         qmlRegisterType<HdrChromeEffect>("HdrTest", 1, 0, "HdrChromeEffect");
         QQuickWindow window;
+#if defined(Q_OS_WIN)
+        QQuickGraphicsConfiguration configuration;
+        configuration.setPreferSoftwareDevice(true);
+        window.setGraphicsConfiguration(configuration);
+#endif
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
         if (window.rendererInterface()->graphicsApi() == QSGRendererInterface::Vulkan)
             window.setVulkanInstance(&m_instance);

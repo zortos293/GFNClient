@@ -68,9 +68,12 @@ after decoder destruction. They complement, rather than replace, the live Qt pla
 ## Color and recovery
 
 Repeat playback with H.265 10-bit 4:2:0 when it is offered by the device and service. Confirm the
-decoder and presentation preserve 10-bit output rather than silently converting it to 8-bit
-NV12. Check dark gradients and limited/full-range black and white levels. This is an SDR
-bit-depth check, not HDR certification. Unsupported chroma/bit-depth combinations must fail
+decoder preserves P010 and the native conversion publishes RGB10A2 rather than an 8-bit
+intermediate. Qt's SDR swapchain is 8-bit: the final video draw applies centered spatial
+dithering after scaling, including to generated frames, without changing the transfer function.
+Check `qt-native.log` for `SDR video composition: textureBits=10 outputBits=8 dither=ordered-8x8`.
+Check dark gradients and limited/full-range black and white levels. This is an SDR
+precision check, not a claim of 10-bit scan-out or HDR certification. Unsupported chroma/bit-depth combinations must fail
 before session creation instead of silently changing the selected quality.
 
 Interrupt the network briefly, then restore it. Recovery must discard unusable reference frames

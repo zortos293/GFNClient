@@ -26,6 +26,24 @@ if(BUILD_TESTING)
         endif()
     endif()
     set_tests_properties(opennow-frameinterpolator-tests PROPERTIES TIMEOUT 60)
+    qt_add_executable(opennow-streamcolor-tests tests/tst_streamcolor.cpp)
+    target_include_directories(opennow-streamcolor-tests PRIVATE src)
+    target_link_libraries(opennow-streamcolor-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate)
+    qt_add_shaders(opennow-streamcolor-tests "opennow-streamcolor-test-shaders"
+        PREFIX "/opennow/shaders" BASE "shaders"
+        FILES shaders/streamvideo.vert shaders/streamvideo.frag)
+    if(OPENNOW_XVFB_RUN)
+        add_test(NAME opennow-streamcolor-tests
+            COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-streamcolor-tests>" -o -,txt)
+        set_tests_properties(opennow-streamcolor-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
+    else()
+        add_test(NAME opennow-streamcolor-tests COMMAND opennow-streamcolor-tests -o -,txt)
+        if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            set_tests_properties(opennow-streamcolor-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
+    endif()
+    set_tests_properties(opennow-streamcolor-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/SteamBigPictureAcceptance.qml)
     add_test(NAME qml-steam-big-picture

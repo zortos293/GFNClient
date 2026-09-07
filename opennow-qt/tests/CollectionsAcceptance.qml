@@ -49,7 +49,8 @@ QtObject {
         const screen = find(item, "desktopLibraryScreen")
         check(screen !== null, "library screen not rendered")
         const originalGames = ShellStore.catalogGames.slice()
-        ShellStore.settings = {gameCollections: [], hiddenGameIds: [], favoriteGameIds: [], desktopRailCollapsed: false}
+        ShellStore.settings = {gameCollections: [], hiddenGameIds: [], favoriteGameIds: [], desktopRailCollapsed: false,
+            appTheme: ShellStore.settings.appTheme || "dark"}
         ShellStore.catalogGames = [
             {uuid: "game-a", id: "variant-a", title: "First game", availableStores: ["Steam"]},
             {id: "game-b", title: "Second game", availableStores: ["Epic"]},
@@ -116,6 +117,9 @@ QtObject {
         const field = find(item, "collectionNameField")
         const confirm = find(item, "collectionConfirmButton")
         check(field && confirm, "collection editor not rendered")
+        const dialogBackground = find(item, "collectionDialogBackground")
+        check(dialogBackground && dialogBackground.color === DesktopTokens.shell
+            && field.background.color === DesktopTokens.raised, "collection editor does not follow the active theme")
         field.text = "Controller nights"
         check(confirm.enabled, "valid collection cannot be submitted")
         confirm.clicked()

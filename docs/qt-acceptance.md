@@ -31,7 +31,7 @@ alone is not performance or zero-copy evidence.
 ## Custom library collections
 
 Run `ctest --test-dir build/opennow-qt -R qml-collections --output-on-failure`
-for the isolated 960- and 1440-pixel collection workflows. These exercise the real
+for the isolated 960- and 1440-pixel collection workflows in dark and light themes. These exercise the real
 Qt library, collection editor, and state owner with a mock core transport, including
 create/rename/delete, multiple membership, search/store/hidden filters, rejected
 names, failed saves, and disconnect recovery. Persistence and validation are covered

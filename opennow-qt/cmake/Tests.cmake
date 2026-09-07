@@ -1,5 +1,29 @@
 include(CTest)
 if(BUILD_TESTING)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-theme-tests tests/tst_theme.cpp)
+    target_link_libraries(opennow-theme-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-theme-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    add_test(NAME opennow-theme-tests COMMAND opennow-theme-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/theme")
+    set_tests_properties(opennow-theme-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    qt_add_resources(opennow-qt "theme-settings-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ThemeSettingsAcceptance.qml)
+    foreach(width 960 1440)
+        foreach(mode dark light)
+            set(theme_mode_args)
+            if(mode STREQUAL "light")
+                list(APPEND theme_mode_args --smoke-light-theme)
+            endif()
+            add_test(NAME "qml-theme-settings-${width}-${mode}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                    --route settings-themes --smoke-theme-settings --reduced-motion
+                    --smoke-width ${width} ${theme_mode_args})
+            set_tests_properties("qml-theme-settings-${width}-${mode}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+        endforeach()
+    endforeach()
     qt_add_executable(opennow-framepacer-tests tests/tst_framepacer.cpp)
     target_include_directories(opennow-framepacer-tests PRIVATE src)
     target_link_libraries(opennow-framepacer-tests PRIVATE Qt6::Test)
@@ -45,13 +69,31 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(opennow-streamcolor-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/ControllerMetadataAcceptance.qml)
     foreach(width 960 1440)
         add_test(NAME "qml-collections-${width}"
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
                 --route library --smoke-collections --smoke-width ${width} --reduced-motion)
         set_tests_properties("qml-collections-${width}" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+        add_test(NAME "qml-collections-light-${width}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route library --smoke-collections --smoke-light-theme --smoke-width ${width} --reduced-motion)
+        set_tests_properties("qml-collections-light-${width}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+    endforeach()
+    add_test(NAME qml-controller-metadata
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-input --smoke-controller-metadata --reduced-motion)
+    set_tests_properties(qml-controller-metadata PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "custom-background-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/CustomBackgroundAcceptance.qml)
+    foreach(width 960 1600)
+        add_test(NAME qml-custom-background-${width}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route settings-themes --smoke-custom-background --smoke-width ${width} --reduced-motion)
+        set_tests_properties(qml-custom-background-${width} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     endforeach()
     add_test(NAME qml-steam-big-picture
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
@@ -316,6 +358,20 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 20
     )
+    qt_add_executable(opennow-controllermetadata-tests
+        tests/tst_controllermetadata.cpp
+        src/input/ControllerInput.cpp
+        src/input/ControllerInput.h
+    )
+    target_include_directories(opennow-controllermetadata-tests PRIVATE src)
+    target_link_libraries(opennow-controllermetadata-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui SDL3::SDL3)
+    add_test(NAME opennow-controllermetadata-tests
+             COMMAND opennow-controllermetadata-tests -o -,txt)
+    set_tests_properties(opennow-controllermetadata-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 30
+    )
     if(WIN32)
         add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-test-runtime)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
@@ -333,6 +389,7 @@ if(BUILD_TESTING)
             opennow-thumbnail-tests
             opennow-controllerinput-tests
             opennow-controllersources-tests
+            opennow-controllermetadata-tests
             PROPERTIES WIN32_EXECUTABLE FALSE)
 
         # windeployqt follows the application graph and therefore does not copy
@@ -376,7 +433,8 @@ if(BUILD_TESTING)
                 opennow-singleinstance-tests
                 opennow-thumbnail-tests
                 opennow-controllerinput-tests
-                opennow-controllersources-tests)
+                opennow-controllersources-tests
+                opennow-controllermetadata-tests)
             add_dependencies(${test_target} opennow-qt-test-runtime)
         endforeach()
     endif()

@@ -358,8 +358,8 @@ FocusScope {
         visible: contextMotion.present
         enabled: root.contextGame !== null
         z: 41
-        color: "#F710131D"
-        border.width: 1; border.color: "#29FFFFFF"
+        color: DesktopTokens.shell
+        border.width: 1; border.color: DesktopTokens.seam
         Column {
             x: 8; y: 8; width: 214; spacing: 0
             Text { width: parent.width; height: 26; leftPadding: 8; text: root.presentedContextGame ? String(root.presentedContextGame.title || "").toUpperCase() : ""; color: DesktopTokens.textFaint; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.DemiBold; font.letterSpacing: 0.6 }
@@ -412,8 +412,8 @@ FocusScope {
         visible: collectionMotion.present
         enabled: root.contextGame !== null && root.collectionOpen
         z: 42
-        color: "#F710131D"
-        border.width: 1; border.color: "#29FFFFFF"
+        color: DesktopTokens.shell
+        border.width: 1; border.color: DesktopTokens.seam
         Column {
             x: 8; y: 8; width: parent.width - 16; spacing: 0
             Text { width: parent.width; height: 24; leftPadding: 8; text: qsTr("COLLECTIONS"); color: DesktopTokens.textFaint; verticalAlignment: Text.AlignVCenter; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.tinySize; font.weight: Font.DemiBold; font.letterSpacing: 0.6 }
@@ -432,7 +432,7 @@ FocusScope {
                     padding: 8
                     enabled: !ShellStore.collectionsBusy
                     Accessible.name: modelData.name
-                    background: Rectangle { radius: 7; color: membershipButton.hovered || membershipButton.activeFocus ? "#14FFFFFF" : "transparent" }
+                    background: Rectangle { radius: 7; color: membershipButton.hovered || membershipButton.activeFocus ? DesktopTokens.raised : "transparent" }
                     contentItem: Text {
                         text: (ShellStore.isInCollection(root.contextGame, membershipButton.modelData.id) ? "✓  " : "+  ") + membershipButton.modelData.name
                         textFormat: Text.PlainText
@@ -449,7 +449,7 @@ FocusScope {
                 id: newCollectionAction
                 width: parent.width; height: 40; padding: 8
                 enabled: !ShellStore.collectionsBusy
-                background: Rectangle { radius: 7; color: newCollectionAction.hovered || newCollectionAction.activeFocus ? "#14FFFFFF" : "transparent" }
+                background: Rectangle { radius: 7; color: newCollectionAction.hovered || newCollectionAction.activeFocus ? DesktopTokens.raised : "transparent" }
                 contentItem: Text {
                     text: qsTr("New collection")
                     verticalAlignment: Text.AlignVCenter

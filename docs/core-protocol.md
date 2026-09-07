@@ -224,6 +224,13 @@ do not emit `updater.highlights.show` or enable downloading a downgrade. Missing
 release bodies and empty channels return an explanatory note instead of the
 pre-check placeholder.
 
+Setting `themePack` applies its default appearance (`light` for Bone/Cobalt, `dark`
+for the other built-in packs) and clears `themeAccentOverride` in the same save.
+Setting `appAccentColor` enables `themeAccentOverride` in the same save. The
+`settings.set` response and `settings.changed` event include these coupled values
+in `changes`; clients can still override appearance or restore the pack accent
+by setting `appTheme` or `themeAccentOverride` independently.
+
 Settings writes use a temporary file plus recoverable backup and normalize
 compatibility-sensitive values. Setting `launchInConsoleMode=false` atomically
 sets `switchToConsoleOnPad=false` too, so a manual desktop choice survives restart.

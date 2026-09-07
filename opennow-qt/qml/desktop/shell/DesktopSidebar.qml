@@ -338,7 +338,7 @@ FocusScope {
                     Accessible.name: qsTr("New collection")
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("New collection")
-                    background: Rectangle { radius: 8; color: createCollectionButton.hovered || createCollectionButton.activeFocus ? "#14FFFFFF" : "transparent" }
+                    background: Rectangle { radius: 8; color: createCollectionButton.hovered || createCollectionButton.activeFocus ? DesktopTokens.raised : "transparent" }
                     contentItem: DesktopGlyph { icon: "desktop-plus.svg" }
                     onClicked: root.createCollectionRequested()
                 }
@@ -365,7 +365,7 @@ FocusScope {
                     background: Rectangle {
                         radius: 8
                         color: ShellStore.activeCollectionId === collectionRow.modelData.id && root.currentRoute === "library"
-                            ? "#1AFFFFFF" : collectionRow.hovered || collectionRow.activeFocus ? "#14FFFFFF" : "transparent"
+                            ? DesktopTokens.raisedStrong : collectionRow.hovered || collectionRow.activeFocus ? DesktopTokens.raised : "transparent"
                     }
                     contentItem: Item {
                     width: DesktopTokens.railWidth - 28
@@ -399,7 +399,7 @@ FocusScope {
                         visible: root.reveal > 0
                         opacity: root.reveal
                         text: collectionRow.modelData.gameIds.length
-                        color: "#4DFFFFFF"
+                        color: DesktopTokens.textFaint
                         font.family: DesktopTokens.monoFont
                         font.pixelSize: 10
                         font.weight: Font.DemiBold

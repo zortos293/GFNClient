@@ -120,6 +120,18 @@ impl SettingsStore {
         let previous_values = self.values.clone();
         self.values.insert(key.to_owned(), value);
         self.normalize();
+        if key == "themePack" {
+            let light = matches!(self.values[key].as_str(), Some("bone" | "cobalt"));
+            self.values.insert(
+                "appTheme".to_owned(),
+                json!(if light { "light" } else { "dark" }),
+            );
+            self.values
+                .insert("themeAccentOverride".to_owned(), json!(false));
+        } else if key == "appAccentColor" {
+            self.values
+                .insert("themeAccentOverride".to_owned(), json!(true));
+        }
         if key == "launchInConsoleMode" && self.values.get(key) == Some(&json!(false)) {
             self.values
                 .insert("switchToConsoleOnPad".to_owned(), json!(false));
@@ -148,9 +160,23 @@ impl SettingsStore {
         normalize_choice(
             &mut self.values,
             "desktopBackground",
-            &["art", "gradient", "solid"],
+            &["art", "gradient", "solid", "custom"],
             "art",
         );
+        clamp_integer(&mut self.values, "desktopBackgroundOpacity", 0, 100, 30);
+        let background_image = self.values["desktopBackgroundImage"].as_str().unwrap_or("");
+        if !background_image.is_empty()
+            && (background_image.len() > 8192
+                || !url::Url::parse(background_image).is_ok_and(|url| {
+                    url.scheme() == "file"
+                        && url.to_file_path().is_ok()
+                        && url.query().is_none()
+                        && url.fragment().is_none()
+                }))
+        {
+            self.values
+                .insert("desktopBackgroundImage".to_owned(), json!(""));
+        }
         normalize_choice(
             &mut self.values,
             "aspectRatio",
@@ -737,6 +763,7 @@ fn defaults() -> Map<String, Value> {
         "reducedMotion":false,
         "launchInConsoleMode":false, "consoleProfilePickerOnLaunch":true,
         "desktopRailCollapsed":true, "desktopSidebarHover":true, "desktopBackground":"art",
+        "desktopBackgroundImage":"", "desktopBackgroundOpacity":30,
         "switchToConsoleOnPad":false, "leaveConsoleOnPointer":true,
         "autoFullScreen":false, "favoriteGameIds":[], "hiddenGameIds":[], "gameCollections":[], "homeTileSizes":{}, "sessionCounterEnabled":false,
         "showSessionReport":true, "showSessionTimeRemainingInStatsOverlay":false,
@@ -760,6 +787,52 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn theme_packs_and_accent_overrides_are_atomic_and_persisted() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-theme-policy-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        for pack in [
+            "nocturne", "aurora", "kraft", "phosphor", "bone", "cobalt", "hibiscus", "chapel",
+        ] {
+            store.set("appAccentColor", json!("rose")).unwrap();
+            assert_eq!(store.all()["themeAccentOverride"], json!(true));
+            store.set("themePack", json!(pack)).unwrap();
+            let mut loaded = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(loaded.all()["themePack"], json!(pack));
+            assert_eq!(loaded.all()["themeAccentOverride"], json!(false));
+            assert_eq!(
+                loaded.all()["appTheme"],
+                json!(if matches!(pack, "bone" | "cobalt") {
+                    "light"
+                } else {
+                    "dark"
+                })
+            );
+            loaded.set("appTheme", json!("auto")).unwrap();
+            loaded.set("appAccentColor", json!("violet")).unwrap();
+            store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["appTheme"], json!("auto"));
+            assert_eq!(store.all()["themePack"], json!(pack));
+            assert_eq!(store.all()["themeAccentOverride"], json!(true));
+            assert_eq!(store.all()["appAccentColor"], json!("violet"));
+        }
+        let before = store.all();
+        fs::create_dir(directory.join("settings.json.tmp")).unwrap();
+        assert!(store.set("themePack", json!("bone")).is_err());
+        assert_eq!(store.all(), before);
+        fs::remove_dir(directory.join("settings.json.tmp")).unwrap();
+        store.set("themeAccentOverride", json!(false)).unwrap();
+        let before = store.all();
+        fs::create_dir(directory.join("settings.json.tmp")).unwrap();
+        assert!(store.set("appAccentColor", json!("green")).is_err());
+        assert_eq!(store.all(), before);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn steam_big_picture_is_opt_in_and_persists_independently() {
@@ -1070,6 +1143,72 @@ mod tests {
         let persisted: Value =
             serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
         assert_eq!(persisted["unrelatedLegacySetting"], json!("preserve"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn custom_background_preferences_are_bounded_and_persisted() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-background-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["desktopBackgroundImage"], json!(""));
+        assert_eq!(store.all()["desktopBackgroundOpacity"], json!(30));
+        assert_eq!(
+            store.set("desktopBackground", json!("custom")).unwrap(),
+            json!("custom")
+        );
+
+        let image = url::Url::from_file_path(directory.join("写真 #1.png"))
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            store.set("desktopBackgroundImage", json!(image)).unwrap(),
+            json!(image)
+        );
+        for (input, expected) in [
+            (json!(-10), 0),
+            (json!(110), 100),
+            (json!(0), 0),
+            (json!(65), 65),
+            (json!(null), 30),
+            (json!("50"), 30),
+        ] {
+            assert_eq!(
+                store.set("desktopBackgroundOpacity", input).unwrap(),
+                json!(expected)
+            );
+        }
+        store.set("desktopBackgroundOpacity", json!(65)).unwrap();
+        let reloaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(reloaded.all()["desktopBackground"], json!("custom"));
+        assert_eq!(reloaded.all()["desktopBackgroundImage"], json!(image));
+        assert_eq!(reloaded.all()["desktopBackgroundOpacity"], json!(65));
+
+        for invalid in [
+            "https://example.com/image.png",
+            "qrc:/image.png",
+            "relative.png",
+            "file:///image.png?download=1",
+            "file:///image.png#fragment",
+        ] {
+            assert_eq!(
+                store.set("desktopBackgroundImage", json!(invalid)).unwrap(),
+                json!("")
+            );
+        }
+        assert_eq!(
+            store
+                .set("desktopBackgroundImage", json!("x".repeat(8193)))
+                .unwrap(),
+            json!("")
+        );
+        store.reset().unwrap();
+        assert_eq!(store.all()["desktopBackground"], json!("art"));
+        assert_eq!(store.all()["desktopBackgroundImage"], json!(""));
+        assert_eq!(store.all()["desktopBackgroundOpacity"], json!(30));
         fs::remove_dir_all(directory).unwrap();
     }
 

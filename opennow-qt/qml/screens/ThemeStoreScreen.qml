@@ -10,16 +10,7 @@ FocusScope {
     property string statusMessage: qsTr("Choose a built-in theme to preview or apply")
     readonly property var filters: ["All", "Dark", "Light", "High contrast"]
     readonly property var filterLabels: [qsTr("All"), qsTr("Dark"), qsTr("Light"), qsTr("High contrast")]
-    readonly property var themes: [
-        {id:"nocturne", name:"Nocturne", author:"OPENNOW", category:"Dark", detail:"VIOLET GLASS", bg:"#101321", mid:"#252A48", accent:"#A78BFA"},
-        {id:"aurora", name:"Aurora", author:"OPENNOW", category:"Dark", detail:"MINT AURORA", bg:"#071A20", mid:"#16434A", accent:"#6EE7B7"},
-        {id:"kraft", name:"Kraft", author:"OPENNOW", category:"Dark", detail:"WARM BRASS", bg:"#211D17", mid:"#756346", accent:"#D3A85C"},
-        {id:"phosphor", name:"Phosphor", author:"OPENNOW", category:"High contrast", detail:"CRT GLOW", bg:"#07120B", mid:"#12351D", accent:"#6BFF8A"},
-        {id:"bone", name:"Bone", author:"OPENNOW", category:"Light", detail:"WARM MINIMAL", bg:"#EEE7DB", mid:"#A89578", accent:"#7F6A4D"},
-        {id:"cobalt", name:"Cobalt", author:"OPENNOW", category:"Light", detail:"COBALT PAPER", bg:"#F7F9FF", mid:"#ADC4FF", accent:"#245BDB"},
-        {id:"hibiscus", name:"Hibiscus", author:"OPENNOW", category:"Dark", detail:"ROSE GLASS", bg:"#1F0C18", mid:"#642343", accent:"#FF6F9F"},
-        {id:"chapel", name:"Chapel", author:"OPENNOW", category:"Dark", detail:"GOLD GLASS", bg:"#151225", mid:"#40355D", accent:"#FFD166"}
-    ]
+    readonly property var themes: Theme.packs
     readonly property var visibleThemes: {
         if (root.filterIndex === 0)
             return root.themes
@@ -269,7 +260,7 @@ FocusScope {
                                 id: installedText
                                 anchors.centerIn: parent
                                 text: ShellStore.settings.themePack === modelData.id ? qsTr("✓ Active") : qsTr("Apply")
-                                color: ShellStore.settings.themePack === modelData.id ? "#0B0F1A" : Theme.label
+                                color: ShellStore.settings.themePack === modelData.id ? Theme.contrastText(parent.color) : Theme.label
                                 font.family: Theme.bodyFont
                                 font.pixelSize: 12
                                 font.weight: Font.Black

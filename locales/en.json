@@ -19,6 +19,29 @@
     "nameTooLong": "Use 80 characters or fewer.",
     "limit": "You can create up to 100 collections."
   },
+  "controllerStatus": {
+    "chargingPercent": "Charging · %1%",
+    "charging": "Charging",
+    "charged": "Fully charged",
+    "wired": "Wired power",
+    "batteryPercent": "Battery %1%",
+    "onBattery": "On battery",
+    "unavailable": "Battery unavailable"
+  },
+  "customBackground": {
+    "chooseTitle": "Choose a background image",
+    "imageFilter": "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+    "description": "Game art, a custom image, gradient or solid color",
+    "custom": "Custom",
+    "image": "Custom image",
+    "unavailable": "Image unavailable. Choose another file or remove it.",
+    "keepLocation": "Keep the image in its original location",
+    "formats": "Choose a local PNG, JPEG, WebP or BMP image",
+    "choose": "Choose image…",
+    "remove": "Remove",
+    "opacity": "Image opacity",
+    "opacityDescription": "0% hides the image · 100% shows the full image"
+  },
   "sessionLaunch": {
     "ending": "ENDING SESSION",
     "closing": "Closing your session",
@@ -2979,6 +3002,8 @@
     "s_qt_controller_source_hint": "Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting.",
     "s_qt_controller_source_all": "All controllers (multiplayer)",
     "s_qt_controller_source_device": "Device %1 · %2",
-    "s_qt_controller_source_disconnected": "Selected controller disconnected"
+    "s_qt_controller_source_disconnected": "Selected controller disconnected",
+    "s_qt_theme_pack_applies_palette": "Applies the pack's appearance, accent and surfaces",
+    "s_qt_theme_sky_glass": "SKY GLASS"
   }
 }

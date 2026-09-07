@@ -19,7 +19,7 @@ Dialog {
     padding: 24
     palette.windowText: DesktopTokens.text
     palette.text: DesktopTokens.text
-    background: Rectangle { radius: 16; color: "#10131D"; border.color: DesktopTokens.seam }
+    background: Rectangle { objectName: "collectionDialogBackground"; radius: 16; color: DesktopTokens.shell; border.color: DesktopTokens.seam }
     onAboutToShow: {
         submitted = false
         ShellStore.collectionError = ""
@@ -77,7 +77,7 @@ Dialog {
             font.family: DesktopTokens.bodyFont
             font.pixelSize: 15
             padding: 12
-            background: Rectangle { radius: 8; color: "#0FFFFFFF"; border.color: nameField.activeFocus ? DesktopTokens.focus : DesktopTokens.seam }
+            background: Rectangle { radius: 8; color: DesktopTokens.raised; border.color: nameField.activeFocus ? DesktopTokens.focus : DesktopTokens.seam }
             onTextEdited: ShellStore.collectionError = ""
             onAccepted: root.submit()
         }

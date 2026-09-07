@@ -1,0 +1,94 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import OpenNOW
+
+Column {
+    id: page
+    required property real availableWidth
+    required property var settingsScreen
+
+    width: page.availableWidth; spacing: 20
+    DesktopSettingsPanel {
+        width: parent.width; paperStyle: true
+        DesktopSettingsSection { text: qsTr("PICTURE") }
+        DesktopSettingsResolution {
+            width: parent.width; items: page.settingsScreen.resolutionItems()
+            value: page.settingsScreen.currentResolutionValue()
+            onSelected: value => page.settingsScreen.setSetting("resolution", value)
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "speed"; title: qsTr("Frame rate"); description: page.settingsScreen.fpsEntitlementNote()
+            DesktopSettingsSegmented {
+                readonly property string current: Number(page.settingsScreen.valueSetting("fps",60)) === 0 ? "AUTO" : String(page.settingsScreen.valueSetting("fps",60))
+                options: ["60","90","120","144","240"].indexOf(current) >= 0 ? ["60","90","120","144","240"] : [current,"60","90","120","144","240"]
+                optionWidth: 50; selectedIndex: options.indexOf(current)
+                disabledValues: page.settingsScreen.unentitledFpsValues(); disabledHint: page.settingsScreen.fpsLockedHint()
+                onSelected: (index,value) => page.settingsScreen.setSetting("fps",value === "AUTO" ? 0 : Number(value))
+            }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("HDR")
+            description: qsTr("HDR cannot currently be selected by the native session API")
+            DesktopSettingsToggle { checked: false; enabled: false; opacity: 0.45; Accessible.name: qsTr("HDR unavailable") }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "drop"; title: qsTr("Color depth")
+            description: page.settingsScreen.colorQualityFooter(); showDivider: false
+            DesktopSettingsSegmented {
+                options: page.settingsScreen.colorQualityItems().filter(item => item.value !== "8bit_444" || page.settingsScreen.valueSetting("colorQuality","8bit_420") === "8bit_444").map(item => ({label:item.value === "8bit_420" ? "8-bit" : item.value === "10bit_420" ? "10-bit" : item.value === "8bit_444" ? "8-bit 4:4:4" : "10-bit 4:4:4", value:item.value, enabled:!item.disabled}))
+                optionWidth: 85; selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("colorQuality","8bit_420"))
+                onSelected: (index,item) => page.settingsScreen.setChoice("colorQuality",item.value)
+            }
+        }
+    }
+    DesktopSettingsPanel {
+        width: parent.width; paperStyle: true
+        DesktopSettingsSection { text: qsTr("CONNECTION") }
+        DesktopSettingsChoice {
+            objectName: "streamBackendChoice"
+            width: parent.width; glyph: "chip"; title: qsTr("Video backend")
+            description: Qt.platform.os === "windows"
+                ? qsTr("Auto uses DX11 hardware decoding. DX12 and Vulkan texture sharing are not supported by the Windows stream view yet. Applies to the next stream.")
+                : qsTr("Choose a supported native backend. Applies to the next stream.")
+            items: ShellStore.videoBackendItems()
+            value: page.settingsScreen.valueSetting("nativeVideoBackend", "auto")
+            onSelected: value => page.settingsScreen.setSetting("nativeVideoBackend", value)
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "chip"; title: qsTr("Codec")
+            description: ShellStore.streamerDetectionMessage
+            DesktopSettingsSegmented {
+                options: [{label:qsTr("Auto"),value:"auto"},{label:"AV1",value:"av1",enabled:ShellStore.codecAvailable("av1")},{label:"H.265",value:"h265",enabled:ShellStore.codecAvailable("h265")},{label:"H.264",value:"h264",enabled:ShellStore.codecAvailable("h264")}]
+                disabledHint: qsTr("Not supported by the detected native decoder")
+                optionWidth: 64; selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("codec","auto"))
+                onSelected: (index,item) => page.settingsScreen.setChoice("codec",item.value)
+            }
+        }
+        DesktopSettingsRow {
+            id: bitrateRow
+            width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("Bitrate"); description: qsTr("Maximum requested bitrate")
+            DesktopSettingsSlider {
+                trackWidth: Math.max(DesktopTokens.px(160), bitrateRow.width - DesktopTokens.px(460)); from: 10; to: 200; stepSize: 5
+                value: Number(page.settingsScreen.valueSetting("maxBitrateMbps",75)); suffix: " Mbps"
+                onCommitted: value => page.settingsScreen.setSetting("maxBitrateMbps",Math.round(value))
+            }
+        }
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "bolt"; title: qsTr("Reflex low latency")
+            description: qsTr("When the game supports it"); showDivider: false
+            DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("enableCloudGsync",false); onValueChangedByUser: value => page.settingsScreen.setSetting("enableCloudGsync",value) }
+        }
+    }
+    DesktopSettingsAdvanced { detail: qsTr("Steam Deck identity"); expanded: page.settingsScreen.advancedOpen; onClicked: page.settingsScreen.advancedOpen = !page.settingsScreen.advancedOpen }
+    DesktopSettingsDisclosure {
+        width: parent.width; expanded: page.settingsScreen.advancedOpen
+        sourceComponent: DesktopSettingsPanel {
+            width: page.availableWidth; paperStyle: true
+            DesktopSettingsRow {
+                width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Steam Deck identity"); description: qsTr("Unlock Deck resolutions and 90 FPS · refreshes entitlements")
+                DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("identifyAsSteamDeck",false); onValueChangedByUser: value => page.settingsScreen.setSetting("identifyAsSteamDeck",value) }
+            }
+        }
+    }
+}

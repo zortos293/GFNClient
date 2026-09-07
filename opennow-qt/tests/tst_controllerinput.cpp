@@ -1,4 +1,4 @@
-#include "ControllerInput.h"
+#include "input/ControllerInput.h"
 
 #include <QCoreApplication>
 #include <QEvent>

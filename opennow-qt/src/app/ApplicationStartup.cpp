@@ -1,0 +1,231 @@
+#include "app/AppController.h"
+#include "acceptance/AcceptanceSession.h"
+#include "app/ApplicationStartup.h"
+#include "input/ControllerInput.h"
+#include "core/CoreClient.h"
+#include "input/InputModeTracker.h"
+#include "localization/Localization.h"
+#include "streaming/rendering/LinuxVulkanGraphics.h"
+#ifdef OPENNOW_EMBEDDED_STREAMER
+#include "streaming/NativeStreamRuntime.h"
+#endif
+#include "app/SingleInstance.h"
+#include "streaming/StreamVideoItem.h"
+#include "media/ThumbnailGenerator.h"
+
+#include <QGuiApplication>
+#include <QElapsedTimer>
+#include <QFont>
+#include <QFontDatabase>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include <QQuickStyle>
+#include <QDir>
+#include <QFileInfo>
+#include <QQuickWindow>
+#include <QSGRendererInterface>
+#include <QFileOpenEvent>
+
+#include <cstdlib>
+
+using namespace Qt::StringLiterals;
+
+namespace {
+class FileOpenFilter final : public QObject
+{
+public:
+    explicit FileOpenFilter(AppController *controller)
+        : m_controller(controller)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() != QEvent::FileOpen) {
+            return QObject::eventFilter(watched, event);
+        }
+        const auto *openEvent = static_cast<QFileOpenEvent *>(event);
+        if (!openEvent->url().isValid()) return false;
+        const auto handled = m_controller->handleArguments(
+            {QCoreApplication::applicationFilePath(), openEvent->url().toString()});
+        if (handled) m_controller->activateWindow();
+        return handled;
+    }
+
+private:
+    AppController *m_controller;
+};
+}
+
+int runApplication(int argc, char *argv[])
+{
+    qputenv("QT_TLS_BACKEND", "schannel");
+    QElapsedTimer startupTimer;
+    startupTimer.start();
+    QGuiApplication::setApplicationName(u"OpenNOW"_s);
+    QGuiApplication::setOrganizationName(u"OpenCloudGaming"_s);
+    QGuiApplication::setOrganizationDomain(u"opennow.app"_s);
+    QGuiApplication::setApplicationVersion(QString::fromLatin1(OPENNOW_VERSION));
+    QQuickWindow::setDefaultAlphaBuffer(true);
+    QQuickWindow::setTextRenderType(QQuickWindow::QtTextRendering);
+#if defined(Q_OS_WIN)
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+#elif defined(Q_OS_MACOS)
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Metal);
+#elif defined(Q_OS_LINUX)
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+#endif
+    QQuickStyle::setStyle(u"Basic"_s);
+
+    QGuiApplication application(argc, argv);
+#if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+    LinuxVulkanGraphics::requestDeviceExtensions();
+#endif
+    registerStreamVideoItemQmlType();
+    qSetMessagePattern(u"%{time yyyy-MM-ddTHH:mm:ss.zzz} %{type} %{category}: %{message}"_s);
+    const QStringList bundledFonts = {
+        u":/qt/qml/OpenNOW/res/fonts/Nunito-Variable.ttf"_s,
+        u":/qt/qml/OpenNOW/res/fonts/IBMPlexMono-Regular.ttf"_s,
+        u":/qt/qml/OpenNOW/res/fonts/IBMPlexMono-Medium.ttf"_s,
+        u":/qt/qml/OpenNOW/res/fonts/IBMPlexMono-Bold.ttf"_s,
+    };
+    for (const auto &fontPath : bundledFonts) {
+        if (QFontDatabase::addApplicationFont(fontPath) == -1)
+            qWarning("Could not load bundled font %s", qUtf8Printable(fontPath));
+    }
+    QFont applicationFont(QStringLiteral("Nunito"));
+    applicationFont.setHintingPreference(QFont::PreferNoHinting);
+    applicationFont.setStyleStrategy(QFont::PreferAntialias);
+    application.setFont(applicationFont);
+    const auto arguments = application.arguments();
+    SingleInstance singleInstance;
+    if (!arguments.contains(u"--allow-multiple-instances"_s)
+            && !singleInstance.acquire(arguments)) {
+        return EXIT_SUCCESS;
+    }
+    AppController controller;
+    if (!controller.ensureDirectLaunchAssociation())
+        qWarning("Could not register the opennow:// direct-launch association");
+    FileOpenFilter fileOpenFilter(&controller);
+    application.installEventFilter(&fileOpenFilter);
+    ControllerInput controllerInput;
+    ThumbnailGenerator thumbnailGenerator;
+    Localization localization;
+    application.installTranslator(&localization);
+    CoreClient coreClient;
+#ifdef OPENNOW_EMBEDDED_STREAMER
+    NativeStreamRuntime nativeStreamRuntime;
+    if (!nativeStreamRuntime.start())
+        qWarning("Could not start the embedded streamer runtime: %s",
+                 qUtf8Printable(nativeStreamRuntime.lastError()));
+    StreamVideoItem::setNativeStreamRuntime(&nativeStreamRuntime);
+    QObject::connect(
+        &controllerInput, &ControllerInput::gamepadSnapshot, &nativeStreamRuntime,
+        [&nativeStreamRuntime](quint8 controllerId, quint16 bitmap, quint16 buttons,
+                               quint8 leftTrigger, quint8 rightTrigger,
+                               qint16 leftStickX, qint16 leftStickY,
+                               qint16 rightStickX, qint16 rightStickY) {
+            nativeStreamRuntime.submitGamepad(
+                controllerId, bitmap, buttons, leftTrigger, rightTrigger,
+                leftStickX, leftStickY, rightStickX, rightStickY);
+        });
+    QObject::connect(&controllerInput, &ControllerInput::localActionRequested,
+                     &nativeStreamRuntime, [&nativeStreamRuntime](quint32 action) {
+                         nativeStreamRuntime.submitLocalAction(action);
+                     });
+#endif
+    InputModeTracker inputModeTracker(&controller);
+    application.installEventFilter(&inputModeTracker);
+    controller.setControllerCount(controllerInput.controllerCount());
+    QObject::connect(&controllerInput, &ControllerInput::controllerCountChanged,
+                     &controller, &AppController::setControllerCount);
+    QObject::connect(&controllerInput, &ControllerInput::controllerActivity,
+                     &controller, [&controller] { controller.setInputMode(u"controller"_s); });
+
+    const auto routeIndex = arguments.indexOf(u"--route"_s);
+    if (routeIndex >= 0 && routeIndex + 1 < arguments.size()) {
+        controller.navigate(arguments.at(routeIndex + 1));
+    }
+    const auto overlayIndex = arguments.indexOf(u"--overlay"_s);
+    if (overlayIndex >= 0 && overlayIndex + 1 < arguments.size()) {
+        controller.showOverlay(arguments.at(overlayIndex + 1));
+    }
+    if (arguments.contains(u"--reduced-motion"_s)) {
+        controller.setReducedMotion(true);
+    }
+
+    QQmlApplicationEngine engine;
+    AcceptanceSession acceptance(application, engine, controller, coreClient, arguments);
+    engine.rootContext()->setContextProperty(u"AppController"_s, &controller);
+    engine.rootContext()->setContextProperty(u"ControllerInput"_s, &controllerInput);
+    engine.rootContext()->setContextProperty(u"ThumbnailGenerator"_s, &thumbnailGenerator);
+    engine.rootContext()->setContextProperty(u"I18n"_s, &localization);
+    engine.rootContext()->setContextProperty(u"CoreClient"_s, &coreClient);
+#ifdef OPENNOW_EMBEDDED_STREAMER
+    engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s,
+                                             &nativeStreamRuntime);
+#endif
+    engine.rootContext()->setContextProperty(
+        u"LaunchModeOverride"_s,
+        arguments.contains(u"--desktop"_s) ? u"desktop"_s
+            : arguments.contains(u"--console"_s) ? u"console"_s : QString{});
+    acceptance.configureContext();
+    QObject::connect(&localization, &Localization::localeChanged,
+                     &engine, &QQmlApplicationEngine::retranslate);
+    QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
+                     &application, [] { QCoreApplication::exit(EXIT_FAILURE); },
+                     Qt::QueuedConnection);
+    engine.loadFromModule(u"OpenNOW"_s, u"Main"_s);
+    if (acceptance.prepareWindow() != EXIT_SUCCESS) return EXIT_FAILURE;
+    const auto qmlReadyMs = startupTimer.elapsed();
+    controller.handleArguments(arguments);
+    QObject::connect(&controller, &AppController::activationRequested,
+                     &application, [&engine] {
+                         if (engine.rootObjects().isEmpty()) return;
+                         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+                         if (!window) return;
+                         window->show();
+                         window->raise();
+                         window->requestActivate();
+                     });
+    QObject::connect(&singleInstance, &SingleInstance::activationRequested,
+                     &application, [&controller](const QStringList &forwardedArguments) {
+                         controller.activationRequested();
+                         controller.handleArguments(forwardedArguments);
+                     });
+
+    if (acceptance.measureStartup(startupTimer, qmlReadyMs) != EXIT_SUCCESS)
+        return EXIT_FAILURE;
+
+    const auto coreIndex = arguments.indexOf(u"--core"_s);
+    if (acceptance.allowsExplicitCore()
+            && coreIndex >= 0 && coreIndex + 1 < arguments.size()) {
+        coreClient.start(arguments.at(coreIndex + 1));
+    } else if (acceptance.allowsBundledCore()) {
+        const auto bundledCore = QDir(QCoreApplication::applicationDirPath()).filePath(
+#ifdef Q_OS_WIN
+            u"opennow-core.exe"_s
+#else
+            u"opennow-core"_s
+#endif
+        );
+        if (QFileInfo::exists(bundledCore)) {
+            coreClient.start(bundledCore);
+        }
+    }
+
+    if (acceptance.startWorkload() != EXIT_SUCCESS) return EXIT_FAILURE;
+
+    const auto exitCode = application.exec();
+#ifdef OPENNOW_EMBEDDED_STREAMER
+    const auto roots = engine.rootObjects();
+    for (auto *root : roots) delete root;
+    StreamVideoItem::setNativeStreamRuntime(nullptr);
+    if (!nativeStreamRuntime.shutdown()) {
+        qWarning("Could not complete embedded streamer shutdown: %s",
+                 qUtf8Printable(nativeStreamRuntime.lastError()));
+    }
+#endif
+    return exitCode;
+}

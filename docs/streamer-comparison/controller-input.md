@@ -74,7 +74,7 @@ Qt launches with `OPENNOW_NATIVE_INPUT_OWNER=native`. SDL events become type 12.
 - Capture and deadzone. `native/opennow-streamer/crates/opennow-streamer-platform/src/output.rs`
 - Type-12 build. `native/opennow-streamer/crates/opennow-streamer-core/src/lib.rs` `captured_input_packet`
 - NVST encode. `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst_input.rs` `gamepad_command`
-- Qt shell only. `opennow-qt/src/ControllerInput.cpp`
+- Qt shell only. `opennow-qt/src/input/ControllerInput.cpp`
 
 ## Gotchas
 

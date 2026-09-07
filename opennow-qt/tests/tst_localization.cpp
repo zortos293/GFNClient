@@ -1,4 +1,4 @@
-#include "Localization.h"
+#include "localization/Localization.h"
 
 #include <QDirIterator>
 #include <QFile>

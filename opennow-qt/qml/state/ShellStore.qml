@@ -1,12 +1,63 @@
 pragma Singleton
 import QtQuick
+import "catalog"
+import "settings"
+import "account"
 
 QtObject {
     id: root
-    property var settings: ({})
-    property string previewThemePack: ""
+    property CatalogState catalogOwnerState: CatalogState {
+        id: catalogOwner
+        coreClient: CoreClient
+        appController: AppController
+        ready: root.ready
+        signedIn: root.signedIn
+        settings: root.settings
+        setSetting: root.setSetting
+        onAccessibilityAnnounced: message => root.accessibilityMessage = message
+        onStoreSessionReset: root.storeSessionReset()
+    }
+
+    property ArtworkState artworkOwnerState: ArtworkState {
+        id: artworkOwner
+        coreClient: CoreClient
+        ready: root.ready
+    }
+
+    property SettingsState settingsOwnerState: SettingsState {
+        id: settingsOwner
+        coreClient: CoreClient
+        appController: AppController
+        i18n: I18n
+        ready: root.ready
+        subscription: root.subscription
+        nativeRuntimeReady: root.nativeRuntimeReady
+        nativeRuntimeCapabilities: root.nativeRuntimeCapabilities
+        refreshAccountServices: root.refreshAccountServices
+        refreshStreamerDetection: root.refreshStreamerDetection
+        syncDiscordPresence: root.syncDiscordPresence
+        syncTelemetry: root.syncTelemetry
+        lastError: root.lastError
+        onConsoleSurfaceRequested: enabled => root.consoleSurfaceRequested(enabled)
+        onAccessibilityAnnounced: message => root.accessibilityMessage = message
+        onErrorReported: message => root.lastError = message
+    }
+
+    property AccountServicesState accountServicesOwnerState: AccountServicesState {
+        id: accountServicesOwner
+        coreClient: CoreClient
+        appController: AppController
+        ready: root.ready
+        signedIn: root.signedIn
+        reloadCatalogForSession: root.reloadCatalogForSession
+        refreshAccountServices: root.refreshAccountServices
+        onAccessibilityAnnounced: message => root.accessibilityMessage = message
+    }
+
+    property alias settings: settingsOwner.settings
+    property alias previewThemePack: settingsOwner.previewThemePack
     property string accessibilityMessage: ""
-    property string settingsRequestId: ""
+    property alias settingsRequestId: settingsOwner.settingsRequestId
     property string lastError: ""
     property var focusPositions: ({})
     property var providers: []
@@ -14,72 +65,61 @@ QtObject {
     property var authChallenge: null
     property string authState: "idle"
     property string authMessage: ""
-    property var catalogGames: []
-    property var selectedGame: null
-    property int catalogTotalCount: 0
-    property string catalogState: "idle"
-    property string catalogSource: "public"
-    // Store channel: the full CMS browse catalog (all games) for signed-in
-    // users, static public list otherwise. Separate from the library channel
-    // so store browsing never disturbs library counts or filters.
-    property var storeGames: []
-    property var storeFacets: ({genres:[], stores:[], categories:[]})
-    property var storeFilters: ({})
-    property bool storeUsesLocalIndex: false
+    property alias catalogGames: catalogOwner.catalogGames
+    property alias selectedGame: catalogOwner.selectedGame
+    property alias catalogTotalCount: catalogOwner.catalogTotalCount
+    property alias catalogState: catalogOwner.catalogState
+    property alias catalogSource: catalogOwner.catalogSource
+    property alias storeGames: catalogOwner.storeGames
+    property alias storeFacets: catalogOwner.storeFacets
+    property alias storeFilters: catalogOwner.storeFilters
+    property alias storeUsesLocalIndex: catalogOwner.storeUsesLocalIndex
     signal storeSessionReset()
-    property int storeTotalCount: 0
-    property string storeState: "idle"
-    property string storeSource: "public"
-    property string storeError: ""
-    property string storeWarning: ""
-    property string storeSearchQuery: ""
-    property string storeNextCursor: ""
-    property bool storeHasMore: false
-    property bool storeReplacePage: true
-    property int storePageCount: 0
-    property var storeSeenCursors: ({})
-    property string storePresentationRequestId: ""
-    property int storePresentationIndex: 0
-    // One account-scoped browse snapshot, not an unbounded cache of searches.
-    // Arrays are shared until the next page replaces them; no deep catalog copy.
-    property var storeBrowseCache: null
-    property bool storeForceRefresh: false
-    property bool storeLastPageCached: false
-    readonly property bool storeLoading: storeRequestId !== "" || storePageTimer.running
-    property Timer storePageTimer: Timer {
-        interval: root.storeLastPageCached ? 1 : 75
-        onTriggered: root.requestStorePage()
-    }
-    // Storefront chrome from the CMS panels documents: marquee hero slides,
-    // official shelves (GFN Thursday, per-store rows…), and filter groups.
-    property var storeMarquee: []
-    property var storePanels: []
-    property var storeFilterGroups: []
+    property alias storeTotalCount: catalogOwner.storeTotalCount
+    property alias storeState: catalogOwner.storeState
+    property alias storeSource: catalogOwner.storeSource
+    property alias storeError: catalogOwner.storeError
+    property alias storeWarning: catalogOwner.storeWarning
+    property alias storeSearchQuery: catalogOwner.storeSearchQuery
+    property alias storeNextCursor: catalogOwner.storeNextCursor
+    property alias storeHasMore: catalogOwner.storeHasMore
+    property alias storeReplacePage: catalogOwner.storeReplacePage
+    property alias storePageCount: catalogOwner.storePageCount
+    property alias storeSeenCursors: catalogOwner.storeSeenCursors
+    property alias storePresentationRequestId: catalogOwner.storePresentationRequestId
+    property alias storePresentationIndex: catalogOwner.storePresentationIndex
+    property alias storeBrowseCache: catalogOwner.storeBrowseCache
+    property alias storeForceRefresh: catalogOwner.storeForceRefresh
+    property alias storeLastPageCached: catalogOwner.storeLastPageCached
+    readonly property bool storeLoading: catalogOwner.storeLoading
+    property alias storePageTimer: catalogOwner.storePageTimer
+    property alias storeMarquee: catalogOwner.storeMarquee
+    property alias storePanels: catalogOwner.storePanels
+    property alias storeFilterGroups: catalogOwner.storeFilterGroups
     property string sessionPersistence: "none"
     property bool authRestorePending: true
     property bool pendingStaySignedIn: true
     signal consoleSurfaceRequested(bool enabled)
-    property string consoleSurfaceRequestId: ""
-    property bool consoleSurfaceConfirmedValue: false
-    property bool consoleSurfaceDesiredValue: false
-    property bool consoleSurfaceRequestValue: false
-    property bool consoleSurfaceInitialized: false
-    property string consoleSurfaceError: ""
+    property alias consoleSurfaceRequestId: settingsOwner.consoleSurfaceRequestId
+    property alias consoleSurfaceConfirmedValue: settingsOwner.consoleSurfaceConfirmedValue
+    property alias consoleSurfaceDesiredValue: settingsOwner.consoleSurfaceDesiredValue
+    property alias consoleSurfaceRequestValue: settingsOwner.consoleSurfaceRequestValue
+    property alias consoleSurfaceInitialized: settingsOwner.consoleSurfaceInitialized
+    property alias consoleSurfaceError: settingsOwner.consoleSurfaceError
     property bool desktopUiActive: false
-    property var subscription: null
-    property var regions: []
-    property var regionPingResults: ({})
-    property string regionPingMessage: ""
-    property bool regionPingPending: false
-    readonly property bool regionPingBusy: regionPingPending || regionPingRequestId !== ""
-    onRegionPingMessageChanged: if (regionPingMessage !== "") accessibilityMessage = regionPingMessage
+    property alias subscription: accountServicesOwner.subscription
+    property alias regions: accountServicesOwner.regions
+    property alias regionPingResults: accountServicesOwner.regionPingResults
+    property alias regionPingMessage: accountServicesOwner.regionPingMessage
+    property alias regionPingPending: accountServicesOwner.regionPingPending
+    readonly property bool regionPingBusy: accountServicesOwner.regionPingBusy
     property var savedAccounts: []
-    property var gameAccounts: []
-    property string gameAccountsState: "idle"
-    property string gameAccountMessage: ""
-    property var accountLinkAttempt: null
-    property var storageLocations: []
-    property string storageMessage: ""
+    property alias gameAccounts: accountServicesOwner.gameAccounts
+    property alias gameAccountsState: accountServicesOwner.gameAccountsState
+    property alias gameAccountMessage: accountServicesOwner.gameAccountMessage
+    property alias accountLinkAttempt: accountServicesOwner.accountLinkAttempt
+    property alias storageLocations: accountServicesOwner.storageLocations
+    property alias storageMessage: accountServicesOwner.storageMessage
     property var mediaItems: []
     property string mediaRootPath: ""
     property string mediaState: "idle"
@@ -124,7 +164,7 @@ QtObject {
     property int streamerRestartRecoveryCount: 0
     property int sessionRecoveryCount: 0
     property var guidePagesVisited: []
-    property string regionsVpcId: ""
+    property alias regionsVpcId: accountServicesOwner.regionsVpcId
     property string providersRequestId: ""
     property string authSessionRequestId: ""
     property string activeSessionRequestId: ""
@@ -139,54 +179,45 @@ QtObject {
     property string streamerPrepareRequestId: ""
     property string streamerStopRequestId: ""
     property bool streamerStopExpected: false
-    property var artworkUrls: ({})
-    property var artworkPending: ({})
-    property var artworkRequestSources: ({})
-    property var artworkRetrySources: ({})
-    property var artworkInterests: ({})
-    property var storeShelfCache: []
-    property int storeShelfEpoch: 0
+    property alias artworkUrls: artworkOwner.artworkUrls
+    property alias artworkPending: artworkOwner.artworkPending
+    property alias artworkRequestSources: artworkOwner.artworkRequestSources
+    property alias artworkRetrySources: artworkOwner.artworkRetrySources
+    property alias artworkInterests: artworkOwner.artworkInterests
+    property alias storeShelfCache: catalogOwner.storeShelfCache
+    property alias storeShelfEpoch: catalogOwner.storeShelfEpoch
 
     function cachedStoreShelf(category, limit) {
-        const entries = storeShelfCache.slice()
-        const index = entries.findIndex(entry => entry.category === category && entry.limit >= limit)
-        if (index < 0) return null
-        const entry = entries.splice(index, 1)[0]
-        entries.push(entry)
-        storeShelfCache = entries
-        return entry.games
+        return catalogOwner.cachedStoreShelf(category, limit)
     }
 
     function cacheStoreShelf(category, limit, games) {
-        const entries = storeShelfCache.filter(entry => entry.category !== category)
-        entries.push({category:category, limit:Math.min(60, limit), games:games.slice(0, 60)})
-        storeShelfCache = entries.slice(-24)
+        return catalogOwner.cacheStoreShelf(category, limit, games)
     }
 
     function resetStoreShelves() {
-        storeShelfCache = []
-        storeShelfEpoch++
+        return catalogOwner.resetStoreShelves()
     }
-    property string catalogRequestId: ""
-    property string storeRequestId: ""
+    property alias catalogRequestId: catalogOwner.catalogRequestId
+    property alias storeRequestId: catalogOwner.storeRequestId
     property string deviceStartRequestId: ""
     property string devicePollRequestId: ""
     property string deviceCompleteRequestId: ""
     property string logoutRequestId: ""
     property string logoutAllRequestId: ""
-    property string subscriptionRequestId: ""
-    property string regionsRequestId: ""
-    property string regionPingRequestId: ""
+    property alias subscriptionRequestId: accountServicesOwner.subscriptionRequestId
+    property alias regionsRequestId: accountServicesOwner.regionsRequestId
+    property alias regionPingRequestId: accountServicesOwner.regionPingRequestId
     property string accountsRequestId: ""
     property string accountSwitchRequestId: ""
     property string accountRemoveRequestId: ""
     property string pinRequestId: ""
-    property string gameAccountsRequestId: ""
-    property string gameAccountActionRequestId: ""
-    property string accountLinkStartRequestId: ""
-    property string accountLinkPollRequestId: ""
-    property string storageLocationsRequestId: ""
-    property string storageResetRequestId: ""
+    property alias gameAccountsRequestId: accountServicesOwner.gameAccountsRequestId
+    property alias gameAccountActionRequestId: accountServicesOwner.gameAccountActionRequestId
+    property alias accountLinkStartRequestId: accountServicesOwner.accountLinkStartRequestId
+    property alias accountLinkPollRequestId: accountServicesOwner.accountLinkPollRequestId
+    property alias storageLocationsRequestId: accountServicesOwner.storageLocationsRequestId
+    property alias storageResetRequestId: accountServicesOwner.storageResetRequestId
     property string sessionAdRequestId: ""
     property string mediaRequestId: ""
     property string mediaDeleteRequestId: ""
@@ -302,12 +333,7 @@ QtObject {
         onTriggered: root.controlStream("anti-afk-pulse")
     }
 
-    property Timer artworkRetryTimer: Timer {
-        interval: 1000
-        repeat: true
-        running: root.ready && Object.keys(root.artworkRetrySources).length > 0
-        onTriggered: root.retryVisibleArtwork(Date.now())
-    }
+    property alias artworkRetryTimer: artworkOwner.artworkRetryTimer
 
     property Timer streamRecordingTimer: Timer {
         interval: 250
@@ -316,12 +342,7 @@ QtObject {
         onTriggered: root.streamRecordingElapsedMs = Math.max(0, Date.now() - root.streamRecordingStartedAtMs)
     }
 
-    property Timer accountLinkPollTimer: Timer {
-        interval: 1200
-        repeat: true
-        running: false
-        onTriggered: root.pollAccountLink()
-    }
+    property alias accountLinkPollTimer: accountServicesOwner.accountLinkPollTimer
 
     property Timer streamerRestartTimer: Timer {
         interval: Math.min(8000, 1000 * Math.pow(2, Math.min(3, root.sessionReconnectAttempts)))
@@ -350,9 +371,7 @@ QtObject {
     }
 
     function refreshSettings() {
-        if (!ready)
-            return
-        settingsRequestId = CoreClient.request("settings.get", {})
+        return settingsOwner.refreshSettings()
     }
 
     function initializeServices() {
@@ -443,26 +462,7 @@ QtObject {
     }
 
     function codecNamesFromCapabilities(capabilities) {
-        const result = []
-        const backends = capabilities && capabilities.videoBackends
-            ? capabilities.videoBackends : []
-        for (let backendIndex = 0; backendIndex < backends.length; ++backendIndex) {
-            const backend = backends[backendIndex]
-            const requested = String(settings.nativeVideoBackend || "auto")
-            if (!backend.available || ["software", "ffmpeg"].indexOf(backend.backend) >= 0
-                    || (requested !== "auto" && requested !== backend.backend
-                    && !(requested === "nvdec" && backend.backend === "cuda")))
-                continue
-            const codecs = backend.codecs || []
-            for (let codecIndex = 0; codecIndex < codecs.length; ++codecIndex) {
-                const codec = codecs[codecIndex]
-                const name = String(codec.codec || "").toLowerCase()
-                if (codec.available && ["h264", "h265", "av1"].indexOf(name) >= 0
-                        && result.indexOf(name) < 0)
-                    result.push(name)
-            }
-        }
-        return result
+        return settingsOwner.codecNamesFromCapabilities(capabilities)
     }
 
     function acceptNativeCapabilities(capabilities) {
@@ -526,349 +526,87 @@ QtObject {
     }
 
     function codecAvailable(codec) {
-        const name = String(codec || "h264").toLowerCase()
-        // Bind directly to current capabilities and backend preference. Do not leave old
-        // support enabled while a reconnect or a new hardware probe is pending.
-        return nativeRuntimeReady
-            && codecNamesFromCapabilities(nativeRuntimeCapabilities).indexOf(name) >= 0
+        return settingsOwner.codecAvailable(codec)
     }
 
     function availableCodecValues() {
-        const result = []
-        if (codecAvailable("h264")) {
-            result.push("auto")
-            result.push("h264")
-        }
-        if (codecAvailable("h265"))
-            result.push("h265")
-        if (codecAvailable("av1"))
-            result.push("av1")
-        // Keep the persisted choice visible when the child is missing or the selected decoder
-        // policy has no compatible codec. Prelaunch validation still rejects it before CloudMatch.
-        return result.length ? result : [String(settings.codec || "auto").toLowerCase()]
+        return settingsOwner.availableCodecValues()
     }
 
     function availableCodecLabels() {
-        const values = availableCodecValues()
-        const result = []
-        for (let index = 0; index < values.length; ++index) {
-            result.push(values[index] === "auto" ? "Auto"
-                : values[index] === "h264" ? "H.264"
-                : values[index] === "h265" ? "H.265" : "AV1")
-        }
-        return result
+        return settingsOwner.availableCodecLabels()
     }
 
-    // Canonical frame rates offered by GeForce NOW clients. The Rust core
-    // clamps fps to 30–240, so 360 (an Electron-legacy preset) is excluded.
     function canonicalFpsValues() {
-        return [30, 60, 90, 120, 144, 165, 240]
+        return settingsOwner.canonicalFpsValues()
     }
 
-    // Official catalog rates per resolution. 1080p rigs offer 240 FPS;
-    // other modes top out at 120 FPS. Exact MES tuples (e.g. 90 FPS) are
-    // preserved separately and never synthesized from a higher envelope.
     function presetFpsForResolution(width, height) {
-        if (width === 1920 && (height === 1080 || height === 1200))
-            return [30, 60, 120, 240]
-        return [30, 60, 120]
+        return settingsOwner.presetFpsForResolution(width, height)
     }
 
     function isFpsCoveredByEntitlement(width, height, fps) {
-        const raw = (subscription && subscription.entitledResolutions) || []
-        for (let index = 0; index < raw.length; ++index) {
-            if (Number(raw[index].width || 0) >= width
-                    && Number(raw[index].height || 0) >= height
-                    && Number(raw[index].fps || 0) >= fps)
-                return true
-        }
-        return false
+        return settingsOwner.isFpsCoveredByEntitlement(width, height, fps)
     }
 
-    // Frame rates the membership entitles at the given resolution, mirroring
-    // Electron's getFpsForResolution. Returns [] when no exact entitlement
-    // tuple exists or no subscription is loaded (callers fall back to the
-    // offline static list with nothing locked).
     function entitledFpsForResolution(resolution) {
-        const parts = String(resolution || "").split("x")
-        const width = Number(parts[0])
-        const height = Number(parts[1])
-        if (!(width > 0 && height > 0) || !subscription)
-            return []
-        const exact = []
-        const raw = subscription.entitledResolutions || []
-        for (let index = 0; index < raw.length; ++index) {
-            if (Number(raw[index].width) === width && Number(raw[index].height) === height) {
-                const fps = Math.trunc(Number(raw[index].fps || 0))
-                if (fps >= 30 && exact.indexOf(fps) < 0)
-                    exact.push(fps)
-            }
-        }
-        if (exact.length === 0)
-            return []
-        const presets = presetFpsForResolution(width, height)
-        for (let index = 0; index < presets.length; ++index) {
-            if (exact.indexOf(presets[index]) < 0
-                    && isFpsCoveredByEntitlement(width, height, presets[index]))
-                exact.push(presets[index])
-        }
-        exact.sort((left, right) => left - right)
-        return exact
+        return settingsOwner.entitledFpsForResolution(resolution)
     }
 
-    // Canonical rates NOT entitled at the given resolution. Empty when the
-    // subscription is unknown so offline users keep the full static list.
     function unentitledFpsValues(resolution) {
-        const entitled = entitledFpsForResolution(resolution)
-        if (entitled.length === 0)
-            return []
-        const locked = []
-        const canonical = canonicalFpsValues()
-        for (let index = 0; index < canonical.length; ++index) {
-            if (entitled.indexOf(canonical[index]) < 0)
-                locked.push(canonical[index])
-        }
-        return locked
+        return settingsOwner.unentitledFpsValues(resolution)
     }
 
-    // Clamp a requested fps to the nearest entitled rate at or below it,
-    // mirroring resolveEntitledStreamProfile. Returns the input when the
-    // subscription is unknown.
     function resolveEntitledFps(resolution, requested) {
-        const entitled = entitledFpsForResolution(resolution)
-        if (entitled.length === 0)
-            return requested
-        const wanted = Math.trunc(Number(requested || 0))
-        if (wanted === 0 || entitled.indexOf(wanted) >= 0)
-            return wanted
-        for (let index = entitled.length - 1; index >= 0; --index) {
-            if (entitled[index] <= wanted)
-                return entitled[index]
-        }
-        return entitled[0]
+        return settingsOwner.resolveEntitledFps(resolution, requested)
     }
 
-    // Persistently correct settings.fps when the resolution or subscription
-    // changed underneath it (e.g. tier downgrade). No-op while offline.
     function clampFpsToEntitlement() {
-        const clamped = resolveEntitledFps(settings.resolution, settings.fps)
-        if (Number(clamped) !== Number(settings.fps))
-            setSetting("fps", clamped)
+        return settingsOwner.clampFpsToEntitlement()
     }
 
     function refreshCatalog(searchQuery) {
-        if (!ready || catalogRequestId !== "")
-            return
-        catalogState = catalogGames.length > 0 ? "refreshing" : "loading"
-        catalogSource = signedIn ? "account-library" : "public"
-        catalogRequestId = CoreClient.request(signedIn ? "catalog.library.list" : "catalog.public.list", {
-            limit: signedIn ? 1000 : 360,
-            searchQuery: searchQuery || ""
-        }, 30000)
+        return catalogOwner.refreshCatalog(searchQuery)
     }
 
     function reloadCatalogForSession() {
-        if (catalogRequestId !== "") {
-            CoreClient.cancel(catalogRequestId)
-            catalogRequestId = ""
-        }
-        catalogGames = []
-        catalogState = "idle"
-        refreshCatalog("")
-        reloadStoreForSession()
+        return catalogOwner.reloadCatalogForSession()
     }
 
     function ensureStore(searchQuery, filters) {
-        const query = String(searchQuery || "").trim()
-        const nextFilters = filters || ({})
-        const sameFilters = JSON.stringify(nextFilters) === JSON.stringify(storeFilters)
-        if (query === storeSearchQuery && sameFilters && (storeLoading || storeState !== "idle")) return
-        const cached = storeBrowseCache
-        if (query === "" && JSON.stringify(nextFilters) === "{}" && cached) {
-            cancelStoreRequests()
-            storeBrowseCache = null
-            storeSearchQuery = ""
-            storeFilters = ({})
-            storeGames = cached.games
-            storeTotalCount = cached.totalCount
-            storeState = cached.state
-            storeError = cached.error
-            storeNextCursor = cached.nextCursor
-            storeHasMore = cached.hasMore
-            storeReplacePage = false
-            storePageCount = cached.pageCount
-            storeSeenCursors = cached.seenCursors
-            storeForceRefresh = false
-            storeLastPageCached = cached.lastPageCached
-            requestStorePresentation()
-            return
-        }
-        refreshStore(query, false, nextFilters)
+        return catalogOwner.ensureStore(searchQuery, filters)
     }
 
     function videoBackendItems() {
-        const backends = nativeRuntimeCapabilities.videoBackends || []
-        const result = [{label: qsTr("Auto (recommended)"), value: "auto",
-            detail: qsTr("Use a supported native backend")}]
-        const choices = Qt.platform.os === "windows"
-            ? [{label:"DirectX 11", value:"d3d11"}, {label:"DirectX 12", value:"d3d12"}, {label:"Vulkan", value:"vulkan"}]
-            : Qt.platform.os === "osx"
-                ? [{label:"Metal / VideoToolbox", value:"videotoolbox"}]
-                : backends.filter(backend => ["vulkan", "cuda", "vaapi", "v4l2"].indexOf(backend.backend) >= 0)
-                    .map(backend => ({label:String(backend.backend).toUpperCase(), value:backend.backend}))
-        for (const choice of choices) {
-            const backend = backends.find(backend => backend.backend === choice.value)
-            result.push(Object.assign({}, choice, {
-                disabled: !nativeRuntimeReady || !backend || !backend.available,
-                detail: !nativeRuntimeReady ? qsTr("Checking hardware…")
-                    : !backend ? qsTr("Not supported by this stream view")
-                    : backend.available ? qsTr("Hardware decoding")
-                    : String(backend.reason || qsTr("Unavailable on this device"))
-            }))
-        }
-        return result
+        return settingsOwner.videoBackendItems()
     }
 
     function refreshStore(searchQuery, forceRefresh, filters) {
-        if (!ready)
-            return
-        const query = String(searchQuery || "").trim()
-        const nextFilters = filters || ({})
-        const sameFilters = JSON.stringify(nextFilters) === JSON.stringify(storeFilters)
-        if (storeLoading && storeSearchQuery === query && sameFilters && !forceRefresh) return
-        if (!forceRefresh && storeSearchQuery === "" && JSON.stringify(storeFilters) === "{}" && (query !== "" || !sameFilters) && storePageCount > 0) {
-            storeBrowseCache = {games: storeGames, totalCount: storeTotalCount,
-                state: storeState, error: storeError, nextCursor: storeNextCursor,
-                hasMore: storeHasMore, pageCount: storePageCount,
-                seenCursors: storeSeenCursors, lastPageCached: storeLastPageCached, resume: storeLoading}
-        }
-        cancelStoreRequests()
-        if (query !== storeSearchQuery || !sameFilters) {
-            storeGames = []
-            storeTotalCount = 0
-        }
-        if (forceRefresh) {
-            resetStoreShelves()
-            storeBrowseCache = null
-            storePresentationIndex = 0
-        }
-        storeSearchQuery = query
-        storeFilters = nextFilters
-        storeForceRefresh = forceRefresh === true
-        storeLastPageCached = false
-        storeNextCursor = ""
-        storeHasMore = true
-        storeReplacePage = true
-        storePageCount = 0
-        storeSeenCursors = Object.create(null)
-        storeError = ""
-        storeWarning = ""
-        storeSource = signedIn ? "store-browse" : "public"
-        requestStorePage()
+        return catalogOwner.refreshStore(searchQuery, forceRefresh, filters)
     }
 
     function cancelStoreRequests() {
-        storePageTimer.stop()
-        const pageId = storeRequestId
-        const presentationId = storePresentationRequestId
-        storeRequestId = ""
-        storePresentationRequestId = ""
-        // Clear ownership before cancel() emits its synchronous failure signal.
-        if (pageId !== "") CoreClient.cancel(pageId)
-        if (presentationId !== "") CoreClient.cancel(presentationId)
+        return catalogOwner.cancelStoreRequests()
     }
 
     function requestStorePage() {
-        if (!ready || storeRequestId !== "" || !storeHasMore) return
-        storePageTimer.stop()
-        storeError = ""
-        storeState = storeGames.length > 0 ? "refreshing" : "loading"
-        storeRequestId = CoreClient.request(storeSource === "store-browse" ? "catalog.store.local" : "catalog.public.list", {
-            limit: 40,
-            cursor: storeNextCursor, searchQuery: storeSearchQuery,
-            genre: storeFilters.genre || "", store: storeFilters.store || "", categoryId: storeFilters.categoryId || "",
-            refresh: storeForceRefresh && storeNextCursor === ""
-        }, 60000)
-        if (storeRequestId === "") {
-            storeState = "error"
-            storeError = qsTr("Could not start the Store request. Try again.")
-        }
+        return catalogOwner.requestStorePage()
     }
 
     function requestStorePresentation() {
-        if (!ready || storeSource !== "store-browse" || storePresentationRequestId !== "" || storePresentationIndex >= 3) return
-        storePresentationRequestId = CoreClient.request("catalog.store.presentation", {
-            section: ["marquee", "panels", "filters"][storePresentationIndex], metadataOnly:true
-        }, 30000)
+        return catalogOwner.requestStorePresentation()
     }
 
     function retryStore() {
-        if (storeLoading) return
-        if (storeError !== "") requestStorePage()
-        if (storeWarning !== "") {
-            storeWarning = ""
-            storePresentationIndex = 0
-            requestStorePresentation()
-        }
+        return catalogOwner.retryStore()
     }
 
     function acceptStorePage(result) {
-        storeRequestId = ""
-        const more = storeSource === "store-browse" && result.hasNextPage === true
-        const next = String(result.nextCursor || "")
-        if (!Array.isArray(result.games) || (more && (!next || next === storeNextCursor || storeSeenCursors[next]))) {
-            storeState = "error"
-            storeError = qsTr("The Store returned an invalid page. Try again.")
-            return
-        }
-        const merged = storeReplacePage ? [] : storeGames.slice()
-        const seen = Object.create(null)
-        const identity = game => String(game.uuid || game.id || game.launchAppId || "")
-        for (let i = 0; i < merged.length; ++i) seen[identity(merged[i])] = true
-        for (let i = 0; i < result.games.length; ++i) {
-            const game = result.games[i]
-            const key = identity(game)
-            if (key && !seen[key]) { merged.push(game); seen[key] = true }
-        }
-        storeGames = merged
-        storeReplacePage = false
-        storeForceRefresh = false
-        storeLastPageCached = result.cacheHit === true
-        storeUsesLocalIndex = result.source === "store-local"
-        storePageCount += 1
-        storeTotalCount = Math.max(merged.length, Number(result.totalCount || 0))
-        if (result.facets) storeFacets = result.facets
-        storeHasMore = more
-        storeNextCursor = next
-        if (next) storeSeenCursors[next] = true
-        storeState = "ready"
-        if (storePageCount === 1) requestStorePresentation()
-        // Demand-driven: the viewport or Load more owns continuation. Never
-        // enumerate the whole disk catalog just because Store was opened.
+        return catalogOwner.acceptStorePage(result)
     }
 
     function reloadStoreForSession() {
-        resetStoreShelves()
-        cancelStoreRequests()
-        storeBrowseCache = null
-        storeForceRefresh = false
-        storeLastPageCached = false
-        storeSearchQuery = ""
-        storeFilters = ({})
-        storeFacets = ({genres:[], stores:[], categories:[]})
-        storeUsesLocalIndex = false
-        storePageCount = 0
-        storeGames = []
-        storeTotalCount = 0
-        storeMarquee = []
-        storePanels = []
-        storeFilterGroups = []
-        storeError = ""
-        storeWarning = ""
-        storeHasMore = false
-        storeState = "idle"
-        // Store is loaded only when its view is opened, not during login on Home.
-        storeSessionReset()
+        return catalogOwner.reloadStoreForSession()
     }
 
     function refreshAccountServices() {
@@ -889,107 +627,43 @@ QtObject {
     }
 
     function refreshRegions() {
-        if (!ready || !signedIn || regionsRequestId !== "")
-            return
-        regionsRequestId = CoreClient.request("network.regions.list", {}, 30000)
+        return accountServicesOwner.refreshRegions()
     }
 
     function pingRegions() {
-        if (regionPingBusy)
-            return
-        if (!ready) {
-            regionPingMessage = qsTr("The OpenNOW core is not ready. Try again shortly.")
-            return
-        }
-        if (!signedIn) {
-            regionPingMessage = qsTr("Sign in to measure region latency.")
-            return
-        }
-        if (regionsRequestId !== "" || regions.length === 0) {
-            regionPingPending = true
-            regionPingMessage = qsTr("Loading regions before measuring latency…")
-            refreshRegions()
-            if (regionsRequestId === "") {
-                regionPingPending = false
-                regionPingMessage = qsTr("Could not load regions. Try again.")
-            }
-            return
-        }
-        regionPingResults = ({})
-        regionPingMessage = qsTr("Measuring region latency…")
-        regionPingRequestId = CoreClient.request("network.regions.ping", {
-            regions: regions
-        }, 20000)
-        if (regionPingRequestId === "")
-            regionPingMessage = qsTr("Could not start the latency test. Try again.")
+        return accountServicesOwner.pingRegions()
     }
 
     function resetRegionPing() {
-        const requestId = regionPingRequestId
-        regionPingRequestId = ""
-        regionPingPending = false
-        regionPingResults = ({})
-        regionPingMessage = ""
-        if (requestId !== "") CoreClient.cancel(requestId)
+        return accountServicesOwner.resetRegionPing()
     }
 
     function refreshGameAccounts() {
-        if (!ready || !signedIn || gameAccountsRequestId !== "")
-            return
-        gameAccountsState = gameAccounts.length ? "refreshing" : "loading"
-        gameAccountsRequestId = CoreClient.request("account.connections.list", {}, 30000)
+        return accountServicesOwner.refreshGameAccounts()
     }
 
     function startAccountLink(provider) {
-        if (!ready || accountLinkStartRequestId !== "")
-            return
-        gameAccountMessage = qsTr("Opening %1 sign-in…").arg(provider)
-        accountLinkStartRequestId = CoreClient.request("account.connections.link.start", { provider: provider }, 30000)
+        return accountServicesOwner.startAccountLink(provider)
     }
 
     function pollAccountLink() {
-        if (!ready || !accountLinkAttempt || accountLinkPollRequestId !== "")
-            return
-        accountLinkPollRequestId = CoreClient.request("account.connections.link.poll", {
-            attemptId: accountLinkAttempt.attemptId
-        }, 10000)
+        return accountServicesOwner.pollAccountLink()
     }
 
     function syncGameAccount(provider) {
-        if (!ready || gameAccountActionRequestId !== "")
-            return
-        gameAccountMessage = qsTr("Starting library sync…")
-        gameAccountActionRequestId = CoreClient.request("account.connections.sync", { provider: provider }, 30000)
+        return accountServicesOwner.syncGameAccount(provider)
     }
 
     function unlinkGameAccount(provider) {
-        if (!ready || gameAccountActionRequestId !== "")
-            return
-        gameAccountMessage = qsTr("Disconnecting account…")
-        gameAccountActionRequestId = CoreClient.request("account.connections.unlink", { provider: provider }, 30000)
+        return accountServicesOwner.unlinkGameAccount(provider)
     }
 
     function refreshStorageLocations() {
-        if (!ready || !signedIn || storageLocationsRequestId !== "")
-            return
-        const addon = subscription && subscription.storageAddon ? subscription.storageAddon : ({})
-        storageMessage = qsTr("Loading storage regions…")
-        storageLocationsRequestId = CoreClient.request("account.storage.locations", {
-            serverRegionId: subscription ? subscription.serverRegionId : "",
-            currentRegionCode: addon.regionCode || "",
-            currentRegionName: addon.regionName || "",
-            locale: "en_US"
-        }, 30000)
+        return accountServicesOwner.refreshStorageLocations()
     }
 
     function resetPersistentStorage(regionCode) {
-        if (!ready || !signedIn || storageResetRequestId !== "")
-            return
-        storageMessage = qsTr("Resetting persistent storage…")
-        storageResetRequestId = CoreClient.request("account.storage.reset", {
-            storageRegion: regionCode || null,
-            confirmed: true
-        }, 30000)
+        return accountServicesOwner.resetPersistentStorage(regionCode)
     }
 
     function refreshMedia() {
@@ -1143,139 +817,55 @@ QtObject {
     }
 
     function openGame(game) {
-        selectedGame = game
-        AppController.navigateFromLastPrimary("game-detail")
+        return catalogOwner.openGame(game)
     }
 
     function selectGameVariant(index) {
-        if (!selectedGame)
-            return
-        const variants = selectedGame.variants || []
-        if (!variants.length)
-            return
-        const boundedIndex = Math.max(0, Math.min(variants.length - 1, Number(index)))
-        const nextGame = Object.assign({}, selectedGame)
-        nextGame.selectedVariantIndex = boundedIndex
-        selectedGame = nextGame
-        const variant = variants[boundedIndex]
-        accessibilityMessage = qsTr("%1 platform selected").arg(String(variant.store || qsTr("Unknown")))
-            + (Boolean(variant.inLibrary) ? qsTr(" · owned") : qsTr(" · not owned"))
+        return catalogOwner.selectGameVariant(index)
     }
 
     function gameIdentity(game) {
-        if (!game)
-            return ""
-        return String(game.uuid || game.id || game.launchAppId || "")
+        return catalogOwner.gameIdentity(game)
     }
 
     function isFavorite(game) {
-        const id = gameIdentity(game)
-        return id !== "" && (settings.favoriteGameIds || []).indexOf(id) >= 0
+        return catalogOwner.isFavorite(game)
     }
 
     function toggleFavorite(game) {
-        const id = gameIdentity(game)
-        if (!id)
-            return
-        const favorites = (settings.favoriteGameIds || []).slice(0)
-        const index = favorites.indexOf(id)
-        if (index >= 0) {
-            removeFromHome(game)
-            return
-        }
-        addToHome(game)
+        return catalogOwner.toggleFavorite(game)
     }
 
     function isHidden(game) {
-        const id = gameIdentity(game)
-        return id !== "" && (settings.hiddenGameIds || []).indexOf(id) >= 0
+        return catalogOwner.isHidden(game)
     }
 
     function hiddenGameCount() {
-        return (settings.hiddenGameIds || []).length
+        return catalogOwner.hiddenGameCount()
     }
 
     function toggleHidden(game) {
-        const id = gameIdentity(game)
-        if (!id)
-            return
-        const hidden = (settings.hiddenGameIds || []).slice(0)
-        const index = hidden.indexOf(id)
-        if (index >= 0) {
-            hidden.splice(index, 1)
-            accessibilityMessage = qsTr("Restored to library")
-        } else {
-            hidden.push(id)
-            accessibilityMessage = qsTr("Hidden from library")
-        }
-        setSetting("hiddenGameIds", hidden)
+        return catalogOwner.toggleHidden(game)
     }
 
     function addToHome(game) {
-        const id = gameIdentity(game)
-        if (!id)
-            return
-        const favorites = (settings.favoriteGameIds || []).slice(0)
-        if (favorites.indexOf(id) >= 0)
-            return
-        const firstTile = favorites.length === 0
-        favorites.push(id)
-        if (firstTile) {
-            const sizes = Object.assign({}, settings.homeTileSizes || ({}))
-            if (!sizes[id])
-                sizes[id] = "wide"
-            setSetting("homeTileSizes", sizes)
-        }
-        setSetting("favoriteGameIds", favorites)
-        accessibilityMessage = qsTr("Added to Home")
+        return catalogOwner.addToHome(game)
     }
 
     function removeFromHome(game) {
-        const id = gameIdentity(game)
-        if (!id)
-            return
-        const favorites = (settings.favoriteGameIds || []).slice(0)
-        const index = favorites.indexOf(id)
-        if (index < 0)
-            return
-        favorites.splice(index, 1)
-        const sizes = Object.assign({}, settings.homeTileSizes || ({}))
-        delete sizes[id]
-        setSetting("homeTileSizes", sizes)
-        setSetting("favoriteGameIds", favorites)
-        accessibilityMessage = qsTr("Removed from Home")
+        return catalogOwner.removeFromHome(game)
     }
 
     function setHomeOrder(ids) {
-        const known = settings.favoriteGameIds || []
-        const normalized = []
-        for (let index = 0; index < ids.length; ++index) {
-            const id = String(ids[index] || "")
-            if (id && known.indexOf(id) >= 0 && normalized.indexOf(id) < 0)
-                normalized.push(id)
-        }
-        for (let index = 0; index < known.length; ++index) {
-            if (normalized.indexOf(known[index]) < 0)
-                normalized.push(known[index])
-        }
-        setSetting("favoriteGameIds", normalized)
-        accessibilityMessage = qsTr("Home layout saved")
+        return catalogOwner.setHomeOrder(ids)
     }
 
     function homeTileSize(game) {
-        const id = gameIdentity(game)
-        return id && settings.homeTileSizes && settings.homeTileSizes[id] === "wide"
-            ? "wide" : "square"
+        return catalogOwner.homeTileSize(game)
     }
 
     function setHomeTileSize(game, size) {
-        const id = gameIdentity(game)
-        if (!id)
-            return
-        const sizes = Object.assign({}, settings.homeTileSizes || ({}))
-        sizes[id] = size === "wide" ? "wide" : "square"
-        setSetting("homeTileSizes", sizes)
-        accessibilityMessage = size === "wide" ? qsTr("Wide Home tile") : qsTr("Square Home tile")
+        return catalogOwner.setHomeTileSize(game, size)
     }
 
     function acceptDirectLaunch(appId, title) {
@@ -1780,125 +1370,35 @@ QtObject {
     }
 
     function artworkUrl(sourceUrl) {
-        const source = String(sourceUrl || "")
-        if (source === "")
-            return ""
-        if (!/^https?:\/\//i.test(source))
-            return source
-        const resolved = artworkUrls[source]
-        if (resolved !== undefined)
-            return String(resolved)
-        return ""
+        return artworkOwner.artworkUrl(sourceUrl)
     }
 
     function retainArtwork(source) {
-        if (!/^https?:\/\//i.test(source)) return
-        const interests = Object.assign({}, artworkInterests)
-        interests[source] = (interests[source] || 0) + 1
-        artworkInterests = interests
+        return artworkOwner.retainArtwork(source)
     }
 
     function releaseArtwork(source) {
-        const interests = Object.assign({}, artworkInterests)
-        if ((interests[source] || 0) > 1) interests[source]--
-        else {
-            delete interests[source]
-            const retries = Object.assign({}, artworkRetrySources)
-            delete retries[source]
-            artworkRetrySources = retries
-        }
-        artworkInterests = interests
+        return artworkOwner.releaseArtwork(source)
     }
 
     function scheduleArtworkRetry(source) {
-        if (!artworkInterests[source]) return
-        const retries = Object.assign({}, artworkRetrySources)
-        const failures = Math.min(7, (retries[source] ? retries[source].failures : 0) + 1)
-        retries[source] = {failures: failures, nextAt: Date.now() + Math.min(1800000, 30000 * Math.pow(2, failures - 1))}
-        artworkRetrySources = retries
+        return artworkOwner.scheduleArtworkRetry(source)
     }
 
     function retryVisibleArtwork(now) {
-        // Pace retries independently of the number of failed posters on screen.
-        let budget = 2
-        for (const source of Object.keys(artworkRetrySources)) {
-            if (!budget) break
-            const retry = artworkRetrySources[source]
-            if (!artworkInterests[source] || retry.nextAt > now || artworkPending[source]) continue
-            // A pending cache job completes via artwork.resolved; don't repeatedly
-            // query it while waiting. A missed event can be retried after backoff.
-            retry.nextAt = now + Math.min(1800000, 30000 * Math.pow(2, retry.failures - 1))
-            requestArtwork(source, true)
-            budget--
-        }
+        return artworkOwner.retryVisibleArtwork(now)
     }
 
     function requestArtwork(sourceUrl, retryDue) {
-        const source = String(sourceUrl || "")
-        const resolved = artworkUrls[source]
-        if (!ready || !/^https?:\/\//i.test(source) || artworkPending[source]
-                || (!retryDue && artworkRetrySources[source])
-                || (resolved !== undefined && String(resolved) !== source))
-            return ""
-        const requestId = CoreClient.request("artwork.resolve", { sourceUrl: source }, 2000)
-        if (requestId === "")
-            return ""
-        const pending = Object.assign({}, artworkPending)
-        const requests = Object.assign({}, artworkRequestSources)
-        pending[source] = true
-        requests[requestId] = source
-        artworkPending = pending
-        artworkRequestSources = requests
-        return requestId
+        return artworkOwner.requestArtwork(sourceUrl, retryDue)
     }
 
     function finishArtworkRequest(requestId, result, failed) {
-        const source = artworkRequestSources[requestId]
-        if (source === undefined)
-            return false
-        const requests = Object.assign({}, artworkRequestSources)
-        const pending = Object.assign({}, artworkPending)
-        delete requests[requestId]
-        delete pending[source]
-        artworkRequestSources = requests
-        artworkPending = pending
-        const resolved = result && result.cached === true && result.artworkUrl
-            ? String(result.artworkUrl) : ""
-        if (resolved !== "") {
-            const urls = Object.assign({}, artworkUrls)
-            urls[source] = resolved
-            artworkUrls = urls
-            const retries = Object.assign({}, artworkRetrySources)
-            delete retries[source]
-            artworkRetrySources = retries
-        }
-        if (failed || (result && result.cached === false)) {
-            scheduleArtworkRetry(source)
-        }
-        return true
+        return artworkOwner.finishArtworkRequest(requestId, result, failed)
     }
 
     function acceptArtworkResult(payload) {
-        const source = String(payload && payload.sourceUrl || "")
-        const resolved = payload && payload.cached === true
-            ? String(payload.artworkUrl || "") : ""
-        if (source === "")
-            return
-        const pending = Object.assign({}, artworkPending)
-        delete pending[source]
-        artworkPending = pending
-        if (resolved !== "") {
-            const urls = Object.assign({}, artworkUrls)
-            urls[source] = resolved
-            artworkUrls = urls
-        }
-        const retries = Object.assign({}, artworkRetrySources)
-        if (payload.cached === false) {
-            scheduleArtworkRetry(source)
-        } else {
-            delete retries[source]
-            artworkRetrySources = retries
-        }
+        return artworkOwner.acceptArtworkResult(payload)
     }
 
     function stopNativeStreamer(reason) {
@@ -2208,88 +1708,27 @@ QtObject {
     }
 
     function requestConsoleSurface(enabled) {
-        const requested = Boolean(enabled)
-        const previous = consoleSurfaceInitialized
-            ? consoleSurfaceConfirmedValue : Boolean(settings.launchInConsoleMode)
-        consoleSurfaceError = ""
-        consoleSurfaceDesiredValue = requested
-        applySetting("launchInConsoleMode", requested)
-        root.consoleSurfaceRequested(requested)
-        if (!ready) {
-            consoleSurfaceDesiredValue = previous
-            applySetting("launchInConsoleMode", previous)
-            root.consoleSurfaceRequested(previous)
-            consoleSurfaceError = qsTr("Console mode could not be saved because the OpenNOW core is not ready. The previous mode was restored.")
-            lastError = consoleSurfaceError
-            accessibilityMessage = lastError
-            return ""
-        }
-        if (consoleSurfaceRequestId === "")
-            beginConsoleSurfacePersistence()
-        return consoleSurfaceRequestId
+        return settingsOwner.requestConsoleSurface(enabled)
     }
 
     function beginConsoleSurfacePersistence() {
-        consoleSurfaceRequestValue = consoleSurfaceDesiredValue
-        consoleSurfaceRequestId = CoreClient.request("settings.set", {
-            key: "launchInConsoleMode",
-            value: consoleSurfaceRequestValue
-        })
-        if (consoleSurfaceRequestId !== "")
-            return
-        const restored = consoleSurfaceConfirmedValue
-        consoleSurfaceDesiredValue = restored
-        applySetting("launchInConsoleMode", restored)
-        root.consoleSurfaceRequested(restored)
-        consoleSurfaceError = qsTr("Console mode could not be saved. The previous mode was restored.")
-        lastError = consoleSurfaceError
-        accessibilityMessage = lastError
+        return settingsOwner.beginConsoleSurfacePersistence()
     }
 
     function setSetting(key, value) {
-        if (key === "launchInConsoleMode")
-            return requestConsoleSurface(Boolean(value))
-        if (!ready) {
-            lastError = qsTr("The OpenNOW core is not ready")
-            return ""
-        }
-        const requestId = CoreClient.request("settings.set", { key: key, value: value })
-        if (key === "identifyAsSteamDeck") {
-            // MES serves a different resolution catalog per device identity
-            // (Steam Deck unlocks 90 FPS tuples), so re-read entitlements.
-            Qt.callLater(root.refreshAccountServices)
-        }
-        return requestId
+        return settingsOwner.setSetting(key, value)
     }
 
     function resetSettings() {
-        if (!ready) {
-            lastError = qsTr("The OpenNOW core is not ready")
-            return
-        }
-        CoreClient.request("settings.reset", {})
+        return settingsOwner.resetSettings()
     }
 
     function applyCoupledSettings(changes) {
-        for (const key of Object.keys(changes || {}))
-            root.applySetting(key, changes[key])
+        return settingsOwner.applyCoupledSettings(changes)
     }
 
     function applySetting(key, value) {
-        const updated = Object.assign({}, settings)
-        updated[key] = value
-        settings = updated
-        if (["nativeStreamerExecutablePath", "nativeVideoBackend", "decoderPreference"].indexOf(key) >= 0)
-            Qt.callLater(root.refreshStreamerDetection)
-        accessibilityMessage = qsTr("%1 updated").arg(String(key).split(/(?=[A-Z])/).join(" "))
-        if (key === "reducedMotion")
-            AppController.reducedMotion = Boolean(value)
-        if (key === "appLanguage")
-            I18n.setLocale(String(value || "system"))
-        if (key === "discordRichPresence")
-            syncDiscordPresence()
-        if (key === "errorReportingConsent")
-            syncTelemetry()
+        return settingsOwner.applySetting(key, value)
     }
 
     function focusIndex(route) {
@@ -2554,33 +1993,14 @@ QtObject {
             if (root.finishArtworkRequest(requestId, result, false)) {
                 return
             } else if (requestId === root.settingsRequestId && result.settings) {
-                root.settings = Object.assign({}, result.settings, {microphoneMode: "disabled"})
-                if (result.settings.microphoneMode !== "disabled")
-                    root.setSetting("microphoneMode", "disabled")
-                root.consoleSurfaceConfirmedValue = Boolean(result.settings.launchInConsoleMode)
-                root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
-                root.consoleSurfaceInitialized = true
-                AppController.reducedMotion = Boolean(result.settings.reducedMotion)
-                I18n.setLocale(String(result.settings.appLanguage || "system"))
-                root.settingsRequestId = ""
+                settingsOwner.acceptSettings(result)
                 root.syncTelemetry()
                 root.syncDiscordPresence()
                 root.refreshStreamerDetection()
                 if (result.settings.autoCheckForUpdates && root.updaterCheckRequestId === "")
                     root.autoUpdateCheckTimer.restart()
             } else if (requestId === root.consoleSurfaceRequestId) {
-                root.applyCoupledSettings(result.changes)
-                root.consoleSurfaceRequestId = ""
-                root.consoleSurfaceConfirmedValue = Boolean(result.value)
-                root.consoleSurfaceInitialized = true
-                if (root.consoleSurfaceDesiredValue === root.consoleSurfaceConfirmedValue) {
-                    root.applySetting("launchInConsoleMode", root.consoleSurfaceConfirmedValue)
-                    root.consoleSurfaceError = ""
-                    root.accessibilityMessage = root.consoleSurfaceConfirmedValue
-                        ? qsTr("Console mode saved") : qsTr("Computer mode saved")
-                } else {
-                    root.beginConsoleSurfacePersistence()
-                }
+                settingsOwner.acceptConsoleSurface(result)
             } else if (requestId === root.providersRequestId) {
                 root.providers = result.providers || []
                 root.providersRequestId = ""
@@ -2602,22 +2022,12 @@ QtObject {
                     root.remoteSessions = []
                 root.resolveDirectLaunch()
             } else if (requestId === root.catalogRequestId) {
-                root.catalogGames = result.games || []
-                root.catalogTotalCount = Number(result.totalCount || root.catalogGames.length)
-                if (!root.selectedGame && root.catalogGames.length > 0)
-                    root.selectedGame = root.catalogGames[0]
-                root.catalogState = "ready"
-                root.catalogRequestId = ""
+                catalogOwner.acceptCatalog(result)
                 root.resolveDirectLaunch()
             } else if (requestId === root.storeRequestId) {
                 root.acceptStorePage(result)
             } else if (requestId === root.storePresentationRequestId) {
-                root.storePresentationRequestId = ""
-                if (result.section === "marquee") root.storeMarquee = result.items || []
-                else if (result.section === "panels") root.storePanels = result.items || []
-                else if (result.section === "filters") root.storeFilterGroups = result.items || []
-                root.storePresentationIndex += 1
-                root.requestStorePresentation()
+                catalogOwner.acceptStorePresentation(result)
             } else if (requestId === root.deviceStartRequestId) {
                 root.authChallenge = result
                 root.authState = "waiting"
@@ -2689,42 +2099,11 @@ QtObject {
                 root.reloadCatalogForSession()
                 root.accessibilityMessage = qsTr("All saved accounts signed out")
             } else if (requestId === root.subscriptionRequestId) {
-                root.subscription = result.subscription || null
-                root.subscriptionRequestId = ""
+                accountServicesOwner.acceptSubscription(result)
             } else if (requestId === root.regionsRequestId) {
-                root.regions = result.regions || []
-                root.regionsVpcId = result.vpcId || ""
-                root.regionsRequestId = ""
-                if (root.regionPingPending) {
-                    root.regionPingPending = false
-                    if (root.regions.length > 0) root.pingRegions()
-                    else root.regionPingMessage = qsTr("No streaming regions are available for this account.")
-                }
+                accountServicesOwner.acceptRegions(result)
             } else if (requestId === root.regionPingRequestId) {
-                root.regionPingRequestId = ""
-                const values = {}
-                const results = result.results || []
-                let bestName = ""
-                let bestPing = Number.MAX_VALUE
-                for (let index = 0; index < results.length; ++index) {
-                    const item = results[index]
-                    const measured = Number(item.pingMs)
-                    values[String(item.url || "")] = item.pingMs === null || item.pingMs === undefined
-                        || !Number.isFinite(measured) || measured < 0 ? null : measured
-                    if (values[String(item.url || "")] !== null && Number(item.pingMs) < bestPing) {
-                        bestPing = Number(item.pingMs)
-                        for (let regionIndex = 0; regionIndex < root.regions.length; ++regionIndex) {
-                            if (root.regions[regionIndex].url === item.url) {
-                                bestName = root.regions[regionIndex].name
-                                break
-                            }
-                        }
-                    }
-                }
-                root.regionPingResults = values
-                root.regionPingMessage = bestName
-                    ? qsTr("Best: %1 · %2 ms").arg(bestName).arg(bestPing)
-                    : qsTr("No region responded")
+                accountServicesOwner.acceptRegionPing(result)
             } else if (requestId === root.accountsRequestId) {
                 root.savedAccounts = result.accounts || []
                 root.accountsRequestId = ""
@@ -2762,47 +2141,17 @@ QtObject {
                             : qsTr("Enter exactly four digits.")
                 }
             } else if (requestId === root.gameAccountsRequestId) {
-                root.gameAccountsRequestId = ""
-                root.gameAccounts = result.accounts || []
-                root.gameAccountsState = "ready"
-                root.gameAccountMessage = qsTr("")
+                accountServicesOwner.acceptGameAccounts(result)
             } else if (requestId === root.gameAccountActionRequestId) {
-                root.gameAccountActionRequestId = ""
-                root.gameAccountMessage = result.message || qsTr("Account updated")
-                root.refreshGameAccounts()
-                root.reloadCatalogForSession()
+                accountServicesOwner.acceptGameAccountAction(result)
             } else if (requestId === root.accountLinkStartRequestId) {
-                root.accountLinkStartRequestId = ""
-                root.accountLinkAttempt = result
-                if (!AppController.openExternalUrl(result.loginUrl || "")) {
-                    root.gameAccountMessage = qsTr("Open the provider sign-in URL in your browser.")
-                } else {
-                    root.gameAccountMessage = qsTr("Finish signing in in your browser…")
-                }
-                root.accountLinkPollTimer.restart()
+                accountServicesOwner.acceptAccountLinkStart(result)
             } else if (requestId === root.accountLinkPollRequestId) {
-                root.accountLinkPollRequestId = ""
-                const status = result.status || "error"
-                if (status === "pending") {
-                    return
-                }
-                root.accountLinkPollTimer.stop()
-                root.accountLinkAttempt = null
-                if (status === "complete") {
-                    root.gameAccountMessage = qsTr("Account connected")
-                    root.refreshGameAccounts()
-                    root.reloadCatalogForSession()
-                } else {
-                    root.gameAccountMessage = result.message || qsTr("Account linking expired")
-                }
+                accountServicesOwner.acceptAccountLinkPoll(result)
             } else if (requestId === root.storageLocationsRequestId) {
-                root.storageLocationsRequestId = ""
-                root.storageLocations = result.locations || []
-                root.storageMessage = qsTr("")
+                accountServicesOwner.acceptStorageLocations(result)
             } else if (requestId === root.storageResetRequestId) {
-                root.storageResetRequestId = ""
-                root.storageMessage = result.message || qsTr("Persistent storage was reset successfully.")
-                root.refreshAccountServices()
+                accountServicesOwner.acceptStorageReset(result)
             } else if (requestId === root.mediaRequestId) {
                 root.mediaRequestId = ""
                 root.mediaItems = result.items || []
@@ -2969,10 +2318,7 @@ QtObject {
         }
         function onRequestFailed(requestId, code, message) {
             if (requestId === root.storePresentationRequestId && requestId !== "") {
-                root.storePresentationRequestId = ""
-                root.storeWarning = qsTr("Some storefront sections could not load: %1").arg(message)
-                root.storePresentationIndex += 1
-                root.requestStorePresentation()
+                catalogOwner.failStorePresentation(message)
                 return
             }
             if (root.finishArtworkRequest(requestId, null, true))
@@ -2984,21 +2330,11 @@ QtObject {
             }
             root.lastError = message
             if (requestId === root.consoleSurfaceRequestId) {
-                root.consoleSurfaceRequestId = ""
-                root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
-                root.applySetting("launchInConsoleMode", root.consoleSurfaceConfirmedValue)
-                root.consoleSurfaceRequested(root.consoleSurfaceConfirmedValue)
-                root.consoleSurfaceError = qsTr("Console mode could not be saved. The previous mode was restored. %1").arg(message)
-                root.lastError = root.consoleSurfaceError
-                root.accessibilityMessage = root.lastError
+                settingsOwner.failConsoleSurface(message)
             } else if (requestId === root.catalogRequestId) {
-                root.catalogState = "error"
-                root.catalogRequestId = ""
+                catalogOwner.failCatalog(message)
             } else if (requestId === root.storeRequestId) {
-                root.storeState = "error"
-                root.storeRequestId = ""
-                root.storePageTimer.stop()
-                root.storeError = message
+                catalogOwner.failStore(message)
             } else if (requestId === root.providersRequestId) {
                 root.providersRequestId = ""
             } else if (requestId === root.authSessionRequestId) {
@@ -3023,14 +2359,11 @@ QtObject {
                 root.logoutAllRequestId = ""
                 root.authMessage = message
             } else if (requestId === root.subscriptionRequestId) {
-                root.subscriptionRequestId = ""
+                accountServicesOwner.failSubscription(message)
             } else if (requestId === root.regionsRequestId) {
-                root.regionsRequestId = ""
-                root.regionPingPending = false
-                root.regionPingMessage = qsTr("Could not load regions: %1").arg(message)
+                accountServicesOwner.failRegions(message)
             } else if (requestId === root.regionPingRequestId) {
-                root.regionPingRequestId = ""
-                root.regionPingMessage = message
+                accountServicesOwner.failRegionPing(message)
             } else if (requestId === root.accountsRequestId) {
                 root.accountsRequestId = ""
             } else if (requestId === root.accountSwitchRequestId) {
@@ -3042,25 +2375,17 @@ QtObject {
                 root.pinRequestId = ""
                 root.pinMessage = message
             } else if (requestId === root.gameAccountsRequestId) {
-                root.gameAccountsRequestId = ""
-                root.gameAccountsState = "error"
-                root.gameAccountMessage = message
+                accountServicesOwner.failGameAccounts(message)
             } else if (requestId === root.gameAccountActionRequestId) {
-                root.gameAccountActionRequestId = ""
-                root.gameAccountMessage = message
+                accountServicesOwner.failGameAccountAction(message)
             } else if (requestId === root.accountLinkStartRequestId) {
-                root.accountLinkStartRequestId = ""
-                root.gameAccountMessage = message
+                accountServicesOwner.failAccountLinkStart(message)
             } else if (requestId === root.accountLinkPollRequestId) {
-                root.accountLinkPollRequestId = ""
-                root.accountLinkPollTimer.stop()
-                root.gameAccountMessage = message
+                accountServicesOwner.failAccountLinkPoll(message)
             } else if (requestId === root.storageLocationsRequestId) {
-                root.storageLocationsRequestId = ""
-                root.storageMessage = message
+                accountServicesOwner.failStorageLocations(message)
             } else if (requestId === root.storageResetRequestId) {
-                root.storageResetRequestId = ""
-                root.storageMessage = message
+                accountServicesOwner.failStorageReset(message)
             } else if (requestId === root.mediaRequestId) {
                 root.mediaRequestId = ""
                 root.mediaState = "error"
@@ -3172,21 +2497,7 @@ QtObject {
         }
         function onEventReceived(name, payload) {
             if (name === "settings.changed") {
-                // Coupled preferences are saved atomically by the core.
-                root.applyCoupledSettings(payload.changes)
-                if (payload.key === "launchInConsoleMode") {
-                    const persisted = Boolean(payload.value)
-                    root.consoleSurfaceConfirmedValue = persisted
-                    root.consoleSurfaceInitialized = true
-                    if (root.consoleSurfaceRequestId !== ""
-                            && root.consoleSurfaceDesiredValue !== persisted)
-                        return
-                    root.consoleSurfaceDesiredValue = persisted
-                    root.applySetting(payload.key, persisted)
-                    root.consoleSurfaceRequested(persisted)
-                } else {
-                    root.applySetting(payload.key, payload.value)
-                }
+                settingsOwner.acceptSettingsChange(payload)
             } else if (name === "settings.reset")
                 root.refreshSettings()
             else if (name === "auth.session.changed") {

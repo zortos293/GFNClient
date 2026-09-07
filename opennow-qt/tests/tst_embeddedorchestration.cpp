@@ -19,7 +19,7 @@ class EmbeddedOrchestrationTest final : public QObject
 private slots:
     void pendingRecoveryDoesNotHideAStartedVideoSurface()
     {
-        for (const auto &path : {"qml/screens/StreamScreen.qml", "qml/desktop/DesktopStreamScreen.qml"}) {
+        for (const auto &path : {"qml/screens/StreamScreen.qml", "qml/desktop/stream/DesktopStreamScreen.qml"}) {
             const QRegularExpression status(QStringLiteral(
                 "readonly property string status: \\{(.*?)\\n    \\}"),
                 QRegularExpression::DotMatchesEverythingOption);
@@ -195,7 +195,7 @@ private slots:
 
     void applicationExposesRuntimeWithoutLegacySurfaceController()
     {
-        const auto main = source(QStringLiteral("src/main.cpp"));
+        const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
         QVERIFY(!main.isEmpty());
         QVERIFY(main.contains(QStringLiteral("setContextProperty(u\"NativeStreamRuntime\"_s")));
         QVERIFY(main.contains(QStringLiteral("StreamVideoItem::setNativeStreamRuntime")));
@@ -206,7 +206,7 @@ private slots:
     {
         const QStringList screens{
             QStringLiteral("qml/screens/StreamScreen.qml"),
-            QStringLiteral("qml/desktop/DesktopStreamScreen.qml"),
+            QStringLiteral("qml/desktop/stream/DesktopStreamScreen.qml"),
         };
         const QRegularExpression liveItem(
             QStringLiteral("StreamVideoItem\\s*\\{[^}]*objectName:\\s*\"streamSurfaceHost\""),
@@ -230,7 +230,7 @@ private slots:
     void passiveStatsKeepGameplayInputWhileModalOverlaysTakeOwnership()
     {
         const auto main = source(QStringLiteral("qml/Main.qml"));
-        const auto host = source(QStringLiteral("qml/desktop/DesktopStreamOverlayHost.qml"));
+        const auto host = source(QStringLiteral("qml/desktop/stream/DesktopStreamOverlayHost.qml"));
         QVERIFY(!main.isEmpty());
         QVERIFY(main.contains(QStringLiteral(
             "ControllerInput.shellCaptureEnabled = shellOwnsInput")));
@@ -245,10 +245,10 @@ private slots:
     void gameplayEscapeIsForwardedWhileDedicatedStopStillConfirms()
     {
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
-        const auto desktop = source(QStringLiteral("qml/desktop/DesktopApp.qml"));
+        const auto desktop = source(QStringLiteral("qml/desktop/shell/DesktopApp.qml"));
         const QStringList screens{
             QStringLiteral("qml/screens/StreamScreen.qml"),
-            QStringLiteral("qml/desktop/DesktopStreamScreen.qml"),
+            QStringLiteral("qml/desktop/stream/DesktopStreamScreen.qml"),
         };
         QVERIFY(!shell.contains(QStringLiteral("\"request-exit\": [\"Escape\"]")));
         QVERIFY(shell.contains(QStringLiteral(
@@ -265,9 +265,9 @@ private slots:
 
     void statsOverlayNeverPaintsOverTheStream()
     {
-        const auto host = source(QStringLiteral("qml/desktop/DesktopStreamOverlayHost.qml"));
+        const auto host = source(QStringLiteral("qml/desktop/stream/DesktopStreamOverlayHost.qml"));
         QVERIFY(!host.contains(QStringLiteral("visible: root.statsVisible\n        color:")));
-        const auto menu = source(QStringLiteral("qml/desktop/DesktopInStreamMenu.qml"));
+        const auto menu = source(QStringLiteral("qml/desktop/stream/DesktopInStreamMenu.qml"));
         QVERIFY(!menu.contains(QStringLiteral("Stream quality")));
     }
 
@@ -330,7 +330,7 @@ private slots:
 
     void cursorModeTransitionsCloseThePreviousButtonOwner()
     {
-        const auto streamVideoSource = source(QStringLiteral("src/StreamVideoItem.cpp"));
+        const auto streamVideoSource = source(QStringLiteral("src/streaming/StreamVideoItemInput.cpp"));
         const auto transition = streamVideoSource.indexOf(
             QStringLiteral("if (relative && !m_rawInputActive) releaseQtMouseButtons();"));
         const auto switchMode = streamVideoSource.indexOf(
@@ -346,13 +346,13 @@ private slots:
 
     void unlockedPointerMovementUsesQtHoverDelivery()
     {
-        const auto header = source(QStringLiteral("src/StreamVideoItem.h"));
+        const auto header = source(QStringLiteral("src/streaming/StreamVideoItem.h"));
         QVERIFY(header.contains(QStringLiteral(
             "void hoverEnterEvent(QHoverEvent *event) override;")));
         QVERIFY(header.contains(QStringLiteral(
             "void hoverMoveEvent(QHoverEvent *event) override;")));
 
-        const auto streamVideoSource = source(QStringLiteral("src/StreamVideoItem.cpp"));
+        const auto streamVideoSource = source(QStringLiteral("src/streaming/StreamVideoItemInput.cpp"));
         const auto hoverMove = streamVideoSource.indexOf(
             QStringLiteral("void StreamVideoItem::hoverMoveEvent(QHoverEvent *event)"));
         const auto wheel = streamVideoSource.indexOf(

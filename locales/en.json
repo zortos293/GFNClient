@@ -1,4 +1,23 @@
 {
+  "sessionLaunch": {
+    "ending": "ENDING SESSION",
+    "closing": "Closing your session",
+    "closingDetail": "Waiting for your session to close.",
+    "cancelDetail": "Your session request will be cancelled and you will leave the queue.",
+    "keepWaiting": "Keep waiting",
+    "reconnecting": "Reconnecting to your session",
+    "connecting": "Connecting to your game",
+    "checking": "Checking session availability",
+    "requesting": "Requesting your session",
+    "resuming": "Resuming your session",
+    "preparing": "Preparing your game",
+    "failedDetail": "Please try again or return to your library.",
+    "reconnectingDetail": "Your stream will return when the connection is restored.",
+    "connectingDetail": "Your game will appear here as soon as the video is ready.",
+    "queuedDetail": "Waiting for an available rig. Your session will start automatically.",
+    "preparingDetail": "Your session will start automatically when it is ready.",
+    "retry": "Retry connection"
+  },
   "desktopRenewRemaining": {
     "regionAfrica": "AFRICA",
     "searchRegions": "Search regions…",

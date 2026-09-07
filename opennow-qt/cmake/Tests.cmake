@@ -367,6 +367,23 @@ if(BUILD_TESTING)
     endforeach()
     foreach(motion_mode normal reduced)
         foreach(motion_window windowed fullscreen)
+            set(launch_args --smoke-test --allow-multiple-instances --desktop --route library --smoke-session-launch)
+            if(motion_mode STREQUAL "reduced")
+                list(APPEND launch_args --reduced-motion)
+            endif()
+            if(motion_window STREQUAL "fullscreen")
+                list(APPEND launch_args --smoke-motion-fullscreen)
+            endif()
+            add_test(NAME "qml-session-launch-${motion_mode}-${motion_window}" COMMAND opennow-qt ${launch_args})
+            set_tests_properties("qml-session-launch-${motion_mode}-${motion_window}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+            if(OPENNOW_XVFB_RUN)
+                add_test(NAME "qml-session-launch-video-${motion_mode}-${motion_window}"
+                    COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-qt>"
+                        ${launch_args} --smoke-session-launch-video)
+                set_tests_properties("qml-session-launch-video-${motion_mode}-${motion_window}" PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=xcb" TIMEOUT 30)
+            endif()
             set(motion_args --smoke-test --allow-multiple-instances --desktop --route home --smoke-paper-design --smoke-motion)
             if(motion_mode STREQUAL "reduced")
                 list(APPEND motion_args --reduced-motion)

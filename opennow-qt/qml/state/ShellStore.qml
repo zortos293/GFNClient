@@ -1525,7 +1525,7 @@ QtObject {
     }
 
     function requestStreamExitConfirmation() {
-        if (AppController.route !== "stream")
+        if (AppController.route !== "stream" && AppController.route !== "inserting")
             return
         AppController.showOverlay("desktop-stream-exit-confirm")
         accessibilityMessage = qsTr("Confirm ending the cloud session")

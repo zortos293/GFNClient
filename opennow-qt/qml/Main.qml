@@ -135,6 +135,14 @@ ApplicationWindow {
     onActiveChanged: syncInputOwnership()
     onDesktopSurfaceActiveChanged: ShellStore.desktopUiActive = desktopSurfaceActive
 
+    Shortcut {
+        objectName: "shellFullscreenShortcut"
+        sequence: "F11"
+        context: Qt.ApplicationShortcut
+        enabled: window.activeRoute !== "stream"
+        onActivated: window.toggleFullscreen()
+    }
+
     Connections {
         target: ShellStore
         function onFullscreenToggleRequested() {

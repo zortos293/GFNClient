@@ -88,6 +88,10 @@ The keyboard fixtures cover Return, keypad Enter, Tab+Space, Escape, safe defaul
 auto-repeat suppression, and preserving the stream surface/input across cancellation.
 They use a smoke session, not a live GFN connection.
 
+Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-session-fullscreen-'`
+to verify that F11 can leave and re-enter fullscreen after confirming session exit,
+in desktop/console mode, restoring either the normal or maximized window state.
+
 ### Local frame generation (experimental)
 
 The desktop Streaming settings and console Video settings offer **Off** (default) or **2×**.

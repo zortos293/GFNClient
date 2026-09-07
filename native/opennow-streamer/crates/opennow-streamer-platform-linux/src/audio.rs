@@ -39,6 +39,7 @@ pub struct AudioConfig {
     pub queue_depth: usize,
     pub preference: AudioBackendPreference,
     pub alsa_device: String,
+    pub output_device: String,
 }
 
 impl Default for AudioConfig {
@@ -49,12 +50,26 @@ impl Default for AudioConfig {
             queue_depth: 12,
             preference: AudioBackendPreference::PipeWireThenAlsa,
             alsa_device: "default".to_owned(),
+            output_device: String::new(),
         }
     }
 }
 
 impl AudioConfig {
     pub fn validate(&self) -> Result<()> {
+        if !self.output_device.is_empty() {
+            let name = self
+                .output_device
+                .strip_prefix("pipewire:")
+                .or_else(|| self.output_device.strip_prefix("alsa:"));
+            if !crate::audio_devices::valid_id(&self.output_device)
+                || name.is_none_or(str::is_empty)
+            {
+                return Err(Error::InvalidFormat(
+                    "Audio output device must be a valid pipewire: or alsa: identifier".to_owned(),
+                ));
+            }
+        }
         if !matches!(self.sample_rate, 8_000 | 12_000 | 16_000 | 24_000 | 48_000) {
             return Err(Error::InvalidFormat(format!(
                 "Opus sample rate {} is unsupported",
@@ -216,7 +231,14 @@ pub(crate) trait AudioSink {
 
 pub(crate) fn open_audio_sink(config: &AudioConfig) -> Result<Box<dyn AudioSink + Send>> {
     config.validate()?;
-    let order: &[AudioBackend] = match config.preference {
+    let preference = if config.output_device.starts_with("pipewire:") {
+        AudioBackendPreference::PipeWireOnly
+    } else if config.output_device.starts_with("alsa:") {
+        AudioBackendPreference::AlsaOnly
+    } else {
+        config.preference
+    };
+    let order: &[AudioBackend] = match preference {
         AudioBackendPreference::PipeWireThenAlsa => &[AudioBackend::PipeWire, AudioBackend::Alsa],
         AudioBackendPreference::AlsaThenPipeWire => &[AudioBackend::Alsa, AudioBackend::PipeWire],
         AudioBackendPreference::PipeWireOnly => &[AudioBackend::PipeWire],
@@ -247,6 +269,12 @@ pub(crate) fn open_audio_fallback(
     config: &AudioConfig,
     current: AudioBackend,
 ) -> Result<Box<dyn AudioSink + Send>> {
+    if !config.output_device.is_empty() {
+        return Err(Error::unavailable(
+            Subsystem::Session,
+            "Fixed audio output device forbids fallback",
+        ));
+    }
     let preference = match (config.preference, current) {
         (AudioBackendPreference::PipeWireThenAlsa, AudioBackend::PipeWire)
         | (AudioBackendPreference::AlsaThenPipeWire, AudioBackend::PipeWire) => {
@@ -306,6 +334,15 @@ unsafe impl Send for AlsaSink {}
 
 impl AlsaSink {
     fn open(config: &AudioConfig) -> Result<Self> {
+        let device = if let Some(name) = config.output_device.strip_prefix("alsa:") {
+            crate::audio_devices::require_device(
+                &config.output_device,
+                &crate::audio_devices::alsa_devices()?,
+            )?;
+            name
+        } else {
+            &config.alsa_device
+        };
         unsafe {
             let library = Library::new("libasound.so.2")
                 .or_else(|_| Library::new("libasound.so"))
@@ -317,7 +354,7 @@ impl AlsaSink {
             let drop_pcm: SndPcmDrop = *load_symbol(&library, b"snd_pcm_drop\0")?;
             let close: SndPcmClose = *load_symbol(&library, b"snd_pcm_close\0")?;
             let strerror: SndStrError = *load_symbol(&library, b"snd_strerror\0")?;
-            let name = CString::new(config.alsa_device.as_str()).map_err(|_| {
+            let name = CString::new(device).map_err(|_| {
                 Error::InvalidFormat("ALSA device contains an embedded NUL".to_owned())
             })?;
             let mut raw = std::ptr::null_mut();
@@ -443,6 +480,13 @@ struct PipeWireSink {
 
 impl PipeWireSink {
     fn open(config: &AudioConfig) -> Result<Self> {
+        let target = config.output_device.strip_prefix("pipewire:");
+        if target.is_some() {
+            crate::audio_devices::require_device(
+                &config.output_device,
+                &crate::audio_devices::pipewire_devices()?,
+            )?;
+        }
         pipewire_socket().ok_or_else(|| {
             Error::unavailable(
                 Subsystem::PipeWire,
@@ -452,10 +496,25 @@ impl PipeWireSink {
         let executable = find_in_path("pw-cat").ok_or_else(|| {
             Error::unavailable(Subsystem::PipeWire, "pw-cat was not found in PATH")
         })?;
-        let mut child = Command::new(executable)
+        let help = crate::audio_devices::bounded_command_output(
+            Command::new(&executable).arg("--help"),
+            std::time::Duration::from_millis(250),
+        )?;
+        let mut command = Command::new(executable);
+        if String::from_utf8_lossy(&help).contains("--raw") {
+            command.arg("--raw");
+        }
+        if let Some(target) = target {
+            command.args([
+                "--target",
+                target,
+                "--properties",
+                "{\"node.dont-fallback\":true,\"node.dont-reconnect\":true}",
+            ]);
+        }
+        let mut child = command
             .args([
                 "--playback",
-                "--raw",
                 "--format",
                 "f32",
                 "--rate",
@@ -552,4 +611,132 @@ fn find_in_path(executable: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|path| path.join(executable))
         .find(|candidate| candidate.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_audio_output_validates_backend_and_forbids_fallback() {
+        assert!(AudioConfig::default().validate().is_ok());
+        for name in ["pipewire:usb.speakers", "alsa:front:CARD=USB"] {
+            let config = AudioConfig {
+                output_device: name.to_owned(),
+                ..AudioConfig::default()
+            };
+            assert!(config.validate().is_ok());
+            assert!(open_audio_fallback(&config, AudioBackend::PipeWire).is_err());
+            assert!(open_audio_fallback(&config, AudioBackend::Alsa).is_err());
+        }
+        for name in ["unknown", "alsa:", "pipewire:", "alsa:a\0b"] {
+            let config = AudioConfig {
+                output_device: name.to_owned(),
+                ..AudioConfig::default()
+            };
+            assert!(config.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn missing_alsa_output_never_opens_default() {
+        let config = AudioConfig {
+            output_device: "alsa:opennow-test-missing-device".to_owned(),
+            ..AudioConfig::default()
+        };
+        assert!(open_audio_sink(&config).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires ALSA_CONFIG_PATH=tests/fixtures/audio-null.conf"]
+    fn selected_alsa_output_opens_and_survives_enumeration() {
+        let config = AudioConfig {
+            output_device: "alsa:opennow_test_output".to_owned(),
+            ..AudioConfig::default()
+        };
+        let mut sink = open_audio_sink(&config).expect("selected ALSA output");
+        assert_eq!(sink.backend(), AudioBackend::Alsa);
+        sink.write(&[0.0; 960], &|| false)
+            .expect("initial PCM write");
+        let devices = crate::audio_devices::alsa_devices().expect("enumeration during playback");
+        crate::audio_devices::require_device(&config.output_device, &devices)
+            .expect("selected device remains visible");
+        sink.write(&[0.0; 960], &|| false)
+            .expect("PCM after enumeration");
+        let missing = AudioConfig {
+            output_device: "alsa:missing".to_owned(),
+            ..config
+        };
+        assert!(open_audio_sink(&missing).is_err());
+        sink.write(&[0.0; 960], &|| false)
+            .expect("original output survives failed open");
+    }
+
+    #[test]
+    #[ignore = "requires an isolated PipeWire server with opennow_test_output sink"]
+    fn selected_pipewire_output_opens_and_survives_enumeration() {
+        let config = AudioConfig {
+            output_device: "pipewire:opennow_test_output".to_owned(),
+            ..AudioConfig::default()
+        };
+        let mut sink = PipeWireSink::open(&config).expect("selected PipeWire output");
+        assert_eq!(sink.backend(), AudioBackend::PipeWire);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        sink.write(&[0.0; 960], &|| std::time::Instant::now() >= deadline)
+            .expect("initial PCM write");
+        let pid = sink.child.id();
+        loop {
+            let bytes = crate::audio_devices::bounded_command_output(
+                &mut Command::new("pw-dump"),
+                std::time::Duration::from_millis(500),
+            )
+            .unwrap();
+            let graph: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+            let target = graph
+                .iter()
+                .find(|object| object["info"]["props"]["node.name"] == "opennow_test_output")
+                .expect("target node")["id"]
+                .clone();
+            let client = graph.iter().find(|object| {
+                object["type"] == "PipeWire:Interface:Client"
+                    && object["info"]["props"]["application.process.id"] == pid
+            });
+            let stream = client.and_then(|client| {
+                graph.iter().find(|object| {
+                    object["type"] == "PipeWire:Interface:Node"
+                        && object["info"]["props"]["client.id"] == client["id"]
+                })
+            });
+            if let Some(stream) = stream {
+                assert_eq!(
+                    stream["info"]["props"]["target.object"],
+                    "opennow_test_output"
+                );
+                assert_eq!(stream["info"]["props"]["node.dont-fallback"], true);
+                if graph.iter().any(|object| {
+                    object["type"] == "PipeWire:Interface:Link"
+                        && object["info"]["output-node-id"] == stream["id"]
+                        && object["info"]["input-node-id"] == target
+                }) {
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "playback was not linked to the selected sink"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let devices =
+            crate::audio_devices::pipewire_devices().expect("enumeration during playback");
+        crate::audio_devices::require_device(&config.output_device, &devices)
+            .expect("selected device remains visible");
+        let missing = AudioConfig {
+            output_device: "pipewire:opennow_missing_output".to_owned(),
+            ..config
+        };
+        assert!(open_audio_sink(&missing).is_err());
+        sink.write(&[0.0; 960], &|| std::time::Instant::now() >= deadline)
+            .expect("PCM after enumeration");
+    }
 }

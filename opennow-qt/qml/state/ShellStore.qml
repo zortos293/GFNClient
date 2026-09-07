@@ -251,6 +251,20 @@ QtObject {
     property bool nativeRuntimeReady: false
     readonly property int nativeProtocolVersion: 5
     property var nativeRuntimeCapabilities: ({})
+    property var audioOutputDevices: []
+    property bool audioOutputDevicesBusy: false
+    property string audioOutputDevicesError: ""
+    property string audioOutputDevicesRequestId: ""
+    property Timer audioOutputDevicesTimeout: Timer {
+        interval: 10000
+        onTriggered: {
+            root.takeNativeRequest(root.audioOutputDevicesRequestId)
+            root.audioOutputDevicesRequestId = ""
+            root.audioOutputDevicesBusy = false
+            root.audioOutputDevices = []
+            root.audioOutputDevicesError = qsTr("Audio device discovery timed out. Try refreshing again.")
+        }
+    }
     property int nativeRequestSequence: 0
     property var nativeRequests: ({})
     property int overlayRequestGeneration: 0
@@ -506,6 +520,20 @@ QtObject {
         delete requests[requestId]
         nativeRequests = requests
         return pending
+    }
+
+    function refreshAudioOutputDevices() {
+        if (audioOutputDevicesBusy || !nativeRuntimeReady)
+            return
+        audioOutputDevicesError = ""
+        audioOutputDevicesBusy = true
+        audioOutputDevicesRequestId = sendNativeCommand("audioDevices", {}, "audioDevices")
+        if (audioOutputDevicesRequestId === "") {
+            audioOutputDevicesBusy = false
+            audioOutputDevicesError = lastError
+        } else {
+            audioOutputDevicesTimeout.restart()
+        }
     }
 
     function ensureNativeRuntimeReady() {
@@ -1751,6 +1779,19 @@ QtObject {
         if (!pending)
             return
         const responseType = String(response.type || "")
+        if (pending.operation === "audioDevices") {
+            audioOutputDevicesTimeout.stop()
+            audioOutputDevicesRequestId = ""
+            audioOutputDevicesBusy = false
+            if (responseType === "audioDevices" && Array.isArray(response.devices)) {
+                audioOutputDevices = response.devices
+                audioOutputDevicesError = ""
+            } else {
+                audioOutputDevices = []
+                audioOutputDevicesError = String(response.message || qsTr("Could not list audio output devices"))
+            }
+            return
+        }
         if (responseType === "error") {
             const message = String(response.message || qsTr("The embedded media runtime rejected a command"))
             if (pending.operation === "hello") {
@@ -1964,6 +2005,11 @@ QtObject {
             if (NativeStreamRuntime.running)
                 return
             root.nativeRuntimeReady = false
+            root.audioOutputDevices = []
+            root.audioOutputDevicesBusy = false
+            root.audioOutputDevicesError = ""
+            root.audioOutputDevicesRequestId = ""
+            root.audioOutputDevicesTimeout.stop()
             root.nativeRequests = ({})
             root.streamerStartRequestId = ""
             root.streamerStopRequestId = ""

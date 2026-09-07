@@ -475,6 +475,7 @@ pub struct BackendConfig {
     pub surface: SurfaceTarget,
     pub video: VideoFormat,
     pub audio: AudioFormat,
+    pub audio_output_device: Option<String>,
     pub queues: QueueLimits,
 }
 
@@ -482,11 +483,13 @@ pub struct BackendConfig {
 pub struct EmbeddedBackendConfig {
     pub video: VideoFormat,
     pub audio: AudioFormat,
+    pub audio_output_device: Option<String>,
     pub queues: QueueLimits,
 }
 
 impl EmbeddedBackendConfig {
     pub(crate) fn validate(&self) -> Result<(), FormatError> {
+        crate::audio_device::validate_audio_output_device(self.audio_output_device.as_deref())?;
         self.audio.validate()?;
         self.queues.validate()
     }
@@ -494,6 +497,7 @@ impl EmbeddedBackendConfig {
 
 impl BackendConfig {
     pub(crate) fn validate(&self) -> Result<(), FormatError> {
+        crate::audio_device::validate_audio_output_device(self.audio_output_device.as_deref())?;
         self.audio.validate()?;
         self.queues.validate()?;
         if let SurfaceTarget::OwnedOverlay(overlay) = self.surface {
@@ -508,6 +512,10 @@ impl BackendConfig {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum FormatError {
+    #[error(
+        "audio output device must be a nonempty coreaudio: UID of at most 1024 bytes without NUL"
+    )]
+    InvalidAudioOutputDevice,
     #[error("video parameter set is empty")]
     EmptyParameterSet,
     #[error("video parameter set exceeds the supported size")]

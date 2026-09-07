@@ -109,7 +109,7 @@ Item {
                                 enabled: !modelData.disabled; opacity: enabled ? 1 : 0.45
                                 hoverEnabled: true
                                 Accessible.name: String(modelData.label) + " " + String(modelData.detail || "")
-                                onClicked: { root.selected(modelData.value); root.expanded = false }
+                                onClicked: { root.expanded = false; root.selected(modelData.value) }
                                 Keys.onEscapePressed: event => { root.expanded = false; event.accepted = true }
                                 background: Rectangle {
                                     radius: 12

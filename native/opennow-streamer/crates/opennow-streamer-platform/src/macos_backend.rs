@@ -67,6 +67,7 @@ fn av1_availability() -> &'static AtomicBool {
 
 pub(crate) struct MacOutput {
     backend: Option<MacOsBackend>,
+    audio_output_device: Option<String>,
     // The backend must detach its CAMetalLayer before SDL destroys the NSView.
     external_surface: Option<MacExternalSurface>,
     screen_rect: ScreenRect,
@@ -77,12 +78,23 @@ pub(crate) struct MacOutput {
 }
 
 impl MacOutput {
-    pub(crate) fn initialize(stream: MediaStreamConfig) -> Result<Self, String> {
+    pub(crate) fn initialize(
+        stream: MediaStreamConfig,
+        audio_device: &opennow_streamer_protocol::AudioOutputDevice,
+    ) -> Result<Self, String> {
+        if let Some(id) = audio_device.device_name() {
+            let devices = opennow_streamer_platform_macos::audio_output_devices()
+                .map_err(|error| error.to_string())?;
+            if devices.iter().filter(|device| device.id == id).count() != 1 {
+                return Err("The selected audio output device is unavailable or ambiguous. Select another device or System default.".to_owned());
+            }
+        }
         let external_surface = external_renderer_enabled()
             .then(|| MacExternalSurface::initialize(stream))
             .transpose()?;
         Ok(Self {
             backend: None,
+            audio_output_device: audio_device.device_name().map(str::to_owned),
             external_surface,
             screen_rect: HIDDEN_SURFACE,
             visible: false,
@@ -119,6 +131,7 @@ impl MacOutput {
             surface,
             video: H264Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
             audio: AudioFormat::OPUS_STEREO_48KHZ,
+            audio_output_device: self.audio_output_device.clone(),
             queues: QueueLimits::default(),
         })
         .map_err(|error| format!("VideoToolbox backend initialization failed: {error}"))?;
@@ -148,6 +161,7 @@ impl MacOutput {
             surface,
             video: H265Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
             audio: AudioFormat::OPUS_STEREO_48KHZ,
+            audio_output_device: self.audio_output_device.clone(),
             queues: QueueLimits::default(),
         })
         .map_err(|error| format!("VideoToolbox HEVC backend initialization failed: {error}"))?;
@@ -174,6 +188,7 @@ impl MacOutput {
             surface,
             video: format.into(),
             audio: AudioFormat::OPUS_STEREO_48KHZ,
+            audio_output_device: self.audio_output_device.clone(),
             queues: QueueLimits::default(),
         })
         .map_err(|error| format!("VideoToolbox AV1 backend initialization failed: {error}"))?;

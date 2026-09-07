@@ -94,6 +94,17 @@ impl SettingsStore {
         if !defaults().contains_key(key) {
             return Err(format!("Unknown setting: {key}"));
         }
+        if key == "audioOutputDevice" {
+            let device = value
+                .as_str()
+                .ok_or_else(|| "audioOutputDevice must be a string".to_owned())?;
+            if device.len() > 1024 || device.contains('\0') {
+                return Err(
+                    "audioOutputDevice must be at most 1024 bytes without NUL characters"
+                        .to_owned(),
+                );
+            }
+        }
         if key == "sessionProxyUrl" {
             let raw = value
                 .as_str()
@@ -133,6 +144,13 @@ impl SettingsStore {
 
     fn normalize(&mut self) {
         normalize_types(&mut self.values);
+        if self.values["audioOutputDevice"]
+            .as_str()
+            .is_some_and(|device| device.len() > 1024 || device.contains('\0'))
+        {
+            self.values
+                .insert("audioOutputDevice".to_owned(), json!(""));
+        }
         normalize_resolution(&mut self.values);
         normalize_choice(
             &mut self.values,
@@ -629,7 +647,7 @@ fn defaults() -> Map<String, Value> {
         "resolution":"1920x1080", "aspectRatio":"16:9", "posterSizeScale":1.05,
         "fps":60, "frameGeneration":"off", "maxBitrateMbps":75, "recordingBitrateMbps":null,
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
-        "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"",
+        "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"", "audioOutputDevice":"",
         "nativeCloudGsyncMode":"auto", "nativeD3dFullscreenMode":"auto",
         "nativeExternalRenderer":false, "transportMode":"nvst", "showNativeStreamerStats":false,
         "codec":"auto", "fallbackCodec":"auto", "decoderPreference":"auto",
@@ -680,6 +698,50 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn audio_output_device_is_persisted_and_validated() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-audio-settings-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["audioOutputDevice"], json!(""));
+        let name = "USB Headphones – Audio";
+        assert_eq!(
+            store.set("audioOutputDevice", json!(name)).unwrap(),
+            json!(name)
+        );
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["audioOutputDevice"], json!(name));
+        for invalid in [
+            json!(42),
+            json!(null),
+            json!("speaker\0other"),
+            json!("é".repeat(513)),
+        ] {
+            assert!(store.set("audioOutputDevice", invalid).is_err());
+            assert_eq!(store.all()["audioOutputDevice"], json!(name));
+        }
+        store.set("audioOutputDevice", json!("")).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["audioOutputDevice"],
+            json!("")
+        );
+        let mut persisted: Value =
+            serde_json::from_slice(&fs::read(directory.join("settings.json")).unwrap()).unwrap();
+        persisted["audioOutputDevice"] = json!("bad\0device");
+        fs::write(
+            directory.join("settings.json"),
+            serde_json::to_vec(&persisted).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["audioOutputDevice"],
+            json!("")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn console_switching_is_opt_in_and_manual_desktop_survives_reload() {
         let unique = SystemTime::now()

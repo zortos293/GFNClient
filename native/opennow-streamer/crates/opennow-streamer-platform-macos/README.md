@@ -38,6 +38,7 @@ let mut backend = MacOsBackend::start(BackendConfig {
     )),
     video: H264Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
     audio: AudioFormat::OPUS_STEREO_48KHZ,
+    audio_output_device: None,
     queues: QueueLimits::default(),
 })?;
 

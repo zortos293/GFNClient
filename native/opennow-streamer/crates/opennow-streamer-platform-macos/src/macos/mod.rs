@@ -1,4 +1,5 @@
 mod audio;
+mod audio_devices;
 mod embedded;
 mod mailbox;
 mod presentation;
@@ -24,6 +25,7 @@ use crate::lifecycle::{BackendState, Lifecycle};
 use crate::queue::{BoundedQueue, PushResult};
 
 use self::audio::AudioPipeline;
+pub use self::audio_devices::audio_output_devices;
 pub use self::embedded::{
     AdoptedMetalContext, EmbeddedFrameProducer, MetalFrame, MetalRecordedFrame,
 };
@@ -90,6 +92,10 @@ pub enum BackendError {
     EmptyOpusPacket,
     #[error("{api} failed with OSStatus {status}")]
     AppleApi { api: &'static str, status: i32 },
+    #[error("CoreAudio output device is unavailable: {0}")]
+    AudioOutputDeviceUnavailable(String),
+    #[error("CoreAudio returned invalid or oversized audio device data")]
+    InvalidAudioDeviceData,
     #[error("{0}")]
     Metal(String),
     #[error("Opus decoder failed: {0}")]
@@ -421,6 +427,7 @@ impl StreamSink {
         }
         *audio = Some(AudioPipeline::start(
             format,
+            self.shared.audio_output_device.as_deref(),
             self.shared.opus_packets,
             self.shared.pcm_milliseconds,
             Arc::clone(&self.shared.counters),
@@ -458,6 +465,7 @@ struct Shared {
     video_frames_in_flight: usize,
     opus_packets: usize,
     pcm_milliseconds: u32,
+    audio_output_device: Option<String>,
     max_video_access_unit_bytes: usize,
 }
 
@@ -529,6 +537,7 @@ impl MacOsBackend {
         )?;
         let audio = AudioPipeline::start(
             config.audio,
+            config.audio_output_device.as_deref(),
             config.queues.opus_packets,
             config.queues.pcm_milliseconds,
             Arc::clone(&counters),
@@ -546,6 +555,7 @@ impl MacOsBackend {
             video_frames_in_flight: config.queues.video_frames_in_flight,
             opus_packets: config.queues.opus_packets,
             pcm_milliseconds: config.queues.pcm_milliseconds,
+            audio_output_device: config.audio_output_device,
             max_video_access_unit_bytes: config.queues.max_video_access_unit_bytes,
         });
         Ok(Self {
@@ -616,6 +626,7 @@ impl MacOsBackend {
         )?;
         let audio = AudioPipeline::start(
             config.audio,
+            config.audio_output_device.as_deref(),
             config.queues.opus_packets,
             config.queues.pcm_milliseconds,
             Arc::clone(&counters),
@@ -633,6 +644,7 @@ impl MacOsBackend {
             video_frames_in_flight: config.queues.video_frames_in_flight,
             opus_packets: config.queues.opus_packets,
             pcm_milliseconds: config.queues.pcm_milliseconds,
+            audio_output_device: config.audio_output_device,
             max_video_access_unit_bytes: config.queues.max_video_access_unit_bytes,
         });
         Ok(Self {

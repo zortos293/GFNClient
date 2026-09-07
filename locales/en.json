@@ -1,4 +1,15 @@
 {
+  "audioOutputSelection": {
+    "systemDefault": "System default",
+    "unavailable": "%1 (unavailable)",
+    "description": "Applies to your next streaming session. A fixed device must be available when the session starts.",
+    "availableOutputs": "Available outputs",
+    "waiting": "Waiting for the native streamer",
+    "refreshDescription": "Refresh after connecting or disconnecting an audio device",
+    "refresh": "Refresh devices",
+    "failed": "Could not list audio output devices",
+    "timeout": "Audio device discovery timed out. Try refreshing again."
+  },
   "desktopRenewRemaining": {
     "languageJapanese": "Japanese",
     "languageKorean": "Korean",

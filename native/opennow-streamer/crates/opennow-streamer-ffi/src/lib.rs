@@ -2045,6 +2045,26 @@ mod tests {
     }
 
     #[test]
+    fn audio_devices_round_trips_without_changing_the_media_runtime() {
+        let messages = Box::new(CallbackMessages::default());
+        let (mut handle, host) = create_with_test_runtime(&messages);
+        assert_eq!(
+            handle.send(br#"{"id":"audio-1","type":"audioDevices"}"#),
+            OpenNowStreamerStatus::Ok
+        );
+        let response = messages.wait_for_id("audio-1");
+        assert_eq!(response["type"], "audioDevices");
+        assert_eq!(response["devices"], json!([]));
+        assert_eq!(
+            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":5}"#),
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(messages.wait_for_id("hello-after-audio")["type"], "ready");
+        handle.shutdown();
+        host.join().expect("test media runtime");
+    }
+
+    #[test]
     fn public_constructor_installs_the_production_in_process_media_runtime() {
         let messages = Box::new(CallbackMessages::default());
         let config = test_config(&messages);

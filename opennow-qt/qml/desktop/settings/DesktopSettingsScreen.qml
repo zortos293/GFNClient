@@ -626,6 +626,7 @@ FocusScope {
         id: audioPage
         DesktopSettingsAudioPage {
             availableWidth: contentFlick.width
+            settingsScreen: root
         }
     }
 

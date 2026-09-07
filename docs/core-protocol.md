@@ -232,6 +232,9 @@ That response and `settings.changed` event additionally contain
 before the primary key. Automatic console switching defaults off. Existing
 pre-opt-in settings receive a one-time reset of automatic switching only;
 explicit subsequent opt-ins and the independent startup preference are preserved.
+Existing microphone device selections are cleared only when explicitly selecting Open
+microphone; that write likewise reports `"changes":{"microphoneDeviceId":""}` so the
+shell follows the system-default capture selection.
 Provider discovery falls back to NVIDIA's
 default service when discovery is unavailable. Device-login tokens are stored
 through the OS credential store (DPAPI/Credential Manager, Keychain or Secret

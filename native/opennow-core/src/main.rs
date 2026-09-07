@@ -301,6 +301,9 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
             if key == "launchInConsoleMode" && applied == json!(false) {
                 event["changes"] = json!({"switchToConsoleOnPad": false});
             }
+            if key == "microphoneMode" && applied == json!("voice-activity") {
+                event["changes"] = json!({"microphoneDeviceId": ""});
+            }
             Ok((event.clone(), Some(("settings.changed", event))))
         }
         "settings.reset" => {

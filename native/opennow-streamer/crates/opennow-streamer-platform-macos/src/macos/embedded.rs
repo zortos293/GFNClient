@@ -11,8 +11,8 @@ use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_video::{
     CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBufferGetHeightOfPlane,
     CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
-    CVPixelBufferGetWidthOfPlane, kCVImageBufferYCbCrMatrixKey,
-    kCVImageBufferYCbCrMatrix_ITU_R_601_4, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+    CVPixelBufferGetWidthOfPlane, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+    kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVImageBufferYCbCrMatrixKey,
     kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
@@ -597,13 +597,13 @@ impl Drop for MetalState {
 mod tests {
     use super::{BiPlanarFormat, MAX_RETAINED_FRAME_SLOTS, validate_frame_slot};
     use crate::format::MetalFrameFormat;
-    use objc2_metal::MTLPixelFormat;
     use objc2_core_video::{
         kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
         kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
         kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
         kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
     };
+    use objc2_metal::MTLPixelFormat;
 
     #[test]
     fn accepts_nv12_and_p010_ranges_only() {

@@ -54,9 +54,9 @@ FocusScope {
     }
 
     function choice(title, description, key, values, labels, control, disabledValues) {
-        const current = ShellStore.settings[key]
+        const current = key === "controllerInputSource" ? ControllerInput.inputControllerId : ShellStore.settings[key]
         const index = values.indexOf(current)
-        return {t:title, d:description, v:index >= 0 ? labels[index] : root.titleCase(current), key:key, values:values, labels:labels, control:control || "dropdown", disabledValues:disabledValues || []}
+        return {t:title, d:description, v:index >= 0 ? labels[index] : key === "controllerInputSource" ? qsTr("Selected controller disconnected") : root.titleCase(current), key:key, values:values, labels:labels, control:control || "dropdown", disabledValues:disabledValues || []}
     }
 
     function toggle(title, description, key, onLabel, offLabel) {
@@ -381,7 +381,10 @@ FocusScope {
                 controllerCards.push({slot:controllerCards.length + 1, name:qsTr("Controller %1").arg(controllerCards.length + 1), connected:false, battery:""})
             rows.push({t:"Controllers", control:"controllers", height:105, controllers:controllerCards, route:"joining"})
             rows.push({t:"Button glyphs", d:"Detected automatically from the active controller", v:"Auto", info:true})
-            rows.push(toggle("Steam controller compatibility", "Expose the pad as an Xbox controller for picky games", "steamControllerCompatibilityMode"))
+            rows.push(choice(qsTr("Controller input source"),
+                qsTr("Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting."),
+                "controllerInputSource", [0].concat(ControllerInput.availableControllers.map(controller => Number(controller.instanceId))),
+                [qsTr("All controllers (multiplayer)")].concat(ControllerInput.availableControllers.map(controller => qsTr("Device %1 · %2").arg(controller.slot).arg(controller.name)))))
             rows.push(toggle("Gyroscope", "Forward motion data to the rig", "enableGyroscopeControls"))
             rows.push({t:"Mouse sensitivity", d:"Acceleration off · raw input", v:Number(settings.mouseSensitivity || 1).toFixed(1) + "×", key:"mouseSensitivity", values:[0.5,0.75,1,1.25,1.5], labels:["0.5×","0.75×","1.0×","1.25×","1.5×"], control:"slider", sliderPercent:Number(settings.mouseSensitivity || 1) / 1.5})
             rows.push(choice("Keyboard layout", "Physical key mapping requested from GeForce NOW", "keyboardLayout",
@@ -471,7 +474,7 @@ FocusScope {
     }
 
     function dropdownChoiceSelected(index) {
-        const current = ShellStore.settings[root.dropdownKey]
+        const current = root.dropdownKey === "controllerInputSource" ? ControllerInput.inputControllerId : ShellStore.settings[root.dropdownKey]
         const candidate = root.dropdownValues[index]
         if (typeof current === "object" || typeof candidate === "object")
             return JSON.stringify(current) === JSON.stringify(candidate)
@@ -488,7 +491,10 @@ FocusScope {
         const key = root.dropdownKey
         const value = root.dropdownValues[index]
         const currentQuality = String(ShellStore.settings.colorQuality || "8bit_420")
-        ShellStore.setSetting(key, value)
+        if (key === "controllerInputSource")
+            ControllerInput.inputControllerId = Number(value)
+        else
+            ShellStore.setSetting(key, value)
         if (key === "codec") {
             const codec = String(value).toLowerCase()
             if (codec === "h264" && currentQuality !== "8bit_420")

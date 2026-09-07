@@ -15,6 +15,20 @@ Column {
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("CONTROLLERS") }
+        DesktopSettingsChoice {
+            width: parent.width
+            title: qsTr("Controller input source")
+            description: qsTr("Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting.")
+            glyph: "controller"
+            items: [{value: 0, label: qsTr("All controllers (multiplayer)")}].concat(
+                ControllerInput.availableControllers.map(controller => ({
+                    value: controller.instanceId,
+                    label: qsTr("Device %1 · %2").arg(controller.slot).arg(controller.name)
+                })))
+            value: ControllerInput.inputControllerId
+            valueLabel: current ? current.label : qsTr("Selected controller disconnected")
+            onSelected: value => ControllerInput.inputControllerId = Number(value)
+        }
         Repeater {
             model: ControllerInput.controllers
             delegate: DesktopSettingsRow {
@@ -31,9 +45,6 @@ Column {
         }
         DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "globe"; title: qsTr("Gyroscope"); description: qsTr("Motion aiming on supported pads")
             DesktopSettingsToggle { checked: controlsRoot.settingsScreen.boolSetting("enableGyroscopeControls",false); onValueChangedByUser: value => controlsRoot.settingsScreen.setSetting("enableGyroscopeControls",value) }
-        }
-        DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Steam Input compatibility"); description: qsTr("Use the compatibility path for Steam-managed controllers"); showDivider: false
-            DesktopSettingsToggle { checked: controlsRoot.settingsScreen.boolSetting("steamControllerCompatibilityMode",false); onValueChangedByUser: value => controlsRoot.settingsScreen.setSetting("steamControllerCompatibilityMode",value) }
         }
     }
     DesktopSettingsPanel {

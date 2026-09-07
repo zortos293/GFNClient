@@ -330,6 +330,15 @@ impl MediaColorQuality {
     pub const fn is_444(self) -> bool {
         matches!(self, Self::EightBit444 | Self::TenBit444)
     }
+
+    #[cfg(target_os = "macos")]
+    const fn macos_bit_depth(self) -> opennow_streamer_platform_macos::VideoBitDepth {
+        use opennow_streamer_platform_macos::VideoBitDepth;
+        match self {
+            Self::EightBit420 | Self::EightBit444 => VideoBitDepth::Eight,
+            Self::TenBit420 | Self::TenBit444 => VideoBitDepth::Ten,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1145,6 +1154,11 @@ impl MediaSession {
         stream: MediaStreamConfig,
         frames: crate::GraphicsFramePublisher,
     ) -> Result<Self, String> {
+        if stream.color_quality.is_444() {
+            return Err(
+                "embedded VideoToolbox decode does not support negotiated 4:4:4 color".to_owned(),
+            );
+        }
         let shared = Arc::new(SharedPipeline {
             video: Arc::new(VideoQueue::new(macos_video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
@@ -1218,7 +1232,9 @@ impl MediaSession {
                             reply,
                         } => {
                             let result = start(
-                                H265Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
+                                H265Format::new(parameter_sets, VideoColorSpace::Bt709)
+                                    .with_bit_depth(stream.color_quality.macos_bit_depth())
+                                    .into(),
                             )
                             .and_then(|mut started| {
                                 started.set_paused(paused)?;
@@ -3359,7 +3375,8 @@ fn run_macos_h265_video(
             && configured_parameter_sets.as_ref() != Some(parameter_sets)
             && frame.keyframe
         {
-            let format = H265Format::new(parameter_sets.clone(), VideoColorSpace::Bt709);
+            let format = H265Format::new(parameter_sets.clone(), VideoColorSpace::Bt709)
+                .with_bit_depth(shared.stream.color_quality.macos_bit_depth());
             let Some(sink) = backend_sink.as_ref() else {
                 return;
             };

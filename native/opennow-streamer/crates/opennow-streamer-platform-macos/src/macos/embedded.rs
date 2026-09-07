@@ -7,11 +7,13 @@ use std::sync::{Arc, Mutex};
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_core_foundation::CFRetained;
+use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_video::{
     CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBufferGetHeightOfPlane,
     CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
-    CVPixelBufferGetWidthOfPlane, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    CVPixelBufferGetWidthOfPlane, kCVImageBufferYCbCrMatrixKey,
+    kCVImageBufferYCbCrMatrix_ITU_R_601_4, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
@@ -24,7 +26,8 @@ use objc2_metal::{
     MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
 
-use crate::format::VideoColorSpace;
+use crate::color::ConversionParameters;
+use crate::format::{MetalFrameFormat, VideoBitDepth, VideoColorSpace};
 
 use super::mailbox::LatestMailbox;
 use super::video::DecodedFrame;
@@ -52,9 +55,15 @@ struct VertexOut {
 };
 
 struct ConversionParameters {
-    uint color_space;
-    uint sample_format;
-    uint full_range;
+    float sample_scale;
+    float luma_offset;
+    float luma_scale;
+    float chroma_offset;
+    float chroma_scale;
+    float red_cr;
+    float green_cb;
+    float green_cr;
+    float blue_cb;
 };
 
 vertex VertexOut embedded_video_vertex(uint vertex_id [[vertex_id]]) {
@@ -72,33 +81,14 @@ fragment float4 embedded_video_fragment(
     texture2d<float> chroma [[texture(1)]],
     constant ConversionParameters &parameters [[buffer(0)]]) {
     constexpr sampler linear_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
-    float y = luma.sample(linear_sampler, in.texcoord).r;
-    float2 cbcr = chroma.sample(linear_sampler, in.texcoord).rg;
-    if (parameters.full_range == 0) {
-        if (parameters.sample_format == 0) {
-            y = (y - (16.0 / 255.0)) * (255.0 / 219.0);
-            cbcr -= float2(0.5);
-        } else {
-            y = (y - (64.0 / 1023.0)) * (1023.0 / 876.0);
-            cbcr -= float2(512.0 / 1023.0);
-        }
-    } else {
-        cbcr -= parameters.sample_format == 0
-            ? float2(128.0 / 255.0)
-            : float2(512.0 / 1023.0);
-    }
-    float3 rgb;
-    if (parameters.color_space == 0) {
-        rgb = float3(
-            y + 1.596027 * cbcr.y,
-            y - 0.391762 * cbcr.x - 0.812968 * cbcr.y,
-            y + 2.017232 * cbcr.x);
-    } else {
-        rgb = float3(
-            y + 1.792741 * cbcr.y,
-            y - 0.213249 * cbcr.x - 0.532909 * cbcr.y,
-            y + 2.112402 * cbcr.x);
-    }
+    float y = luma.sample(linear_sampler, in.texcoord).r * parameters.sample_scale;
+    float2 cbcr = chroma.sample(linear_sampler, in.texcoord).rg * parameters.sample_scale;
+    y = (y - parameters.luma_offset) * parameters.luma_scale;
+    cbcr = (cbcr - parameters.chroma_offset) * parameters.chroma_scale;
+    float3 rgb = float3(
+        y + parameters.red_cr * cbcr.y,
+        y + parameters.green_cb * cbcr.x + parameters.green_cr * cbcr.y,
+        y + parameters.blue_cb * cbcr.x);
     return float4(saturate(rgb), 1.0);
 }
 "#;
@@ -135,30 +125,61 @@ impl BiPlanarFormat {
         }
     }
 
-    const fn parameters(self, color_space: VideoColorSpace) -> ConversionParameters {
-        ConversionParameters {
-            color_space: match color_space {
-                VideoColorSpace::Bt601 => 0,
-                VideoColorSpace::Bt709 => 1,
+    const fn output_format(self) -> MetalFrameFormat {
+        match self {
+            Self::Nv12Video | Self::Nv12Full => MetalFrameFormat::Rgba8Unorm,
+            Self::P010Video | Self::P010Full => MetalFrameFormat::Rgb10a2Unorm,
+        }
+    }
+
+    fn parameters(self, color_space: VideoColorSpace) -> ConversionParameters {
+        ConversionParameters::new(
+            match self {
+                Self::Nv12Video | Self::Nv12Full => VideoBitDepth::Eight,
+                Self::P010Video | Self::P010Full => VideoBitDepth::Ten,
             },
-            sample_format: match self {
-                Self::Nv12Video | Self::Nv12Full => 0,
-                Self::P010Video | Self::P010Full => 1,
-            },
-            full_range: match self {
-                Self::Nv12Video | Self::P010Video => 0,
-                Self::Nv12Full | Self::P010Full => 1,
-            },
+            matches!(self, Self::Nv12Full | Self::P010Full),
+            color_space,
+        )
+    }
+}
+
+impl MetalFrameFormat {
+    const fn pixel_format(self) -> MTLPixelFormat {
+        match self {
+            Self::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
+            Self::Rgb10a2Unorm => MTLPixelFormat::RGB10A2Unorm,
+        }
+    }
+
+    const fn pipeline_index(self) -> usize {
+        match self {
+            Self::Rgba8Unorm => 0,
+            Self::Rgb10a2Unorm => 1,
         }
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct ConversionParameters {
-    color_space: u32,
-    sample_format: u32,
-    full_range: u32,
+fn frame_color_space(frame: &DecodedFrame) -> Result<VideoColorSpace, BackendError> {
+    let Some(attachment) = (unsafe {
+        frame
+            .image
+            .attachment(kCVImageBufferYCbCrMatrixKey, ptr::null_mut())
+    }) else {
+        return Ok(frame.color_space);
+    };
+    let matrix = attachment.downcast_ref::<CFString>().ok_or_else(|| {
+        BackendError::Metal("VideoToolbox returned an invalid YCbCr matrix attachment".into())
+    })?;
+    if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_601_4 } {
+        Ok(VideoColorSpace::Bt601)
+    } else if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_709_2 } {
+        Ok(VideoColorSpace::Bt709)
+    } else {
+        Err(BackendError::Metal(format!(
+            "unsupported VideoToolbox YCbCr matrix: {matrix}"
+        )))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -170,6 +191,7 @@ pub struct AdoptedMetalContext {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MetalRecordedFrame {
     pub texture: *mut c_void,
+    pub format: MetalFrameFormat,
     pub width: u32,
     pub height: u32,
     pub frame_slot: u32,
@@ -321,7 +343,8 @@ struct SlotResources {
 struct MetalState {
     device_identity: usize,
     _device: Retained<ProtocolObject<dyn MTLDevice>>,
-    pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    library: Retained<ProtocolObject<dyn MTLLibrary>>,
+    pipelines: [Option<Retained<ProtocolObject<dyn MTLRenderPipelineState>>>; 2],
     texture_cache: CFRetained<CVMetalTextureCache>,
     slots: HashMap<u32, SlotResources>,
     generation: u64,
@@ -339,24 +362,6 @@ impl MetalState {
         let library = device
             .newLibraryWithSource_options_error(&source, None)
             .map_err(|error| BackendError::Metal(error.localizedDescription().to_string()))?;
-        let vertex = library
-            .newFunctionWithName(&NSString::from_str("embedded_video_vertex"))
-            .ok_or_else(|| BackendError::Metal("embedded_video_vertex shader is missing".into()))?;
-        let fragment = library
-            .newFunctionWithName(&NSString::from_str("embedded_video_fragment"))
-            .ok_or_else(|| {
-                BackendError::Metal("embedded_video_fragment shader is missing".into())
-            })?;
-        let descriptor = MTLRenderPipelineDescriptor::new();
-        descriptor.setVertexFunction(Some(&vertex));
-        descriptor.setFragmentFunction(Some(&fragment));
-        let attachments = descriptor.colorAttachments();
-        let attachment = unsafe { attachments.objectAtIndexedSubscript(0) };
-        attachment.setPixelFormat(MTLPixelFormat::RGBA8Unorm);
-        let pipeline = device
-            .newRenderPipelineStateWithDescriptor_error(&descriptor)
-            .map_err(|error| BackendError::Metal(error.localizedDescription().to_string()))?;
-
         let mut cache_ptr = ptr::null_mut();
         let status = unsafe {
             CVMetalTextureCache::create(None, None, &device, None, NonNull::from(&mut cache_ptr))
@@ -374,7 +379,8 @@ impl MetalState {
         Ok(Self {
             device_identity,
             _device: device,
-            pipeline,
+            library,
+            pipelines: [None, None],
             texture_cache: unsafe { CFRetained::from_raw(cache_ptr) },
             slots: HashMap::with_capacity(3),
             generation: 0,
@@ -402,6 +408,9 @@ impl MetalState {
                 .ok_or_else(|| {
                     BackendError::Metal("VideoToolbox returned neither NV12 nor P010".into())
                 })?;
+        let output_format = format.output_format();
+        let parameters = format.parameters(frame_color_space(&frame)?);
+        self.ensure_pipeline(output_format)?;
         let width = CVPixelBufferGetWidthOfPlane(&frame.image, 0);
         let height = CVPixelBufferGetHeightOfPlane(&frame.image, 0);
         let chroma_width = CVPixelBufferGetWidthOfPlane(&frame.image, 1);
@@ -419,12 +428,16 @@ impl MetalState {
             .slots
             .remove(&frame_slot)
             .map(|resources| resources.output)
-            .filter(|texture| texture.width() == width && texture.height() == height)
+            .filter(|texture| {
+                texture.width() == width
+                    && texture.height() == height
+                    && texture.pixelFormat() == output_format.pixel_format()
+            })
             .map_or_else(
                 || {
                     let descriptor = unsafe {
                         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                            MTLPixelFormat::RGBA8Unorm,
+                            output_format.pixel_format(),
                             width,
                             height,
                             false,
@@ -437,7 +450,7 @@ impl MetalState {
                     self._device
                         .newTextureWithDescriptor(&descriptor)
                         .ok_or_else(|| {
-                            BackendError::Metal("failed to create embedded RGBA texture".into())
+                            BackendError::Metal(format!("failed to create embedded {output_format:?} texture"))
                         })
                 },
                 Ok,
@@ -452,12 +465,15 @@ impl MetalState {
         let encoder = command_buffer
             .renderCommandEncoderWithDescriptor(&render_pass)
             .ok_or_else(|| BackendError::Metal("failed to create embedded Metal encoder".into()))?;
-        encoder.setRenderPipelineState(&self.pipeline);
+        encoder.setRenderPipelineState(
+            self.pipelines[output_format.pipeline_index()]
+                .as_ref()
+                .expect("initialized pipeline"),
+        );
         unsafe {
             encoder.setFragmentTexture_atIndex(Some(&luma_texture), 0);
             encoder.setFragmentTexture_atIndex(Some(&chroma_texture), 1);
         }
-        let parameters = format.parameters(frame.color_space);
         unsafe {
             encoder.setFragmentBytes_length_atIndex(
                 NonNull::from(&parameters).cast::<c_void>(),
@@ -491,12 +507,47 @@ impl MetalState {
         self.generation = self.generation.wrapping_add(1);
         Ok(MetalRecordedFrame {
             texture,
+            format: output_format,
             width: u32::try_from(width).unwrap_or(u32::MAX),
             height: u32::try_from(height).unwrap_or(u32::MAX),
             frame_slot,
             generation: self.generation,
             presentation_time_ns: 0,
         })
+    }
+
+    fn ensure_pipeline(&mut self, format: MetalFrameFormat) -> Result<(), BackendError> {
+        let pipeline = &mut self.pipelines[format.pipeline_index()];
+        if pipeline.is_some() {
+            return Ok(());
+        }
+        let vertex = self
+            .library
+            .newFunctionWithName(&NSString::from_str("embedded_video_vertex"))
+            .ok_or_else(|| BackendError::Metal("embedded_video_vertex shader is missing".into()))?;
+        let fragment = self
+            .library
+            .newFunctionWithName(&NSString::from_str("embedded_video_fragment"))
+            .ok_or_else(|| {
+                BackendError::Metal("embedded_video_fragment shader is missing".into())
+            })?;
+        let descriptor = MTLRenderPipelineDescriptor::new();
+        descriptor.setVertexFunction(Some(&vertex));
+        descriptor.setFragmentFunction(Some(&fragment));
+        let attachments = descriptor.colorAttachments();
+        let attachment = unsafe { attachments.objectAtIndexedSubscript(0) };
+        attachment.setPixelFormat(format.pixel_format());
+        *pipeline = Some(
+            self._device
+                .newRenderPipelineStateWithDescriptor_error(&descriptor)
+                .map_err(|error| {
+                    BackendError::Metal(format!(
+                        "failed to create {format:?} pipeline: {}",
+                        error.localizedDescription()
+                    ))
+                })?,
+        );
+        Ok(())
     }
 
     fn make_plane_texture(
@@ -545,6 +596,8 @@ impl Drop for MetalState {
 #[cfg(test)]
 mod tests {
     use super::{BiPlanarFormat, MAX_RETAINED_FRAME_SLOTS, validate_frame_slot};
+    use crate::format::MetalFrameFormat;
+    use objc2_metal::MTLPixelFormat;
     use objc2_core_video::{
         kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
         kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
@@ -579,5 +632,33 @@ mod tests {
         assert!(validate_frame_slot(0).is_ok());
         assert!(validate_frame_slot(7).is_ok());
         assert!(validate_frame_slot(8).is_err());
+    }
+
+    #[test]
+    fn ten_bit_planes_always_select_rgb10a2_texture_and_pipeline() {
+        for format in [BiPlanarFormat::Nv12Video, BiPlanarFormat::Nv12Full] {
+            assert_eq!(format.output_format(), MetalFrameFormat::Rgba8Unorm);
+            assert_eq!(
+                format.output_format().pixel_format(),
+                MTLPixelFormat::RGBA8Unorm
+            );
+            assert_eq!(format.output_format().pipeline_index(), 0);
+            assert_eq!(
+                format.plane_formats(),
+                (MTLPixelFormat::R8Unorm, MTLPixelFormat::RG8Unorm)
+            );
+        }
+        for format in [BiPlanarFormat::P010Video, BiPlanarFormat::P010Full] {
+            assert_eq!(format.output_format(), MetalFrameFormat::Rgb10a2Unorm);
+            assert_eq!(
+                format.output_format().pixel_format(),
+                MTLPixelFormat::RGB10A2Unorm
+            );
+            assert_eq!(format.output_format().pipeline_index(), 1);
+            assert_eq!(
+                format.plane_formats(),
+                (MTLPixelFormat::R16Unorm, MTLPixelFormat::RG16Unorm)
+            );
+        }
     }
 }

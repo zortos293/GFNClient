@@ -14,6 +14,15 @@ FocusScope {
     property int focusZone: 0
     property int focusIndex: 0
     property bool active: true
+    property double lastPlayedNowMs: Date.now()
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.active && root.visible && Qt.application.state === Qt.ApplicationActive
+        triggeredOnStart: true
+        onTriggered: root.lastPlayedNowMs = Date.now()
+    }
 
     signal routeRequested(string route)
     signal gameRequested(var game)
@@ -71,7 +80,7 @@ FocusScope {
         const game = root.heroGame
         if (!game)
             return qsTr("Sign in and sync your library to continue a game.")
-        const last = String(game.lastPlayed || "")
+        const last = DesktopTokens.relativeLastPlayed(game.lastPlayed, root.lastPlayedNowMs)
         const hours = game.hoursPlayed ? qsTr("%1 h played").arg(game.hoursPlayed) : ""
         if (last !== "" && hours !== "")
             return last + " · " + hours

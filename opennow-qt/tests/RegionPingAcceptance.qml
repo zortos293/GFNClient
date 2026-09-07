@@ -5,6 +5,7 @@ import OpenNOW
 // unchanged, but no request can reach an account or the network.
 QtObject {
     id: test
+    property RegionChoicesAcceptance regionChoices: RegionChoicesAcceptance {}
     property QtObject client: QtObject {
         property string state: "ready"
         property string lastError: ""
@@ -38,6 +39,7 @@ QtObject {
         return false
     }
     function run(screen, row, button, picker) {
+        regionChoices.run(screen, picker)
         ShellStore.resetRegionPing()
         ShellStore.regionsRequestId = ""
         ShellStore.regions = []

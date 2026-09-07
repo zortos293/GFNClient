@@ -964,7 +964,7 @@ QtObject {
             title: selectedGame.title || "GeForce NOW game",
             supportsInGameSettingsPersistence: Boolean(selectedVariant && selectedVariant.supportsInGameSettingsPersistence),
             accountLinked: Boolean(selectedVariant && selectedVariant.inLibrary),
-            appLaunchMode: Boolean(settings.controllerMode || settings.launchInConsoleMode || directConsoleMode)
+            appLaunchMode: settings.steamBigPictureMode === true
                 ? "gamepadFriendly" : "default"
         }
         const configuredRegion = String(settings.region || "")

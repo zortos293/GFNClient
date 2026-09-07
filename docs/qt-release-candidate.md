@@ -1,5 +1,8 @@
 # Qt production release candidates
 
+For certificate-free Windows/Linux nightlies, use the manual `qt-ci` publishing option described
+in [`qt-nightly-release.md`](qt-nightly-release.md). This signed candidate workflow is separate.
+
 The `qt-release-candidate` workflow builds one immutable Qt/Rust source commit for Windows and
 Linux, each on x64 and ARM64. macOS builds are temporarily disabled in Actions. The workflow does not publish a GitHub release;
 it produces protected candidate artifacts that must still pass the live matrix and staged rollout.
@@ -40,7 +43,7 @@ ephemeral or reset after each approved release operation.
 
 ## Candidate guarantees
 
-- A numeric version such as `0.6.0` is embedded consistently in Qt, Rust, package metadata,
+- A numeric version such as `1.0.0` is embedded consistently in Qt, Rust, package metadata,
   diagnostics, telemetry and updater selection.
 - Windows x64/ARM64 binaries listed in
   `opennow-qt/packaging/windows-release-binaries.txt` and MSI installers are timestamped with

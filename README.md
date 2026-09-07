@@ -77,6 +77,9 @@ work. Removing the legacy app does not establish that those release gates have p
 Published desktop builds are available from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
 Historical releases may still contain the removed Electron client. Qt candidate packaging and
 release validation are documented in [`docs/qt-release-candidate.md`](docs/qt-release-candidate.md).
+Unsigned Qt nightlies are built and optionally published through `qt-ci`; see
+[`docs/qt-nightly-release.md`](docs/qt-nightly-release.md) for the manual release procedure.
+They require manual update downloads and do not need a Windows signing certificate.
 
 ### Desktop updates
 

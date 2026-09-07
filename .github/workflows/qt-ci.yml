@@ -2,6 +2,11 @@ name: qt-ci
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_nightly:
+        description: Publish an unsigned nightly prerelease after all checks pass
+        type: boolean
+        default: false
   pull_request:
     branches:
       - dev
@@ -31,13 +36,32 @@ on:
       - "package.json"
 
 concurrency:
-  group: qt-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: qt-ci-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
 
 jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test release metadata and artifact inventory
+        run: |
+          python3 -m unittest discover -s opennow-qt/tests -p test_release_metadata.py
+          python3 -m unittest discover -s opennow-qt/tests -p test_nightly_release.py
+      - name: Record immutable nightly identity
+        id: version
+        shell: bash
+        run: |
+          version=$(python3 opennow-qt/packaging/nightly_release.py version \
+            --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+
   localization:
     runs-on: ubuntu-24.04
     steps:
@@ -50,6 +74,7 @@ jobs:
 
   validate:
     name: ${{ matrix.label }}
+    needs: metadata
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -97,10 +122,13 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       SDL_VERSION: release-3.2.20
+      OPENNOW_BUILD_VERSION: ${{ needs.metadata.outputs.version }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
       - name: Enable Windows Media Foundation
         if: runner.os == 'Windows'
@@ -346,6 +374,7 @@ jobs:
           fi
           cmake -S opennow-qt -B build/opennow-qt-release \
             -DCMAKE_BUILD_TYPE=Release \
+            -DOPENNOW_BUILD_VERSION="$OPENNOW_BUILD_VERSION" \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
             "${OPENNOW_CMAKE_ARGS[@]}"
 
@@ -374,6 +403,7 @@ jobs:
         shell: bash
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so
           LINUXDEPLOY_ARCH: ${{ matrix.linuxdeploy-arch }}
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy-sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt-plugin-sha256 }}
@@ -394,7 +424,7 @@ jobs:
           chmod +x "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" "build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage"
           QMAKE="$QT_ROOT_DIR/bin/qmake" \
           QML_SOURCES_PATHS="$PWD/opennow-qt/qml" \
-          OUTPUT="OpenNOW-Qt-${{ matrix.label }}.AppImage" \
+          OUTPUT="OpenNOW-Qt-${OPENNOW_BUILD_VERSION}-Linux-${{ matrix.linuxdeploy-arch == 'aarch64' && 'arm64' || 'x64' }}.AppImage" \
             "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
               --appdir build/AppDir \
               --desktop-file build/AppDir/usr/share/applications/io.github.opencloudgaming.OpenNOW.desktop \
@@ -405,9 +435,10 @@ jobs:
               --output appimage
           test -f build/AppDir/usr/lib/libva.so.2
           test -f build/AppDir/usr/lib/libva-drm.so.2
+          test -f build/AppDir/usr/plugins/platforms/libqoffscreen.so
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
             python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
-          mv "OpenNOW-Qt-${{ matrix.label }}.AppImage" build/qt-packages/
+          mv OpenNOW-Qt-*.AppImage build/qt-packages/
 
       - name: Smoke-test Linux AppImage
         if: runner.os == 'Linux'
@@ -416,7 +447,11 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           QT_QPA_PLATFORM: offscreen
         run: |
-          build/qt-packages/OpenNOW-Qt-${{ matrix.label }}.AppImage \
+          appimages=(build/qt-packages/OpenNOW-Qt-*.AppImage)
+          [[ ${#appimages[@]} -eq 1 && -f "${appimages[0]}" ]]
+          env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
+            -u QML2_IMPORT_PATH -u QML_IMPORT_PATH -u LD_LIBRARY_PATH \
+            "${appimages[0]}" \
             --smoke-test --allow-multiple-instances --route home --reduced-motion
 
       - name: Upload unsigned validation package
@@ -431,3 +466,78 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+  nightly-inventory:
+    name: Verify complete nightly artifact set
+    needs: [metadata, localization, validate]
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: opennow-qt-*-unsigned
+          path: nightly-artifacts
+      - name: Verify all six packages and prepare release checksums
+        shell: bash
+        run: |
+          python3 opennow-qt/packaging/nightly_release.py assemble \
+            --source nightly-artifacts --destination nightly-release \
+            --version "$RELEASE_VERSION" --commit "$SOURCE_SHA"
+          (cd nightly-release && sha256sum --check --strict SHA256SUMS)
+      - name: Upload complete unsigned nightly
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-${{ needs.metadata.outputs.version }}-complete-unsigned
+          path: nightly-release/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish-nightly:
+    name: Publish unsigned nightly prerelease
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly
+    needs: [metadata, nightly-inventory]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: opennow-qt-${{ needs.metadata.outputs.version }}-complete-unsigned
+          path: nightly-release
+      - name: Verify checksums and prepare unsigned release notes
+        shell: bash
+        run: |
+          (cd nightly-release && sha256sum --check --strict SHA256SUMS)
+          cat > nightly-notes.md <<EOF
+          Experimental OpenNOW Qt/native nightly from commit \`$SOURCE_SHA\`.
+
+          **All packages are unsigned.** Windows may display a SmartScreen or unknown-publisher warning.
+          Windows x64 and ARM64 downloads are portable ZIPs: extract the entire archive and run \`bin/OpenNOW.exe\`.
+          Linux AppImages are the recommended portable download; mark the file executable before launching it.
+          DEBs require a distribution providing Qt 6.8+ and SDL3; stock Ubuntu 24.04 does not satisfy those requirements.
+
+          These builds have no pinned update-signing key and require manual downloads for updates.
+          SHA256SUMS detects corrupted downloads; it is not a cryptographic publisher signature.
+          macOS is not included. Windows ARM64 is cross-built, not runtime-tested by CI.
+          EOF
+      - name: Publish only after the complete upload succeeds
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$RELEASE_VERSION" nightly-release/* \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
+            --title "OpenNOW v$RELEASE_VERSION" --notes-file nightly-notes.md \
+            --draft --prerelease --latest=false
+          gh release edit "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease --latest=false

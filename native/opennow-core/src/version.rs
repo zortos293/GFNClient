@@ -8,13 +8,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn application_version_is_a_numeric_release_triplet() {
-        let parts = APPLICATION_VERSION.split('.').collect::<Vec<_>>();
-        assert_eq!(parts.len(), 3);
-        assert!(
-            parts
-                .iter()
-                .all(|part| { !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()) })
-        );
+    fn application_version_is_semver() {
+        semver::Version::parse(APPLICATION_VERSION).expect("application version must be semver");
+    }
+
+    #[test]
+    fn nightly_version_preserves_run_and_attempt() {
+        let version = semver::Version::parse("1.0.0-nightly.123456.2").unwrap();
+        assert_eq!((version.major, version.minor, version.patch), (1, 0, 0));
+        assert_eq!(version.pre.as_str(), "nightly.123456.2");
+        assert_eq!(version.to_string(), "1.0.0-nightly.123456.2");
     }
 }

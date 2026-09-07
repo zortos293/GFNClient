@@ -35,14 +35,15 @@ fn run() -> Result<(), String> {
     let version = arguments
         .next()
         .and_then(|value| value.into_string().ok())
-        .ok_or_else(|| "update version is required".to_owned())?
-        .trim_start_matches('v')
-        .to_owned();
+        .ok_or_else(|| "update version is required".to_owned())?;
+    let version = semver::Version::parse(version.strip_prefix('v').unwrap_or(&version))
+        .map_err(|_| "update version must be valid semver".to_owned())?
+        .to_string();
     let output = arguments.next().map(PathBuf::from).unwrap_or_else(|| {
         let name = asset.file_name().unwrap_or_default().to_string_lossy();
         asset.with_file_name(format!("{name}.manifest.json"))
     });
-    if arguments.next().is_some() || parse_version(&version).is_none() {
+    if arguments.next().is_some() {
         return Err("update manifest arguments are invalid".to_owned());
     }
     let asset_name = asset
@@ -155,17 +156,6 @@ fn safe_asset_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let core = value.split(['-', '+']).next()?;
-    let mut parts = core.split('.');
-    let version = (
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-    );
-    parts.next().is_none().then_some(version)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +198,34 @@ mod tests {
                 .verify_strict(signature_payload(&tampered).as_bytes(), &signature)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn nightly_signature_binds_the_full_version() {
+        let signing = SigningKey::from_bytes(&[9_u8; 32]);
+        let mut manifest = Manifest {
+            schema_version: 1,
+            version: semver::Version::parse("1.0.0-nightly.123456.2")
+                .unwrap()
+                .to_string(),
+            asset: "OpenNOW-Qt-1.0.0-nightly.123456.2-Linux-x64.deb".to_owned(),
+            size: 42,
+            sha256: "0".repeat(64),
+            signature: String::new(),
+        };
+        let signature = signing.sign(signature_payload(&manifest).as_bytes());
+        signing
+            .verifying_key()
+            .verify_strict(signature_payload(&manifest).as_bytes(), &signature)
+            .unwrap();
+        for version in ["1.0.0-nightly.123456.3", "1.0.0"] {
+            manifest.version = version.to_owned();
+            assert!(
+                signing
+                    .verifying_key()
+                    .verify_strict(signature_payload(&manifest).as_bytes(), &signature)
+                    .is_err()
+            );
+        }
     }
 }

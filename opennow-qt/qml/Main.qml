@@ -88,7 +88,7 @@ ApplicationWindow {
         "diagnostics", "feedback", "theme-store"].indexOf(activeRoute) < 0
     readonly property bool targetDesktopSurface: streamSurfaceLocked
         ? lockedStreamDesktopSurface : desktopRequested && desktopEligibleRoute
-    readonly property bool streamQmlOverlayActive: activeRoute === "stream"
+    readonly property bool streamQmlOverlayActive: (activeRoute === "stream" || activeRoute === "inserting")
         && (AppController.overlay.startsWith("desktop-stream-")
             || AppController.overlay.startsWith("stream-stats"))
     readonly property bool consoleOverlayFallbackActive: desktopSurfaceActive
@@ -190,6 +190,14 @@ ApplicationWindow {
         enabled: window.activeRoute === "stream"
             && ShellStore.isStreamStatsOverlay(AppController.overlay)
         onActivated: desktopStreamOverlay.copyStatsToClipboard()
+    }
+    Shortcut {
+        objectName: "streamMicrophoneShortcut"
+        sequence: String(ShellStore.settings.shortcutToggleMicrophone || "Ctrl+Shift+M")
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: window.activeRoute === "stream" && ShellStore.microphoneToggleAvailable
+        onActivated: ShellStore.toggleMicrophone()
     }
 
     function isGuideShortcut(event) {
@@ -357,6 +365,12 @@ ApplicationWindow {
         ShellStore.desktopUiActive = window.desktopSurfaceActive
         syncInputOwnership()
         Qt.callLater(() => window.showConfiguredStreamStats())
+        Qt.callLater(() => {
+            if (window.streamQmlOverlayActive && desktopStreamOverlay.inputBlocking)
+                desktopStreamOverlay.forceActiveFocus()
+            else
+                window.restorePassiveStreamInput()
+        })
     }
 
     HoverHandler {
@@ -592,7 +606,7 @@ ApplicationWindow {
         overlay: AppController.overlay
         inputBlocking: ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         visible: window.streamQmlOverlayActive
-            || (window.activeRoute === "stream" && desktopStreamOverlay.present)
+            || ((window.activeRoute === "stream" || window.activeRoute === "inserting") && desktopStreamOverlay.present)
         z: 1100
         onVisibleChanged: if (visible && inputBlocking) forceActiveFocus()
         onInputBlockingChanged: if (visible && inputBlocking) forceActiveFocus()

@@ -258,8 +258,9 @@ FocusScope {
                 id: micRow
                 title: qsTr("Microphone")
                 value: ShellStore.microphoneLabel
-                enabled: false
+                enabled: ShellStore.microphoneCanToggle
                 KeyNavigation.up: syncRow
+                onTriggered: ShellStore.toggleMicrophone()
             }
 
             Item {

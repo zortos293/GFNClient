@@ -1569,7 +1569,7 @@ mod tests {
 
     #[test]
     fn hdr_request_requires_resolved_runtime_opt_in_and_uses_cloudmatch_enums() {
-        let capabilities = json!({"protocolVersion":5,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]
@@ -1759,6 +1759,25 @@ mod tests {
             request["requestedStreamingFeatures"]["dynamicStreamingMode"],
             0
         );
+    }
+
+    #[test]
+    fn launch_mode_defaults_to_normal_and_maps_explicit_requests() {
+        for (mode, expected) in [
+            (Value::Null, 1),
+            (json!("default"), 1),
+            (json!("gamepadFriendly"), 2),
+            (json!("touchFriendly"), 3),
+            (json!("unknown"), 1),
+        ] {
+            let body = build_create_body(
+                "12345",
+                &json!({"appLaunchMode": mode}),
+                &json!({"controllerMode":true,"launchInConsoleMode":true}),
+                "device-id",
+            );
+            assert_eq!(body["sessionRequestData"]["appLaunchMode"], expected);
+        }
     }
 
     #[test]

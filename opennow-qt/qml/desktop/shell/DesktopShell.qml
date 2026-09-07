@@ -205,6 +205,18 @@ FocusScope {
         onRouteRequested: route => root.routeRequested(route)
         onConsoleModeRequested: root.consoleModeRequested()
         onCollapseRequested: collapsed => root.persistRailCollapsed(collapsed)
+        onCreateCollectionRequested: {
+            sidebar.closeOverlay()
+            collectionDialog.open()
+        }
+    }
+
+    DesktopCollectionDialog {
+        id: collectionDialog
+        onCollectionOpened: collectionId => {
+            ShellStore.activeCollectionId = collectionId
+            root.routeRequested("library")
+        }
     }
 
     Keys.onPressed: event => {

@@ -9,9 +9,11 @@ use objc2_audio_toolbox::{
     AURenderCallbackStruct, AudioComponentDescription, AudioComponentFindNext,
     AudioComponentInstanceDispose, AudioComponentInstanceNew, AudioOutputUnitStart,
     AudioOutputUnitStop, AudioUnit, AudioUnitInitialize, AudioUnitRenderActionFlags,
-    AudioUnitSetProperty, AudioUnitUninitialize, kAudioUnitManufacturer_Apple,
-    kAudioUnitProperty_SetRenderCallback, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input,
-    kAudioUnitSubType_DefaultOutput, kAudioUnitType_Output,
+    AudioUnitSetProperty, AudioUnitUninitialize, kAudioOutputUnitProperty_CurrentDevice,
+    kAudioOutputUnitProperty_EnableIO, kAudioUnitManufacturer_Apple,
+    kAudioUnitProperty_SetRenderCallback, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Global,
+    kAudioUnitScope_Input, kAudioUnitScope_Output, kAudioUnitSubType_DefaultOutput,
+    kAudioUnitSubType_HALOutput, kAudioUnitType_Output,
 };
 use objc2_core_audio_types::{
     AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, kAudioFormatFlagIsFloat,
@@ -38,6 +40,7 @@ pub(super) struct AudioPipeline {
 impl AudioPipeline {
     pub(super) fn start(
         format: AudioFormat,
+        audio_output_device: Option<&str>,
         packet_capacity: usize,
         pcm_milliseconds: u32,
         counters: Arc<Counters>,
@@ -104,14 +107,15 @@ impl AudioPipeline {
             })
             .map_err(|_| BackendError::Thread("Opus decoder"))?;
 
-        let output = match AudioOutput::start(format, Arc::clone(&ring), counters) {
-            Ok(output) => output,
-            Err(error) => {
-                packets.close();
-                let _ = worker.join();
-                return Err(error);
-            }
-        };
+        let output =
+            match AudioOutput::start(format, audio_output_device, Arc::clone(&ring), counters) {
+                Ok(output) => output,
+                Err(error) => {
+                    packets.close();
+                    let _ = worker.join();
+                    return Err(error);
+                }
+            };
         Ok(Self {
             packets,
             ring,
@@ -175,12 +179,20 @@ unsafe impl Send for AudioOutput {}
 impl AudioOutput {
     fn start(
         format: AudioFormat,
+        audio_output_device: Option<&str>,
         ring: Arc<PcmRing>,
         counters: Arc<Counters>,
     ) -> Result<Self, BackendError> {
+        let device = audio_output_device
+            .map(super::audio_devices::resolve_output_device)
+            .transpose()?;
         let mut description = AudioComponentDescription {
             componentType: kAudioUnitType_Output,
-            componentSubType: kAudioUnitSubType_DefaultOutput,
+            componentSubType: if device.is_some() {
+                kAudioUnitSubType_HALOutput
+            } else {
+                kAudioUnitSubType_DefaultOutput
+            },
             componentManufacturer: kAudioUnitManufacturer_Apple,
             componentFlags: 0,
             componentFlagsMask: 0,
@@ -213,6 +225,33 @@ impl AudioOutput {
                 channels: usize::from(format.channels),
             }),
         };
+        if let Some(device) = device {
+            for (scope, element, enabled) in [
+                (kAudioUnitScope_Input, 1, 0u32),
+                (kAudioUnitScope_Output, 0, 1u32),
+            ] {
+                check_status("AudioUnitSetProperty(EnableIO)", unsafe {
+                    AudioUnitSetProperty(
+                        output.unit,
+                        kAudioOutputUnitProperty_EnableIO,
+                        scope,
+                        element,
+                        (&enabled as *const u32).cast(),
+                        mem::size_of_val(&enabled) as u32,
+                    )
+                })?;
+            }
+            check_status("AudioUnitSetProperty(CurrentDevice)", unsafe {
+                AudioUnitSetProperty(
+                    output.unit,
+                    kAudioOutputUnitProperty_CurrentDevice,
+                    kAudioUnitScope_Global,
+                    0,
+                    (&device as *const u32).cast(),
+                    mem::size_of_val(&device) as u32,
+                )
+            })?;
+        }
         let bytes_per_frame = u32::from(format.channels) * mem::size_of::<f32>() as u32;
         let stream_format = AudioStreamBasicDescription {
             mSampleRate: f64::from(format.sample_rate),
@@ -339,7 +378,7 @@ unsafe extern "C-unwind" fn render_callback(
     0
 }
 
-fn check_status(api: &'static str, status: i32) -> Result<(), BackendError> {
+pub(super) fn check_status(api: &'static str, status: i32) -> Result<(), BackendError> {
     if status == 0 {
         Ok(())
     } else {

@@ -14,6 +14,30 @@ if(BUILD_TESTING)
         PREFIX "/opennow/shaders" BASE "shaders" FILES shaders/framegen.vert shaders/hdroutput.frag)
     qt_add_shaders(opennow-hdrcolor-tests "opennow-hdrchrome-test-shaders"
         BATCHABLE PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_CHROME_SHADERS})
+    find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-theme-tests tests/tst_theme.cpp)
+    target_link_libraries(opennow-theme-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-theme-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    add_test(NAME opennow-theme-tests COMMAND opennow-theme-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/theme")
+    set_tests_properties(opennow-theme-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    qt_add_resources(opennow-qt "theme-settings-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ThemeSettingsAcceptance.qml)
+    foreach(width 960 1440)
+        foreach(mode dark light)
+            set(theme_mode_args)
+            if(mode STREQUAL "light")
+                list(APPEND theme_mode_args --smoke-light-theme)
+            endif()
+            add_test(NAME "qml-theme-settings-${width}-${mode}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                    --route settings-themes --smoke-theme-settings --reduced-motion
+                    --smoke-width ${width} ${theme_mode_args})
+            set_tests_properties("qml-theme-settings-${width}-${mode}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+        endforeach()
+    endforeach()
     qt_add_executable(opennow-framepacer-tests tests/tst_framepacer.cpp)
     target_include_directories(opennow-framepacer-tests PRIVATE src)
     target_link_libraries(opennow-framepacer-tests PRIVATE Qt6::Test)
@@ -49,8 +73,79 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(opennow-hdrcolor-tests PROPERTIES TIMEOUT 60)
     set_tests_properties(opennow-frameinterpolator-tests PROPERTIES TIMEOUT 60)
+    qt_add_executable(opennow-streamcolor-tests tests/tst_streamcolor.cpp)
+    target_include_directories(opennow-streamcolor-tests PRIVATE src)
+    target_link_libraries(opennow-streamcolor-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate)
+    qt_add_shaders(opennow-streamcolor-tests "opennow-streamcolor-test-shaders"
+        PREFIX "/opennow/shaders" BASE "shaders"
+        FILES shaders/streamvideo.vert shaders/streamvideo.frag)
+    if(OPENNOW_XVFB_RUN)
+        add_test(NAME opennow-streamcolor-tests
+            COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-streamcolor-tests>" -o -,txt)
+        set_tests_properties(opennow-streamcolor-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
+    else()
+        add_test(NAME opennow-streamcolor-tests COMMAND opennow-streamcolor-tests -o -,txt)
+        if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            set_tests_properties(opennow-streamcolor-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
+    endif()
+    set_tests_properties(opennow-streamcolor-tests PROPERTIES TIMEOUT 60)
     qt_add_resources(opennow-qt "region-ping-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml)
+    add_test(NAME qml-microphone
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-audio --smoke-microphone --reduced-motion)
+    set_tests_properties(qml-microphone PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    foreach(surface desktop console)
+        set(microphone_settings_route settings-audio)
+        set(microphone_overlay desktop-stream-menu)
+        if(surface STREQUAL "console")
+            set(microphone_settings_route settings-input)
+            set(microphone_overlay guide-session)
+        endif()
+        add_test(NAME qml-microphone-settings-${surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                --route ${microphone_settings_route} --smoke-microphone-supported --reduced-motion)
+        add_test(NAME qml-microphone-muted-${surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                --route stream --overlay ${microphone_overlay} --smoke-microphone-muted --reduced-motion)
+        set_tests_properties(qml-microphone-settings-${surface} qml-microphone-muted-${surface}
+            PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
+    add_test(NAME qml-audio-output
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-audio --smoke-audio-output --reduced-motion)
+    set_tests_properties(qml-audio-output PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    foreach(width 960 1440)
+        add_test(NAME "qml-collections-${width}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route library --smoke-collections --smoke-width ${width} --reduced-motion)
+        set_tests_properties("qml-collections-${width}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+        add_test(NAME "qml-collections-light-${width}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route library --smoke-collections --smoke-light-theme --smoke-width ${width} --reduced-motion)
+        set_tests_properties("qml-collections-light-${width}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+    endforeach()
+    add_test(NAME qml-controller-metadata
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-input --smoke-controller-metadata --reduced-motion)
+    set_tests_properties(qml-controller-metadata PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "custom-background-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/CustomBackgroundAcceptance.qml)
+    foreach(width 960 1600)
+        add_test(NAME qml-custom-background-${width}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route settings-themes --smoke-custom-background --smoke-width ${width} --reduced-motion)
+        set_tests_properties(qml-custom-background-${width} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
+    add_test(NAME qml-steam-big-picture
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings-streaming --smoke-steam-big-picture --reduced-motion)
+    set_tests_properties(qml-steam-big-picture PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     add_test(NAME qml-frame-generation
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-frame-generation --reduced-motion)
@@ -311,6 +406,20 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 20
     )
+    qt_add_executable(opennow-controllermetadata-tests
+        tests/tst_controllermetadata.cpp
+        src/input/ControllerInput.cpp
+        src/input/ControllerInput.h
+    )
+    target_include_directories(opennow-controllermetadata-tests PRIVATE src)
+    target_link_libraries(opennow-controllermetadata-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui SDL3::SDL3)
+    add_test(NAME opennow-controllermetadata-tests
+             COMMAND opennow-controllermetadata-tests -o -,txt)
+    set_tests_properties(opennow-controllermetadata-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 30
+    )
     if(WIN32)
         add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-test-runtime)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
@@ -328,6 +437,7 @@ if(BUILD_TESTING)
             opennow-thumbnail-tests
             opennow-controllerinput-tests
             opennow-controllersources-tests
+            opennow-controllermetadata-tests
             PROPERTIES WIN32_EXECUTABLE FALSE)
 
         # windeployqt follows the application graph and therefore does not copy
@@ -371,7 +481,8 @@ if(BUILD_TESTING)
                 opennow-singleinstance-tests
                 opennow-thumbnail-tests
                 opennow-controllerinput-tests
-                opennow-controllersources-tests)
+                opennow-controllersources-tests
+                opennow-controllermetadata-tests)
             add_dependencies(${test_target} opennow-qt-test-runtime)
         endforeach()
     endif()
@@ -387,6 +498,23 @@ if(BUILD_TESTING)
     endforeach()
     foreach(motion_mode normal reduced)
         foreach(motion_window windowed fullscreen)
+            set(launch_args --smoke-test --allow-multiple-instances --desktop --route library --smoke-session-launch)
+            if(motion_mode STREQUAL "reduced")
+                list(APPEND launch_args --reduced-motion)
+            endif()
+            if(motion_window STREQUAL "fullscreen")
+                list(APPEND launch_args --smoke-motion-fullscreen)
+            endif()
+            add_test(NAME "qml-session-launch-${motion_mode}-${motion_window}" COMMAND opennow-qt ${launch_args})
+            set_tests_properties("qml-session-launch-${motion_mode}-${motion_window}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+            if(OPENNOW_XVFB_RUN)
+                add_test(NAME "qml-session-launch-video-${motion_mode}-${motion_window}"
+                    COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-qt>"
+                        ${launch_args} --smoke-session-launch-video)
+                set_tests_properties("qml-session-launch-video-${motion_mode}-${motion_window}" PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=xcb" TIMEOUT 30)
+            endif()
             set(motion_args --smoke-test --allow-multiple-instances --desktop --route home --smoke-paper-design --smoke-motion)
             if(motion_mode STREQUAL "reduced")
                 list(APPEND motion_args --reduced-motion)

@@ -37,6 +37,8 @@
     <string>public.app-category.games</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>OpenNOW uses your microphone for in-game voice chat only when you enable Open microphone in audio settings.</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
 </dict>

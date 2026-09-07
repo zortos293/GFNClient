@@ -10,6 +10,7 @@
 
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
+#include <QDebug>
 
 #include <utility>
 #include <atomic>
@@ -237,6 +238,19 @@ public:
             reportFailure(QStringLiteral("Could not import the decoded video texture into Qt. The decoder and graphics backend must use compatible GPU resources."));
             return;
         }
+        if (m_reportedColorFormat != recorded.texture_format
+                || m_reportedColorSpace != recorded.color_space
+                || m_reportedOutputBits != m_textures.outputBits()) {
+            m_reportedColorFormat = recorded.texture_format;
+            m_reportedColorSpace = recorded.color_space;
+            m_reportedOutputBits = m_textures.outputBits();
+            qInfo("Video composition: sourceColorSpace=%s textureBits=%u outputBits=%d dither=%s",
+                  recorded.color_space == OPENNOW_STREAMER_COLOR_SPACE_PQ2020 ? "PQ2020"
+                    : recorded.color_space == OPENNOW_STREAMER_COLOR_SPACE_HLG2020 ? "HLG2020" : "SDR709",
+                  recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA16F ? 16u
+                    : recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2 ? 10u : 8u,
+                  m_reportedOutputBits, m_reportedOutputBits == 8 ? "ordered-8x8" : "none");
+        }
         m_outputDirty = true;
         m_outputKind = 1;
         if (m_sourceColorSpace != OPENNOW_STREAMER_COLOR_SPACE_SDR709) {
@@ -397,12 +411,18 @@ public:
         if (m_graphicsReady && m_runtime) m_runtime->sceneGraphShutdown();
         m_graphicsReady = false;
         m_reportedFailure = false;
+        m_reportedColorFormat = 0;
+        m_reportedColorSpace = 0;
+        m_reportedOutputBits = 0;
         m_rhi = nullptr;
     }
 
 private:
     NativeStreamRuntime *m_runtime;
     QRhi *m_rhi = nullptr;
+    std::uint32_t m_reportedColorFormat = 0;
+    std::uint32_t m_reportedColorSpace = 0;
+    int m_reportedOutputBits = 0;
     StreamVideoTextureRenderer m_textures;
     int m_sourceColorSpace = OPENNOW_STREAMER_COLOR_SPACE_SDR709;
     StreamFrameInterpolator m_interpolator;

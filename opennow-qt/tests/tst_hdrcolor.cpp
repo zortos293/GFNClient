@@ -79,6 +79,14 @@ class HdrColorTest final : public QObject
         return float(std::pow((0.8359375 + 18.8515625 * p) / (1.0 + 18.6875 * p), 78.84375));
     }
 
+public:
+    static void initMain()
+    {
+#if defined(Q_OS_WIN)
+        QGuiApplication::setDesktopSettingsAware(false);
+#endif
+    }
+
 private slots:
     void initTestCase()
     {

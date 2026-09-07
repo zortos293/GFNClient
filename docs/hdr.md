@@ -23,6 +23,8 @@ Decoder metadata carries transfer function, primaries, matrix, range, and suppor
 
 FFI ABI 6 publishes the texture format and encoded RGB color space separately. Windows publishes PQ BT.2020 in RGB10A2; Linux preserves PQ/HLG BT.2020 in RGBA16F. Qt performs the transfer-function and gamut conversion for the actual output. HDR/SDR changes retain per-frame metadata and bounded GPU resource ownership. Build and deploy the Qt shell and native streamer together; an older ABI is rejected.
 
+Ten-bit SDR is preserved independently: Windows, Linux, and macOS publish RGB10A2 for supported ten-bit SDR decode instead of first reducing it to RGBA8. When the final Qt output is eight-bit SDR, ordered dithering is applied after color conversion and any HDR-to-SDR tone mapping. Linear HDR output is neither SDR-clamped nor eight-bit dithered.
+
 The existing `StreamVideoItem`, stream transport, and input owner remain active under menus, statistics, and exit confirmation. Losing HDR output uses explicit SDR tone mapping instead of reinterpreting PQ values as SDR. No CPU video readback is introduced for HDR presentation.
 
 SDR chrome is converted to the output's linear white level before blending. scRGB uses direct scene composition. HDR10-only outputs require one bounded, window-sized RGBA16F GPU composition target and a final PQ-encoding pass, so translucent chrome blends in linear light rather than averaging PQ code values. This adds GPU bandwidth only on the HDR10 output path; it does not create another window or decoder.

@@ -41,12 +41,6 @@ pub enum LinuxTextureColorSpace {
     Hlg2020,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LinuxTextureFormat {
-    Rgba8,
-    Rgba16Float,
-}
-
 impl LinuxTextureColorSpace {
     fn from_format(format: crate::StreamFormat) -> Result<Self> {
         format.validate()?;
@@ -60,13 +54,6 @@ impl LinuxTextureColorSpace {
             )),
         }
     }
-
-    fn texture_format(self) -> vk::Format {
-        match self {
-            Self::Sdr709 => vk::Format::R8G8B8A8_UNORM,
-            Self::Pq2020 | Self::Hlg2020 => vk::Format::R16G16B16A16_SFLOAT,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,11 +62,63 @@ pub struct RecordedGpuFrame {
     pub generation: u64,
     pub image: u64,
     pub image_view: u64,
+    pub texture_format: GpuTextureFormat,
     pub width: u32,
     pub height: u32,
     pub timestamp_us: u64,
     pub color_space: LinuxTextureColorSpace,
-    pub texture_format: LinuxTextureFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GpuTextureFormat {
+    Rgba8,
+    Rgb10A2,
+    Rgba16Float,
+}
+
+impl GpuTextureFormat {
+    fn for_stream_format(format: crate::StreamFormat) -> Result<Self> {
+        match LinuxTextureColorSpace::from_format(format)? {
+            LinuxTextureColorSpace::Sdr709 => Self::for_pixel_format(format.pixel_format),
+            LinuxTextureColorSpace::Pq2020 | LinuxTextureColorSpace::Hlg2020 => {
+                Ok(Self::Rgba16Float)
+            }
+        }
+    }
+
+    fn for_pixel_format(format: PixelFormat) -> Result<Self> {
+        match format {
+            PixelFormat::Nv12 => Ok(Self::Rgba8),
+            PixelFormat::P010 => Ok(Self::Rgb10A2),
+            _ => Err(Error::InvalidFormat(format!(
+                "unsupported embedded conversion source format {format:?}"
+            ))),
+        }
+    }
+
+    fn vulkan_format(self) -> vk::Format {
+        match self {
+            Self::Rgba8 => vk::Format::R8G8B8A8_UNORM,
+            Self::Rgb10A2 => vk::Format::A2B10G10R10_UNORM_PACK32,
+            Self::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
+        }
+    }
+
+    fn validate_features(self, features: vk::FormatFeatureFlags) -> Result<()> {
+        let required = vk::FormatFeatureFlags::COLOR_ATTACHMENT
+            | vk::FormatFeatureFlags::SAMPLED_IMAGE
+            | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR;
+        if !features.contains(required) {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                format!(
+                    "embedded {self:?} output ({:?}) requires optimal-tiling color attachment and linearly filtered sampling support; available features: {features:?}",
+                    self.vulkan_format()
+                ),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -428,7 +467,7 @@ pub struct LinuxFrameProducer {
     render: VulkanRenderDevice,
     dmabuf_import_supported: bool,
     imported: HashMap<DmaBufKey, Weak<ImportedNv12Frame>>,
-    renderers: HashMap<i32, RendererResources>,
+    renderers: HashMap<GpuTextureFormat, RendererResources>,
     slots: Vec<Option<FrameSlotResources>>,
     generation: u64,
     device_lost: bool,
@@ -459,15 +498,21 @@ struct CpuUploadResources {
 }
 
 struct FrameSlotResources {
-    texture_format: vk::Format,
     width: u32,
     height: u32,
+    texture_format: GpuTextureFormat,
     output: GpuImage,
     output_initialized: bool,
     framebuffer: vk::Framebuffer,
     cpu: Option<CpuUploadResources>,
     owned_input_views: Vec<vk::ImageView>,
     frame: Option<PreparedLinuxFrame>,
+}
+
+impl FrameSlotResources {
+    fn reusable(&self, width: u32, height: u32, texture_format: GpuTextureFormat) -> bool {
+        self.width == width && self.height == height && self.texture_format == texture_format
+    }
 }
 
 impl LinuxFrameProducer {
@@ -562,7 +607,7 @@ impl LinuxFrameProducer {
         let full_range = frame.format.color_range == crate::ColorRange::Full;
         let chroma_location = frame.format.chroma_location;
         let color_space = LinuxTextureColorSpace::from_format(frame.format)?;
-        let texture_format = color_space.texture_format();
+        let texture_format = GpuTextureFormat::for_stream_format(frame.format)?;
         let prepared = self.prepare(frame)?;
         self.ensure_renderer(texture_format)?;
         self.ensure_slot(slot_index, width, height, texture_format)?;
@@ -608,16 +653,11 @@ impl LinuxFrameProducer {
             generation,
             image: slot_resources.output.image.as_raw(),
             image_view: slot_resources.output.view.as_raw(),
+            texture_format: slot_resources.texture_format,
             width,
             height,
             timestamp_us,
             color_space,
-            texture_format: match color_space {
-                LinuxTextureColorSpace::Sdr709 => LinuxTextureFormat::Rgba8,
-                LinuxTextureColorSpace::Pq2020 | LinuxTextureColorSpace::Hlg2020 => {
-                    LinuxTextureFormat::Rgba16Float
-                }
-            },
         })
     }
 
@@ -774,26 +814,19 @@ impl LinuxFrameProducer {
         Ok(imported)
     }
 
-    fn ensure_renderer(&mut self, texture_format: vk::Format) -> Result<()> {
-        if self.renderers.contains_key(&texture_format.as_raw()) {
+    fn ensure_renderer(&mut self, texture_format: GpuTextureFormat) -> Result<()> {
+        if self.renderers.contains_key(&texture_format) {
             return Ok(());
         }
         let properties = unsafe {
-            self.instance
-                .get_physical_device_format_properties(self.physical_device, texture_format)
+            self.instance.get_physical_device_format_properties(
+                self.physical_device,
+                texture_format.vulkan_format(),
+            )
         };
-        if !properties.optimal_tiling_features.contains(
-            vk::FormatFeatureFlags::COLOR_ATTACHMENT
-                | vk::FormatFeatureFlags::SAMPLED_IMAGE
-                | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR,
-        ) {
-            return Err(Error::unavailable(
-                Subsystem::Vulkan,
-                "device cannot render and sample the required output texture format",
-            ));
-        }
+        texture_format.validate_features(properties.optimal_tiling_features)?;
         let attachment = [vk::AttachmentDescription::default()
-            .format(texture_format)
+            .format(texture_format.vulkan_format())
             .samples(vk::SampleCountFlags::TYPE_1)
             .load_op(vk::AttachmentLoadOp::DONT_CARE)
             .store_op(vk::AttachmentStoreOp::STORE)
@@ -945,7 +978,7 @@ impl LinuxFrameProducer {
         }
         .map_err(|error| vk_error("allocate embedded NV12 descriptor sets", error))?;
         self.renderers.insert(
-            texture_format.as_raw(),
+            texture_format,
             RendererResources {
                 render_pass,
                 descriptor_set_layout,
@@ -964,14 +997,43 @@ impl LinuxFrameProducer {
         slot: usize,
         width: u32,
         height: u32,
-        texture_format: vk::Format,
+        texture_format: GpuTextureFormat,
     ) -> Result<()> {
-        if self.slots[slot].as_ref().is_some_and(|resources| {
-            resources.width == width
-                && resources.height == height
-                && resources.texture_format == texture_format
-        }) {
+        if self.slots[slot]
+            .as_ref()
+            .is_some_and(|resources| resources.reusable(width, height, texture_format))
+        {
             return Ok(());
+        }
+        let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
+        let properties = unsafe {
+            self.instance.get_physical_device_image_format_properties(
+                self.physical_device,
+                texture_format.vulkan_format(),
+                vk::ImageType::TYPE_2D,
+                vk::ImageTiling::OPTIMAL,
+                usage,
+                vk::ImageCreateFlags::empty(),
+            )
+        }
+        .map_err(|error| {
+            vk_error(
+                &format!("query embedded {texture_format:?} output support"),
+                error,
+            )
+        })?;
+        if width > properties.max_extent.width
+            || height > properties.max_extent.height
+            || !properties
+                .sample_counts
+                .contains(vk::SampleCountFlags::TYPE_1)
+        {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                format!(
+                    "embedded {texture_format:?} output does not support {width}x{height} single-sample images"
+                ),
+            ));
         }
         if let Some(resources) = self.slots[slot].take() {
             self.destroy_slot(resources);
@@ -982,13 +1044,10 @@ impl LinuxFrameProducer {
             &self.device,
             width,
             height,
-            texture_format,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            texture_format.vulkan_format(),
+            usage,
         )?;
-        let renderer = self
-            .renderers
-            .get(&texture_format.as_raw())
-            .expect("renderer initialized");
+        let renderer = &self.renderers[&texture_format];
         let attachments = [output.view];
         let framebuffer = unsafe {
             self.device.create_framebuffer(
@@ -1003,9 +1062,9 @@ impl LinuxFrameProducer {
         }
         .map_err(|error| vk_error("create embedded RGBA framebuffer", error))?;
         self.slots[slot] = Some(FrameSlotResources {
-            texture_format,
             width,
             height,
+            texture_format,
             output,
             output_initialized: false,
             framebuffer,
@@ -1062,16 +1121,8 @@ impl LinuxFrameProducer {
         luma_view: vk::ImageView,
         chroma_view: vk::ImageView,
     ) {
-        let renderer = self
-            .renderers
-            .get(
-                &self.slots[slot]
-                    .as_ref()
-                    .expect("slot initialized")
-                    .texture_format
-                    .as_raw(),
-            )
-            .expect("renderer initialized");
+        let resources = self.slots[slot].as_ref().expect("slot initialized");
+        let renderer = &self.renderers[&resources.texture_format];
         let luma = [vk::DescriptorImageInfo::default()
             .sampler(renderer.sampler)
             .image_view(luma_view)
@@ -1108,10 +1159,7 @@ impl LinuxFrameProducer {
         chroma_location: crate::ChromaLocation,
     ) -> Result<()> {
         let resources = self.slots[slot].as_mut().expect("slot initialized");
-        let renderer = self
-            .renderers
-            .get(&resources.texture_format.as_raw())
-            .expect("renderer initialized");
+        let renderer = &self.renderers[&resources.texture_format];
         let mut acquire = Vec::new();
         match prepared {
             PreparedLinuxFrame::Vulkan(frame) => {
@@ -2103,7 +2151,7 @@ fn create_plane_view(
         .map_err(|error| vk_error("create DMA-BUF plane image view", error))
 }
 
-fn vk_error(context: &'static str, error: vk::Result) -> Error {
+fn vk_error(context: &str, error: vk::Result) -> Error {
     if error == vk::Result::ERROR_DEVICE_LOST {
         return Error::DeviceLost {
             subsystem: Subsystem::Vulkan,
@@ -2126,6 +2174,191 @@ fn decode_readiness(result: std::result::Result<(), vk::Result>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_output_format_preserves_source_precision() {
+        assert_eq!(
+            GpuTextureFormat::for_pixel_format(PixelFormat::Nv12).unwrap(),
+            GpuTextureFormat::Rgba8
+        );
+        assert_eq!(
+            GpuTextureFormat::for_pixel_format(PixelFormat::P010).unwrap(),
+            GpuTextureFormat::Rgb10A2
+        );
+        assert_eq!(
+            GpuTextureFormat::Rgba8.vulkan_format(),
+            vk::Format::R8G8B8A8_UNORM
+        );
+        assert_eq!(
+            GpuTextureFormat::Rgb10A2.vulkan_format(),
+            vk::Format::A2B10G10R10_UNORM_PACK32
+        );
+        assert_eq!(
+            GpuTextureFormat::Rgba16Float.vulkan_format(),
+            vk::Format::R16G16B16A16_SFLOAT
+        );
+        assert!(GpuTextureFormat::for_pixel_format(PixelFormat::I420).is_err());
+    }
+
+    #[test]
+    fn embedded_output_requires_attachment_and_filtered_sampling_support() {
+        let required = vk::FormatFeatureFlags::COLOR_ATTACHMENT
+            | vk::FormatFeatureFlags::SAMPLED_IMAGE
+            | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR;
+        for format in [
+            GpuTextureFormat::Rgba8,
+            GpuTextureFormat::Rgb10A2,
+            GpuTextureFormat::Rgba16Float,
+        ] {
+            assert!(format.validate_features(required).is_ok());
+            for missing in [
+                vk::FormatFeatureFlags::COLOR_ATTACHMENT,
+                vk::FormatFeatureFlags::SAMPLED_IMAGE,
+                vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR,
+            ] {
+                let error = format.validate_features(required & !missing).unwrap_err();
+                assert!(error.to_string().contains(&format!("{format:?}")));
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_slot_reuse_requires_matching_extent_and_precision() {
+        for texture_format in [
+            GpuTextureFormat::Rgba8,
+            GpuTextureFormat::Rgb10A2,
+            GpuTextureFormat::Rgba16Float,
+        ] {
+            let resources = FrameSlotResources {
+                width: 1920,
+                height: 1080,
+                texture_format,
+                output: GpuImage {
+                    image: vk::Image::null(),
+                    memory: vk::DeviceMemory::null(),
+                    view: vk::ImageView::null(),
+                },
+                output_initialized: false,
+                framebuffer: vk::Framebuffer::null(),
+                cpu: None,
+                owned_input_views: Vec::new(),
+                frame: None,
+            };
+            assert!(resources.reusable(1920, 1080, texture_format));
+            assert!(!resources.reusable(1280, 1080, texture_format));
+            assert!(!resources.reusable(1920, 720, texture_format));
+            let other_format = match texture_format {
+                GpuTextureFormat::Rgba8 => GpuTextureFormat::Rgb10A2,
+                GpuTextureFormat::Rgb10A2 | GpuTextureFormat::Rgba16Float => {
+                    GpuTextureFormat::Rgba8
+                }
+            };
+            assert!(!resources.reusable(1920, 1080, other_format));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan implementation; runs with Mesa lavapipe without /dev/dri"]
+    fn embedded_precision_switch_recreates_only_the_recycled_slot() {
+        unsafe {
+            let entry = ash::Entry::load().unwrap();
+            let application = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
+            let instance = entry
+                .create_instance(
+                    &vk::InstanceCreateInfo::default().application_info(&application),
+                    None,
+                )
+                .unwrap();
+            let physical = instance.enumerate_physical_devices().unwrap()[0];
+            let family = instance
+                .get_physical_device_queue_family_properties(physical)
+                .iter()
+                .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+                .unwrap() as u32;
+            let priorities = [1.0];
+            let queues = [vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(family)
+                .queue_priorities(&priorities)];
+            let device = instance
+                .create_device(
+                    physical,
+                    &vk::DeviceCreateInfo::default().queue_create_infos(&queues),
+                    None,
+                )
+                .unwrap();
+            let render = VulkanRenderDevice {
+                instance: instance.handle().as_raw() as usize,
+                physical_device: physical.as_raw() as usize,
+                device: device.handle().as_raw() as usize,
+                queue: device.get_device_queue(family, 0).as_raw() as usize,
+                queue_family: family,
+                dmabuf_import_enabled: false,
+            };
+            let mut producer = LinuxFrameProducer::new_with_slots(render, 2).unwrap();
+            producer.ensure_renderer(GpuTextureFormat::Rgba8).unwrap();
+            for slot in 0..2 {
+                producer
+                    .ensure_slot(slot, 4, 4, GpuTextureFormat::Rgba8)
+                    .unwrap();
+                producer.slots[slot].as_mut().unwrap().output_initialized = true;
+            }
+            let other_image = producer.slots[1].as_ref().unwrap().output.image;
+            let rgba8_pipeline = producer.renderers[&GpuTextureFormat::Rgba8].pipeline;
+            producer.ensure_renderer(GpuTextureFormat::Rgb10A2).unwrap();
+            let rgb10_pipeline = producer.renderers[&GpuTextureFormat::Rgb10A2].pipeline;
+            assert_ne!(rgba8_pipeline, rgb10_pipeline);
+            producer
+                .ensure_renderer(GpuTextureFormat::Rgba16Float)
+                .unwrap();
+            let rgba16_pipeline = producer.renderers[&GpuTextureFormat::Rgba16Float].pipeline;
+            assert_ne!(rgba8_pipeline, rgba16_pipeline);
+            assert_ne!(rgb10_pipeline, rgba16_pipeline);
+            for texture_format in [
+                GpuTextureFormat::Rgb10A2,
+                GpuTextureFormat::Rgba16Float,
+                GpuTextureFormat::Rgba8,
+                GpuTextureFormat::Rgb10A2,
+                GpuTextureFormat::Rgba16Float,
+            ] {
+                producer.ensure_renderer(texture_format).unwrap();
+                producer.ensure_slot(0, 4, 4, texture_format).unwrap();
+                let slot = producer.slots[0].as_mut().unwrap();
+                assert_eq!(slot.texture_format, texture_format);
+                assert!(!slot.output_initialized);
+                let image = slot.output.image;
+                slot.output_initialized = true;
+                producer.ensure_slot(0, 4, 4, texture_format).unwrap();
+                let slot = producer.slots[0].as_ref().unwrap();
+                assert_eq!(slot.output.image, image);
+                assert!(slot.output_initialized);
+                let other_slot = producer.slots[1].as_ref().unwrap();
+                assert_eq!(other_slot.output.image, other_image);
+                assert_eq!(other_slot.texture_format, GpuTextureFormat::Rgba8);
+                assert!(other_slot.output_initialized);
+                assert_eq!(producer.renderers.len(), 3);
+                assert_eq!(
+                    producer.renderers[&GpuTextureFormat::Rgba8].pipeline,
+                    rgba8_pipeline
+                );
+                assert_eq!(
+                    producer.renderers[&GpuTextureFormat::Rgb10A2].pipeline,
+                    rgb10_pipeline
+                );
+                assert_eq!(
+                    producer.renderers[&GpuTextureFormat::Rgba16Float].pipeline,
+                    rgba16_pipeline
+                );
+            }
+            producer
+                .ensure_slot(0, 8, 4, GpuTextureFormat::Rgb10A2)
+                .unwrap();
+            assert_eq!(producer.slots[0].as_ref().unwrap().width, 8);
+            assert!(!producer.slots[0].as_ref().unwrap().output_initialized);
+            drop(producer);
+            device.destroy_device(None);
+            instance.destroy_instance(None);
+        }
+    }
 
     #[test]
     #[ignore = "requires a Vulkan implementation; runs with Mesa lavapipe without /dev/dri"]
@@ -2583,6 +2816,10 @@ mod tests {
                 let output = frame.record(render, command.as_raw() as usize, 0).unwrap();
                 assert_ne!(output.image, 0);
                 assert_eq!((output.width, output.height), (4, 4));
+                assert_eq!(
+                    output.texture_format,
+                    GpuTextureFormat::for_pixel_format(pixel_format).unwrap()
+                );
                 device.end_command_buffer(command).unwrap();
                 device
                     .queue_submit(
@@ -2598,19 +2835,19 @@ mod tests {
                             1,
                             crate::ColorTransfer::Pq,
                             LinuxTextureColorSpace::Pq2020,
-                            LinuxTextureFormat::Rgba16Float,
+                            GpuTextureFormat::Rgba16Float,
                         ),
                         (
                             0,
                             crate::ColorTransfer::Hlg,
                             LinuxTextureColorSpace::Hlg2020,
-                            LinuxTextureFormat::Rgba16Float,
+                            GpuTextureFormat::Rgba16Float,
                         ),
                         (
                             1,
                             crate::ColorTransfer::Sdr,
                             LinuxTextureColorSpace::Sdr709,
-                            LinuxTextureFormat::Rgba8,
+                            GpuTextureFormat::Rgb10A2,
                         ),
                     ] {
                         let mut decoded = frame.frame.clone();
@@ -2690,12 +2927,14 @@ mod tests {
     #[test]
     fn hdr_output_precision_follows_explicit_color_metadata() {
         let mut format = crate::StreamFormat::video_default(3840, 2160).unwrap();
+        assert_eq!(
+            GpuTextureFormat::for_stream_format(format).unwrap(),
+            GpuTextureFormat::Rgba8
+        );
         format.pixel_format = PixelFormat::P010;
         assert_eq!(
-            LinuxTextureColorSpace::from_format(format)
-                .unwrap()
-                .texture_format(),
-            vk::Format::R8G8B8A8_UNORM
+            GpuTextureFormat::for_stream_format(format).unwrap(),
+            GpuTextureFormat::Rgb10A2
         );
         format.color_transfer = crate::ColorTransfer::Pq;
         assert!(LinuxTextureColorSpace::from_format(format).is_err());
@@ -2705,16 +2944,21 @@ mod tests {
             LinuxTextureColorSpace::Pq2020
         );
         assert_eq!(
-            LinuxTextureColorSpace::from_format(format)
-                .unwrap()
-                .texture_format(),
-            vk::Format::R16G16B16A16_SFLOAT
+            GpuTextureFormat::for_stream_format(format).unwrap(),
+            GpuTextureFormat::Rgba16Float
         );
         format.color_transfer = crate::ColorTransfer::Hlg;
         assert_eq!(
             LinuxTextureColorSpace::from_format(format).unwrap(),
             LinuxTextureColorSpace::Hlg2020
         );
+        assert_eq!(
+            GpuTextureFormat::for_stream_format(format).unwrap(),
+            GpuTextureFormat::Rgba16Float
+        );
+        format.pixel_format = PixelFormat::Nv12;
+        assert!(GpuTextureFormat::for_stream_format(format).is_err());
+        format.pixel_format = PixelFormat::P010;
         format.color_transfer = crate::ColorTransfer::Sdr;
         assert!(LinuxTextureColorSpace::from_format(format).is_err());
     }

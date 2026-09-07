@@ -13,7 +13,7 @@ use crate::audio_playout::AudioPlayoutBuffer;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use image::ImageReader;
-use opennow_streamer_protocol::RenderSurface;
+use opennow_streamer_protocol::{AudioDevice as PlaybackDevice, AudioOutputDevice, RenderSurface};
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
@@ -41,6 +41,87 @@ const AUDIO_SAMPLE_RATE: i32 = 48_000;
 const AUDIO_CHANNELS: u8 = 2;
 const AUDIO_BUFFER_FRAMES: u16 = 480;
 const MAX_AUDIO_LATENCY_MS: usize = 120;
+
+pub(crate) fn audio_devices() -> Result<Vec<PlaybackDevice>, String> {
+    let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
+    let audio = sdl
+        .audio()
+        .map_err(|error| format!("SDL audio initialization failed: {error}"))?;
+    let devices = playback_devices(&audio)?;
+    Ok(unique_playback_devices(devices))
+}
+
+fn unique_playback_devices(devices: Vec<PlaybackDevice>) -> Vec<PlaybackDevice> {
+    let mut counts = HashMap::new();
+    for device in &devices {
+        *counts.entry(device.id.clone()).or_insert(0) += 1;
+    }
+    devices
+        .into_iter()
+        .filter(|device| counts[&device.id] == 1)
+        .collect()
+}
+
+fn playback_devices(audio: &sdl2::AudioSubsystem) -> Result<Vec<PlaybackDevice>, String> {
+    let count = audio
+        .num_audio_playback_devices()
+        .ok_or_else(|| format!("SDL audio device enumeration failed: {}", sdl2::get_error()))?;
+    if count > 1024 {
+        return Err("SDL returned more than 1024 audio playback devices".to_owned());
+    }
+    (0..count)
+        .map(|index| {
+            let name = audio
+                .audio_playback_device_name(index)
+                .map_err(|error| format!("SDL audio device enumeration failed: {error}"))?;
+            AudioOutputDevice::new(name.clone())?;
+            if name.is_empty() {
+                return Err("SDL returned an empty audio playback device name".to_owned());
+            }
+            Ok(PlaybackDevice {
+                id: name.clone(),
+                name,
+            })
+        })
+        .collect()
+}
+
+fn select_playback_device<'a>(
+    selected: &'a AudioOutputDevice,
+    devices: &[PlaybackDevice],
+) -> Result<Option<&'a str>, String> {
+    let Some(name) = selected.device_name() else {
+        return Ok(None);
+    };
+    if devices.iter().filter(|device| device.id == name).count() != 1 {
+        return Err("The selected audio output device is unavailable or ambiguous. Select another device or System default.".to_owned());
+    }
+    Ok(Some(name))
+}
+
+fn open_audio_playback(
+    audio: &sdl2::AudioSubsystem,
+    output: &Arc<OutputBuffers>,
+    selected: &AudioOutputDevice,
+) -> Result<AudioDevice<StreamAudioCallback>, String> {
+    let devices = if selected.device_name().is_some() {
+        playback_devices(audio)?
+    } else {
+        Vec::new()
+    };
+    let name = select_playback_device(selected, &devices)?;
+    let desired = AudioSpecDesired {
+        freq: Some(AUDIO_SAMPLE_RATE),
+        channels: Some(AUDIO_CHANNELS),
+        samples: Some(AUDIO_BUFFER_FRAMES),
+    };
+    let callback_output = Arc::clone(output);
+    audio
+        .open_playback(name, &desired, move |_| StreamAudioCallback {
+            output: callback_output,
+        })
+        .map_err(|error| format!("native audio output creation failed: {error}"))
+}
 #[cfg(target_os = "linux")]
 const LINUX_VIDEO_QUEUE_CAPACITY: usize = 6;
 
@@ -65,6 +146,8 @@ pub(crate) struct OutputBuffers {
     linux_video: Mutex<VecDeque<QueuedLinuxVideoFrame>>,
     audio: Mutex<AudioPlayoutBuffer>,
     captured_input: Arc<CapturedInputQueue>,
+    microphone: Mutex<Option<std::sync::Weak<crate::microphone::MicrophoneShared>>>,
+    microphone_clock: Mutex<Instant>,
 }
 
 #[cfg(target_os = "windows")]
@@ -144,6 +227,15 @@ impl WindowsBridge {
 }
 
 impl OutputBuffers {
+    #[cfg(test)]
+    pub(crate) fn audio_samples_pending(&self) -> bool {
+        !self
+            .audio
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty()
+    }
+
     pub(crate) fn new() -> Self {
         Self::with_captured_input(Arc::new(CapturedInputQueue::default()))
     }
@@ -157,11 +249,50 @@ impl OutputBuffers {
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
             )),
             captured_input,
+            microphone: Mutex::new(None),
+            microphone_clock: Mutex::new(Instant::now()),
         }
     }
 
     pub(crate) fn captured_input(&self) -> Arc<CapturedInputQueue> {
         Arc::clone(&self.captured_input)
+    }
+
+    pub(crate) fn set_microphone(&self, shared: &Arc<crate::microphone::MicrophoneShared>) {
+        let mut microphone = self
+            .microphone
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(previous) = microphone.take().and_then(|previous| previous.upgrade()) {
+            previous.close(None);
+        }
+        *microphone = Some(Arc::downgrade(shared));
+    }
+
+    pub(crate) fn microphone_clock(&self) -> Instant {
+        *self
+            .microphone_clock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub(crate) fn reset_microphone_clock(&self) {
+        *self
+            .microphone_clock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Instant::now();
+    }
+
+    pub(crate) fn stop_microphone(&self) {
+        if let Some(microphone) = self
+            .microphone
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .and_then(|microphone| microphone.upgrade())
+        {
+            microphone.close(None);
+        }
     }
 
     pub(crate) fn replace_video(&self, frame: DecodedVideoFrame) -> bool {
@@ -262,31 +393,24 @@ impl OutputBuffers {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 pub(crate) struct HeadlessAudioOutput {
     device: AudioDevice<StreamAudioCallback>,
     output: Arc<OutputBuffers>,
     _sdl: sdl2::Sdl,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 impl HeadlessAudioOutput {
-    pub(crate) fn start(output: Arc<OutputBuffers>) -> Result<Self, String> {
+    pub(crate) fn start(
+        output: Arc<OutputBuffers>,
+        audio_device: &AudioOutputDevice,
+    ) -> Result<Self, String> {
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
         let audio_subsystem = sdl
             .audio()
             .map_err(|error| format!("SDL audio initialization failed: {error}"))?;
-        let desired = AudioSpecDesired {
-            freq: Some(AUDIO_SAMPLE_RATE),
-            channels: Some(AUDIO_CHANNELS),
-            samples: Some(AUDIO_BUFFER_FRAMES),
-        };
-        let callback_output = Arc::clone(&output);
-        let device = audio_subsystem
-            .open_playback(None, &desired, move |_| StreamAudioCallback {
-                output: callback_output,
-            })
-            .map_err(|error| format!("native audio output creation failed: {error}"))?;
+        let device = open_audio_playback(&audio_subsystem, &output, audio_device)?;
         device.resume();
         Ok(Self {
             device,
@@ -305,7 +429,7 @@ impl HeadlessAudioOutput {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 impl Drop for HeadlessAudioOutput {
     fn drop(&mut self) {
         self.device.pause();
@@ -340,7 +464,11 @@ pub(crate) struct LinuxHardwareOutput {
 
 #[cfg(target_os = "linux")]
 impl LinuxHardwareOutput {
-    fn initialize(output: Arc<OutputBuffers>, stream: MediaStreamConfig) -> Result<Self, String> {
+    fn initialize(
+        output: Arc<OutputBuffers>,
+        stream: MediaStreamConfig,
+        audio_device: &AudioOutputDevice,
+    ) -> Result<Self, String> {
         configure_linux_sdl_video_driver();
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
         let video = sdl
@@ -394,17 +522,7 @@ impl LinuxHardwareOutput {
         } else {
             NativeSurface::new(&window)
         };
-        let desired = AudioSpecDesired {
-            freq: Some(AUDIO_SAMPLE_RATE),
-            channels: Some(AUDIO_CHANNELS),
-            samples: Some(AUDIO_BUFFER_FRAMES),
-        };
-        let callback_output = Arc::clone(&output);
-        let audio = audio_subsystem
-            .open_playback(None, &desired, move |_| StreamAudioCallback {
-                output: callback_output,
-            })
-            .map_err(|error| format!("native audio output creation failed: {error}"))?;
+        let audio = open_audio_playback(&audio_subsystem, &output, audio_device)?;
         let event_pump = sdl
             .event_pump()
             .map_err(|error| format!("native window event pump creation failed: {error}"))?;
@@ -1427,7 +1545,11 @@ pub(crate) struct SoftwareOutput {
 }
 
 impl SoftwareOutput {
-    fn initialize(output: Arc<OutputBuffers>, stream: MediaStreamConfig) -> Result<Self, String> {
+    fn initialize(
+        output: Arc<OutputBuffers>,
+        stream: MediaStreamConfig,
+        audio_device: &AudioOutputDevice,
+    ) -> Result<Self, String> {
         #[cfg(target_os = "linux")]
         configure_linux_sdl_video_driver();
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
@@ -1461,17 +1583,7 @@ impl SoftwareOutput {
         canvas.clear();
         canvas.present();
 
-        let desired = AudioSpecDesired {
-            freq: Some(AUDIO_SAMPLE_RATE),
-            channels: Some(AUDIO_CHANNELS),
-            samples: Some(AUDIO_BUFFER_FRAMES),
-        };
-        let callback_output = Arc::clone(&output);
-        let audio = audio_subsystem
-            .open_playback(None, &desired, move |_| StreamAudioCallback {
-                output: callback_output,
-            })
-            .map_err(|error| format!("native audio output creation failed: {error}"))?;
+        let audio = open_audio_playback(&audio_subsystem, &output, audio_device)?;
         if audio.spec().freq != AUDIO_SAMPLE_RATE || audio.spec().channels != AUDIO_CHANNELS {
             return Err(format!(
                 "native audio output returned unsupported format: {} Hz, {} channels",
@@ -2219,18 +2331,25 @@ impl ActiveOutput {
     pub(crate) fn initialize(
         output: Arc<OutputBuffers>,
         use_hardware: bool,
-        stream: MediaStreamConfig,
+        config: crate::media::MediaSessionConfig<'_>,
         #[cfg(target_os = "windows")] windows_bridge: Arc<WindowsBridge>,
         use_linux_hardware: bool,
     ) -> Result<Self, String> {
+        let crate::media::MediaSessionConfig {
+            stream,
+            audio_device,
+        } = config;
         #[cfg(target_os = "macos")]
         if use_hardware {
-            return crate::macos_backend::MacOutput::initialize(stream)
+            return crate::macos_backend::MacOutput::initialize(stream, audio_device)
                 .map(Box::new)
                 .map(Self::Mac);
         }
         #[cfg(target_os = "windows")]
         if use_hardware || stream.codec != crate::media::MediaVideoCodec::H264 {
+            if audio_device.device_name().is_some() {
+                return Err("Fixed audio output selection requires the embedded Windows stream view or SDL software output".to_owned());
+            }
             let decoder_mode = if use_hardware {
                 WindowsDecoderMode::Hardware
             } else {
@@ -2242,13 +2361,13 @@ impl ActiveOutput {
         }
         #[cfg(target_os = "linux")]
         if use_linux_hardware {
-            return LinuxHardwareOutput::initialize(output, stream)
+            return LinuxHardwareOutput::initialize(output, stream, audio_device)
                 .map(Box::new)
                 .map(Self::LinuxHardware);
         }
         let _ = use_hardware;
         let _ = use_linux_hardware;
-        SoftwareOutput::initialize(output, stream)
+        SoftwareOutput::initialize(output, stream, audio_device)
             .map(Box::new)
             .map(Self::Software)
     }
@@ -3000,6 +3119,61 @@ fn aspect_fit(source_width: u32, source_height: u32, width: u32, height: u32) ->
 mod tests {
     use super::*;
 
+    #[test]
+    fn audio_selection_requires_one_exact_device_match() {
+        let devices = vec![PlaybackDevice {
+            id: "USB Speakers".to_owned(),
+            name: "USB Speakers".to_owned(),
+        }];
+        assert_eq!(
+            select_playback_device(&AudioOutputDevice::default(), &[]).unwrap(),
+            None
+        );
+        let selected = AudioOutputDevice::new("USB Speakers".to_owned()).unwrap();
+        assert_eq!(
+            select_playback_device(&selected, &devices).unwrap(),
+            Some("USB Speakers")
+        );
+        assert!(select_playback_device(&selected, &[]).is_err());
+        assert!(
+            select_playback_device(&selected, &[devices[0].clone(), devices[0].clone()]).is_err()
+        );
+        let wrong_case = AudioOutputDevice::new("usb speakers".to_owned()).unwrap();
+        assert!(select_playback_device(&wrong_case, &devices).is_err());
+    }
+
+    #[test]
+    fn audio_enumeration_excludes_all_ambiguous_names() {
+        let device = |name: &str| PlaybackDevice {
+            id: name.to_owned(),
+            name: name.to_owned(),
+        };
+        assert_eq!(
+            unique_playback_devices(vec![device("A"), device("B"), device("A")]),
+            vec![device("B")],
+        );
+    }
+
+    #[test]
+    #[ignore = "requires SDL_AUDIODRIVER=dummy in an isolated test process"]
+    fn selected_sdl_output_survives_enumeration_and_missing_device_open() {
+        let sdl = sdl2::init().expect("SDL");
+        let audio = sdl.audio().expect("SDL audio");
+        let output = Arc::new(OutputBuffers::new());
+        let default = open_audio_playback(&audio, &output, &AudioOutputDevice::default())
+            .expect("default output");
+        drop(default);
+        let devices = audio_devices().expect("devices");
+        let selected =
+            AudioOutputDevice::new(devices.first().expect("dummy output").id.clone()).unwrap();
+        let playback = open_audio_playback(&audio, &output, &selected).expect("fixed output");
+        playback.resume();
+        assert_eq!(audio_devices().expect("enumeration while playing"), devices);
+        let missing = AudioOutputDevice::new("opennow-test-missing-output".to_owned()).unwrap();
+        assert!(open_audio_playback(&audio, &output, &missing).is_err());
+        assert_eq!(playback.status(), sdl2::audio::AudioStatus::Playing);
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn automatic_av1_uses_direct_d3d11_but_explicit_d3d12_is_preserved() {
@@ -3027,6 +3201,8 @@ mod tests {
             linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
             audio: Mutex::new(AudioPlayoutBuffer::new(4)),
             captured_input: Arc::new(CapturedInputQueue::default()),
+            microphone: Mutex::new(None),
+            microphone_clock: Mutex::new(Instant::now()),
         };
         assert_eq!(output.push_audio(&[1.0, 2.0]), 0);
         assert_eq!(output.push_audio(&[3.0, 4.0, 5.0, 6.0]), 2);

@@ -7,6 +7,8 @@ compile_error!("the Linux backend currently supports x86_64 and aarch64");
 #[cfg(target_os = "linux")]
 mod audio;
 #[cfg(target_os = "linux")]
+mod audio_devices;
+#[cfg(target_os = "linux")]
 mod capability;
 #[cfg(target_os = "linux")]
 mod error;
@@ -33,6 +35,8 @@ pub use vulkan_device::{SharedVulkanDevice, VulkanDeviceInfo};
 #[cfg(target_os = "linux")]
 pub use audio::{AudioBackend, AudioBackendPreference, AudioConfig, AudioPacket};
 #[cfg(target_os = "linux")]
+pub use audio_devices::{AudioOutputDevice, audio_output_devices};
+#[cfg(target_os = "linux")]
 pub use capability::{
     BackendCapability, CapabilityReport, PresentationCapability, probe_capabilities,
     probe_video_capabilities,
@@ -47,8 +51,8 @@ pub use format::{
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use frame_producer::{
-    CpuNv12Frame, ImportedNv12Frame, LinuxFrameProducer, LinuxGpuFrame, LinuxGpuFrameProducer,
-    LinuxGpuRenderResources, LinuxTextureColorSpace, LinuxTextureFormat, PreparedLinuxFrame,
+    CpuNv12Frame, GpuTextureFormat, ImportedNv12Frame, LinuxFrameProducer, LinuxGpuFrame,
+    LinuxGpuFrameProducer, LinuxGpuRenderResources, LinuxTextureColorSpace, PreparedLinuxFrame,
     PreparedVulkanFrame, PreparedVulkanImage, RecordedGpuFrame, VulkanRenderDevice,
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]

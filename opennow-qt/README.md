@@ -56,6 +56,26 @@ Raw session contexts, credentials, URLs, SDP and media payloads are excluded fro
 the new handshake trace. Logs rotate during use, and exports retain readable lines.
 No per-packet or per-input file logging is added to the gameplay path.
 
+## Video color precision
+
+The color-depth setting selects the stream's encoded and decoded precision, not HDR.
+Ten-bit video stays ten-bit through native YUV-to-RGB conversion and GPU texture import;
+SDR frame-generation history and generated output retain that texture format. The normal Qt SDR
+window uses an 8-bit swapchain. Its final video draw applies centered, static 8×8 spatial
+dithering after scaling so lower bits contribute to the displayed gradient instead of being
+discarded before composition. Black, white, neutral balance, and the SDR transfer function
+are preserved. High-precision texture render targets do not receive the 8-bit dither.
+
+`qt-native.log` reports `Video composition` when the imported format, source color space, or output format changes,
+including `sourceColorSpace`, `textureBits`, `outputBits`, and the dither policy. A ten-bit SDR stream with
+`textureBits=10 outputBits=8 dither=ordered-8x8` is the expected SDR path, not native ten-bit
+scan-out. HDR10 swapchains are not used to display unconverted SDR pixels.
+
+Run `ctest --test-dir build/opennow-qt -R opennow-streamcolor-tests --output-on-failure`
+for GPU readback checks of ten-bit gradients, endpoint and neutral colors, final quantization,
+and high-precision render targets. Live acceptance still requires checking gradients and
+black/white levels on the intended GPU and display in windowed and fullscreen modes.
+
 ## Build
 
 Install the Qt ShaderTools development module with Qt Quick and Multimedia; CMake
@@ -82,11 +102,26 @@ Useful development switches are `--route <name>`, `--overlay <name>`,
 `--reduced-motion`, `--core <path>` and `--screenshot <png-path>`. The test suite
 opens every route and overlay with QML warnings treated as failures.
 
+Run `ctest --test-dir build/opennow-qt --output-on-failure -R 'theme-tests|qml-theme-settings'`
+to check all built-in packs in both appearances, accent contrast, preview restoration,
+and the desktop Look controls at compact and desktop widths. The
+`--smoke-theme-settings --route settings-themes --desktop` workload also accepts
+`--smoke-light-theme` and `--screenshot <png-path>` for account-free visual checks.
+
 Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-stream-exit-'`
 to check the in-stream exit confirmation in desktop/console and windowed/fullscreen modes.
 The keyboard fixtures cover Return, keypad Enter, Tab+Space, Escape, safe default focus,
 auto-repeat suppression, and preserving the stream surface/input across cancellation.
 They use a smoke session, not a live GFN connection.
+
+Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-session-launch-'`
+to check the desktop launch screen in windowed/fullscreen and normal/reduced-motion modes.
+The fixture exercises queue updates, entry/first-frame fades, reconnects, failures, cancellation
+confirmation, and interrupted transitions while checking that the same video item survives.
+Receiver readiness alone must not dismiss the launch screen. These tests inject native status
+and first-frame events; they do not establish live network or decoder behavior.
+When Xvfb is available, the video variants also render a synthetic GPU texture through the
+production video material and check that it stays covered until the first-frame handoff.
 
 Run `ctest --test-dir build/opennow-qt --output-on-failure -R '^qml-session-fullscreen-'`
 to verify that F11 can leave and re-enter fullscreen after confirming session exit,
@@ -194,6 +229,9 @@ is explicitly unavailable for HDR sources.
 Run `opennow-hdrcolor-tests`, `opennow-linuxvulkangraphics-tests`, and the backend-availability
 QML workload. The GPU tests check shader luminance/gamut math, tone-map monotonicity, actual
 linear alpha blending through the HDR10 output pass, and chrome-layer resizing/fullscreen.
+On Windows, the HDR test uses D3D11 WARP for both QRhi devices and disables desktop-settings
+discovery before constructing `QGuiApplication`. This keeps the native Windows window and GPU
+shader checks independent of the WinRT theme services missing from Windows Server CI runners.
 These tests do not establish that a physical HDR monitor received HDR. The live Windows/Linux
 display and reconnect matrix is in [HDR validation](../docs/hdr.md).
 
@@ -231,6 +269,15 @@ the desktop shell and `--screenshot /absolute/path.png` to save visual evidence.
 Offscreen and nested compositor tests do not replace live Windows/X11/Wayland
 controller and mouse acceptance on real streaming sessions.
 
+Microphone fixtures never open capture hardware: `--smoke-test --desktop --route
+settings-audio --smoke-microphone-supported` renders the default-disabled opt-in,
+and `--smoke-test --desktop --route stream --overlay desktop-stream-menu
+--smoke-microphone-muted` renders a supported, muted session. Add
+`--screenshot /absolute/path.png` for visual evidence. For console fixtures use
+`--console`, `settings-input`, and `guide-session` respectively. The
+`--smoke-microphone` acceptance workload checks state, commands and reconnect mute
+preservation against a mock runtime.
+
 If one controller appears as both a physical device and a remapper's virtual device,
 open Settings → Controls → Controller input source (Controllers in the console
 settings) and select one device before starting the stream. The selected device is
@@ -241,6 +288,29 @@ device disconnects, input stays disabled until a source is selected again; recon
 does not silently activate another device. This does not suppress keyboard or mouse
 events generated by an external remapper. Disable those mappings in the remapper if
 they also duplicate input.
+
+The desktop controller rows and source picker use SDL's reported device name and
+[`SDL_GetRealGamepadType`](https://wiki.libsdl.org/SDL3/SDL_GetRealGamepadType)
+for PlayStation (PS3/PS4/PS5) and Xbox (360/One-family) logos. Unknown devices keep
+the generic gamepad icon. This ignores button-layout mapping overrides, but a
+remapper that exposes only a virtual Xbox device can still hide the physical pad's
+identity; OpenNOW does not guess its brand from the name.
+
+Battery status uses [`SDL_GetGamepadPowerInfo`](https://wiki.libsdl.org/SDL3/SDL_GetGamepadPowerInfo)
+on the existing SDL handle, refreshed every two seconds without a second HID reader.
+It reports remaining charge and charging/full/wired states, not battery wear,
+design capacity, or cycle count. Missing data is shown as **Battery unavailable**,
+never as an empty battery. Availability depends on the controller, connection,
+driver, remapper, and HID permissions. SDL's PS4/PS5 HIDAPI reports can be coarse;
+its Xbox One HIDAPI and Windows XInput paths map battery bands to approximate
+percentages. Enhanced-report settings are left unchanged because switching modes
+can affect other applications. No additional raw-HID permissions are requested.
+
+Run `ctest --test-dir build/opennow-qt -R 'opennow-controllermetadata-tests|qml-controller-metadata'`
+for virtual-device identity and synthetic battery-display coverage. The QML fixture
+also supports `--smoke-test --desktop --route settings-input --smoke-controller-metadata
+--reduced-motion --screenshot /absolute/path.png`. Its device names and charge values
+are test data, not hardware measurements. Verify real USB/Bluetooth pads separately.
 
 Run `ctest --test-dir build/opennow-qt -R '^opennow-controller(input|sources)-tests$'`
 for virtual-device coverage of source selection, neutral handoffs, disconnect/reselect,
@@ -271,7 +341,7 @@ The versioned Rust core owns settings, NVIDIA device login and token refresh,
 OS-protected accounts, PINs, catalogs, subscriptions, regions and latency tests,
 account connections, persistent storage, CloudMatch lifecycle/recovery/ads,
 NVST session orchestration, diagnostics, media listing, Discord, telemetry,
-feedback and update discovery. The protocol-v5 native streamer is linked into
+feedback and update discovery. The protocol-v6 native streamer is linked into
 the Qt executable as an in-process Rust library. It owns NVST RTSPS negotiation,
 Mjolnir video, the ICE/DTLS/SCTP control bundle, decode, audio and native input.
 Qt/QML owns stream status, stats, menus, recovery, failure and fullscreen
@@ -285,8 +355,11 @@ in process through the runtime library, not in the probe executable. CI produces
 the platform packages from that layout.
 The screenshot shortcut captures the exact stream region, and F12 records the
 negotiated H.264/H.265/AV1 source stream plus Opus audio atomically into Matroska
-before generating a media thumbnail. Microphone capture is not part of the
-native NVST runtime. Live multi-OS streaming, GPU interop and
+before generating a media thumbnail. Microphone capture defaults to disabled;
+Audio settings offers an explicit Open microphone opt-in using the system default
+input. The setting applies to the next session, and supported sessions expose live
+mute/unmute through the stream menu or Ctrl+Shift+M without restarting media.
+Build support and negotiated session support are checked independently. Live multi-OS streaming, GPU interop and
 hardware validation plus production signing/notarization remain release gates.
 The legacy Electron application has been removed; it is not a fallback in this tree.
 

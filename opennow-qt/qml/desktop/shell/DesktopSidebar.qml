@@ -18,6 +18,7 @@ FocusScope {
     signal routeRequested(string route)
     signal consoleModeRequested()
     signal collapseRequested(bool collapsed)
+    signal createCollectionRequested()
 
     x: 0
     width: overlayOpen ? DesktopTokens.railWidth : DesktopTokens.railCollapsedWidth
@@ -41,52 +42,6 @@ FocusScope {
         { route: "friends", icon: "desktop-nav-friends.svg", name: qsTr("Friends") },
         { route: "settings", icon: "desktop-nav-settings.svg", name: qsTr("Settings") }
     ]
-
-    readonly property var collections: [
-        { icon: "desktop-star.svg", name: qsTr("Favourites"), count: String(root.favoriteCount()), filter: "favorites" },
-        { icon: "desktop-clock.svg", name: qsTr("Recently played"), count: String(root.recentCount()), filter: "recent" },
-        { icon: "desktop-coop.svg", name: qsTr("Co-op with friends"), count: String(root.readyCount()), filter: "ready" },
-        { icon: "desktop-rtx.svg", name: qsTr("RTX ready"), count: String(root.rtxCount()), filter: "rtx" }
-    ]
-
-    function favoriteCount() {
-        const games = ShellStore.catalogGames || []
-        let count = 0
-        for (let i = 0; i < games.length; ++i) {
-            if (ShellStore.isFavorite(games[i]))
-                count += 1
-        }
-        return count
-    }
-    function recentCount() {
-        const games = ShellStore.catalogGames || []
-        let count = 0
-        for (let i = 0; i < games.length; ++i) {
-            if (games[i].lastPlayed)
-                count += 1
-        }
-        return count
-    }
-    function readyCount() {
-        const games = ShellStore.catalogGames || []
-        let count = 0
-        for (let i = 0; i < games.length; ++i) {
-            if (games[i].isInLibrary || games[i].isAvailable)
-                count += 1
-        }
-        return count
-    }
-    function rtxCount() {
-        const games = ShellStore.catalogGames || []
-        let count = 0
-        for (let i = 0; i < games.length; ++i) {
-            const tags = (games[i].genres || []).join(" ").toLowerCase()
-            const title = String(games[i].title || "").toLowerCase()
-            if (tags.indexOf("rtx") >= 0 || title.indexOf("rtx") >= 0)
-                count += 1
-        }
-        return count
-    }
 
     function liveMembershipTier() {
         // The login claim goes stale (e.g. upgrade after sign-in); the live
@@ -338,22 +293,24 @@ FocusScope {
                             color: DesktopTokens.focus
                         }
                     }
-                    onClicked: root.routeRequested(modelData.route)
+                    onClicked: {
+                        if (modelData.route === "library")
+                            ShellStore.activeCollectionId = ""
+                        root.routeRequested(modelData.route)
+                    }
                 }
             }
         }
 
         Item {
             width: parent.width
-            height: 11 + collectionRows.height
-
-            // Keep the compact rail's separator and favourite icon in place.
-            // Only the text and the rows below Favourites reveal with the rail.
+            height: 44 + collectionRows.height
             Item {
                 width: DesktopTokens.railWidth - 28
-                height: 1
+                height: 36
                 Rectangle {
                     x: 8; width: 28; height: 1
+                    anchors.verticalCenter: parent.verticalCenter
                     color: DesktopTokens.seamSoft
                 }
                 Text {
@@ -368,57 +325,69 @@ FocusScope {
                     font.weight: Font.DemiBold
                     font.letterSpacing: 0.9
                 }
-                DesktopGlyph {
+                Button {
+                    id: createCollectionButton
+                    objectName: "createCollectionButton"
                     anchors.right: parent.right
-                    anchors.rightMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 11
-                    height: 11
+                    width: 32
+                    height: 32
                     visible: root.reveal > 0
                     opacity: root.reveal
-                    icon: "desktop-plus.svg"
+                    enabled: root.overlayOpen && !ShellStore.collectionsBusy
+                    Accessible.name: qsTr("New collection")
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("New collection")
+                    background: Rectangle { radius: 8; color: createCollectionButton.hovered || createCollectionButton.activeFocus ? DesktopTokens.raised : "transparent" }
+                    contentItem: DesktopGlyph { icon: "desktop-plus.svg" }
+                    onClicked: root.createCollectionRequested()
                 }
             }
 
             Column {
                 id: collectionRows
-                y: 11
+                y: 40
                 width: parent.width
-                height: 44 + (implicitHeight - 44) * root.reveal
+                height: implicitHeight * root.reveal
                 clip: true
                 spacing: 1
             Repeater {
-                model: root.collections
-                delegate: Item {
+                model: ShellStore.gameCollections
+                delegate: Button {
                     id: collectionRow
-                    required property int index
                     required property var modelData
-                    readonly property bool favourite: index === 0
                     width: parent.width
-                    height: favourite ? 44 : 32
-                    opacity: favourite ? 1 : root.reveal
-                    enabled: favourite || root.overlayOpen
+                    height: 36
+                    opacity: root.reveal
+                    enabled: root.overlayOpen
                     clip: true
-                    Item {
-                    // Counts stay at their expanded position, outside the clip
-                    // until there is room; they must never slide over the icon.
+                    Accessible.name: modelData.name
+                    background: Rectangle {
+                        radius: 8
+                        color: ShellStore.activeCollectionId === collectionRow.modelData.id && root.currentRoute === "library"
+                            ? DesktopTokens.raisedStrong : collectionRow.hovered || collectionRow.activeFocus ? DesktopTokens.raised : "transparent"
+                    }
+                    contentItem: Item {
                     width: DesktopTokens.railWidth - 28
-                    height: collectionRow.favourite ? 44 : 32
+                    height: 36
                     DesktopGlyph {
-                        objectName: "sidebarCollectionIcon-" + collectionRow.modelData.filter
-                        x: collectionRow.favourite ? 13 : 15
+                        objectName: "sidebarCollectionIcon-" + collectionRow.modelData.id
+                        x: 9
                         anchors.verticalCenter: parent.verticalCenter
-                        width: collectionRow.favourite ? 18 : 14
+                        width: 16
                         height: width
-                        icon: collectionRow.modelData.icon
+                        icon: "desktop-nav-library.svg"
                     }
                     Text {
-                        x: 48
+                        x: 42
+                        width: parent.width - x - 44
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
                         anchors.verticalCenter: parent.verticalCenter
                         visible: root.reveal > 0
                         opacity: root.reveal
                         text: collectionRow.modelData.name
-                        color: collectionHover.hovered ? DesktopTokens.text : DesktopTokens.textMuted
+                        color: collectionRow.hovered ? DesktopTokens.text : DesktopTokens.textMuted
                         font.family: DesktopTokens.bodyFont
                         font.pixelSize: 13
                         font.weight: Font.DemiBold
@@ -429,17 +398,30 @@ FocusScope {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: root.reveal > 0
                         opacity: root.reveal
-                        text: collectionRow.modelData.count
-                        color: "#4DFFFFFF"
+                        text: collectionRow.modelData.gameIds.length
+                        color: DesktopTokens.textFaint
                         font.family: DesktopTokens.monoFont
                         font.pixelSize: 10
                         font.weight: Font.DemiBold
                     }
-                    HoverHandler { id: collectionHover; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: root.routeRequested("library") }
+                    }
+                    onClicked: {
+                        ShellStore.activeCollectionId = modelData.id
+                        root.routeRequested("library")
+                        root.closeOverlay()
                     }
                 }
             }
+                Text {
+                    x: 8
+                    width: parent.width - 16
+                    visible: ShellStore.gameCollections.length === 0
+                    text: qsTr("Create your first collection with +")
+                    wrapMode: Text.WordWrap
+                    color: DesktopTokens.textFaint
+                    font.family: DesktopTokens.bodyFont
+                    font.pixelSize: 12
+                }
             }
         }
             }

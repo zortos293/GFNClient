@@ -8,8 +8,8 @@ use ::windows::Win32::Foundation::{E_NOTIMPL, LUID};
 use ::windows::Win32::Graphics::Direct3D11::{
     D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0, D3D11_DECODER_PROFILE_H264_VLD_FGT,
     D3D11_DECODER_PROFILE_H264_VLD_NOFGT, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
-    D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10, D3D11_VIDEO_DECODER_DESC, ID3D11Texture2D,
-    ID3D11VideoDevice,
+    D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10, D3D11_TEXTURE2D_DESC, D3D11_VIDEO_DECODER_DESC,
+    ID3D11Texture2D, ID3D11VideoDevice,
 };
 use ::windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_Y410,
@@ -83,6 +83,7 @@ impl DecodedVideoFrame {
         sample: IMFSample,
         format: VideoFormat,
         aperture: VideoAperture,
+        preferred_pixel_format: VideoPixelFormat,
     ) -> Result<Self, String> {
         match unsafe { sample.GetUINT32(&MFSampleExtension_FrameCorruption) } {
             Ok(corrupted) if corrupted != 0 => {
@@ -93,6 +94,15 @@ impl DecodedVideoFrame {
             Err(error) => return Err(format!("read decoder output corruption flag: {error}")),
         }
         let (texture, subresource) = dxgi_surface(&sample)?;
+        let mut description = D3D11_TEXTURE2D_DESC::default();
+        unsafe {
+            texture.GetDesc(&mut description);
+        }
+        validate_decoded_output_format(
+            description.Format,
+            format.pixel_format,
+            preferred_pixel_format,
+        )?;
         let timestamp_100ns = unsafe { sample.GetSampleTime().unwrap_or(0) };
         let duration_100ns = unsafe {
             sample
@@ -352,7 +362,12 @@ impl Decoder {
                 "hardware decoder requires caller-allocated output samples".to_owned()
             }
         })?;
-        let frame = DecodedVideoFrame::from_sample(sample, self.format, self.aperture)?;
+        let frame = DecodedVideoFrame::from_sample(
+            sample,
+            self.format,
+            self.aperture,
+            self.negotiated_format.pixel_format,
+        )?;
         if decoded_frames.len() == ADAPTIVE_VIDEO_QUEUE_CAPACITY {
             decoded_frames.pop_front();
             let _ = event_queue.push(BackendEvent::QueueOverflow(Subsystem::VideoPresentation));
@@ -726,12 +741,7 @@ fn ensure_hardware_format<G: DecoderDevice>(
         }
         ID3D11VideoDevice::from_raw(service)
     };
-    let output: DXGI_FORMAT = match format.pixel_format {
-        VideoPixelFormat::Nv12 => DXGI_FORMAT_NV12,
-        VideoPixelFormat::P010 => DXGI_FORMAT_P010,
-        VideoPixelFormat::Ayuv => DXGI_FORMAT_AYUV,
-        VideoPixelFormat::Y410 => DXGI_FORMAT_Y410,
-    };
+    let output = decoder_surface_format(format.pixel_format);
     let candidates = hardware_profiles(format.codec, format.pixel_format);
     unsafe {
         for index in 0..device.GetVideoDecoderProfileCount() {
@@ -838,6 +848,37 @@ fn output_format_preferences(preferred: VideoPixelFormat) -> &'static [VideoPixe
             VideoPixelFormat::Nv12,
         ],
     }
+}
+
+fn decoder_surface_format(pixel_format: VideoPixelFormat) -> DXGI_FORMAT {
+    match pixel_format {
+        VideoPixelFormat::Nv12 => DXGI_FORMAT_NV12,
+        VideoPixelFormat::P010 => DXGI_FORMAT_P010,
+        VideoPixelFormat::Ayuv => DXGI_FORMAT_AYUV,
+        VideoPixelFormat::Y410 => DXGI_FORMAT_Y410,
+    }
+}
+
+fn validate_decoded_output_format(
+    surface_format: DXGI_FORMAT,
+    output: VideoPixelFormat,
+    preferred: VideoPixelFormat,
+) -> Result<(), String> {
+    if surface_format != decoder_surface_format(output) {
+        return Err(format!(
+            "Media Foundation decoder surface format {} does not match output media format {output:?}",
+            surface_format.0
+        ));
+    }
+    if output.bit_depth() < preferred.bit_depth()
+        || (chroma_format(preferred) == VideoChromaFormat::Cs444
+            && chroma_format(output) != VideoChromaFormat::Cs444)
+    {
+        return Err(format!(
+            "Media Foundation decoder produced {output:?} output below negotiated {preferred:?} precision or chroma"
+        ));
+    }
+    Ok(())
 }
 
 fn pixel_format_from_subtype(subtype: ::windows::core::GUID) -> Option<VideoPixelFormat> {
@@ -1324,9 +1365,10 @@ mod tests {
                 }
                 sample
             };
-            let error = DecodedVideoFrame::from_sample(sample, format, aperture)
-                .err()
-                .expect("system-memory output cannot be published as a decoded GPU frame");
+            let error =
+                DecodedVideoFrame::from_sample(sample, format, aperture, format.pixel_format)
+                    .err()
+                    .expect("system-memory output cannot be published as a decoded GPU frame");
             assert_eq!(
                 error,
                 if corruption == Some(1) {
@@ -1505,5 +1547,65 @@ mod tests {
             output_format_preferences(VideoPixelFormat::Nv12),
             &[VideoPixelFormat::Nv12]
         );
+    }
+
+    #[test]
+    fn decoded_output_rejects_depth_or_chroma_loss_after_startup() {
+        for (preferred, accepted) in [
+            (VideoPixelFormat::Nv12, [true, true, true, true]),
+            (VideoPixelFormat::P010, [false, true, false, true]),
+            (VideoPixelFormat::Ayuv, [false, false, true, true]),
+            (VideoPixelFormat::Y410, [false, false, false, true]),
+        ] {
+            for (output, accepted) in [
+                VideoPixelFormat::Nv12,
+                VideoPixelFormat::P010,
+                VideoPixelFormat::Ayuv,
+                VideoPixelFormat::Y410,
+            ]
+            .into_iter()
+            .zip(accepted)
+            {
+                let result = validate_decoded_output_format(
+                    decoder_surface_format(output),
+                    output,
+                    preferred,
+                );
+                assert_eq!(
+                    result.is_ok(),
+                    accepted,
+                    "requested={preferred:?} output={output:?}: {result:?}"
+                );
+                if !accepted {
+                    let error = result.unwrap_err();
+                    assert!(error.contains(&format!("produced {output:?}")));
+                    assert!(error.contains(&format!("negotiated {preferred:?}")));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decoded_surface_must_match_media_type_before_precision_validation() {
+        for surface in [
+            DXGI_FORMAT_NV12,
+            DXGI_FORMAT_P010,
+            DXGI_FORMAT_AYUV,
+            DXGI_FORMAT_Y410,
+            ::windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM,
+        ] {
+            for output in [
+                VideoPixelFormat::Nv12,
+                VideoPixelFormat::P010,
+                VideoPixelFormat::Ayuv,
+                VideoPixelFormat::Y410,
+            ] {
+                let result = validate_decoded_output_format(surface, output, output);
+                assert_eq!(result.is_ok(), surface == decoder_surface_format(output));
+                if let Err(error) = result {
+                    assert!(error.contains("does not match output media format"));
+                }
+            }
+        }
     }
 }

@@ -12,13 +12,13 @@ FocusScope {
     readonly property var profile: session.negotiatedStreamProfile || ({})
     readonly property var actions: root.page === "guide-session" ? [
         {label:qsTr("Resume game"), action:"resume", glyph:"B"},
+        {label:ShellStore.microphoneActionLabel, action:ShellStore.microphoneCanToggle ? "microphone" : "none", value:ShellStore.microphoneLabel},
         {label:qsTr("Toggle stats overlay"), action:"stats", value:ShellStore.settings.shortcutToggleStats || "Ctrl+N"},
         {label:qsTr("Toggle pointer lock"), action:"none", value:ShellStore.settings.shortcutTogglePointerLock || "F8"},
         {label:qsTr("Toggle fullscreen"), action:"fullscreen", value:ShellStore.settings.shortcutToggleFullscreen || "F11"},
         {label:qsTr("Take screenshot"), action:"screenshot", value:ShellStore.settings.shortcutScreenshot || "Ctrl+F11"},
         {label:ShellStore.streamRecordingActive ? "Stop recording" : "Start recording", action:"recording", value:ShellStore.settings.shortcutToggleRecording || "F12"},
         {label:qsTr("Screenshots & recordings"), action:"media", value:qsTr("Open library")},
-        {label:qsTr("Microphone"), action:"none", value:ShellStore.microphoneLabel},
         {label:qsTr("End session"), action:"end", danger:true}
     ] : root.page === "guide-controls" ? [
         {label:qsTr("Controller layout"), action:"controllers"},
@@ -38,7 +38,7 @@ FocusScope {
         {label:qsTr("Screenshot"), action:"screenshot", value:ShellStore.settings.shortcutScreenshot || "Ctrl+F11"},
         {label:qsTr("Toggle recording"), action:"recording", value:ShellStore.settings.shortcutToggleRecording || "F12"},
         {label:qsTr("Toggle Anti-AFK"), action:"none", value:ShellStore.settings.shortcutToggleAntiAfk || "Ctrl+Shift+K"},
-        {label:qsTr("Microphone upstream"), action:"none", value:ShellStore.microphoneLabel},
+        {label:qsTr("Microphone"), action:ShellStore.microphoneCanToggle ? "microphone" : "none", value:ShellStore.microphoneToggleAvailable ? String(ShellStore.settings.shortcutToggleMicrophone || "Ctrl+Shift+M") : ShellStore.microphoneLabel},
         {label:qsTr("End session"), action:"none", value:ShellStore.settings.shortcutStopStream || "Ctrl+Shift+Q"}
     ]
     anchors.fill: parent
@@ -95,6 +95,8 @@ FocusScope {
             ShellStore.captureStreamScreenshot()
         } else if (action === "recording") {
             ShellStore.toggleStreamRecording()
+        } else if (action === "microphone") {
+            ShellStore.toggleMicrophone()
         } else if (action === "media") {
             AppController.showOverlay("")
             AppController.navigate("media")

@@ -27,7 +27,31 @@ public:
         m_target = target;
         m_passFormat = format;
         m_sampleCount = target->sampleCount();
+        m_outputBits = 0;
+        if (target->resourceType() == QRhiResource::SwapChainRenderTarget) {
+            const auto *swapChain = static_cast<QRhiSwapChainRenderTarget *>(target)->swapChain();
+            if (swapChain->format() == QRhiSwapChain::SDR) m_outputBits = 8;
+            else if (swapChain->format() == QRhiSwapChain::HDR10) m_outputBits = 10;
+            else m_outputBits = 16;
+        } else if (target->resourceType() == QRhiResource::TextureRenderTarget) {
+            const auto description = static_cast<QRhiTextureRenderTarget *>(target)->description();
+            if (description.colorAttachmentCount() > 0) {
+                const auto *texture = description.colorAttachmentAt(0)->texture();
+                if (texture) {
+                    switch (texture->format()) {
+                    case QRhiTexture::RGBA8:
+                    case QRhiTexture::BGRA8: m_outputBits = 8; break;
+                    case QRhiTexture::RGB10A2: m_outputBits = 10; break;
+                    case QRhiTexture::RGBA16F: m_outputBits = 16; break;
+                    default: break;
+                    }
+                }
+            }
+        }
+        m_composition[25] = m_outputBits == 8 ? 1.0f / 255.0f : 0.0f;
     }
+
+    int outputBits() const { return m_outputBits; }
 
     void setComposition(const QMatrix4x4 &matrix, const QRectF &bounds,
                         const QRectF &video, float opacity)
@@ -247,4 +271,5 @@ private:
     size_t m_currentSlot = 0;
     int m_externalSlot = -1;
     int m_sampleCount = 1;
+    int m_outputBits = 0;
 };

@@ -17,6 +17,9 @@ Column {
             objectName: "renewNetworkRegion"
             width: parent.width; glyph: "globe"; title: qsTr("Server region")
             description: ShellStore.regions.length ? qsTr("%1 streaming regions from your account").arg(ShellStore.regions.length) : qsTr("Sign in to discover available regions")
+            maximumColumns: 4
+            maximumOptionsHeight: DesktopTokens.px(420)
+            filterPlaceholder: qsTr("Search regions…")
             items: page.settingsScreen.regionChoiceItems()
             value: {
                 const selected = String(page.settingsScreen.valueSetting("region",""))
@@ -29,6 +32,7 @@ Column {
         DesktopSettingsRow {
             objectName: "renewRegionLatency"
             width: parent.width; paperStyle: true; glyph: "speed"; title: qsTr("Region latency")
+            showDivider: false
             description: ShellStore.regionPingMessage || qsTr("Measure available regions before your next session")
             value: ShellStore.regionPingBusy || page.settingsScreen.currentRegionPing() === null ? ""
                 : page.settingsScreen.valueSetting("region", "") === "" ? qsTr("Best: %1 ms").arg(page.settingsScreen.currentRegionPing())
@@ -38,17 +42,6 @@ Column {
                 text: ShellStore.regionPingPending ? qsTr("Loading…") : ShellStore.regionPingBusy ? qsTr("Pinging…") : qsTr("Ping regions")
                 enabled: !ShellStore.regionPingBusy
                 onClicked: ShellStore.pingRegions()
-            }
-        }
-        DesktopSettingsRow {
-            id: bandwidthRow
-            width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("Bandwidth ceiling")
-            description: qsTr("Maximum requested bitrate"); showDivider: false
-            DesktopSettingsSlider {
-                trackWidth: Math.max(DesktopTokens.px(160), bandwidthRow.width-DesktopTokens.px(460))
-                from: 10; to: 200; stepSize: 5; suffix: " Mbps"
-                value: Number(page.settingsScreen.valueSetting("maxBitrateMbps",75))
-                onCommitted: value => page.settingsScreen.setSetting("maxBitrateMbps",Math.round(value))
             }
         }
     }

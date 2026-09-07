@@ -291,6 +291,12 @@ QtObject {
     function applySetting(key, value) {
         const updated = Object.assign({}, settings)
         updated[key] = value
+        if (key === "themePack") {
+            updated.appTheme = value === "bone" || value === "cobalt" ? "light" : "dark"
+            updated.themeAccentOverride = false
+        } else if (key === "appAccentColor") {
+            updated.themeAccentOverride = true
+        }
         settings = updated
         if (["nativeStreamerExecutablePath", "nativeVideoBackend", "decoderPreference"].indexOf(key) >= 0)
             Qt.callLater(root.refreshStreamerDetection)
@@ -306,9 +312,7 @@ QtObject {
     }
 
     function acceptSettings(result) {
-        root.settings = Object.assign({}, result.settings, {microphoneMode: "disabled"})
-        if (result.settings.microphoneMode !== "disabled")
-            root.setSetting("microphoneMode", "disabled")
+        root.settings = Object.assign({}, result.settings)
         root.consoleSurfaceConfirmedValue = Boolean(result.settings.launchInConsoleMode)
         root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
         root.consoleSurfaceInitialized = true

@@ -482,6 +482,7 @@ pub fn prepare_owned_nvst(
         ));
     }
     let rtcp_on_sctp = sdp_attribute(&describe.body, "general.rtcpOnSctp").as_deref() == Some("1");
+    let microphone_available = negotiate_microphone(context, &describe.body);
 
     let mut setup_headers = common_headers.clone();
     setup_headers.push(("Session", rtsp_session.clone()));
@@ -585,6 +586,7 @@ pub fn prepare_owned_nvst(
         "localDtlsFingerprint":identity.dtls_fingerprint,
         "remoteDtlsFingerprint":remote_fingerprint,
         "rtcpOnSctp":rtcp_on_sctp,
+        "microphoneOnBundle":microphone_available,
         "codec":codec,
         "audioTrack":{"payloadType":111,"codec":"opus","clockRateHz":48000,"channels":2,"mid":"0"},
         "timeoutMs":VIDEO_TIMEOUT_MS
@@ -629,6 +631,7 @@ pub fn prepare_owned_nvst(
             fingerprint: handoff["localDtlsFingerprint"].as_str().unwrap_or_default(),
             video_port: video_peer_port,
             rtcp_on_sctp,
+            microphone_available,
         },
     );
     Ok(PreparedNvstRtspSession {
@@ -667,6 +670,16 @@ struct AnnounceParams<'a> {
     fingerprint: &'a str,
     video_port: u16,
     rtcp_on_sctp: bool,
+    microphone_available: bool,
+}
+
+fn negotiate_microphone(context: &SessionContext, describe: &str) -> bool {
+    context
+        .settings
+        .get("microphoneMode")
+        .and_then(Value::as_str)
+        == Some("voice-activity")
+        && sdp_attribute(describe, "general.rtcMicOnNativeBundle").as_deref() == Some("1")
 }
 
 fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> String {
@@ -792,7 +805,6 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-general.nativeRtcOnBundlePort:1".to_owned(),
         "a=x-nv-general.rtcVideoOnNativeBundle:0".to_owned(),
         "a=x-nv-general.rtcAudioOnNativeBundle:1".to_owned(),
-        "a=x-nv-general.rtcMicOnNativeBundle:1".to_owned(),
         "a=x-nv-general.rtcDataChannelOnNativeBundle:1".to_owned(),
         "a=x-nv-general.enableUnifiedSocket:0".to_owned(),
         format!(
@@ -811,11 +823,6 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
             "a=candidate:1 1 udp 2122260223 {} {} typ host",
             params.address, params.port
         ),
-        "t=0 0".to_owned(),
-        format!("m=video {}", params.video_port),
-        "c=IN IP4 0.0.0.0".to_owned(),
-        "i=DeviceString, DeviceName".to_owned(),
-        String::new(),
     ];
     if format != 2 {
         lines.insert(
@@ -823,6 +830,17 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
             format!("a=x-nv-clientSupportHevc:{}", u8::from(format == 1)),
         );
     }
+    if params.microphone_available {
+        lines.push("a=x-nv-general.rtcMicOnNativeBundle:1".to_owned());
+        lines.push("a=x-nv-mic.micSsrcConfig.senderSsrc:1".to_owned());
+    }
+    lines.extend([
+        "t=0 0".to_owned(),
+        format!("m=video {}", params.video_port),
+        "c=IN IP4 0.0.0.0".to_owned(),
+        "i=DeviceString, DeviceName".to_owned(),
+        String::new(),
+    ]);
     lines.join("\r\n")
 }
 
@@ -1263,6 +1281,7 @@ mod tests {
                 fingerprint: "AA:BB",
                 video_port: 5004,
                 rtcp_on_sctp: true,
+                microphone_available: false,
             },
         );
         assert!(sdp.contains("a=x-nv-video[0].maxFPS:120"));
@@ -1300,6 +1319,7 @@ mod tests {
                     fingerprint: "AA:BB",
                     video_port: 5004,
                     rtcp_on_sctp: true,
+                    microphone_available: false,
                 },
             );
             assert!(sdp.contains(&format!("a=x-nv-video[0].dynamicRangeMode:{mode}\r\n")));
@@ -1324,11 +1344,57 @@ mod tests {
                 fingerprint: "AA:BB",
                 video_port: 5004,
                 rtcp_on_sctp: true,
+                microphone_available: false,
             },
         );
         assert!(sdp.contains("a=x-nv-video[0].initialBitrateKbps:200000"));
         assert!(sdp.contains("a=x-nv-video[0].initialPeakBitrateKbps:200000"));
         assert!(sdp.contains("a=x-nv-vqos[0].bw.maximumBitrateKbps:200000"));
+    }
+
+    #[test]
+    fn microphone_announce_requires_request_and_server_offer() {
+        let mut value = context();
+        assert!(!negotiate_microphone(
+            &value,
+            "a=x-nv-general.rtcMicOnNativeBundle:1\r\n"
+        ));
+        for mode in ["disabled", "voice-activity", "push-to-talk"] {
+            value.settings["microphoneMode"] = json!(mode);
+            for offer in [
+                "",
+                "a=x-nv-general.rtcMicOnNativeBundle:0\r\n",
+                "a=x-nv-general.rtcMicOnNativeBundle:1\r\n",
+            ] {
+                let available = negotiate_microphone(&value, offer);
+                assert_eq!(available, mode == "voice-activity" && offer.contains(":1"));
+                let sdp = build_announce(
+                    &value,
+                    AnnounceParams {
+                        key: &"01".repeat(32),
+                        key_id: 7,
+                        port: 49006,
+                        address: "192.0.2.10",
+                        ufrag: "abcd",
+                        password: "abcdefghijklmnopqrstuv",
+                        fingerprint: "AA:BB",
+                        video_port: 5004,
+                        rtcp_on_sctp: true,
+                        microphone_available: available,
+                    },
+                );
+                assert_eq!(
+                    sdp.contains("a=x-nv-general.rtcMicOnNativeBundle:1\r\n"),
+                    available
+                );
+                assert_eq!(
+                    sdp.contains("a=x-nv-mic.micSsrcConfig.senderSsrc:1\r\n"),
+                    available
+                );
+                assert_eq!(sdp.contains("rtcMicOnNativeBundle"), available);
+                assert!(sdp.contains("a=x-nv-general.rtcAudioOnNativeBundle:1\r\n"));
+            }
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const STREAMER_PROTOCOL_VERSION: u64 = 5;
+const STREAMER_PROTOCOL_VERSION: u64 = 6;
 const CHILD_MESSAGE_LIMIT: usize = 1024 * 1024;
 const CHILD_START_TIMEOUT: Duration = Duration::from_secs(90);
 const CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -542,12 +542,9 @@ impl StreamerService {
             snapshot.recording_stop_count = 0;
             match microphone_mode {
                 "voice-activity" => {
-                    snapshot.microphone_state = "unavailable".to_owned();
+                    snapshot.microphone_state = "muted".to_owned();
                     snapshot.microphone_enabled = false;
-                    snapshot.microphone_message = Some(
-                        "Microphone upstream is not available on the native NVST runtime"
-                            .to_owned(),
-                    );
+                    snapshot.microphone_message = None;
                 }
                 "push-to-talk" => {
                     snapshot.microphone_state = "unavailable".to_owned();
@@ -1014,7 +1011,7 @@ fn run_worker(
     if hello["capabilities"]["supportsOwnedNvstNegotiation"].as_bool() != Some(true) {
         return Err(StreamerError {
             code: "streamer_protocol_mismatch",
-            message: "Native streamer cannot start NVST: owned NVST negotiation and protocol 5 are required"
+            message: "Native streamer cannot start NVST: owned NVST negotiation and protocol 6 are required"
                 .to_owned(),
         });
     }
@@ -1711,7 +1708,7 @@ mod tests {
         ));
         fs::write(
             &fixture,
-            "#!/bin/sh\nread -r _line\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":5,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true}]}]}}'\nexit 23\n",
+            "#!/bin/sh\nread -r _line\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":6,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true}]}]}}'\nexit 23\n",
         )
         .expect("write crash fixture");
         fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700))
@@ -1753,7 +1750,7 @@ mod tests {
 
     #[test]
     fn embedded_auto_selects_only_supported_codecs_and_preserves_manual_choices() {
-        let mut caps = json!({"protocolVersion":5,"videoBackends":[{
+        let mut caps = json!({"protocolVersion":6,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h264","available":true}, {"codec":"h265","available":true},
                 {"codec":"av1","available":false}]}]});
@@ -1788,7 +1785,7 @@ mod tests {
 
     #[test]
     fn hdr_requires_explicit_output_and_ten_bit_hardware_support() {
-        let capabilities = json!({"protocolVersion":5,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]},
@@ -1837,7 +1834,7 @@ mod tests {
 
     #[test]
     fn windows_hdr_capability_gates_hdr_without_changing_unknown_sdr_profiles() {
-        let mut capabilities = json!({"protocolVersion":5,"nativeHdrSupported":true,"videoBackends":[{
+        let mut capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h265","available":true,"hdrSupported":true}
             ]
@@ -1863,7 +1860,7 @@ mod tests {
 
     #[test]
     fn hdr_resume_uses_accepted_profile_and_rechecks_current_output() {
-        let capabilities = json!({"protocolVersion":5,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]
@@ -1894,7 +1891,7 @@ mod tests {
         let result = service.prepare_embedded(
             &json!({"session": {
             "sessionId":"resume", "status":2, "negotiatedStreamProfile":{"codec":"AV1"}
-        }, "runtimeCapabilities":{"protocolVersion":5,"videoBackends":[{
+        }, "runtimeCapabilities":{"protocolVersion":6,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[{"codec":"h264","available":true}]}]}}),
             &json!({"codec":"auto"}),
         );
@@ -1903,7 +1900,7 @@ mod tests {
 
     #[test]
     fn embedded_color_profiles_gate_auto_and_manual_before_allocation() {
-        let mut capabilities = json!({"protocolVersion":5,"videoBackends":[{
+        let mut capabilities = json!({"protocolVersion":6,"videoBackends":[{
             "backend":"vulkan", "platform":"linux", "available":true, "codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"colorQualities":["8bit_420"]},
@@ -1953,7 +1950,7 @@ mod tests {
                 Some(json!([])),
                 Some(json!("10bit_420")),
             ] {
-                let mut capabilities = json!({"protocolVersion":5,"videoBackends":[{
+                let mut capabilities = json!({"protocolVersion":6,"videoBackends":[{
                     "backend":backend,"platform":"linux","available":true,
                     "codecs":[{"codec":"h265","available":true}]
                 }]});
@@ -1975,7 +1972,7 @@ mod tests {
 
     #[test]
     fn embedded_color_profiles_cannot_be_borrowed_from_another_backend() {
-        let capabilities = json!({"protocolVersion":5,"videoBackends":[
+        let capabilities = json!({"protocolVersion":6,"videoBackends":[
             {"backend":"vulkan","platform":"linux","available":true,
                 "codecs":[{"codec":"h265","available":true,"colorQualities":["8bit_420"]}]},
             {"backend":"other","available":true,
@@ -1994,7 +1991,7 @@ mod tests {
     #[test]
     fn codec_capabilities_require_an_available_backend_and_codec() {
         let capabilities = json!({
-            "protocolVersion":5,
+            "protocolVersion":6,
             "videoBackends":[
                 {"backend":"hardware","available":true,"codecs":[
                     {"codec":"h264","available":true},
@@ -2025,7 +2022,7 @@ mod tests {
         ));
         fs::write(
             &fixture,
-            "#!/bin/sh\nread -r _hello\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":5,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"backend\":\"software\",\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true},{\"codec\":\"av1\",\"available\":false,\"reason\":\"not built\"}]}]}}'\nread -r _shutdown\nprintf '%s\\n' '{\"id\":\"shutdown\",\"type\":\"ok\"}'\n",
+            "#!/bin/sh\nread -r _hello\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":6,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"backend\":\"software\",\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true},{\"codec\":\"av1\",\"available\":false,\"reason\":\"not built\"}]}]}}'\nread -r _shutdown\nprintf '%s\\n' '{\"id\":\"shutdown\",\"type\":\"ok\"}'\n",
         )
         .expect("write capability fixture");
         fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700))
@@ -2035,7 +2032,7 @@ mod tests {
         let detected = service
             .detect(&json!({"nativeStreamerExecutablePath":fixture}))
             .expect("capability probe");
-        assert_eq!(detected["protocolVersion"], 5);
+        assert_eq!(detected["protocolVersion"], 6);
         assert_eq!(detected["availableCodecs"], json!(["h264"]));
         assert_eq!(
             detected["capabilities"]["videoBackends"][0]["backend"],
@@ -2084,6 +2081,25 @@ mod tests {
         assert_eq!(prepared["context"]["settings"]["maxBitrateMbps"], 200);
         assert_eq!(prepared["context"]["surface"], Value::Null);
         assert!(service.worker.lock().expect("streamer worker").is_none());
+    }
+
+    #[test]
+    fn embedded_prepare_preserves_selected_audio_output() {
+        for device in [
+            "",
+            "pipewire:alsa_output.usb-headphones",
+            "coreaudio:BuiltInSpeakerDevice",
+            "USB Headphones",
+        ] {
+            let service = StreamerService::new();
+            let prepared = service
+                .prepare_embedded(
+                    &json!({"session": {"sessionId": "audio-test", "status": 2}}),
+                    &json!({"codec": "h264", "audioOutputDevice": device}),
+                )
+                .unwrap();
+            assert_eq!(prepared["context"]["settings"]["audioOutputDevice"], device);
+        }
     }
 
     #[test]

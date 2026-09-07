@@ -38,9 +38,27 @@ ten-bit SDR remains SDR. Color-only changes invalidate converter resources and t
 The embedded renderer publishes `D3d11RecordedFrame` with `texture_format: Rgb10A2` and
 `color_space: Pq2020` for HDR. PQ uses the matching LEFT or TOPLEFT input colorspace. HLG can
 convert to PQ only for TOPLEFT siting and explicit driver support; HLG with LEFT siting and
-full-range PQ fail because no exact DXGI input colorspace is available. SDR remains RGBA8/709.
+full-range PQ fail because no exact DXGI input colorspace is available. SDR uses BT.709 RGB,
+with RGBA8 for eight-bit input and RGB10A2 for ten-bit input.
 The standalone HWND presenter explicitly rejects HDR; HDR presentation belongs to the embedded
 Qt path, which must preserve the recorded texture's color interpretation through scan-out.
+## Embedded Qt SDR conversion
+
+The embedded frame producer converts NV12/AYUV to RGBA8 and P010/Y410 to RGB10A2,
+preserving ten-bit precision until Qt's final SDR composition pass. RGB10A2 is an SDR
+intermediate, not an HDR or ten-bit scan-out guarantee. Both full- and limited-range
+BT.709 decoder output are converted to full-range BT.709 RGB.
+
+Embedded conversion requires `ID3D11VideoContext1` for explicit color-space selection and
+`ID3D11VideoProcessorEnumerator1` to validate the input/output format and color-space pair.
+Unsupported conversions fail explicitly; the producer does not silently replace RGB10A2
+with RGBA8 or rely on legacy driver color defaults. Format, range, and extent changes
+invalidate the processor, cached input views, and frame slots before conversion resumes.
+
+Media Foundation may temporarily negotiate a lower-precision output type before reading
+the first sequence header. That startup compatibility does not permit downgraded frames:
+each decoded surface must match its output media type and preserve at least the negotiated
+bit depth and chroma before entering the decoded queue.
 
 ## HEVC availability in Qt
 

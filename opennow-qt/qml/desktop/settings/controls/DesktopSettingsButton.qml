@@ -22,7 +22,7 @@ Button {
 
     background: Rectangle {
         radius: control.menu ? height / 2 : compact ? 9 : 10
-        color: control.primary ? Theme.face
+        color: control.primary ? Theme.focus
              : control.danger ? Qt.rgba(1, 0.32, 0.32, control.down ? 0.18 : 0.09)
              : control.menu ? (Theme.lightMode ? Qt.rgba(0,0,0,0.04) : Qt.rgba(0,0,0,0.35))
              : control.down || control.hovered ? DesktopTokens.raisedStrong : DesktopTokens.raised
@@ -46,7 +46,7 @@ Button {
                 width: Math.max(0, Math.min(implicitWidth, control.availableWidth
                     - (control.menu ? 22 : 0) - (control.suffix !== "" ? suffixText.implicitWidth + 18 : 0)))
                 elide: Text.ElideRight
-                color: control.primary ? Theme.faceText : control.danger ? (Theme.lightMode ? "#9F1239" : "#FFC2C2") : Theme.label
+                color: control.primary ? Theme.focusText : control.danger ? (Theme.lightMode ? "#9F1239" : "#FFC2C2") : Theme.label
                 font.family: Theme.bodyFont
                 font.pixelSize: DesktopTokens.px(13)
                 font.weight: Font.Bold
@@ -57,13 +57,13 @@ Button {
                 width: suffixText.implicitWidth + 10
                 height: 18
                 radius: 5
-                color: control.primary ? Qt.rgba(0.05, 0.07, 0.11, 0.08) : Qt.rgba(1, 1, 1, 0.07)
+                color: control.primary ? Qt.rgba(Theme.focusText.r, Theme.focusText.g, Theme.focusText.b, 0.08) : DesktopTokens.raised
                 anchors.verticalCenter: parent.verticalCenter
                 Text {
                     id: suffixText
                     anchors.centerIn: parent
                     text: control.suffix
-                    color: control.primary ? Qt.rgba(0.05, 0.07, 0.11, 0.52) : Theme.textMuted
+                    color: control.primary ? Theme.focusText : Theme.textMuted
                     font.family: Theme.monoFont
                     font.pixelSize: 9
                     font.weight: Font.Bold
@@ -74,7 +74,7 @@ Button {
                 width: 10
                 height: 10
                 glyph: "chevron"; rotation: 90
-                ink: control.primary ? Theme.faceText : Theme.textMuted
+                ink: control.primary ? Theme.focusText : Theme.textMuted
                 anchors.verticalCenter: parent.verticalCenter
             }
         }

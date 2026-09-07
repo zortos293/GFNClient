@@ -11,6 +11,19 @@ Column {
     width: page.availableWidth; spacing: 20
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Steam Big Picture mode")
+            description: qsTr("Request gamepad-friendly launchers such as Steam Big Picture. Applies to new GeForce NOW sessions only.")
+            showDivider: false
+            DesktopSettingsToggle {
+                objectName: "steamBigPictureToggle"
+                checked: page.settingsScreen.boolSetting("steamBigPictureMode", false)
+                onValueChangedByUser: value => page.settingsScreen.setSetting("steamBigPictureMode", value)
+            }
+        }
+    }
+    DesktopSettingsPanel {
+        width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("PICTURE") }
         DesktopSettingsResolution {
             width: parent.width; items: page.settingsScreen.resolutionItems()

@@ -607,10 +607,10 @@ jobs:
           bin="$app/Contents/MacOS"
           for executable in OpenNOW opennow-core opennow-acceptance-verify opennow-streamer; do
             test -x "$bin/$executable"
-            lipo -verify_arch arm64 "$bin/$executable"
+            lipo "$bin/$executable" -verify_arch arm64
           done
           test -f "$bin/libopennow_streamer_ffi.dylib"
-          lipo -verify_arch arm64 "$bin/libopennow_streamer_ffi.dylib"
+          lipo "$bin/libopennow_streamer_ffi.dylib" -verify_arch arm64
           otool -D build/opennow-qt-release/OpenNOW.app/Contents/MacOS/libopennow_streamer_ffi.dylib \
             | grep -Fx '@rpath/libopennow_streamer_ffi.dylib'
           test -f "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES"

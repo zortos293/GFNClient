@@ -1,4 +1,4 @@
-#include "NativeStreamRuntime.h"
+#include "streaming/NativeStreamRuntime.h"
 
 #include <QElapsedTimer>
 #include <QFile>

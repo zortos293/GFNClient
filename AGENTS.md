@@ -38,6 +38,75 @@ If a tradeoff is required, choose correctness and robustness over short-term con
 - `OpenNOW-Site/` is a separate repository when present; do not modify it from OpenNOW tasks unless
   explicitly requested.
 
+### Qt C++ Module Map
+
+All paths below are relative to `opennow-qt/`. Use `src/` as the include root and qualify
+cross-module includes, for example `"streaming/NativeStreamRuntime.h"`. Keep existing owners
+intact when splitting their implementation across translation units.
+
+| Location | Ownership |
+| --- | --- |
+| `src/main.cpp` | Minimal entry point into `runApplication`. |
+| `src/app/` | `ApplicationStartup` composes application-lifetime services and QML context bindings; `AppController` owns shell navigation and OS actions; `SingleInstance` forwards launches. |
+| `src/core/` | `CoreClient` owns the versioned JSON process connection, request tracking, and restart handling. |
+| `src/input/` | SDL controller discovery/routing and shell input-mode tracking. |
+| `src/input/platform/` | Native Wayland pointer capture using Qt's display and surface. |
+| `src/streaming/` | `NativeStreamRuntime` owns the bounded FFI wrapper. `StreamVideoItem.cpp` owns item lifecycle and properties; `StreamVideoItemInput.cpp` implements input/capture on that same item. |
+| `src/streaming/rendering/` | The render callback contract, native GPU callback, scene-graph node, texture renderer, and Vulkan device integration. |
+| `src/localization/` | Source-text/key translation and locale selection. |
+| `src/media/` | Media thumbnail generation. |
+| `src/diagnostics/` | Shared diagnostics path policy. |
+| `src/acceptance/` | `AcceptanceSession` owns acceptance callbacks and warning state; smoke fixtures, smoke workloads, motion checks, and performance profiling live separately from production startup. |
+
+`ApplicationStartup` must keep the QML engine and acceptance callbacks within the lifetime of
+their controller, core, and native runtime dependencies. Acceptance-only setup belongs in
+`src/acceptance/`, not back in the entry point. Rendering and input source splits do not create
+new presenters, runtime instances, threads, or capture owners.
+
+### Qt QML Module Map
+
+The QML files remain one `OpenNOW` module with stable public type names. Folder boundaries
+organize features; they do not create additional QML engines or desktop runtimes.
+
+- `qml/Main.qml` composes desktop/console surfaces and application-level shortcuts.
+- `qml/desktop/shell/` owns desktop composition, navigation, sidebar, and command palette.
+- `qml/desktop/components/` owns shared desktop primitives and the `DesktopTokens` singleton.
+- `qml/desktop/{home,library,store,auth,friends,updates}/` owns each desktop feature's UI.
+- `qml/desktop/settings/` owns settings navigation and shared settings actions;
+  `settings/pages/` contains the individual page components, and `settings/controls/` contains
+  reusable settings controls. Pages declare their width, screen dependency, and nested page
+  components explicitly rather than reaching into an enclosing component's IDs.
+- `qml/desktop/stream/` owns the desktop stream screen, menus, statistics, and exit confirmation.
+- `qml/screens/`, `qml/overlays/`, and `qml/components/` contain the console-oriented screens,
+  shared overlays, and shared primitives. `qml/theme/` owns the shared `Theme` singleton.
+- `qml/state/ShellStore.qml` is the public shell-state singleton and session orchestration owner.
+  `state/catalog/CatalogState.qml` owns catalog/store paging and browse state;
+  `state/catalog/ArtworkState.qml` owns artwork interests, resolution requests, and retry pacing;
+  `state/settings/SettingsState.qml` owns preferences, capability choices, and console-mode
+  persistence; `state/account/AccountServicesState.qml` owns subscription, region/ping, linked
+  account, and storage-service state. These are singleton-owned instances with explicit
+  dependencies, not new global singletons. Preserve the facade's property aliases and method
+  contracts, and route feature responses to the owning instance without duplicating state.
+
+Keep resource URLs stable when moving QML files. New QML types must be explicitly registered
+in `cmake/QmlModule.cmake`, and singleton declarations must move with their source paths.
+The translator resolves source text independently of the QML filename; preserve localized
+copy and `qsTr` bindings when extracting components.
+
+### Qt Build Ownership
+
+`CMakeLists.txt` composes the build. `cmake/Sources.cmake` lists C++ sources and shares the
+streaming source sets between the app and tests; `QmlModule.cmake` registers QML and its assets;
+`Resources.cmake` bundles locales and shaders. `PlatformInput.cmake` owns generated Wayland
+protocols, `NativeRuntime.cmake` owns Rust builds and runtime deployment, `WindowsRuntime.cmake`
+owns Windows runtime dependencies, and `Packaging.cmake` owns installation and CPack.
+`BuildMetadata.cmake` remains the version/architecture authority.
+
+`cmake/Tests.cmake` registers native Qt tests and QML acceptance workloads. When moving an
+implementation, update both build registrations and source-path fixtures in
+`tests/tst_embeddedorchestration.cpp` without weakening their assertions. Keep test names and
+CLI switches stable so the acceptance runbook and CI continue exercising the same contracts.
+
 ## Architecture and Ownership
 
 - Qt/QML owns windows, focus, navigation, overlays, accessibility, fullscreen state, stream chrome,

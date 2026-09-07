@@ -1,4 +1,4 @@
-#include "ThumbnailGenerator.h"
+#include "media/ThumbnailGenerator.h"
 
 #include <QDir>
 #include <QFile>

@@ -1,4 +1,4 @@
-#include "AppController.h"
+#include "app/AppController.h"
 
 #include <QSignalSpy>
 #include <QClipboard>

@@ -1,0 +1,25 @@
+#pragma once
+
+#include <QMatrix4x4>
+#include <QRect>
+
+class QRhi;
+class QRhiCommandBuffer;
+class QRhiRenderTarget;
+
+class StreamVideoRenderCallback
+{
+public:
+    virtual ~StreamVideoRenderCallback() = default;
+
+    virtual void initialize(QRhi *rhi,
+                            QRhiCommandBuffer *commandBuffer,
+                            QRhiRenderTarget *renderTarget) = 0;
+    virtual void prepareFrame(QRhiCommandBuffer *commandBuffer) = 0;
+    virtual void setComposition(const QMatrix4x4 &, const QRectF &, const QRectF &, float) {}
+    virtual void setClip(bool, int) {}
+    virtual void recordFrame(QRhiCommandBuffer *commandBuffer,
+                             const QRect &videoViewport) = 0;
+    virtual void finishFrame() = 0;
+    virtual void releaseResources() = 0;
+};

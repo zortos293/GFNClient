@@ -1,4 +1,4 @@
-#include "SingleInstance.h"
+#include "app/SingleInstance.h"
 
 #include <QSignalSpy>
 #include <QTest>

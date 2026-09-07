@@ -1,6 +1,6 @@
 add_library(opennow-platform-input STATIC
-    "${CMAKE_CURRENT_LIST_DIR}/../src/WaylandPointerCapture.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/../src/WaylandPointerCapture.h")
+    "${CMAKE_CURRENT_LIST_DIR}/../src/input/platform/WaylandPointerCapture.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/input/platform/WaylandPointerCapture.h")
 target_link_libraries(opennow-platform-input PUBLIC Qt6::Gui PRIVATE Qt6::GuiPrivate)
 target_include_directories(opennow-platform-input PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../src")
 

@@ -1,4 +1,4 @@
-#include "WaylandPointerCapture.h"
+#include "input/platform/WaylandPointerCapture.h"
 
 #include <QSignalSpy>
 #include <QTest>

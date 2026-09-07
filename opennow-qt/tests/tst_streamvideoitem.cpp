@@ -1,8 +1,8 @@
-#include "StreamVideoItem.h"
-#include "LinuxVulkanGraphics.h"
-#include "NativeStreamRuntime.h"
-#include "StreamVideoTextureRenderer.h"
-#include "WaylandPointerCapture.h"
+#include "streaming/StreamVideoItem.h"
+#include "streaming/rendering/LinuxVulkanGraphics.h"
+#include "streaming/NativeStreamRuntime.h"
+#include "streaming/rendering/StreamVideoTextureRenderer.h"
+#include "input/platform/WaylandPointerCapture.h"
 
 #include <QGuiApplication>
 #include <QJsonDocument>

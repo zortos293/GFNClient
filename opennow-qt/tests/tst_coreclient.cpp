@@ -1,4 +1,4 @@
-#include "CoreClient.h"
+#include "core/CoreClient.h"
 
 #include <QSignalSpy>
 #include <QCoreApplication>

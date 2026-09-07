@@ -5,6 +5,39 @@ or newer and uses SDL3 for controller input. A bundled Rust process owns setting
 and is the start of the shell-neutral application core. See
 `docs/qt-migration.md` for the migration history and remaining release checklist.
 
+## Code organization
+
+`src/main.cpp` only enters `app/ApplicationStartup.cpp`, which composes the application-lifetime
+services and binds them to QML. C++ features live in `app/`, `core/`, `input/`, `localization/`,
+`media/`, `diagnostics/`, and `streaming/`. Cross-feature includes are qualified relative to
+`src/`; there are no forwarding headers in the former flat layout.
+
+The streaming item has separate lifecycle, input, and scene-graph translation units, but remains
+one `StreamVideoItem` with one capture boundary. `streaming/rendering/` owns the GPU callback,
+texture renderer, and graphics integration. `input/platform/` owns native Wayland capture.
+The Rust runtime wrapper remains the single owner of FFI shutdown and callback marshalling.
+
+Startup smoke fixtures and workloads, motion acceptance, and performance profiling live in
+`src/acceptance/`. `AcceptanceSession` bounds their callbacks to the engine's lifetime; the
+development switches and their execution order are unchanged.
+
+Desktop QML is grouped into `shell/`, `components/`, `home/`, `library/`, `store/`, `settings/`,
+`stream/`, `auth/`, `friends/`, and `updates/`. Settings pages live in `settings/pages/`, with
+explicit screen/width dependencies, while reusable controls live in `settings/controls/`.
+These folders still share the existing `OpenNOW` QML module and type names. Console screens,
+overlays, shared components, and themes retain their existing folders.
+
+`qml/state/ShellStore.qml` preserves the public singleton API and session/recovery orchestration.
+It composes dedicated catalog, artwork, settings, and account-service owners in `state/catalog/`,
+`state/settings/`, and `state/account/`. Property aliases retain reactive updates without copying
+feature state; facade methods keep existing UI and acceptance consumers compatible.
+
+The top-level CMake file composes focused modules in `cmake/`: `Sources` for C++, `QmlModule`
+for QML, `Resources` for locales/shaders, `PlatformInput` for native pointer support,
+`NativeRuntime` and `WindowsRuntime` for deployment, `Tests` for acceptance, and `Packaging`
+for installation. Source lists are explicit; register new files in the matching module.
+See the repository's `AGENTS.md` for the full ownership map and invariants.
+
 ## Remote streaming diagnostics
 
 Settings → About → Copy diagnostics exports a bounded report containing both

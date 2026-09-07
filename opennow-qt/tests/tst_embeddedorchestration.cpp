@@ -17,6 +17,74 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void lastPlayedUsesElapsedUnits_data()
+    {
+        QTest::addColumn<QString>("raw");
+        QTest::addColumn<qint64>("elapsedMs");
+        QTest::addColumn<QString>("expected");
+        const auto timestamp = QStringLiteral("2026-09-07T18:49:52.000Z");
+        QTest::newRow("now") << timestamp << qint64(0) << QStringLiteral("Just now");
+        QTest::newRow("future") << timestamp << qint64(-60000) << QStringLiteral("Just now");
+        QTest::newRow("second") << timestamp << qint64(1000) << QStringLiteral("1 second ago");
+        QTest::newRow("seconds") << timestamp << qint64(59999) << QStringLiteral("59 seconds ago");
+        QTest::newRow("minute") << timestamp << qint64(60000) << QStringLiteral("1 minute ago");
+        QTest::newRow("minutes") << timestamp << qint64(3599999) << QStringLiteral("59 minutes ago");
+        QTest::newRow("hour") << timestamp << qint64(3600000) << QStringLiteral("1 hour ago");
+        QTest::newRow("hours") << timestamp << qint64(86399999) << QStringLiteral("23 hours ago");
+        QTest::newRow("day") << timestamp << qint64(86400000) << QStringLiteral("1 day ago");
+        QTest::newRow("days") << timestamp << qint64(30LL * 86400000) << QStringLiteral("30 days ago");
+        QTest::newRow("offset") << QStringLiteral("2026-09-07T20:49:52.000+02:00")
+                                << qint64(7200000) << QStringLiteral("2 hours ago");
+        QTest::newRow("missing") << QString() << qint64(0) << QString();
+        QTest::newRow("invalid") << QStringLiteral("not a timestamp") << qint64(0) << QString();
+    }
+
+    void lastPlayedUsesElapsedUnits()
+    {
+        QFETCH(QString, raw);
+        QFETCH(qint64, elapsedMs);
+        QFETCH(QString, expected);
+        const auto tokens = source(QStringLiteral("qml/desktop/components/DesktopTokens.qml"));
+        const auto match = QRegularExpression(QStringLiteral(
+            "    function relativeLastPlayed\\([^\\n]*\\) \\{.*?\\n    \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(tokens);
+        QVERIFY(match.hasMatch());
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        auto formatter = engine.evaluate(u'(' + match.captured() + u')');
+        QVERIFY2(formatter.isCallable(), qPrintable(formatter.toString()));
+        const auto now = engine.evaluate(QStringLiteral("Date.parse('2026-09-07T18:49:52.000Z')")).toNumber();
+        const auto result = formatter.call({raw, now + elapsedMs});
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(result.toString(), expected);
+    }
+
+    void continuePlayingFormatsMetadata()
+    {
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &entry : {
+                 qMakePair(QStringLiteral("qml/desktop/components/DesktopTokens.qml"), QStringLiteral("relativeLastPlayed")),
+                 qMakePair(QStringLiteral("qml/desktop/home/DesktopHomeScreen.qml"), QStringLiteral("heroMeta"))}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(entry.second),
+                QRegularExpression::DotMatchesEverythingOption).match(source(entry.first));
+            QVERIFY(match.hasMatch());
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+        }
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var DesktopTokens = {relativeLastPlayed: relativeLastPlayed};
+            var root = {heroGame: {lastPlayed: '2026-09-07T18:49:52.000', hoursPlayed: 14},
+                        lastPlayedNowMs: Date.parse('2026-09-07T20:49:52.000')};
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("heroMeta()")).toString(), QStringLiteral("2 hours ago · 14 h played"));
+        QCOMPARE(engine.evaluate(QStringLiteral("root.heroGame.hoursPlayed = 0; heroMeta()")).toString(), QStringLiteral("2 hours ago"));
+        QCOMPARE(engine.evaluate(QStringLiteral("root.lastPlayedNowMs += 3600000; heroMeta()")).toString(), QStringLiteral("3 hours ago"));
+        QCOMPARE(engine.evaluate(QStringLiteral("root.heroGame.lastPlayed = 'invalid'; heroMeta()")).toString(), QStringLiteral("Ready to stream from your library"));
+        QCOMPARE(engine.evaluate(QStringLiteral("root.heroGame.hoursPlayed = 14; heroMeta()")).toString(), QStringLiteral("14 h played"));
+        QCOMPARE(engine.evaluate(QStringLiteral("root.heroGame = null; heroMeta()")).toString(), QStringLiteral("Sign in and sync your library to continue a game."));
+    }
+
     void pendingRecoveryDoesNotHideAStartedVideoSurface()
     {
         for (const auto &path : {"qml/screens/StreamScreen.qml", "qml/desktop/stream/DesktopStreamScreen.qml"}) {

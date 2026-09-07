@@ -140,6 +140,65 @@ class NativeStreamRuntimeTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void bootstrapAndRuntimeShareTheInjectedDiagnosticsSink()
+    {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        const bool hadOverride = qEnvironmentVariableIsSet("OPENNOW_DATA_DIR");
+        const auto oldOverride = qgetenv("OPENNOW_DATA_DIR");
+        const auto restore = qScopeGuard([&] {
+            if (hadOverride) qputenv("OPENNOW_DATA_DIR", oldOverride);
+            else qunsetenv("OPENNOW_DATA_DIR");
+        });
+        qputenv("OPENNOW_DATA_DIR", data.path().toUtf8());
+        static QStringList paths;
+        static bool configuredBeforeCreate;
+        paths.clear();
+        configuredBeforeCreate = false;
+        auto api = fakeApi();
+        api.setLogFile = [](const char *path) {
+            paths.append(QString::fromUtf8(path));
+            return OPENNOW_STREAMER_OK;
+        };
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            configuredBeforeCreate = paths.size() == 2;
+            return fakeCreate(config, output);
+        };
+        NativeStreamRuntime::initializeDiagnostics(api.setLogFile);
+        QCOMPARE(paths, QStringList{data.filePath(QStringLiteral("diagnostics/native-streamer.log"))});
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        QVERIFY(configuredBeforeCreate);
+        QCOMPARE(paths.size(), 2);
+        QCOMPARE(paths.first(), paths.last());
+        NativeStreamRuntime::initializeDiagnostics(nullptr);
+        QCOMPARE(paths.size(), 2);
+    }
+
+    void passesOptionalVulkanOwnerAcrossRestarts()
+    {
+        static OpenNowStreamerConfig captured;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            captured = *config;
+            return fakeCreate(config, output);
+        };
+        const auto *owner = reinterpret_cast<const OpenNowStreamerVulkanDevice *>(1);
+        NativeStreamRuntime runtime(api, nullptr, owner);
+        QCOMPARE(runtime.vulkanDevice(), owner);
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            QVERIFY(runtime.start());
+            QCOMPARE(captured.abi_version, OPENNOW_STREAMER_FFI_ABI_VERSION);
+            QCOMPARE(captured.struct_size, sizeof(OpenNowStreamerConfig));
+            QCOMPARE(captured.vulkan_device, owner);
+            QVERIFY(runtime.shutdown());
+        }
+        NativeStreamRuntime fallback(api);
+        QVERIFY(fallback.start());
+        QVERIFY(!fallback.vulkanDevice());
+        QVERIFY(!captured.vulkan_device);
+    }
+
     void rejectedSessionCommandsRestorePreviousInputAuthorization()
     {
         NativeStreamRuntime runtime(fakeApi());

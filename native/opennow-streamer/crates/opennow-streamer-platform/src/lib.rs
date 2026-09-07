@@ -35,7 +35,11 @@ pub use media::{
     StreamShortcutBindings,
 };
 #[cfg(target_os = "linux")]
-pub use opennow_streamer_platform_linux::{LinuxGpuFrame, LinuxGpuFrameProducer};
+pub use opennow_streamer_platform_linux::{
+    LinuxGpuFrame, LinuxGpuFrameProducer, SharedVulkanDevice,
+};
+#[cfg(not(target_os = "linux"))]
+pub enum SharedVulkanDevice {}
 #[cfg(target_os = "macos")]
 pub use opennow_streamer_platform_macos::{
     AdoptedMetalContext, EmbeddedFrameProducer, MetalFrame, MetalRecordedFrame,
@@ -48,7 +52,7 @@ pub use opennow_streamer_platform_windows::{
 pub use recording::{RecordingSummary, record_matroska};
 pub use runtime::{
     MainThreadHost, MediaRuntime, MediaRuntimeControl, create_embedded_runtime,
-    create_embedded_runtime_with_input, create_runtime,
+    create_embedded_runtime_with_input, create_embedded_runtime_with_vulkan_device, create_runtime,
 };
 #[cfg(feature = "test-runtime")]
 pub use runtime::{TestMediaRuntimeHost, create_test_runtime};
@@ -83,19 +87,48 @@ pub fn video_backends() -> Vec<VideoBackendCapability> {
 }
 
 pub fn embedded_video_backends() -> Vec<VideoBackendCapability> {
+    embedded_video_backends_with_device(None)
+}
+
+pub(crate) fn embedded_video_backends_with_device(
+    _device: Option<&SharedVulkanDevice>,
+) -> Vec<VideoBackendCapability> {
     #[cfg(target_os = "linux")]
     let mut backends = linux_backend::video_backends();
     #[cfg(target_os = "linux")]
     for backend in &mut backends {
         if backend.backend == "vulkan" {
-            let reason = opennow_streamer_platform_linux::DecoderBackend::Vulkan
-                .embedded_presentation_error();
-            backend.available = false;
-            backend.reason = reason;
-            backend.zero_copy_modes.clear();
+            use opennow_streamer_platform_linux::VideoCodec;
             for codec in &mut backend.codecs {
-                codec.available = false;
-                codec.reason = reason;
+                let profile = match codec.codec {
+                    "h264" => VideoCodec::H264,
+                    "h265" => VideoCodec::H265,
+                    _ => VideoCodec::Av1,
+                };
+                let colors = [("8bit_420", false), ("10bit_420", true)]
+                    .into_iter()
+                    .filter_map(|(color, ten_bit)| {
+                        _device
+                            .is_some_and(|device| device.codec_support(profile, ten_bit))
+                            .then_some(color)
+                    })
+                    .collect::<Vec<_>>();
+                codec.available = !colors.is_empty();
+                codec.color_qualities = Some(colors);
+                codec.reason = (!codec.available)
+                    .then_some("the attached Vulkan device does not support this decode profile");
+            }
+            backend.available = backend.codecs.iter().any(|codec| codec.available);
+            backend.reason = (!backend.available)
+                .then_some("no compatible shared Vulkan decode device is attached");
+            backend.zero_copy_modes.clear();
+        } else {
+            for codec in &mut backend.codecs {
+                codec.color_qualities = Some(if codec.available {
+                    vec!["8bit_420"]
+                } else {
+                    Vec::new()
+                });
             }
         }
     }
@@ -188,6 +221,7 @@ fn windows_hardware_backend(
         platform: "windows",
         codecs: vec![
             CodecCapability {
+                color_qualities: None,
                 codec: "h264",
                 available: media_output_available && probe.h264_hardware_decode,
                 reason: (!(media_output_available && probe.h264_hardware_decode)).then_some(
@@ -195,6 +229,7 @@ fn windows_hardware_backend(
                 ),
             },
             CodecCapability {
+                color_qualities: None,
                 codec: "h265",
                 available: media_output_available && probe.h265_hardware_decode,
                 reason: (!(media_output_available && probe.h265_hardware_decode)).then_some(
@@ -202,6 +237,7 @@ fn windows_hardware_backend(
                 ),
             },
             CodecCapability {
+                color_qualities: None,
                 codec: "av1",
                 available: media_output_available && probe.av1_hardware_decode,
                 reason: (!(media_output_available && probe.av1_hardware_decode)).then_some(
@@ -236,18 +272,21 @@ fn hardware_backend() -> VideoBackendCapability {
         platform: "macos",
         codecs: vec![
             CodecCapability {
+                color_qualities: None,
                 codec: "h264",
                 available: h264_available,
                 reason: (!h264_available)
                     .then_some("H.264 VideoToolbox hardware decode or Metal is unavailable"),
             },
             CodecCapability {
+                color_qualities: None,
                 codec: "h265",
                 available: h265_available,
                 reason: (!h265_available)
                     .then_some("H.265 VideoToolbox hardware decode or Metal is unavailable"),
             },
             CodecCapability {
+                color_qualities: None,
                 codec: "av1",
                 available: av1_available,
                 reason: (!av1_available)
@@ -282,11 +321,13 @@ fn software_backend() -> VideoBackendCapability {
             platform: "windows",
             codecs: vec![
                 CodecCapability {
+                    color_qualities: None,
                     codec: "h264",
                     available: true,
                     reason: None,
                 },
                 CodecCapability {
+                    color_qualities: None,
                     codec: "h265",
                     available: media_output_available && probe.h265_software_decode,
                     reason: (!(media_output_available && probe.h265_software_decode)).then_some(
@@ -294,6 +335,7 @@ fn software_backend() -> VideoBackendCapability {
                     ),
                 },
                 CodecCapability {
+                    color_qualities: None,
                     codec: "av1",
                     available: media_output_available && probe.av1_software_decode,
                     reason: (!(media_output_available && probe.av1_software_decode)).then_some(
@@ -312,16 +354,19 @@ fn software_backend() -> VideoBackendCapability {
         platform: "cross-platform",
         codecs: vec![
             CodecCapability {
+                color_qualities: None,
                 codec: "h264",
                 available: true,
                 reason: None,
             },
             CodecCapability {
+                color_qualities: None,
                 codec: "h265",
                 available: false,
                 reason: Some("H.265 decoder is not built into this binary"),
             },
             CodecCapability {
+                color_qualities: None,
                 codec: "av1",
                 available: false,
                 reason: Some("AV1 decoder is not built into this binary"),
@@ -345,6 +390,7 @@ fn unavailable_backend(
         codecs: ["h264", "h265", "av1"]
             .into_iter()
             .map(|codec| CodecCapability {
+                color_qualities: None,
                 codec,
                 available: false,
                 reason: Some(reason),
@@ -525,5 +571,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["videotoolbox"]
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn embedded_linux_reports_explicit_color_profiles_without_claiming_zero_copy() {
+        for backend in embedded_video_backends_with_device(None) {
+            for codec in backend.codecs {
+                let colors = codec
+                    .color_qualities
+                    .expect("embedded Linux color profiles");
+                if backend.backend == "vulkan" {
+                    assert!(colors.is_empty());
+                    assert!(backend.zero_copy_modes.is_empty());
+                } else {
+                    assert!(colors.iter().all(|color| *color == "8bit_420"));
+                }
+            }
+        }
     }
 }

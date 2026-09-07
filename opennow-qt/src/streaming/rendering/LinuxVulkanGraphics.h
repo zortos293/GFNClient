@@ -7,9 +7,45 @@
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
 #include <QVulkanInstance>
 #include <QVulkanFunctions>
+#include "opennow_streamer_ffi.h"
 #include <atomic>
 
+class QQuickWindow;
+
 namespace LinuxVulkanGraphics {
+class Device final
+{
+public:
+    struct Api {
+        decltype(&opennow_streamer_vulkan_device_create) create = &opennow_streamer_vulkan_device_create;
+        decltype(&opennow_streamer_vulkan_device_info) info = &opennow_streamer_vulkan_device_info;
+        decltype(&opennow_streamer_vulkan_device_destroy) destroy = &opennow_streamer_vulkan_device_destroy;
+    };
+
+    Device();
+    explicit Device(Api api);
+    ~Device();
+    Device(const Device &) = delete;
+    Device &operator=(const Device &) = delete;
+
+    bool initialize();
+    bool adopt(QQuickWindow *window);
+    const OpenNowStreamerVulkanDevice *handle() const;
+    QString lastError() const;
+    static bool validInfo(const OpenNowStreamerVulkanDeviceInfo &info);
+    static bool matchesContext(const OpenNowStreamerVulkanDeviceInfo &info,
+                               const OpenNowStreamerGraphicsContext &context);
+
+private:
+    void reset();
+
+    Api m_api;
+    OpenNowStreamerVulkanDevice *m_device = nullptr;
+    OpenNowStreamerVulkanDeviceInfo m_info{};
+    QVulkanInstance m_instance;
+    QString m_lastError;
+};
+
 inline std::atomic<bool> extensionRequestInstalled{false};
 inline QByteArrayList deviceExtensions()
 {

@@ -160,6 +160,8 @@ pub struct VideoBackendCapability {
 pub struct CodecCapability {
     pub codec: &'static str,
     pub available: bool,
+    #[serde(rename = "colorQualities", skip_serializing_if = "Option::is_none")]
+    pub color_qualities: Option<Vec<&'static str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
 }
@@ -189,6 +191,27 @@ pub fn event(kind: &str, fields: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codec_color_profiles_are_additive_and_preserve_explicit_empty_support() {
+        let mut codec = CodecCapability {
+            codec: "h265",
+            available: true,
+            color_qualities: None,
+            reason: None,
+        };
+        let value = serde_json::to_value(&codec).unwrap();
+        assert!(value.get("colorQualities").is_none());
+        codec.color_qualities = Some(vec!["8bit_420", "10bit_420"]);
+        let value = serde_json::to_value(&codec).unwrap();
+        assert_eq!(
+            value["colorQualities"],
+            serde_json::json!(["8bit_420", "10bit_420"])
+        );
+        codec.color_qualities = Some(Vec::new());
+        let value = serde_json::to_value(&codec).unwrap();
+        assert_eq!(value["colorQualities"], serde_json::json!([]));
+    }
 
     #[test]
     fn parses_forward_compatible_commands() {

@@ -9,7 +9,8 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 4u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 5u
+#define OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION 1u
 #define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 2u
 #define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 1u
 
@@ -27,6 +28,19 @@ extern "C" {
 
 typedef struct OpenNowStreamer OpenNowStreamer;
 typedef struct OpenNowStreamerFrame OpenNowStreamerFrame;
+typedef struct OpenNowStreamerVulkanDevice OpenNowStreamerVulkanDevice;
+
+typedef struct OpenNowStreamerVulkanDeviceInfo {
+    uint32_t version;
+    size_t struct_size;
+    void *instance;
+    void *physical_device;
+    void *device;
+    void *graphics_queue;
+    uint32_t graphics_queue_family_index;
+    uint32_t graphics_queue_index;
+    uint32_t api_version;
+} OpenNowStreamerVulkanDeviceInfo;
 
 typedef void (*OpenNowStreamerCallback)(
     const uint8_t *bytes,
@@ -47,6 +61,7 @@ typedef struct OpenNowStreamerConfig {
     OpenNowStreamerFrameAvailableCallback frame_available_callback;
     OpenNowStreamerCallback cursor_callback;
     void *user_data;
+    const OpenNowStreamerVulkanDevice *vulkan_device;
 } OpenNowStreamerConfig;
 
 /*
@@ -128,6 +143,16 @@ typedef enum OpenNowStreamerStatus {
 OpenNowStreamerStatus opennow_streamer_create(
     const OpenNowStreamerConfig *config,
     OpenNowStreamer **output);
+
+OpenNowStreamerStatus opennow_streamer_vulkan_device_create(
+    OpenNowStreamerVulkanDevice **output);
+
+OpenNowStreamerStatus opennow_streamer_vulkan_device_info(
+    const OpenNowStreamerVulkanDevice *handle,
+    OpenNowStreamerVulkanDeviceInfo *output);
+
+OpenNowStreamerStatus opennow_streamer_vulkan_device_destroy(
+    OpenNowStreamerVulkanDevice *handle);
 
 /* Points the embedded file log at a UTF-8 path (rotating past 2 MiB).
  * The Qt shell passes its diagnostics native-streamer.log here so packaged

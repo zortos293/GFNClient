@@ -122,8 +122,102 @@ pub(crate) fn select_video_path() -> LinuxVideoSelection {
     )
 }
 
-pub(crate) fn select_requested_video_path(requested: &str) -> LinuxVideoSelection {
-    select_video_path_for(Some(requested), capabilities(), selected_window_system())
+pub(crate) fn select_embedded_video_path(
+    requested: &str,
+    device: Option<&crate::SharedVulkanDevice>,
+    stream: crate::MediaStreamConfig,
+) -> LinuxVideoSelection {
+    let policy = std::env::var(VIDEO_BACKEND_ENV).unwrap_or_else(|_| "auto".to_owned());
+    let requested = if requested == "auto" {
+        policy.as_str()
+    } else {
+        requested
+    };
+    let requested = requested.trim().to_ascii_lowercase();
+    let requested = if requested.is_empty() {
+        "auto"
+    } else {
+        &requested
+    };
+    let codec = match stream.codec {
+        crate::MediaVideoCodec::H264 => opennow_streamer_platform_linux::VideoCodec::H264,
+        crate::MediaVideoCodec::H265 => opennow_streamer_platform_linux::VideoCodec::H265,
+        crate::MediaVideoCodec::Av1 => opennow_streamer_platform_linux::VideoCodec::Av1,
+    };
+    if requested == "vulkan"
+        || (matches!(requested, "auto" | "hardware")
+            && !stream.color_quality.is_444()
+            && device.is_some_and(|device| {
+                device.supports(
+                    codec,
+                    stream.color_quality.bit_depth() == 10,
+                    stream.width,
+                    stream.height,
+                )
+            }))
+    {
+        return LinuxVideoSelection {
+            path: LinuxVideoPath::Hardware(DecoderPreference::VulkanOnly),
+            use_vulkan_output: true,
+            fallback_reason: None,
+        };
+    }
+    select_embedded_fallback(
+        requested,
+        stream,
+        &crate::embedded_video_backends_with_device(device),
+    )
+}
+
+fn select_embedded_fallback(
+    requested: &str,
+    stream: crate::MediaStreamConfig,
+    backends: &[VideoBackendCapability],
+) -> LinuxVideoSelection {
+    if stream.color_quality == crate::MediaColorQuality::EightBit420 {
+        for (name, preference) in [
+            ("cuda", DecoderPreference::CudaOnly),
+            ("vaapi", DecoderPreference::VaApiOnly),
+            ("v4l2", DecoderPreference::V4l2Only),
+        ] {
+            if !matches!(requested, "auto" | "hardware")
+                && requested != name
+                && !(requested == "nvdec" && name == "cuda")
+            {
+                continue;
+            }
+            if backends.iter().any(|backend| {
+                backend.backend == name
+                    && backend.available
+                    && backend.codecs.iter().any(|codec| {
+                        codec.codec == stream.codec.label()
+                            && codec.available
+                            && codec
+                                .color_qualities
+                                .as_ref()
+                                .is_none_or(|qualities| qualities.contains(&"8bit_420"))
+                    })
+            }) {
+                return LinuxVideoSelection {
+                    path: LinuxVideoPath::Hardware(if matches!(requested, "auto" | "hardware") {
+                        DecoderPreference::HardwareOnly
+                    } else {
+                        preference
+                    }),
+                    use_vulkan_output: true,
+                    fallback_reason: None,
+                };
+            }
+        }
+    }
+    LinuxVideoSelection {
+        path: LinuxVideoPath::Software,
+        use_vulkan_output: false,
+        fallback_reason: Some(format!(
+            "No compatible embedded {requested} decoder supports the negotiated {} color profile",
+            stream.codec.label(),
+        )),
+    }
 }
 
 fn select_video_path_for(
@@ -248,6 +342,7 @@ fn multi_codec_capability(
                 None
             };
             CodecCapability {
+                color_qualities: None,
                 codec,
                 available,
                 reason,
@@ -293,16 +388,19 @@ fn h264_capability(
         platform: "linux",
         codecs: vec![
             CodecCapability {
+                color_qualities: None,
                 codec: "h264",
                 available: h264_available,
                 reason: h264_reason,
             },
             CodecCapability {
+                color_qualities: None,
                 codec: "h265",
                 available: false,
                 reason: Some("native backend currently supports H.264 only"),
             },
             CodecCapability {
+                color_qualities: None,
                 codec: "av1",
                 available: false,
                 reason: Some("native backend currently supports H.264 only"),
@@ -325,6 +423,83 @@ fn static_reason(reason: String) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_fallback_uses_the_selected_codec_not_all_codec_support() {
+        let capabilities = snapshot(true, false, true, true, vec!["x11"]);
+        let mut cuda = multi_codec_capability("cuda", "cuda", &capabilities, "x11", false);
+        cuda.available = true;
+        cuda.codecs
+            .iter_mut()
+            .find(|codec| codec.codec == "h265")
+            .unwrap()
+            .available = true;
+        let stream = crate::MediaStreamConfig {
+            codec: crate::MediaVideoCodec::H265,
+            ..Default::default()
+        };
+        for (requested, preference) in [
+            ("auto", DecoderPreference::HardwareOnly),
+            ("hardware", DecoderPreference::HardwareOnly),
+            ("cuda", DecoderPreference::CudaOnly),
+            ("nvdec", DecoderPreference::CudaOnly),
+        ] {
+            assert_eq!(
+                select_embedded_fallback(requested, stream, &[cuda.clone()]).path,
+                LinuxVideoPath::Hardware(preference),
+            );
+        }
+        let stream = crate::MediaStreamConfig {
+            codec: crate::MediaVideoCodec::Av1,
+            ..stream
+        };
+        assert_eq!(
+            select_embedded_fallback("auto", stream, &[cuda]).path,
+            LinuxVideoPath::Software
+        );
+    }
+
+    #[test]
+    fn embedded_fallback_never_reselects_standalone_vulkan_or_software() {
+        let capabilities = snapshot(true, false, true, true, vec!["x11"]);
+        let mut backends = vec![
+            multi_codec_capability("vulkan", "vulkan-video", &capabilities, "x11", false),
+            multi_codec_capability("ffmpeg", "ffmpeg-software", &capabilities, "x11", false),
+            h264_capability("vaapi", "vaapi-h264", &capabilities, "x11"),
+        ];
+        let stream = crate::MediaStreamConfig::default();
+        let unavailable = select_embedded_fallback("auto", stream, &backends);
+        assert_eq!(unavailable.path, LinuxVideoPath::Software);
+        assert!(
+            unavailable
+                .fallback_reason
+                .unwrap()
+                .contains("No compatible embedded")
+        );
+        backends[2].available = true;
+        backends[2].codecs[0].available = true;
+        assert_eq!(
+            select_embedded_fallback("auto", stream, &backends).path,
+            LinuxVideoPath::Hardware(DecoderPreference::HardwareOnly),
+        );
+        for color_quality in [
+            crate::MediaColorQuality::TenBit420,
+            crate::MediaColorQuality::EightBit444,
+        ] {
+            assert_eq!(
+                select_embedded_fallback(
+                    "auto",
+                    crate::MediaStreamConfig {
+                        color_quality,
+                        ..stream
+                    },
+                    &backends
+                )
+                .path,
+                LinuxVideoPath::Software,
+            );
+        }
+    }
 
     fn capability(name: &'static str, available: bool) -> BackendCapability {
         BackendCapability {

@@ -13,6 +13,22 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
+### Shared Vulkan device (ABI 5)
+
+ABI 5 appends `const OpenNowStreamerVulkanDevice *vulkan_device` to the engine config and rejects older config versions. Initialize this field to `NULL` on platforms that do not adopt a shared device.
+
+On Linux, call `opennow_streamer_vulkan_device_create` before creating the Qt graphics device. Success returns one opaque owner; unsupported builds, unavailable Vulkan Video devices, and device-creation failures return `OPENNOW_STREAMER_GRAPHICS_UNAVAILABLE` with a null output. `opennow_streamer_vulkan_device_info` writes the complete version-1 `OpenNowStreamerVulkanDeviceInfo`, including its size, instance, physical device, logical device, graphics queue, queue family and index, and API version. The output needs writable storage for the complete structure; it does not need preinitialization. These native objects are borrowed, not transferred to the caller.
+
+Linux bootstrap failures retain the device-creation reason in a single line capped at 512 characters, sent to the native file log when configured and to stderr even before runtime logging is initialized. This diagnostic contains the typed device error, not native object addresses or session credentials. Stderr write failures do not change the FFI result.
+
+Qt adopts these exact graphics objects and passes the owner in `OpenNowStreamerConfig`. Engine creation clones the native reference before starting its worker, and the runtime passes that same owner to every Linux decoder session. Keep the shell's owner alive until all adopted Qt graphics resources, windows, and Vulkan instance wrappers have been released. `opennow_streamer_vulkan_device_destroy` consumes only the shell's reference; it does not invalidate a reference retained by an engine or decoder. No call may race with owner destruction. Null device handles are rejected by info and destroy.
+
+Embedded Vulkan capabilities come from the attached logical device's codec profiles rather than the standalone device probe. Session startup also validates the negotiated codec, dimensions, and color depth: 4:2:0 8-bit uses NV12, supported 4:2:0 10-bit uses P010, and 4:4:4 is rejected instead of silently downgraded. A null owner keeps embedded Vulkan decode unavailable and preserves the existing non-Vulkan fallback. Standalone backend selection and other operating systems are unchanged.
+
+The protocol-5 hello report includes `videoBackends[].codecs[].colorQualities` for embedded Linux codecs. Vulkan lists only the attached device's supported `8bit_420`/`10bit_420` profiles, and other Linux codecs list only `8bit_420`. Qt forwards that report intact to core `session.create`, where both Auto and manual codec choices are checked against the requested color mode before CloudMatch allocation. A missing Main10 profile or an unsupported 4:4:4 request fails before acquiring a seat; the media-start check remains a second guard.
+
+The shared decoder copies decoded images into bounded GPU snapshots isolated from FFmpeg's reference-picture pool. Completed snapshots remain immutable while Qt samples them. This path is GPU-only, with no CPU readback, but it is not zero-copy and does not advertise a zero-copy mode.
+
 All three queues are bounded. Command submission returns `OPENNOW_STREAMER_QUEUE_FULL` rather than blocking. Responses backpressure the engine worker so an accepted command's response is retained. Unsolicited events use a drop-newest policy when their queue is full because the engine's event path cannot block latency-sensitive transport workers.
 
 ## GPU frame lifecycle
@@ -35,7 +51,7 @@ Shutdown invalidates the context even if resource retirement returns `OPENNOW_ST
 
 Qt requests the extensions through `QT_VULKAN_DEVICE_EXTENSIONS` before any window/device creation. Qt 6.8's Vulkan backend enables each requested extension that the selected physical device advertises. The host contract checks both that this startup request was installed and that every non-core extension is requested and supported on the selected device, with Vulkan 1.1 or newer on the instance and physical device. Vulkan 1.1 provides the external-memory, bind-memory, memory-requirements, sampler-YCbCr, and maintenance prerequisites; the request also includes their extension names. `VK_KHR_image_format_list` must be enabled unless both instance and physical device provide Vulkan 1.2. Support is not inferred from advertisement alone. This contract applies to Qt-created devices, not arbitrary adopted devices.
 
-Embedded Linux sessions reject FFmpeg's independent-device Vulkan decoder before opening it: its existing pool is not a verified Qt sharing path, and split-object DMA-BUF export is not supported by the importer. Auto continues through the configured decoder order; forced Vulkan fails explicitly and is reported unavailable in embedded capabilities. Standalone decoder policy is unchanged. CUDA/NVDEC remains an explicit CPU-transfer backend, and downloaded/software frames carry CPU planes without foreign Vulkan metadata. No failed GPU import triggers readback in the embedded presenter.
+Embedded Linux sessions reject FFmpeg's independent-device Vulkan decoder before opening it. Vulkan decode is available only through the ABI 5 shared owner described above. CUDA/NVDEC remains an explicit CPU-transfer backend, and downloaded/software frames carry CPU planes without foreign Vulkan metadata. No failed GPU import triggers readback in the embedded presenter.
 
 ## Integration boundary
 

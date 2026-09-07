@@ -152,6 +152,7 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
                     instance: context.instance,
                     physical_device: context.physical_device,
                     device: context.device,
+                    queue: context.queue,
                     queue_family: context.queue_family_index,
                     dmabuf_import_enabled: context.vulkan_dmabuf_import_enabled,
                 },

@@ -25,7 +25,7 @@ pub enum DecoderBackend {
 impl DecoderBackend {
     pub fn embedded_presentation_error(self) -> Option<&'static str> {
         (self == Self::Vulkan).then_some(
-            "FFmpeg Vulkan uses an independent device without compatible Qt DMA-BUF export; choose a configured fallback decoder",
+            "embedded Vulkan requires a shared device with an isolated Qt graphics queue; an independent device cannot be presented by this stream view",
         )
     }
 }
@@ -78,6 +78,7 @@ pub struct SessionConfig {
     pub stream_format: StreamFormat,
     pub decoder_preference: DecoderPreference,
     pub embedded_presentation: bool,
+    pub vulkan_device: Option<Arc<crate::SharedVulkanDevice>>,
     pub v4l2_device: Option<PathBuf>,
     pub encoded_queue_depth: usize,
     pub decoded_queue_depth: usize,
@@ -91,6 +92,7 @@ impl SessionConfig {
             stream_format,
             decoder_preference: DecoderPreference::Automatic,
             embedded_presentation: false,
+            vulkan_device: None,
             v4l2_device: None,
             // Hardware decoders can briefly stop consuming while the driver
             // retires a large frame or reallocates surfaces. Four frames is
@@ -825,10 +827,24 @@ fn open_decoder(
     format: StreamFormat,
     backend: DecoderBackend,
 ) -> Result<Box<dyn VideoDecoder>> {
-    if config.embedded_presentation {
+    if config.embedded_presentation && config.vulkan_device.is_none() {
         validate_decoder_presentation(backend)?;
     }
     match backend {
+        #[cfg(all(feature = "ffmpeg", feature = "vulkan"))]
+        DecoderBackend::Vulkan if config.embedded_presentation => {
+            crate::video::FfmpegDecoder::open_shared(
+                config.codec,
+                format,
+                Arc::clone(config.vulkan_device.as_ref().ok_or_else(|| {
+                    Error::unavailable(
+                        Subsystem::Vulkan,
+                        "embedded Vulkan requires the shared device",
+                    )
+                })?),
+            )
+            .map(|decoder| Box::new(decoder) as Box<dyn VideoDecoder>)
+        }
         DecoderBackend::Vulkan => open_ffmpeg_decoder(config.codec, format, backend),
         DecoderBackend::Cuda => open_ffmpeg_decoder(config.codec, format, backend),
         DecoderBackend::Ffmpeg => open_ffmpeg_decoder(config.codec, format, backend),

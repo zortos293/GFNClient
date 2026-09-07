@@ -54,6 +54,10 @@ pub(crate) struct FfmpegDecoder {
     last_timestamp_us: u64,
     zero_copy_active: bool,
     zero_copy_unavailable_reported: bool,
+    #[cfg(feature = "vulkan")]
+    shared_device: Option<Arc<crate::SharedVulkanDevice>>,
+    #[cfg(feature = "vulkan")]
+    snapshot_pool: Option<super::vulkan_copy::VulkanCopyPool>,
 }
 
 struct HardwareFormatSelection {
@@ -63,6 +67,35 @@ struct HardwareFormatSelection {
 
 impl FfmpegDecoder {
     pub(crate) fn open(codec: VideoCodec, format: StreamFormat, mode: FfmpegMode) -> Result<Self> {
+        Self::open_internal(codec, format, mode, None)
+    }
+
+    #[cfg(feature = "vulkan")]
+    pub(crate) fn open_shared(
+        codec: VideoCodec,
+        format: StreamFormat,
+        device: Arc<crate::SharedVulkanDevice>,
+    ) -> Result<Self> {
+        if !device.supports(
+            codec,
+            format.pixel_format == PixelFormat::P010,
+            format.width,
+            format.height,
+        ) {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "negotiated codec, bit depth or dimensions are unsupported by the shared Vulkan device",
+            ));
+        }
+        Self::open_internal(codec, format, FfmpegMode::Vulkan, Some(device))
+    }
+
+    fn open_internal(
+        codec: VideoCodec,
+        format: StreamFormat,
+        mode: FfmpegMode,
+        shared_device: Option<Arc<crate::SharedVulkanDevice>>,
+    ) -> Result<Self> {
         initialize_ffmpeg()?;
         let decoder_definition = if mode == FfmpegMode::Software {
             ffmpeg::decoder::find(codec_id(codec))
@@ -114,6 +147,16 @@ impl FfmpegDecoder {
                     );
                 }
             }
+            #[cfg(feature = "vulkan")]
+            let create_result = if let Some(shared) = shared_device.as_ref() {
+                device = shared.retain();
+                if device.is_null() { -12 } else { 0 }
+            } else {
+                unsafe {
+                    ffi::av_hwdevice_ctx_create(&mut device, device_type, ptr::null(), options, 0)
+                }
+            };
+            #[cfg(not(feature = "vulkan"))]
             let create_result = unsafe {
                 ffi::av_hwdevice_ctx_create(&mut device, device_type, ptr::null(), options, 0)
             };
@@ -169,6 +212,10 @@ impl FfmpegDecoder {
             last_timestamp_us: 0,
             zero_copy_active: false,
             zero_copy_unavailable_reported: false,
+            #[cfg(feature = "vulkan")]
+            shared_device,
+            #[cfg(feature = "vulkan")]
+            snapshot_pool: None,
         })
     }
 
@@ -210,6 +257,45 @@ impl FfmpegDecoder {
     }
 
     fn convert_frame(&mut self, decoded: &frame::Video) -> Result<DecodedVideoFrame> {
+        #[cfg(feature = "vulkan")]
+        if let Some(device) = self.shared_device.as_ref() {
+            if decoded.format() != Pixel::VULKAN {
+                return Err(Error::backend(
+                    Subsystem::Vulkan,
+                    "embedded Vulkan decoder returned a non-GPU frame",
+                ));
+            }
+            if self.snapshot_pool.is_none() {
+                self.snapshot_pool =
+                    Some(super::vulkan_copy::VulkanCopyPool::new(Arc::clone(device))?);
+            }
+            let mut output = self
+                .snapshot_pool
+                .as_mut()
+                .expect("initialized snapshot pool")
+                .copy(decoded, self.last_timestamp_us)?;
+            if output.format.pixel_format != self.configured_format.pixel_format
+                || !device.supports(
+                    self.codec,
+                    output.format.pixel_format == PixelFormat::P010,
+                    output.format.width,
+                    output.format.height,
+                )
+            {
+                return Err(Error::unavailable(
+                    Subsystem::Vulkan,
+                    "decoded Vulkan format differs from the supported negotiated profile",
+                ));
+            }
+            output.format.color_range = map_color_range(decoded);
+            output.format.color_matrix = map_color_matrix(decoded);
+            output.format.chroma_location = map_chroma_location(decoded);
+            if output.format != self.configured_format {
+                self.configured_format = output.format;
+                self.pending_format_change = Some(output.format);
+            }
+            return Ok(output);
+        }
         if self.mode == FfmpegMode::Vulkan
             && self
                 .wanted_hw_format
@@ -868,6 +954,90 @@ mod tests {
         for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
             assert!(ffmpeg::decoder::find(codec_id(codec)).is_some());
         }
+    }
+
+    #[cfg(feature = "vulkan")]
+    fn shared_hevc_snapshot(ten_bit: bool) {
+        let owner =
+            crate::SharedVulkanDevice::create().expect("shared Vulkan device must initialize");
+        let mut format = StreamFormat::video_default(256, 144).unwrap();
+        if ten_bit {
+            format.pixel_format = PixelFormat::P010;
+        }
+        assert!(
+            owner.supports(VideoCodec::H265, ten_bit, 256, 144),
+            "requested HEVC profile must be supported"
+        );
+        let encoded = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=256x144:rate=60",
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                if ten_bit { "yuv420p10le" } else { "yuv420p" },
+                "-c:v",
+                "libx265",
+                "-x265-params",
+                "log-level=error:pools=1",
+                "-f",
+                "hevc",
+                "pipe:1",
+            ])
+            .output()
+            .expect("FFmpeg CLI with libx265 must start");
+        assert!(
+            encoded.status.success(),
+            "HEVC sample encode failed: {}",
+            String::from_utf8_lossy(&encoded.stderr)
+        );
+        let mut decoder =
+            FfmpegDecoder::open_shared(VideoCodec::H265, format, Arc::clone(&owner)).unwrap();
+        let packet = EncodedVideoFrame::new(encoded.stdout, 1, true).unwrap();
+        let mut frames = decoder.decode(&packet).unwrap();
+        frames.extend(decoder.flush().unwrap());
+        assert_eq!(frames.len(), 1);
+        let frame = frames.remove(0);
+        frame.validate().unwrap();
+        assert!(frame.planes.is_empty());
+        assert!(frame.dmabuf.is_none());
+        assert_eq!(frame.format.pixel_format, format.pixel_format);
+        let vulkan = frame.vulkan.as_ref().unwrap();
+        assert_eq!(vulkan.device, owner.info().device);
+        assert!(vulkan.completed_gpu_copy());
+        assert_eq!(vulkan.images.len(), 2);
+        assert!(
+            vulkan.images.iter().all(
+                |image| image.layout == ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL.as_raw()
+            )
+        );
+        assert!(vulkan.download_nv12().is_err());
+        drop(decoder);
+        let producer = crate::LinuxGpuFrameProducer::new(3).unwrap();
+        let retained = producer
+            .frame(frame)
+            .expect("GPU-only snapshot must publish after decoder destruction");
+        drop(owner);
+        drop(retained);
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    #[ignore = "opt-in: requires a Vulkan Video HEVC GPU with an isolated Qt graphics queue and FFmpeg CLI/libx265"]
+    fn shared_vulkan_hevc_nv12_gpu_only() {
+        shared_hevc_snapshot(false);
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    #[ignore = "opt-in: requires a Vulkan Video HEVC Main10 GPU with an isolated Qt graphics queue and FFmpeg CLI/libx265"]
+    fn shared_vulkan_hevc_p010_gpu_only() {
+        shared_hevc_snapshot(true);
     }
 
     #[test]

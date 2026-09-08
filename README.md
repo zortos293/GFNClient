@@ -1,6 +1,6 @@
-<p align="center">
-  <img src="docs/assets/readme/hero.svg" alt="OpenNOW — your games, your client. An open-source desktop client for GeForce NOW, built with Qt and Rust." width="100%" />
-</p>
+<h1 align="center">OpenNOW</h1>
+
+<p align="center"><strong>An open-source desktop client for GeForce NOW.</strong></p>
 
 <p align="center">
   <a href="https://github.com/OpenCloudGaming/OpenNOW/releases"><img src="https://img.shields.io/badge/Download-Desktop_builds-56E6A5?style=for-the-badge&labelColor=101916" alt="Download desktop builds" /></a>
@@ -16,7 +16,11 @@
   <a href="#contributing">Contribute</a>
 </p>
 
-# OpenNOW
+<p align="center">
+  <img src="docs/assets/readme/desktop-home.webp" alt="Paper design preview of OpenNOW Home, with a continue-playing card, game library, and friends panel." width="100%" />
+</p>
+
+<p align="center"><em>Desktop Home · From the OpenNOW Paper design.</em></p>
 
 Browse the GeForce NOW catalog, organize your library, and tune your stream in a
 community-built desktop app. OpenNOW pairs a **Qt Quick interface** with a **Rust
@@ -65,6 +69,18 @@ These are separate platform projects, not packages of the Qt desktop app.
 
 ## Inside the client
 
+Images are exported from the [OpenNOW Paper design](https://app.paper.design/file/01M11SPTRPMYQB9S9AX948A6WH/4-0),
+not captured from a running build. Games, account details, and session statistics shown
+are design content, not a statement of current game availability or measured performance.
+
+### Desktop library
+
+![Paper design preview of the desktop Library, showing game covers, collection navigation, filters, and a game's context menu.](docs/assets/readme/desktop-library.webp)
+
+### Controller-first console layout
+
+![Paper design preview of console Home, showing a controller-focused game grid, navigation dock, and button prompts.](docs/assets/readme/console-home.webp)
+
 | | What you can do |
 | --- | --- |
 | **Catalog & library** | Browse games, keep favorites, and organize your library into collections. |
@@ -78,8 +94,6 @@ Feature availability varies by platform and hardware. For rendering requirements
 experimental features, and current limitations, see the [Qt app guide](opennow-qt/README.md).
 
 ## How it works
-
-![Architecture: the Rust core communicates with the Qt shell over versioned JSON. Inside the desktop process, Qt connects to the native Rust streamer through a C ABI; the streamer publishes GPU frames for Qt to compose with its overlays.](docs/assets/readme/architecture.svg)
 
 - **Qt owns the interface:** windows, navigation, focus, overlays, and the embedded video item.
 - **The Rust core owns application services:** accounts, settings, catalog requests, and complete session preparation, exposed through the [versioned JSON protocol](docs/core-protocol.md).

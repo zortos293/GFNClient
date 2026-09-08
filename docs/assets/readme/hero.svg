@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="560" viewBox="0 0 1280 560" role="img" aria-labelledby="title desc">
+  <title id="title">OpenNOW — your games, your client.</title>
+  <desc id="desc">An open-source desktop client for GeForce NOW, built with Qt and Rust. Mint signal lines flow through an abstract play symbol on a dark background. This is brand artwork, not an application screenshot.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#101e19"/>
+      <stop offset="1" stop-color="#080e0c"/>
+    </linearGradient>
+    <linearGradient id="signal">
+      <stop stop-color="#56e6a5" stop-opacity="0"/>
+      <stop offset="0.6" stop-color="#56e6a5"/>
+      <stop offset="1" stop-color="#c8ff6a"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#91b6a1" stroke-opacity="0.07"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="560" rx="24" fill="url(#background)"/>
+  <rect x="704" width="576" height="560" rx="24" fill="url(#grid)"/>
+  <path d="M56 116H1224M56 474H1224" stroke="#2a3c32"/>
+  <g font-family="'Trebuchet MS', Lato, sans-serif">
+    <text x="56" y="80" fill="#f1f6ef" font-size="32" font-weight="700" letter-spacing="-1">OpenNOW<tspan fill="#56e6a5"> /</tspan></text>
+    <text x="1224" y="76" text-anchor="end" fill="#acc0b2" font-family="'Courier New', monospace" font-size="16" letter-spacing="2">COMMUNITY BUILT. OPEN SOURCE.</text>
+    <text x="56" y="229" fill="#f1f6ef" font-size="78" font-weight="700" letter-spacing="-3">Your games.</text>
+    <text x="56" y="318" fill="#b9f778" font-size="78" font-weight="700" letter-spacing="-3">Your client.</text>
+    <text x="60" y="382" fill="#bbccc1" font-size="24">An open-source desktop client for GeForce NOW.</text>
+    <text x="60" y="422" fill="#bbccc1" font-size="24">Built with Qt and Rust.</text>
+    <text x="56" y="516" fill="#acc0b2" font-family="'Courier New', monospace" font-size="16" letter-spacing="2">BROWSE / CUSTOMIZE / PLAY</text>
+    <text x="1224" y="516" text-anchor="end" fill="#56e6a5" font-family="'Courier New', monospace" font-size="16" letter-spacing="2">NATIVE DESKTOP · NVST STREAMING</text>
+  </g>
+  <g fill="none">
+    <circle cx="1000" cy="290" r="152" stroke="#263e31"/>
+    <circle cx="1000" cy="290" r="120" stroke="#345541" stroke-dasharray="3 12"/>
+    <path d="M1000 138A152 152 0 0 1 1152 290" stroke="#56e6a5" stroke-width="3"/>
+    <path d="M770 242H915M734 290H970M794 338H915" stroke="url(#signal)" stroke-width="5"/>
+    <path d="M1100 242H1195M1080 290H1224M1100 338H1168" stroke="#345541" stroke-width="2"/>
+    <path d="M974 204L1094 274Q1116 290 1094 306L974 376Q952 388 952 362V218Q952 192 974 204Z" fill="#b9f778" fill-opacity="0.06" stroke="#b9f778" stroke-width="3"/>
+    <path d="M990 258L1046 290L990 322" stroke="#e2ffc2" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <circle cx="1000" cy="138" r="5" fill="#b9f778"/>
+  <circle cx="1152" cy="290" r="5" fill="#56e6a5"/>
+</svg>

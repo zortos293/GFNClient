@@ -1655,6 +1655,7 @@ name = "opennow-streamer-platform"
 version = "0.2.0"
 dependencies = [
  "base64",
+ "cc",
  "image",
  "libc",
  "objc2",

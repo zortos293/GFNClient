@@ -19,6 +19,9 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOMOC_COMPILER_PREDEFINES OFF)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui Network Multimedia Test ShaderTools)
+if(APPLE)
+    find_package(Qt6 ${Qt6_VERSION} EXACT REQUIRED COMPONENTS Svg)
+endif()
 # Qt 6.8 exports GuiPrivate with Gui; newer Qt versions package it separately.
 # Require the actual target on both layouts without requesting a 6.8 package
 # that does not exist. Private headers remain a mandatory build dependency.
@@ -84,6 +87,8 @@ target_link_libraries(opennow-qt PRIVATE
 )
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(opennow-qt PRIVATE Vulkan::Vulkan)
+elseif(APPLE)
+    target_link_libraries(opennow-qt PRIVATE Qt6::Svg)
 endif()
 
 include(cmake/WindowsRuntime.cmake)

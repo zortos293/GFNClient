@@ -91,6 +91,42 @@ cmake --build build/opennow-qt
 ctest --test-dir build/opennow-qt --output-on-failure
 ```
 
+### macOS
+
+Use Xcode command-line tools, CMake 3.24+, Rust, Qt 6.8+ (including Quick,
+Multimedia, ShaderTools, Svg, and the Gui private headers), and a shared SDL3 build.
+Point `CMAKE_PREFIX_PATH` at Qt and SDL3 if they are not already discoverable.
+Build one architecture at a time; universal Qt bundles are not supported.
+
+```sh
+arch=$(uname -m)
+case "$arch" in
+  arm64) rustup target add aarch64-apple-darwin ;;
+  x86_64) rustup target add x86_64-apple-darwin ;;
+esac
+cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_ARCHITECTURES="$arch"
+cmake --build build/opennow-qt --parallel 4
+ctest --test-dir build/opennow-qt --output-on-failure --parallel 2
+./build/opennow-qt/OpenNOW.app/Contents/MacOS/OpenNOW
+cpack --config build/opennow-qt/CPackConfig.cmake -G ZIP -B build/qt-packages
+```
+
+CMake selects the matching Rust target; an explicitly supplied
+`OPENNOW_RUST_TARGET` must agree with the Qt architecture. The app bundle carries
+the core, acceptance verifier, standalone capability probe, embedded streamer
+dylib, and deployed Qt/SDL3 libraries. The FFI dylib uses an `@rpath` install name
+so it can load outside the build tree.
+The app explicitly links Qt Svg so macdeployqt includes the SVG image plugin used
+by the QML icons; the relocated-bundle check requires that plugin to be present.
+
+The separate `macos-validate` CI job builds and tests the native Apple Silicon
+stack, then checks a relocated ZIP with the development dependencies hidden.
+These are unsigned validation artifacts, not notarized releases, and are not
+part of the Linux/Windows nightly inventory. Offscreen tests cover shell and FFI
+contracts; real VideoToolbox/Metal presentation, audio, input capture, and login
+still require macOS hardware and a GFN account.
+
 Run with the offscreen Qt platform plugin for a startup smoke test:
 
 ```sh

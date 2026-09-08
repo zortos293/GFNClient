@@ -57,6 +57,7 @@ jobs:
         run: |
           python3 -m unittest discover -s opennow-qt/tests -p test_release_metadata.py
           python3 -m unittest discover -s opennow-qt/tests -p test_nightly_release.py
+          python3 -m unittest discover -s opennow-qt/tests -p test_macos_build.py
       - name: Record immutable nightly identity
         id: version
         shell: bash
@@ -507,6 +508,175 @@ jobs:
             build/qt-packages/*.deb
             build/qt-packages/*.dmg
             build/qt-packages/*.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  macos-validate:
+    name: macos-arm64
+    needs: metadata
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      SDL_VERSION: release-3.2.20
+      OPENNOW_BUILD_VERSION: ${{ needs.metadata.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtmultimedia qtshadertools
+          cache: true
+          cache-key-prefix: qt-target-macos-arm64
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: qt-ci-macos-arm64
+          cache-bin: false
+          cache-on-failure: true
+          workspaces: |
+            native/opennow-core -> target
+            native/opennow-streamer -> target
+            native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
+      - name: Cache SDL3 installation
+        id: sdl-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/SDL-install
+          key: qt-ci-sdl-v1-macos-arm64-${{ env.SDL_VERSION }}-${{ hashFiles('.github/workflows/qt-ci.yml') }}
+      - name: Build SDL3
+        if: steps.sdl-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$SDL_VERSION" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
+          cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL-build" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_FRAMEWORK=OFF \
+            -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF
+          cmake --build "$RUNNER_TEMP/SDL-build" --parallel 3
+          cmake --install "$RUNNER_TEMP/SDL-build" --prefix "$RUNNER_TEMP/SDL-install"
+      - name: Test macOS native contracts
+        shell: bash
+        run: |
+          [[ "$(uname -m)" == arm64 ]]
+          python3 -m unittest discover -s opennow-qt/tests -p test_macos_build.py
+          cargo test --manifest-path native/opennow-core/Cargo.toml --locked
+          cargo test --manifest-path native/opennow-streamer/Cargo.toml --locked \
+            -p opennow-streamer-platform-macos -p opennow-streamer-protocol -p opennow-streamer-ffi
+      - name: Configure and build Qt native release
+        shell: bash
+        run: |
+          cmake -S opennow-qt -B build/opennow-qt-release \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            -DOPENNOW_BUILD_VERSION="$OPENNOW_BUILD_VERSION" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
+          cmake --build build/opennow-qt-release --parallel 3
+      - name: Test Qt shell and embedded runtime offscreen
+        shell: bash
+        run: |
+          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel 2 \
+            -R '^opennow-.*-tests$|^opennow-acceptance-verifier-help$|^qml-(desktop-route-(home|settings|stream)|fullscreen-.*stats-shortcut|desktop-stream-.*|streamer-event-contract)$'
+      - name: Package unsigned macOS validation bundle
+        shell: bash
+        run: |
+          mkdir -p build/qt-packages
+          cpack --config build/opennow-qt-release/CPackConfig.cmake \
+            -G ZIP -B build/qt-packages
+      - name: Test relocated bundle without development libraries
+        shell: bash
+        run: |
+          packages=(build/qt-packages/OpenNOW-Qt-*-Darwin-arm64.zip)
+          [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]]
+          ditto -x -k "${packages[0]}" "$RUNNER_TEMP/relocated"
+          app=$(find "$RUNNER_TEMP/relocated" -name OpenNOW.app -type d -print -quit)
+          [[ -n "$app" ]]
+          bin="$app/Contents/MacOS"
+          for executable in OpenNOW opennow-core opennow-acceptance-verify opennow-streamer; do
+            test -x "$bin/$executable"
+            lipo "$bin/$executable" -verify_arch arm64
+          done
+          test -f "$bin/libopennow_streamer_ffi.dylib"
+          lipo "$bin/libopennow_streamer_ffi.dylib" -verify_arch arm64
+          otool -D build/opennow-qt-release/OpenNOW.app/Contents/MacOS/libopennow_streamer_ffi.dylib \
+            | grep -Fx '@rpath/libopennow_streamer_ffi.dylib'
+          test -f "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES"
+          test -f "$app/Contents/PlugIns/imageformats/libqsvg.dylib"
+          restore() {
+            for path in "$PWD/build/opennow-qt-release" "$QT_ROOT_DIR" "$RUNNER_TEMP/SDL-install"; do
+              if [[ -d "$path.unavailable" ]]; then mv "$path.unavailable" "$path"; fi
+            done
+          }
+          trap restore EXIT
+          mv build/opennow-qt-release build/opennow-qt-release.unavailable
+          mv "$QT_ROOT_DIR" "$QT_ROOT_DIR.unavailable"
+          mv "$RUNNER_TEMP/SDL-install" "$RUNNER_TEMP/SDL-install.unavailable"
+          unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH
+          unset DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH
+          "$bin/opennow-acceptance-verify" --help
+          python3 - "$bin" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import select
+          import subprocess
+          import sys
+          import tempfile
+
+          bin_dir = Path(sys.argv[1])
+          for name in ("OpenNOW", "opennow-core", "opennow-acceptance-verify",
+                       "opennow-streamer", "libopennow_streamer_ffi.dylib"):
+              dependencies = subprocess.check_output(["otool", "-L", bin_dir / name], text=True)
+              for line in dependencies.splitlines()[1:]:
+                  dependency = line.strip().split(" (", 1)[0]
+                  assert not dependency.startswith("/") or dependency.startswith(
+                      ("/System/Library/", "/usr/lib/")), (name, dependency)
+          probe = subprocess.run(
+              [bin_dir / "opennow-streamer"],
+              input='{"id":"package-probe","type":"hello","protocolVersion":6}\n'
+                    '{"id":"package-shutdown","type":"shutdown"}\n',
+              text=True, capture_output=True, check=True, timeout=30)
+          messages = [json.loads(line) for line in probe.stdout.splitlines()]
+          ready = next(m for m in messages if m.get("id") == "package-probe")
+          assert ready.get("type") == "ready", ready
+          assert any(b.get("backend") == "videotoolbox" for b in ready["capabilities"]["videoBackends"])
+          with tempfile.TemporaryDirectory() as data_dir:
+              core = subprocess.Popen(
+                  [bin_dir / "opennow-core", "--data-dir", data_dir],
+                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+              try:
+                  core.stdin.write('{"type":"request","id":"package-core","method":"core.hello",'
+                                   '"params":{"protocolVersion":1}}\n')
+                  core.stdin.flush()
+                  assert select.select([core.stdout], [], [], 30)[0], "Core handshake timed out"
+                  response = json.loads(core.stdout.readline())
+                  assert response.get("id") == "package-core" and response.get("ok") is True, response
+              finally:
+                  core.kill()
+                  core.communicate(timeout=5)
+          subprocess.run(
+              [bin_dir / "OpenNOW", "--smoke-test", "--allow-multiple-instances",
+               "--desktop", "--route", "home", "--reduced-motion"],
+              env={**os.environ, "QT_QPA_PLATFORM": "cocoa"}, check=True, timeout=30)
+          PY
+      - name: Upload macOS validation package
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-macos-arm64-validation
+          path: build/qt-packages/*.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

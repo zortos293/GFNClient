@@ -28,6 +28,17 @@
 #include <windows.h>
 #endif
 
+namespace {
+bool swapsMacControlAndMeta()
+{
+#if defined(Q_OS_MACOS)
+    return !QGuiApplication::testAttribute(Qt::AA_MacDontSwapCtrlAndMeta);
+#else
+    return false;
+#endif
+}
+}
+
 quint16 StreamVideoItem::windowsVirtualKey(int key)
 {
     if (key >= Qt::Key_A && key <= Qt::Key_Z) return static_cast<quint16>(key);
@@ -56,10 +67,10 @@ quint16 StreamVideoItem::windowsVirtualKey(int key)
     case Qt::Key_Left: return 0x25;
     case Qt::Key_Down: return 0x28;
     case Qt::Key_Up: return 0x26;
-    case Qt::Key_Control: return 0xa2;
+    case Qt::Key_Control: return swapsMacControlAndMeta() ? 0x5b : 0xa2;
     case Qt::Key_Shift: return 0xa0;
     case Qt::Key_Alt: return 0xa4;
-    case Qt::Key_Meta: return 0x5b;
+    case Qt::Key_Meta: return swapsMacControlAndMeta() ? 0xa2 : 0x5b;
     case Qt::Key_CapsLock: return 0x14;
     case Qt::Key_NumLock: return 0x90;
     case Qt::Key_Insert: return 0x2d;
@@ -81,10 +92,13 @@ quint16 StreamVideoItem::windowsVirtualKey(int key)
 quint16 StreamVideoItem::inputModifiers(Qt::KeyboardModifiers modifiers, int key)
 {
     quint16 result = 0;
+    const bool swapped = swapsMacControlAndMeta();
     if (key != Qt::Key_Shift && modifiers.testFlag(Qt::ShiftModifier)) result |= 0x01;
-    if (key != Qt::Key_Control && modifiers.testFlag(Qt::ControlModifier)) result |= 0x02;
+    if (key != Qt::Key_Control && modifiers.testFlag(Qt::ControlModifier))
+        result |= swapped ? 0x08 : 0x02;
     if (key != Qt::Key_Alt && modifiers.testFlag(Qt::AltModifier)) result |= 0x04;
-    if (key != Qt::Key_Meta && modifiers.testFlag(Qt::MetaModifier)) result |= 0x08;
+    if (key != Qt::Key_Meta && modifiers.testFlag(Qt::MetaModifier))
+        result |= swapped ? 0x02 : 0x08;
     return result;
 }
 
@@ -260,7 +274,7 @@ void StreamVideoItem::mouseMoveEvent(QMouseEvent *event)
                                                    static_cast<qint16>(deltaY));
             const auto anchor = mapToGlobal(QPointF(width() / 2.0, height() / 2.0)).toPoint();
             QCursor::setPos(anchor);
-            m_lastMousePosition = mapFromGlobal(QCursor::pos());
+            m_lastMousePosition = mapFromGlobal(anchor);
         }
     } else {
         submitAbsoluteMouse(event->position());
@@ -428,16 +442,17 @@ QPoint StreamVideoItem::mapRemoteCursorPosition(const QPoint &normalizedPosition
 void StreamVideoItem::resynchronizeInput()
 {
     syncCaptureState();
+    m_lastMousePosition = mapFromGlobal(QCursor::pos());
     if (m_captureActive && m_relativeMouse && !m_rawInputActive
             && !WaylandPointerCapture::isWayland()) {
         const auto anchor = mapToGlobal(QPointF(width() / 2.0, height() / 2.0)).toPoint();
         QCursor::setPos(anchor);
+        m_lastMousePosition = mapFromGlobal(anchor);
     } else if (m_captureActive && !m_relativeMouse) {
         // Fullscreen changes the absolute viewport dimensions without requiring
         // the physical cursor to move. Re-publish the current point immediately.
         submitAbsoluteMouse(mapFromGlobal(QCursor::pos()));
     }
-    m_lastMousePosition = mapFromGlobal(QCursor::pos());
     updateCursorConfinement();
 }
 
@@ -608,18 +623,17 @@ void StreamVideoItem::setRelativeMouse(bool relative)
     m_relativeMouse = relative;
     if (relative) {
         setCursor(Qt::BlankCursor);
-        if (m_captureActive && !WaylandPointerCapture::isWayland()) {
-            grabMouse();
-            const auto anchor = mapToGlobal(QPointF(width() / 2.0, height() / 2.0)).toPoint();
-            QCursor::setPos(anchor);
-            m_lastMousePosition = mapFromGlobal(QCursor::pos());
-        }
     } else {
         ungrabMouse();
         releaseCursorConfinement();
         unsetCursor();
     }
     syncCaptureState();
+    if (relative && m_captureActive && !WaylandPointerCapture::isWayland()) {
+        const auto anchor = mapToGlobal(QPointF(width() / 2.0, height() / 2.0)).toPoint();
+        QCursor::setPos(anchor);
+        m_lastMousePosition = mapFromGlobal(anchor);
+    }
     emit relativeMouseChanged();
 }
 

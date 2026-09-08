@@ -2,7 +2,8 @@ use opennow_streamer_platform_macos::{
     AudioFormat, Av1Format, BackendConfig, BorrowedNsView, H264Format, H264Framing,
     H264ParameterSets, H265Format, H265ParameterSets, MacOsBackend, OwnedOverlayConfig,
     QueueLimits, ScreenRect, StreamSink, SurfaceTarget, VideoColorSpace, probe_av1_hardware,
-    probe_h264_hardware, probe_h265_hardware,
+    probe_av1_main10_hardware, probe_h264_hardware, probe_h265_hardware,
+    probe_h265_main10_hardware,
 };
 use opennow_streamer_protocol::{RenderSurface, RenderSurfaceRect};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -34,6 +35,16 @@ pub(crate) fn h265_available() -> bool {
 
 pub(crate) fn av1_available() -> bool {
     av1_availability().load(Ordering::Acquire)
+}
+
+pub(crate) fn h265_main10_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    h265_available() && *AVAILABLE.get_or_init(probe_h265_main10_hardware)
+}
+
+pub(crate) fn av1_main10_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    av1_available() && *AVAILABLE.get_or_init(probe_av1_main10_hardware)
 }
 
 pub(crate) fn disable() {

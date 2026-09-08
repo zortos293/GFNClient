@@ -30,9 +30,11 @@
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 mod audio_device;
+mod audio_queue;
 mod color;
 mod failure;
 mod format;
+mod frame_order;
 mod lifecycle;
 mod queue;
 mod ring;
@@ -45,8 +47,9 @@ pub use failure::{BackendFailure, BackendSubsystem, VideoDecodeLoss};
 pub use format::{
     AudioFormat, Av1Format, BackendConfig, BorrowedNsView, BorrowedNsWindow, EmbeddedBackendConfig,
     FrameTiming, H264Format, H264Framing, H264ParameterSets, H265Format, H265ParameterSets,
-    MetalFrameFormat, OwnedOverlayConfig, QueueLimits, RendererRect, ScreenRect, SurfaceTarget,
-    VideoBitDepth, VideoColorSpace, VideoFormat, WindowSurfaceConfig,
+    MetalFrameFormat, MetalTextureColorSpace, OwnedOverlayConfig, QueueLimits, RendererRect,
+    ScreenRect, SurfaceTarget, VideoBitDepth, VideoColorSpace, VideoFormat, VideoTransferFunction,
+    WindowSurfaceConfig,
 };
 pub use lifecycle::BackendState;
 
@@ -61,8 +64,9 @@ pub(crate) const fn overlay_should_be_ordered(
 pub use macos::{
     AdoptedMetalContext, BackendError, BackendStats, EmbeddedFrameProducer, MacOsBackend,
     MetalFrame, MetalRecordedFrame, NativeSurfaceHandle, StreamSink, SubmitOutcome,
-    activate_stream_application, audio_output_devices, probe_av1_hardware, probe_h264_hardware,
-    probe_h265_hardware, pump_app_events,
+    activate_stream_application, audio_output_devices, probe_av1_hardware,
+    probe_av1_main10_hardware, probe_h264_hardware, probe_h265_hardware,
+    probe_h265_main10_hardware, pump_app_events,
 };
 
 #[cfg(test)]

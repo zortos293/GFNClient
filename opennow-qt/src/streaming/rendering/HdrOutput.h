@@ -47,6 +47,7 @@ private:
     std::atomic<bool> m_chromeGuiReady{false};
     bool m_chromeSynchronized = false;
     bool m_chromeRequired = false;
+    bool m_metalLinearOutput = false;
     std::unique_ptr<HdrOutputPass> m_outputPass;
     bool m_supported = false;
     int m_mode = 0;

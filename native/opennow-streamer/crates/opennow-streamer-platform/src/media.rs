@@ -372,6 +372,27 @@ impl Default for MediaStreamConfig {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl MediaStreamConfig {
+    const fn macos_color_space(self) -> opennow_streamer_platform_macos::VideoColorSpace {
+        if self.hdr {
+            opennow_streamer_platform_macos::VideoColorSpace::Bt2020
+        } else {
+            opennow_streamer_platform_macos::VideoColorSpace::Bt709
+        }
+    }
+
+    const fn macos_transfer_function(
+        self,
+    ) -> opennow_streamer_platform_macos::VideoTransferFunction {
+        if self.hdr {
+            opennow_streamer_platform_macos::VideoTransferFunction::Pq
+        } else {
+            opennow_streamer_platform_macos::VideoTransferFunction::Sdr
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaCodec {
     H264,
@@ -1186,6 +1207,9 @@ impl MediaSession {
                 "embedded VideoToolbox decode does not support negotiated 4:4:4 color".to_owned(),
             );
         }
+        if stream.hdr && stream.color_quality.bit_depth() != 10 {
+            return Err("embedded VideoToolbox HDR requires negotiated ten-bit color".to_owned());
+        }
         let shared = Arc::new(SharedPipeline {
             video: Arc::new(VideoQueue::new(macos_video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
@@ -1208,7 +1232,7 @@ impl MediaSession {
             .spawn(move || {
                 use opennow_streamer_platform_macos::{
                     AudioFormat, EmbeddedBackendConfig, H264Format, H265Format, MacOsBackend,
-                    QueueLimits, VideoColorSpace,
+                    QueueLimits,
                 };
 
                 let mut backend: Option<MacOsBackend> = None;
@@ -1245,7 +1269,10 @@ impl MediaSession {
                             reply,
                         } => {
                             let result = start(
-                                H264Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
+                                H264Format::new(parameter_sets, stream.macos_color_space())
+                                    .with_bit_depth(stream.color_quality.macos_bit_depth())
+                                    .with_transfer_function(stream.macos_transfer_function())
+                                    .into(),
                             )
                             .and_then(|mut started| {
                                 started.set_paused(paused)?;
@@ -1261,8 +1288,9 @@ impl MediaSession {
                             reply,
                         } => {
                             let result = start(
-                                H265Format::new(parameter_sets, VideoColorSpace::Bt709)
+                                H265Format::new(parameter_sets, stream.macos_color_space())
                                     .with_bit_depth(stream.color_quality.macos_bit_depth())
+                                    .with_transfer_function(stream.macos_transfer_function())
                                     .into(),
                             )
                             .and_then(|mut started| {
@@ -3106,9 +3134,7 @@ fn run_macos_h264_video(
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use opennow_streamer_platform_macos::{
-        FrameTiming, H264Format, SubmitOutcome, VideoColorSpace,
-    };
+    use opennow_streamer_platform_macos::{FrameTiming, H264Format, SubmitOutcome};
 
     use crate::runtime::MacH264Configuration;
 
@@ -3245,7 +3271,9 @@ fn run_macos_h264_video(
                 || shared.video_desynced.load(Ordering::Acquire))
             && frame.keyframe
         {
-            let format = H264Format::new(parameter_sets.clone(), VideoColorSpace::Bt709);
+            let format = H264Format::new(parameter_sets.clone(), shared.stream.macos_color_space())
+                .with_bit_depth(shared.stream.color_quality.macos_bit_depth())
+                .with_transfer_function(shared.stream.macos_transfer_function());
             let Some(sink) = backend_sink.as_ref() else {
                 return;
             };
@@ -3281,7 +3309,8 @@ fn run_macos_h264_video(
             i64::try_from(frame.timestamp).unwrap_or(i64::MAX),
             i64::from(timescale) / i64::from(stream_fps.max(1)),
             timescale,
-        );
+        )
+        .with_frame_index(frame.frame_index);
         let Some(sink) = backend_sink.as_ref() else {
             return;
         };
@@ -3325,9 +3354,7 @@ fn run_macos_h265_video(
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use opennow_streamer_platform_macos::{
-        FrameTiming, H265Format, SubmitOutcome, VideoColorSpace,
-    };
+    use opennow_streamer_platform_macos::{FrameTiming, H265Format, SubmitOutcome};
 
     let mut tracker = crate::macos_backend::H265ParameterSetTracker::default();
     let mut configured_parameter_sets = None;
@@ -3426,8 +3453,9 @@ fn run_macos_h265_video(
             && configured_parameter_sets.as_ref() != Some(parameter_sets)
             && frame.keyframe
         {
-            let format = H265Format::new(parameter_sets.clone(), VideoColorSpace::Bt709)
-                .with_bit_depth(shared.stream.color_quality.macos_bit_depth());
+            let format = H265Format::new(parameter_sets.clone(), shared.stream.macos_color_space())
+                .with_bit_depth(shared.stream.color_quality.macos_bit_depth())
+                .with_transfer_function(shared.stream.macos_transfer_function());
             let Some(sink) = backend_sink.as_ref() else {
                 return;
             };
@@ -3463,7 +3491,8 @@ fn run_macos_h265_video(
             i64::try_from(frame.timestamp).unwrap_or(i64::MAX),
             i64::from(timescale) / i64::from(stream_fps.max(1)),
             timescale,
-        );
+        )
+        .with_frame_index(frame.frame_index);
         let Some(sink) = backend_sink.as_ref() else {
             return;
         };
@@ -3507,7 +3536,7 @@ fn run_macos_av1_video(
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use opennow_streamer_platform_macos::{Av1Format, FrameTiming, SubmitOutcome, VideoColorSpace};
+    use opennow_streamer_platform_macos::{Av1Format, FrameTiming, SubmitOutcome};
 
     let mut configured_codec_configuration: Option<Vec<u8>> = None;
     let mut backend_sink: Option<opennow_streamer_platform_macos::StreamSink> = None;
@@ -3564,9 +3593,9 @@ fn run_macos_av1_video(
                 &codec_configuration,
                 stream.width,
                 stream.height,
-                VideoColorSpace::Bt709,
+                stream.macos_color_space(),
             ) {
-                Ok(format) => format,
+                Ok(format) => format.with_transfer_function(stream.macos_transfer_function()),
                 Err(error) => {
                     let _ = shared.feedback.send(MediaFeedback::DecoderError {
                         codec: "av1",
@@ -3619,9 +3648,9 @@ fn run_macos_av1_video(
                 &codec_configuration,
                 stream.width,
                 stream.height,
-                VideoColorSpace::Bt709,
+                stream.macos_color_space(),
             ) {
-                Ok(format) => format,
+                Ok(format) => format.with_transfer_function(stream.macos_transfer_function()),
                 Err(error) => {
                     eprintln!("Rejected AV1 configuration update: {error}");
                     mark_macos_video_desynced(
@@ -3660,7 +3689,8 @@ fn run_macos_av1_video(
             i64::try_from(frame.timestamp).unwrap_or(i64::MAX),
             i64::from(timescale) / i64::from(stream.fps.max(1)),
             timescale,
-        );
+        )
+        .with_frame_index(frame.frame_index);
         let Some(sink) = backend_sink.as_ref() else {
             return;
         };

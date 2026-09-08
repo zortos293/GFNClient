@@ -21,18 +21,17 @@ use objc2_core_audio_types::{
 };
 use opus::{Channels, Decoder};
 
+use crate::audio_queue::AudioQueue;
 use crate::failure::{BackendSubsystem, FailureReporter};
 use crate::format::AudioFormat;
-use crate::queue::{BoundedQueue, PushResult};
-use crate::ring::PcmRing;
+use crate::queue::PushResult;
 
 use super::{BackendError, Counters};
 
 const MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL: usize = 5_760;
 
 pub(super) struct AudioPipeline {
-    packets: Arc<BoundedQueue<Vec<u8>>>,
-    ring: Arc<PcmRing>,
+    queue: Arc<AudioQueue>,
     output: Option<AudioOutput>,
     worker: Option<JoinHandle<()>>,
 }
@@ -55,8 +54,7 @@ impl AudioPipeline {
             .map(|samples| samples / 1_000)
             .filter(|samples| *samples > 0)
             .ok_or(crate::format::FormatError::QueueTooLarge)?;
-        let ring = Arc::new(PcmRing::new(pcm_capacity));
-        let packets: Arc<BoundedQueue<Vec<u8>>> = Arc::new(BoundedQueue::new(packet_capacity));
+        let queue = Arc::new(AudioQueue::new(packet_capacity, pcm_capacity));
         let decoder_channels = if format.channels == 1 {
             Channels::Mono
         } else {
@@ -64,8 +62,7 @@ impl AudioPipeline {
         };
         let mut decoder = Decoder::new(format.sample_rate, decoder_channels)
             .map_err(|error| BackendError::Opus(error.to_string()))?;
-        let worker_packets = Arc::clone(&packets);
-        let worker_ring = Arc::clone(&ring);
+        let worker_queue = Arc::clone(&queue);
         let worker_counters = Arc::clone(&counters);
         let worker_failures = Arc::clone(&failures);
         let worker = thread::Builder::new()
@@ -74,12 +71,13 @@ impl AudioPipeline {
                 let run_failures = Arc::clone(&worker_failures);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                     let mut pcm = vec![0.0; MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL * channels];
-                    while let Some(packet) = worker_packets.pop_wait() {
-                        match decoder.decode_float(&packet, &mut pcm, false) {
+                    while let Some(packet) = worker_queue.pop_wait() {
+                        match decoder.decode_float(&packet.data, &mut pcm, false) {
                             Ok(samples_per_channel) => {
                                 run_failures.audio_succeeded();
                                 let sample_count = samples_per_channel * channels;
-                                let written = worker_ring.push(&pcm[..sample_count]);
+                                let written =
+                                    worker_queue.publish_pcm(&packet, &pcm[..sample_count]);
                                 if written != sample_count {
                                     worker_counters.pcm_samples_dropped.fetch_add(
                                         (sample_count - written) as u64,
@@ -108,32 +106,30 @@ impl AudioPipeline {
             .map_err(|_| BackendError::Thread("Opus decoder"))?;
 
         let output =
-            match AudioOutput::start(format, audio_output_device, Arc::clone(&ring), counters) {
+            match AudioOutput::start(format, audio_output_device, Arc::clone(&queue), counters) {
                 Ok(output) => output,
                 Err(error) => {
-                    packets.close();
+                    queue.close();
                     let _ = worker.join();
                     return Err(error);
                 }
             };
         Ok(Self {
-            packets,
-            ring,
+            queue,
             output: Some(output),
             worker: Some(worker),
         })
     }
 
     pub(super) fn submit(&self, packet: Vec<u8>) -> PushResult<Vec<u8>> {
-        self.packets.push_drop_oldest(packet)
+        self.queue.submit(packet)
     }
 
     pub(super) fn set_paused(&mut self, paused: bool) -> Result<(), BackendError> {
         if paused && let Some(output) = self.output.as_mut() {
             output.set_paused(true)?;
         }
-        self.packets.clear();
-        self.ring.clear();
+        self.queue.clear();
         if !paused && let Some(output) = self.output.as_mut() {
             output.set_paused(false)?;
         }
@@ -142,7 +138,7 @@ impl AudioPipeline {
 
     pub(super) fn stop(mut self) {
         drop(self.output.take());
-        self.packets.close_and_discard();
+        self.queue.close();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -152,7 +148,7 @@ impl AudioPipeline {
 impl Drop for AudioPipeline {
     fn drop(&mut self) {
         drop(self.output.take());
-        self.packets.close_and_discard();
+        self.queue.close();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -160,7 +156,7 @@ impl Drop for AudioPipeline {
 }
 
 struct AudioCallbackContext {
-    ring: Arc<PcmRing>,
+    queue: Arc<AudioQueue>,
     counters: Arc<Counters>,
     channels: usize,
 }
@@ -180,7 +176,7 @@ impl AudioOutput {
     fn start(
         format: AudioFormat,
         audio_output_device: Option<&str>,
-        ring: Arc<PcmRing>,
+        queue: Arc<AudioQueue>,
         counters: Arc<Counters>,
     ) -> Result<Self, BackendError> {
         let device = audio_output_device
@@ -220,7 +216,7 @@ impl AudioOutput {
             initialized: false,
             started: false,
             callback_context: Box::new(AudioCallbackContext {
-                ring,
+                queue,
                 counters,
                 channels: usize::from(format.channels),
             }),
@@ -360,7 +356,7 @@ unsafe extern "C-unwind" fn render_callback(
         return -50;
     };
     let output = unsafe { std::slice::from_raw_parts_mut(data.as_ptr(), sample_count) };
-    let read = context.ring.pop_into(output);
+    let read = context.queue.pop_pcm(output);
     output[read..].fill(0.0);
     if read < requested {
         context.counters.pcm_underrun_frames.fetch_add(

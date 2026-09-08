@@ -6,6 +6,42 @@ use thiserror::Error;
 const MAX_PARAMETER_SET_BYTES: usize = 64 * 1024;
 const MAX_AV1_CONFIGURATION_BYTES: usize = 64 * 1024;
 
+pub(crate) fn h265_main10_probe_format() -> VideoFormat {
+    H265Format::new(
+        H265ParameterSets::new(
+            [
+                64, 1, 12, 1, 255, 255, 2, 32, 0, 0, 3, 0, 144, 0, 0, 3, 0, 0, 3, 0, 123, 149, 152,
+                9,
+            ],
+            [
+                66, 1, 1, 2, 32, 0, 0, 3, 0, 144, 0, 0, 3, 0, 0, 3, 0, 123, 160, 3, 192, 128, 16,
+                228, 217, 101, 102, 146, 76, 175, 1, 106, 18, 32, 18, 8, 0, 0, 3, 0, 8, 0, 0, 3, 1,
+                224, 64,
+            ],
+            [68, 1, 193, 114, 180, 34, 64],
+        )
+        .expect("valid 1080p60 Main10 probe parameter sets"),
+        VideoColorSpace::Bt2020,
+    )
+    .with_bit_depth(VideoBitDepth::Ten)
+    .with_transfer_function(VideoTransferFunction::Pq)
+    .into()
+}
+
+pub(crate) fn av1_main10_probe_format() -> VideoFormat {
+    Av1Format::new(
+        [
+            129, 9, 76, 0, 10, 14, 0, 0, 0, 74, 171, 191, 195, 119, 43, 231, 66, 68, 2, 65,
+        ],
+        1920,
+        1080,
+        VideoColorSpace::Bt2020,
+    )
+    .expect("valid 1080p60 ten-bit AV1 probe configuration")
+    .with_transfer_function(VideoTransferFunction::Pq)
+    .into()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum H264Framing {
     AnnexB,
@@ -16,6 +52,22 @@ pub enum H264Framing {
 pub enum VideoColorSpace {
     Bt601,
     Bt709,
+    Bt2020,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VideoTransferFunction {
+    #[default]
+    Sdr,
+    Pq,
+    Hlg,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MetalTextureColorSpace {
+    Sdr709,
+    Pq2020,
+    Hlg2020,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,6 +87,7 @@ pub struct FrameTiming {
     pub presentation_value: i64,
     pub duration_value: i64,
     pub timescale: i32,
+    pub frame_index: Option<u32>,
 }
 
 impl FrameTiming {
@@ -43,11 +96,17 @@ impl FrameTiming {
             presentation_value,
             duration_value,
             timescale,
+            frame_index: None,
         }
     }
 
     pub const fn from_90khz(presentation_value: i64, duration_value: i64) -> Self {
         Self::new(presentation_value, duration_value, 90_000)
+    }
+
+    pub const fn with_frame_index(mut self, frame_index: Option<u32>) -> Self {
+        self.frame_index = frame_index;
+        self
     }
 
     pub(crate) fn validate(self) -> Result<(), FormatError> {
@@ -88,6 +147,7 @@ pub struct H264Format {
     pub parameter_sets: H264ParameterSets,
     pub color_space: VideoColorSpace,
     pub bit_depth: VideoBitDepth,
+    pub transfer_function: VideoTransferFunction,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -128,6 +188,7 @@ pub struct H265Format {
     pub parameter_sets: H265ParameterSets,
     pub color_space: VideoColorSpace,
     pub bit_depth: VideoBitDepth,
+    pub transfer_function: VideoTransferFunction,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,6 +198,7 @@ pub struct Av1Format {
     height: i32,
     bit_depth: VideoBitDepth,
     pub color_space: VideoColorSpace,
+    pub transfer_function: VideoTransferFunction,
 }
 
 impl Av1Format {
@@ -173,6 +235,7 @@ impl Av1Format {
             height,
             bit_depth,
             color_space,
+            transfer_function: VideoTransferFunction::Sdr,
         })
     }
 
@@ -191,6 +254,11 @@ impl Av1Format {
     pub const fn bit_depth(&self) -> VideoBitDepth {
         self.bit_depth
     }
+
+    pub const fn with_transfer_function(mut self, transfer: VideoTransferFunction) -> Self {
+        self.transfer_function = transfer;
+        self
+    }
 }
 
 impl H265Format {
@@ -199,11 +267,17 @@ impl H265Format {
             parameter_sets,
             color_space,
             bit_depth: VideoBitDepth::Eight,
+            transfer_function: VideoTransferFunction::Sdr,
         }
     }
 
     pub const fn with_bit_depth(mut self, bit_depth: VideoBitDepth) -> Self {
         self.bit_depth = bit_depth;
+        self
+    }
+
+    pub const fn with_transfer_function(mut self, transfer: VideoTransferFunction) -> Self {
+        self.transfer_function = transfer;
         self
     }
 }
@@ -242,6 +316,14 @@ impl VideoFormat {
             Self::Av1(format) => format.color_space,
         }
     }
+
+    pub const fn transfer_function(&self) -> VideoTransferFunction {
+        match self {
+            Self::H264(format) => format.transfer_function,
+            Self::H265(format) => format.transfer_function,
+            Self::Av1(format) => format.transfer_function,
+        }
+    }
 }
 
 impl From<H264Format> for VideoFormat {
@@ -268,11 +350,17 @@ impl H264Format {
             parameter_sets,
             color_space,
             bit_depth: VideoBitDepth::Eight,
+            transfer_function: VideoTransferFunction::Sdr,
         }
     }
 
     pub const fn with_bit_depth(mut self, bit_depth: VideoBitDepth) -> Self {
         self.bit_depth = bit_depth;
+        self
+    }
+
+    pub const fn with_transfer_function(mut self, transfer: VideoTransferFunction) -> Self {
+        self.transfer_function = transfer;
         self
     }
 }
@@ -846,6 +934,27 @@ mod tests {
             Av1Format::new([0x81, 0x0d, 0x2c, 0], 1920, 1080, VideoColorSpace::Bt709),
             Err(FormatError::InvalidAv1Configuration)
         );
+    }
+
+    #[test]
+    fn main10_probe_formats_require_p010_and_preserve_hdr_metadata() {
+        for format in [h265_main10_probe_format(), av1_main10_probe_format()] {
+            assert_eq!(format.bit_depth(), VideoBitDepth::Ten);
+            assert_eq!(format.destination_bit_depth(None), Ok(VideoBitDepth::Ten));
+            assert_eq!(format.color_space(), VideoColorSpace::Bt2020);
+            assert_eq!(format.transfer_function(), VideoTransferFunction::Pq);
+        }
+    }
+
+    #[test]
+    fn frame_timing_preserves_sender_indices_including_wrap_and_zero() {
+        for frame_index in [None, Some(0), Some(u32::MAX), Some(1)] {
+            let timing = FrameTiming::from_90khz(123, 750).with_frame_index(frame_index);
+            assert_eq!(timing.frame_index, frame_index);
+            assert_eq!(timing.presentation_value, 123);
+            assert_eq!(timing.duration_value, 750);
+            assert_eq!(timing.timescale, 90_000);
+        }
     }
 
     #[test]

@@ -263,6 +263,49 @@ private slots:
         QCOMPARE(render(renderer, source.get(), *target), patches(codes, false));
     }
 
+    void displayReferredImportPreservesMetadataAndRecovery_data()
+    {
+        QTest::addColumn<int>("sourceSpace");
+        QTest::addColumn<int>("code");
+        QTest::addColumn<float>("expected");
+        QTest::newRow("sdr-white") << 0 << 1023 << 1.0f;
+        const double p = std::pow(769.0 / 1023.0, 1.0 / 78.84375);
+        const double nits = 10000.0 * std::pow((p - 0.8359375)
+            / (18.8515625 - 18.6875 * p), 1.0 / 0.1593017578125);
+        QTest::newRow("pq-highlight") << 1 << 769 << float(nits / 203.0);
+        QTest::newRow("hlg-white") << 2 << 1023 << 1000.0f / 203.0f;
+    }
+
+    void displayReferredImportPreservesMetadataAndRecovery()
+    {
+        QFETCH(int, sourceSpace);
+        QFETCH(int, code);
+        QFETCH(float, expected);
+        auto source = makeSource({code});
+        QVERIFY(source);
+        auto target = makeTarget(QRhiTexture::RGBA16F, source->pixelSize());
+        QVERIFY(target);
+        StreamVideoTextureRenderer renderer;
+        renderer.setColorSpace(sourceSpace, 3, 203.0f, true);
+        const auto data = render(renderer, source.get(), *target);
+        QCOMPARE(data.size(), tileSize * tileSize * 8);
+        const auto *pixels = reinterpret_cast<const qfloat16 *>(data.constData());
+        for (int pixel = 0; pixel < tileSize * tileSize; ++pixel) {
+            for (int component = 0; component < 3; ++component)
+                QVERIFY(std::abs(float(pixels[pixel * 4 + component]) - expected) < 0.01f);
+            QCOMPARE(float(pixels[pixel * 4 + 3]), 1.0f);
+        }
+        renderer.setColorSpace(sourceSpace, 3, 203.0f, false);
+        const auto fallback = render(renderer, source.get(), *target);
+        QCOMPARE(fallback.size(), data.size());
+        const auto *mapped = reinterpret_cast<const qfloat16 *>(fallback.constData());
+        QVERIFY(float(mapped[0]) > 0.0f);
+        QVERIFY(float(mapped[0]) <= 1.0f);
+        renderer.release();
+        renderer.setColorSpace(sourceSpace, 3, 203.0f, true);
+        QCOMPARE(render(renderer, source.get(), *target), data);
+    }
+
     void highPrecisionTargetRetainsCodesWithoutDither()
     {
         if (!m_rhi->isTextureFormatSupported(QRhiTexture::RGB10A2, QRhiTexture::RenderTarget))

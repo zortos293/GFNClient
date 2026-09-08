@@ -547,6 +547,15 @@ impl MetalPresenter {
     }
 
     fn present(&mut self, frame: DecodedFrame) -> Result<(), BackendError> {
+        let color_space = match frame.color_space {
+            VideoColorSpace::Bt601 => 0u32,
+            VideoColorSpace::Bt709 => 1u32,
+            VideoColorSpace::Bt2020 => {
+                return Err(BackendError::Metal(
+                    "BT.2020 requires embedded Metal output".into(),
+                ));
+            }
+        };
         if self.pending.len() >= 3 {
             self.wait_for_oldest()?;
         }
@@ -618,10 +627,6 @@ impl MetalPresenter {
             encoder.setFragmentTexture_atIndex(Some(&luma_texture), 0);
             encoder.setFragmentTexture_atIndex(Some(&chroma_texture), 1);
         }
-        let color_space = match frame.color_space {
-            VideoColorSpace::Bt601 => 0u32,
-            VideoColorSpace::Bt709 => 1u32,
-        };
         unsafe {
             encoder.setFragmentBytes_length_atIndex(
                 NonNull::from(&color_space).cast::<c_void>(),

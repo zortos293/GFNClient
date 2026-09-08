@@ -244,7 +244,17 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
         Ok(GraphicsRecordedFrame {
             resource: frame.texture as usize as u64,
             resource_view: 0,
-            color_space: GraphicsColorSpace::Sdr709,
+            color_space: match frame.color_space {
+                opennow_streamer_platform_macos::MetalTextureColorSpace::Sdr709 => {
+                    GraphicsColorSpace::Sdr709
+                }
+                opennow_streamer_platform_macos::MetalTextureColorSpace::Pq2020 => {
+                    GraphicsColorSpace::Pq2020
+                }
+                opennow_streamer_platform_macos::MetalTextureColorSpace::Hlg2020 => {
+                    GraphicsColorSpace::Hlg2020
+                }
+            },
             texture_format: match frame.format {
                 opennow_streamer_platform_macos::MetalFrameFormat::Rgba8Unorm => {
                     GraphicsTextureFormat::Rgba8

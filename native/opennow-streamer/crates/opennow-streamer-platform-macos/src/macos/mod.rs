@@ -132,6 +132,14 @@ pub fn probe_av1_hardware() -> bool {
     probe_hardware_codec(AV1_CODEC_TYPE)
 }
 
+pub fn probe_h265_main10_hardware() -> bool {
+    probe_h265_hardware() && video::probe_format(&crate::format::h265_main10_probe_format())
+}
+
+pub fn probe_av1_main10_hardware() -> bool {
+    probe_av1_hardware() && video::probe_format(&crate::format::av1_main10_probe_format())
+}
+
 fn probe_hardware_codec(codec_type: u32) -> bool {
     if unsafe { VTIsHardwareDecodeSupported(codec_type) } == 0 {
         return false;

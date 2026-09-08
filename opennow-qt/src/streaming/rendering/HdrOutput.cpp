@@ -28,7 +28,8 @@ void HdrOutput::attach(QQuickWindow *window)
 {
     if (!window || m_window) return;
     const auto api = window->rendererInterface()->graphicsApi();
-    if (api != QSGRendererInterface::Direct3D11 && api != QSGRendererInterface::Vulkan) return;
+    if (api != QSGRendererInterface::Direct3D11 && api != QSGRendererInterface::Vulkan
+            && api != QSGRendererInterface::Metal) return;
     m_window = window;
     connect(window, &QQuickWindow::beforeFrameBegin, this,
             &HdrOutput::updateOutput, Qt::DirectConnection);
@@ -127,12 +128,17 @@ void HdrOutput::updateOutput()
             && (sc->format() != QRhiSwapChain::HDR10
                 || (m_outputPass && m_outputPass->matches(d->rhi, sc)))) return;
     auto desired = QRhiSwapChain::SDR;
-    if (d->rhi->backend() == QRhi::D3D11 || d->rhi->backend() == QRhi::Vulkan) {
+    if (d->rhi->backend() == QRhi::D3D11 || d->rhi->backend() == QRhi::Vulkan
+            || d->rhi->backend() == QRhi::Metal) {
         if (sc->isFormatSupported(QRhiSwapChain::HDRExtendedSrgbLinear))
             desired = QRhiSwapChain::HDRExtendedSrgbLinear;
         else if (sc->isFormatSupported(QRhiSwapChain::HDR10))
             desired = QRhiSwapChain::HDR10;
     }
+    const bool formatSupported = desired != QRhiSwapChain::SDR;
+    if (d->rhi->backend() == QRhi::Metal
+            && m_metalLinearOutput)
+        desired = QRhiSwapChain::HDRExtendedSrgbLinear;
     if (desired != QRhiSwapChain::SDR && !m_chromeSynchronized) {
         requestChrome(true);
         m_probeRequested.store(true);
@@ -171,6 +177,10 @@ void HdrOutput::updateOutput()
         d->swapchainJustBecameRenderable = !created;
     };
     if (desired != sc->format()) changeFormat(desired);
+    if (d->rhi->backend() == QRhi::Metal
+            && sc->format() == QRhiSwapChain::HDRExtendedSrgbLinear
+            && d->hasActiveSwapchain && d->hasRenderableSwapchain)
+        m_metalLinearOutput = true;
     if (sc->format() == QRhiSwapChain::HDR10 && d->hasActiveSwapchain && d->hasRenderableSwapchain) {
         if (!m_outputPass || !m_outputPass->matches(d->rhi, sc)) {
             d->rhi->finish();
@@ -199,7 +209,7 @@ void HdrOutput::updateOutput()
     state.outputMode = sc->format() == QRhiSwapChain::HDRExtendedSrgbLinear ? 1
                : sc->format() == QRhiSwapChain::HDR10 ? 2 : 0;
     state.mode = state.outputMode == 0 ? 0 : 1;
-    state.supported = state.mode != 0 && sc->format() == desired
+    state.supported = formatSupported && state.mode != 0 && sc->format() == desired
         && (state.outputMode != 2 || bool(m_outputPass))
         && d->hasActiveSwapchain && d->hasRenderableSwapchain;
     if (!d->hasActiveSwapchain || !d->hasRenderableSwapchain)
@@ -209,7 +219,10 @@ void HdrOutput::updateOutput()
         requestChrome(false);
     }
     const auto info = sc->hdrInfo();
-    if (std::isfinite(info.sdrWhiteLevel) && info.sdrWhiteLevel >= 80.0f
+    if (state.outputMode == 1 && info.luminanceBehavior == QRhiSwapChainHdrInfo::DisplayReferred)
+        state.mode = 3;
+    if (info.luminanceBehavior != QRhiSwapChainHdrInfo::DisplayReferred
+            && std::isfinite(info.sdrWhiteLevel) && info.sdrWhiteLevel >= 80.0f
             && info.sdrWhiteLevel <= 500.0f)
         state.whiteNits = info.sdrWhiteLevel;
     publish(state);

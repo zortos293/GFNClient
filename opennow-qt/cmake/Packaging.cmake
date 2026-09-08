@@ -27,6 +27,10 @@ elseif(NOT APPLE)
     install(PROGRAMS "${OPENNOW_STREAMER_BIN_ARTIFACT}"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
 else()
+    install(PROGRAMS
+        "${OPENNOW_CORE_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-core${OPENNOW_CORE_SUFFIX}"
+        "${OPENNOW_CORE_ARTIFACT_ROOT}/${OPENNOW_CORE_PROFILE}/opennow-acceptance-verify${OPENNOW_CORE_SUFFIX}"
+        DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS")
     install(FILES "${OPENNOW_STREAMER_FFI_RUNTIME}"
         DESTINATION "${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS")
     install(PROGRAMS "${OPENNOW_STREAMER_BIN_ARTIFACT}"
@@ -56,6 +60,13 @@ if(UNIX AND NOT APPLE)
         DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo")
     install(FILES packaging/io.github.opencloudgaming.OpenNOW.svg
         DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
+endif()
+
+if(APPLE)
+    set(OPENNOW_QT_DEPLOY_TOOL_ARGS DEPLOY_TOOL_OPTIONS
+        "-executable=${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS/opennow-core"
+        "-executable=${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS/opennow-acceptance-verify"
+        "-executable=${OPENNOW_EXECUTABLE_NAME}.app/Contents/MacOS/opennow-streamer")
 endif()
 
 if(WIN32 OR APPLE)

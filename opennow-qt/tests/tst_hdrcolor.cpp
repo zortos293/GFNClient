@@ -1,16 +1,19 @@
 #include <QFile>
 #include "streaming/rendering/HdrOutputPass.h"
 #include "streaming/rendering/HdrChromeEffect.h"
+#include "streaming/rendering/HdrOutput.h"
 #include <QQmlEngine>
 #include <QQmlComponent>
 #include <QQuickWindow>
 #include <QQuickGraphicsConfiguration>
 #include <QGuiApplication>
 #include <QTest>
+#include <QSignalSpy>
 #include <QVector3D>
 #include <qfloat16.h>
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
+#include <private/qquickwindow_p.h>
 #include <cmath>
 #include <memory>
 
@@ -150,6 +153,41 @@ private slots:
         QVERIFY(std::abs(gray.x() - 1000.0f * std::pow(1.0f / 12.0f, 1.2f) / 80.0f) < 0.003f);
     }
 
+    void displayReferredLinearOutputUsesSdrWhite()
+    {
+        const auto white = convert({1, 1, 1}, 0, 3);
+        QVERIFY((white - QVector3D(1, 1, 1)).length() < 0.002f);
+        const auto gray = convert({0.5f, 0.5f, 0.5f}, 0, 3);
+        QVERIFY(std::abs(gray.x() - 0.214041f) < 0.002f);
+        for (const float nits : {80.0f, 203.0f, 1000.0f, 4000.0f, 10000.0f}) {
+            const auto value = pq(nits);
+            const auto highlight = convert({value, value, value}, 1, 3);
+            QVERIFY(std::abs(highlight.x() - nits / 203.0f)
+                    < std::max(0.004f, nits / 203.0f * 0.002f));
+        }
+        const auto hlgWhite = convert({1, 1, 1}, 2, 3);
+        QVERIFY(std::abs(hlgWhite.x() - 1000.0f / 203.0f) < 0.01f);
+        const auto red = convert({pq(1000), 0, 0}, 1, 3);
+        QVERIFY(std::abs(red.x() - 1.660491f * 1000.0f / 203.0f) < 0.02f);
+        QVERIFY(red.y() < 0.0f);
+        QVERIFY(red.z() < 0.0f);
+    }
+
+    void displayReferredFallbackStaysWithinSdrWhite()
+    {
+        float previous = -1;
+        for (const float nits : {0.0f, 80.0f, 203.0f, 1000.0f, 4000.0f, 10000.0f}) {
+            const auto value = pq(nits);
+            const auto mapped = convert({value, value, value}, 1, 3, false);
+            QVERIFY(mapped.x() > previous);
+            QVERIFY(mapped.x() <= 1.0f);
+            QVERIFY(std::isfinite(mapped.x()));
+            previous = mapped.x();
+        }
+        const auto white = convert({1, 1, 1}, 0, 3, false);
+        QVERIFY((white - QVector3D(1, 1, 1)).length() < 0.002f);
+    }
+
     void rec2020GamutIsConvertedRatherThanClipped()
     {
         const auto red = convert({pq(1000), 0, 0}, 1, 1);
@@ -278,6 +316,63 @@ private slots:
         window.showNormal();
         window.resize(96, 80);
         QVERIFY(!window.grabWindow().isNull());
+    }
+
+    void outputTracksSwapchainAndSceneGraphLifecycle()
+    {
+        QQuickWindow window;
+        HdrOutput output;
+#if defined(Q_OS_WIN)
+        QQuickGraphicsConfiguration configuration;
+        configuration.setPreferSoftwareDevice(true);
+        window.setGraphicsConfiguration(configuration);
+#endif
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+        if (window.rendererInterface()->graphicsApi() == QSGRendererInterface::Vulkan)
+            window.setVulkanInstance(&m_instance);
+#endif
+        window.setPersistentSceneGraph(false);
+        window.setPersistentGraphics(false);
+        output.attach(&window);
+        std::atomic<int> expectedMode = -1;
+        std::atomic<int> actualMode = -1;
+        connect(&window, &QQuickWindow::afterRendering, &window, [&] {
+            const auto *d = QQuickWindowPrivate::get(&window);
+            auto *sc = d->swapchain;
+            if (!sc) return;
+            int mode = 0;
+            if (sc->isFormatSupported(QRhiSwapChain::HDRExtendedSrgbLinear))
+                mode = sc->hdrInfo().luminanceBehavior == QRhiSwapChainHdrInfo::DisplayReferred ? 3 : 1;
+            else if (sc->isFormatSupported(QRhiSwapChain::HDR10))
+                mode = 1;
+            expectedMode.store(mode);
+            actualMode.store(HdrOutput::renderState().mode);
+        }, Qt::DirectConnection);
+        QSignalSpy invalidated(&window, &QQuickWindow::sceneGraphInvalidated);
+        window.resize(64, 64);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY(expectedMode.load() >= 0);
+        QTRY_COMPARE(actualMode.load(), expectedMode.load());
+        window.showFullScreen();
+        QTRY_COMPARE(window.visibility(), QWindow::FullScreen);
+        QTRY_COMPARE(actualMode.load(), expectedMode.load());
+        window.showNormal();
+        window.resize(96, 80);
+        window.hide();
+        window.releaseResources();
+        QTRY_VERIFY(!invalidated.isEmpty());
+        QCOMPARE(HdrOutput::renderState().mode, 0);
+        QVERIFY(!HdrOutput::renderState().supported);
+        expectedMode.store(-1);
+        actualMode.store(-1);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY(expectedMode.load() >= 0);
+        QTRY_COMPARE(actualMode.load(), expectedMode.load());
+        window.hide();
+        window.releaseResources();
+        QTRY_COMPARE(invalidated.size(), 2);
     }
 };
 

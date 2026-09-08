@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="opennow-qt/res/brand/opennow-mark.png" alt="OpenNOW cloud logo" width="96" height="52" />
+</p>
+
 <h1 align="center">OpenNOW</h1>
 
 <p align="center"><strong>An open-source desktop client for GeForce NOW.</strong></p>

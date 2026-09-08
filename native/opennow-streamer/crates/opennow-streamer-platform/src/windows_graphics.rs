@@ -1,9 +1,19 @@
 use opennow_streamer_platform_windows::{AdoptedD3d11Context, D3d11Frame};
 
 use crate::{
-    GraphicsApi, GraphicsContext, GraphicsFrame, GraphicsFrameInfo, GraphicsRecordCommand,
-    GraphicsRecordedFrame, GraphicsTextureFormat,
+    GraphicsApi, GraphicsColorSpace, GraphicsContext, GraphicsFrame, GraphicsFrameInfo,
+    GraphicsRecordCommand, GraphicsRecordedFrame, GraphicsTextureFormat,
 };
+
+impl From<opennow_streamer_platform_windows::D3d11ColorSpace> for GraphicsColorSpace {
+    fn from(value: opennow_streamer_platform_windows::D3d11ColorSpace) -> Self {
+        match value {
+            opennow_streamer_platform_windows::D3d11ColorSpace::Sdr709 => Self::Sdr709,
+            opennow_streamer_platform_windows::D3d11ColorSpace::Pq2020 => Self::Pq2020,
+            opennow_streamer_platform_windows::D3d11ColorSpace::Hlg2020 => Self::Hlg2020,
+        }
+    }
+}
 
 impl GraphicsFrame for D3d11Frame {
     fn info(&self) -> GraphicsFrameInfo {
@@ -45,6 +55,7 @@ impl GraphicsFrame for D3d11Frame {
         Ok(GraphicsRecordedFrame {
             resource: frame.texture as usize as u64,
             resource_view: 0,
+            color_space: frame.color_space.into(),
             texture_format: match frame.texture_format {
                 opennow_streamer_platform_windows::D3d11TextureFormat::Rgba8 => {
                     GraphicsTextureFormat::Rgba8

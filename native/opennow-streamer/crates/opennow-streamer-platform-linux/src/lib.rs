@@ -28,6 +28,8 @@ mod video;
 mod vulkan_device;
 
 #[cfg(target_os = "linux")]
+pub use video::supports_vaapi_ten_bit;
+#[cfg(target_os = "linux")]
 pub use vulkan_device::{SharedVulkanDevice, VulkanDeviceInfo};
 
 #[cfg(target_os = "linux")]
@@ -43,15 +45,15 @@ pub use capability::{
 pub use error::{Error, Result, Subsystem};
 #[cfg(target_os = "linux")]
 pub use format::{
-    ChromaLocation, ColorMatrix, ColorRange, DecodedVideoFrame, DmaBufFrame, DmaBufLayer,
-    DmaBufObject, DmaBufPlane, EncodedVideoFrame, FramePlane, PixelFormat, StreamFormat,
-    VideoCodec, VulkanImage, VulkanVideoFrame,
+    ChromaLocation, ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, DecodedVideoFrame,
+    DmaBufFrame, DmaBufLayer, DmaBufObject, DmaBufPlane, EncodedVideoFrame, FramePlane,
+    PixelFormat, StreamFormat, VideoCodec, VulkanImage, VulkanVideoFrame,
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use frame_producer::{
     CpuNv12Frame, GpuTextureFormat, ImportedNv12Frame, LinuxFrameProducer, LinuxGpuFrame,
-    LinuxGpuFrameProducer, LinuxGpuRenderResources, PreparedLinuxFrame, PreparedVulkanFrame,
-    PreparedVulkanImage, RecordedGpuFrame, VulkanRenderDevice,
+    LinuxGpuFrameProducer, LinuxGpuRenderResources, LinuxTextureColorSpace, PreparedLinuxFrame,
+    PreparedVulkanFrame, PreparedVulkanImage, RecordedGpuFrame, VulkanRenderDevice,
 };
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use presentation::{NativeSurface, VulkanPresenter};

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 5u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 6u
 #define OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION 1u
 #define OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION 2u
 #define OPENNOW_STREAMER_RENDER_COMMAND_VERSION 1u
@@ -21,6 +21,11 @@ extern "C" {
 
 #define OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8 1u
 #define OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2 2u
+#define OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA16F 3u
+
+#define OPENNOW_STREAMER_COLOR_SPACE_SDR709 0u
+#define OPENNOW_STREAMER_COLOR_SPACE_PQ2020 1u
+#define OPENNOW_STREAMER_COLOR_SPACE_HLG2020 2u
 
 #define OPENNOW_STREAMER_LOCAL_ACTION_GUIDE 1u
 #define OPENNOW_STREAMER_LOCAL_ACTION_SCREENSHOT 2u
@@ -106,7 +111,9 @@ typedef struct OpenNowStreamerFrameInfo {
 } OpenNowStreamerFrameInfo;
 
 /*
- * One GPU texture populated by record_frame. texture_format identifies RGBA8 or RGB10A2. On D3D
+ * One GPU texture populated by record_frame. texture_format identifies RGBA8, RGB10A2 or RGBA16F.
+ * color_space identifies encoded SDR Rec.709, PQ Rec.2020 or HLG Rec.2020 RGB; it is independent
+ * of texture precision. HDR is never published in RGBA8. On D3D
  * and Metal, resource is the native texture pointer encoded as uint64_t and resource_view is zero.
  * On Vulkan, resource is VkImage and resource_view is VkImageView. The producer owns both handles;
  * the frame token retains their backing slot until release.
@@ -116,6 +123,7 @@ typedef struct OpenNowStreamerRecordedFrame {
     uint64_t resource_view;
     uint32_t graphics_api;
     uint32_t texture_format;
+    uint32_t color_space;
     uint32_t width;
     uint32_t height;
     uint32_t frame_slot;

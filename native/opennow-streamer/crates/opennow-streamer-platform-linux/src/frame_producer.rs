@@ -13,6 +13,9 @@ use crate::{
 };
 
 const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
+const DRM_FORMAT_P010: u32 = u32::from_le_bytes(*b"P010");
+const DRM_FORMAT_R16: u32 = u32::from_le_bytes(*b"R16 ");
+const DRM_FORMAT_GR1616: u32 = u32::from_le_bytes(*b"GR32");
 const DRM_FORMAT_R8: u32 = u32::from_le_bytes(*b"R8  ");
 const DRM_FORMAT_GR88: u32 = u32::from_le_bytes(*b"GR88");
 const DECODE_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -32,6 +35,28 @@ pub struct VulkanRenderDevice {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxTextureColorSpace {
+    Sdr709,
+    Pq2020,
+    Hlg2020,
+}
+
+impl LinuxTextureColorSpace {
+    fn from_format(format: crate::StreamFormat) -> Result<Self> {
+        format.validate()?;
+        match (format.color_transfer, format.color_primaries) {
+            (crate::ColorTransfer::Sdr, crate::ColorPrimaries::Bt709) => Ok(Self::Sdr709),
+            (crate::ColorTransfer::Pq, crate::ColorPrimaries::Bt2020) => Ok(Self::Pq2020),
+            (crate::ColorTransfer::Hlg, crate::ColorPrimaries::Bt2020) => Ok(Self::Hlg2020),
+            _ => Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "unsupported source transfer/primaries combination",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordedGpuFrame {
     pub slot: u32,
     pub generation: u64,
@@ -41,15 +66,26 @@ pub struct RecordedGpuFrame {
     pub width: u32,
     pub height: u32,
     pub timestamp_us: u64,
+    pub color_space: LinuxTextureColorSpace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GpuTextureFormat {
     Rgba8,
     Rgb10A2,
+    Rgba16Float,
 }
 
 impl GpuTextureFormat {
+    fn for_stream_format(format: crate::StreamFormat) -> Result<Self> {
+        match LinuxTextureColorSpace::from_format(format)? {
+            LinuxTextureColorSpace::Sdr709 => Self::for_pixel_format(format.pixel_format),
+            LinuxTextureColorSpace::Pq2020 | LinuxTextureColorSpace::Hlg2020 => {
+                Ok(Self::Rgba16Float)
+            }
+        }
+    }
+
     fn for_pixel_format(format: PixelFormat) -> Result<Self> {
         match format {
             PixelFormat::Nv12 => Ok(Self::Rgba8),
@@ -64,6 +100,7 @@ impl GpuTextureFormat {
         match self {
             Self::Rgba8 => vk::Format::R8G8B8A8_UNORM,
             Self::Rgb10A2 => vk::Format::A2B10G10R10_UNORM_PACK32,
+            Self::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
         }
     }
 
@@ -365,6 +402,7 @@ impl PreparedLinuxFrame {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct DmaBufKey {
+    ten_bit: bool,
     device: u64,
     inode: u64,
     width: u32,
@@ -568,7 +606,8 @@ impl LinuxFrameProducer {
         let color_matrix = frame.format.color_matrix;
         let full_range = frame.format.color_range == crate::ColorRange::Full;
         let chroma_location = frame.format.chroma_location;
-        let texture_format = GpuTextureFormat::for_pixel_format(frame.format.pixel_format)?;
+        let color_space = LinuxTextureColorSpace::from_format(frame.format)?;
+        let texture_format = GpuTextureFormat::for_stream_format(frame.format)?;
         let prepared = self.prepare(frame)?;
         self.ensure_renderer(texture_format)?;
         self.ensure_slot(slot_index, width, height, texture_format)?;
@@ -618,11 +657,13 @@ impl LinuxFrameProducer {
             width,
             height,
             timestamp_us,
+            color_space,
         })
     }
 
     pub fn prepare(&mut self, frame: DecodedVideoFrame) -> Result<PreparedLinuxFrame> {
         frame.validate()?;
+        LinuxTextureColorSpace::from_format(frame.format)?;
         if self.device_lost {
             return Err(vk_error(
                 "embedded Vulkan device is lost",
@@ -661,12 +702,6 @@ impl LinuxFrameProducer {
                 source: frame,
             }));
         }
-        if frame.format.pixel_format != PixelFormat::Nv12 {
-            return Err(Error::unavailable(
-                Subsystem::Vulkan,
-                "embedded P010 requires direct Vulkan images",
-            ));
-        }
         let mut gpu_error = None;
         if self.dmabuf_import_supported && frame.dmabuf.is_some() {
             match self.import_dmabuf(Arc::clone(&frame)) {
@@ -676,7 +711,12 @@ impl LinuxFrameProducer {
         }
         // CPU planes are accepted only from an explicitly CPU-backed decoder,
         // never as an automatic substitute for failed native GPU interop.
-        if frame.vulkan.is_none() && frame.dmabuf.is_none() && frame.planes.len() == 2 {
+        if frame.vulkan.is_none()
+            && frame.dmabuf.is_none()
+            && frame.planes.len() == 2
+            && frame.format.pixel_format == PixelFormat::Nv12
+            && frame.format.color_transfer == crate::ColorTransfer::Sdr
+        {
             return Ok(PreparedLinuxFrame::Cpu(CpuNv12Frame {
                 luma: frame.planes[0].clone(),
                 chroma: frame.planes[1].clone(),
@@ -738,10 +778,11 @@ impl LinuxFrameProducer {
 
     fn import_dmabuf(&mut self, source: Arc<DecodedVideoFrame>) -> Result<Arc<ImportedNv12Frame>> {
         let dmabuf = source.dmabuf.as_ref().expect("DMA-BUF checked by caller");
-        let (object_index, luma, chroma) = nv12_dmabuf_layout(dmabuf)?;
+        let (object_index, luma, chroma) = yuv_dmabuf_layout(dmabuf, source.format.pixel_format)?;
         let object = dmabuf.objects[object_index];
         let (device, inode) = fd_identity(object.fd)?;
         let key = DmaBufKey {
+            ten_bit: source.format.pixel_format == PixelFormat::P010,
             device,
             inode,
             width: source.format.width,
@@ -1230,6 +1271,11 @@ impl LinuxFrameProducer {
                         } else {
                             10
                         }
+                    }
+                    PreparedLinuxFrame::DmaBuf(frame)
+                        if frame.source.format.pixel_format == PixelFormat::P010 =>
+                    {
+                        10
                     }
                     _ => 8,
                 },
@@ -1853,15 +1899,29 @@ fn validate_direct_frame(
     Ok(())
 }
 
-fn nv12_dmabuf_layout(frame: &DmaBufFrame) -> Result<(usize, DmaBufPlane, DmaBufPlane)> {
+fn yuv_dmabuf_layout(
+    frame: &DmaBufFrame,
+    pixel_format: PixelFormat,
+) -> Result<(usize, DmaBufPlane, DmaBufPlane)> {
+    let p010 = pixel_format == PixelFormat::P010;
     let (luma, chroma) = if frame.layers.len() == 1
-        && frame.layers[0].format == DRM_FORMAT_NV12
+        && frame.layers[0].format
+            == if p010 {
+                DRM_FORMAT_P010
+            } else {
+                DRM_FORMAT_NV12
+            }
         && frame.layers[0].planes.len() >= 2
     {
         (frame.layers[0].planes[0], frame.layers[0].planes[1])
     } else if frame.layers.len() >= 2
-        && frame.layers[0].format == DRM_FORMAT_R8
-        && frame.layers[1].format == DRM_FORMAT_GR88
+        && frame.layers[0].format == if p010 { DRM_FORMAT_R16 } else { DRM_FORMAT_R8 }
+        && frame.layers[1].format
+            == if p010 {
+                DRM_FORMAT_GR1616
+            } else {
+                DRM_FORMAT_GR88
+            }
         && !frame.layers[0].planes.is_empty()
         && !frame.layers[1].planes.is_empty()
     {
@@ -1869,13 +1929,13 @@ fn nv12_dmabuf_layout(frame: &DmaBufFrame) -> Result<(usize, DmaBufPlane, DmaBuf
     } else {
         return Err(Error::unavailable(
             Subsystem::Vulkan,
-            "unsupported DMA-BUF NV12 plane layout",
+            "unsupported DMA-BUF NV12/P010 plane layout",
         ));
     };
     if luma.object_index != chroma.object_index {
         return Err(Error::unavailable(
             Subsystem::Vulkan,
-            "disjoint multi-object NV12 DMA-BUF import is not supported",
+            "disjoint multi-object NV12/P010 DMA-BUF import is not supported",
         ));
     }
     Ok((luma.object_index, luma, chroma))
@@ -1914,6 +1974,7 @@ fn import_nv12_dmabuf(
             "DMA-BUF plane offset exceeds its object size".to_owned(),
         ));
     }
+    let p010 = source.format.pixel_format == PixelFormat::P010;
     let plane_layouts = [
         vk::SubresourceLayout {
             offset: luma.offset as u64,
@@ -1940,7 +2001,11 @@ fn import_nv12_dmabuf(
         .push_next(&mut drm_modifier)
         .flags(vk::ImageCreateFlags::MUTABLE_FORMAT)
         .image_type(vk::ImageType::TYPE_2D)
-        .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+        .format(if p010 {
+            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+        } else {
+            vk::Format::G8_B8R8_2PLANE_420_UNORM
+        })
         .extent(vk::Extent3D {
             width: source.format.width,
             height: source.format.height,
@@ -2015,7 +2080,11 @@ fn import_nv12_dmabuf(
     let luma_view = match create_plane_view(
         device,
         image,
-        vk::Format::R8_UNORM,
+        if p010 {
+            vk::Format::R10X6_UNORM_PACK16
+        } else {
+            vk::Format::R8_UNORM
+        },
         vk::ImageAspectFlags::PLANE_0,
     ) {
         Ok(view) => view,
@@ -2030,7 +2099,11 @@ fn import_nv12_dmabuf(
     let chroma_view = match create_plane_view(
         device,
         image,
-        vk::Format::R8G8_UNORM,
+        if p010 {
+            vk::Format::R10X6G10X6_UNORM_2PACK16
+        } else {
+            vk::Format::R8G8_UNORM
+        },
         vk::ImageAspectFlags::PLANE_1,
     ) {
         Ok(view) => view,
@@ -2120,6 +2193,10 @@ mod tests {
             GpuTextureFormat::Rgb10A2.vulkan_format(),
             vk::Format::A2B10G10R10_UNORM_PACK32
         );
+        assert_eq!(
+            GpuTextureFormat::Rgba16Float.vulkan_format(),
+            vk::Format::R16G16B16A16_SFLOAT
+        );
         assert!(GpuTextureFormat::for_pixel_format(PixelFormat::I420).is_err());
     }
 
@@ -2128,7 +2205,11 @@ mod tests {
         let required = vk::FormatFeatureFlags::COLOR_ATTACHMENT
             | vk::FormatFeatureFlags::SAMPLED_IMAGE
             | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR;
-        for format in [GpuTextureFormat::Rgba8, GpuTextureFormat::Rgb10A2] {
+        for format in [
+            GpuTextureFormat::Rgba8,
+            GpuTextureFormat::Rgb10A2,
+            GpuTextureFormat::Rgba16Float,
+        ] {
             assert!(format.validate_features(required).is_ok());
             for missing in [
                 vk::FormatFeatureFlags::COLOR_ATTACHMENT,
@@ -2143,7 +2224,11 @@ mod tests {
 
     #[test]
     fn embedded_slot_reuse_requires_matching_extent_and_precision() {
-        for texture_format in [GpuTextureFormat::Rgba8, GpuTextureFormat::Rgb10A2] {
+        for texture_format in [
+            GpuTextureFormat::Rgba8,
+            GpuTextureFormat::Rgb10A2,
+            GpuTextureFormat::Rgba16Float,
+        ] {
             let resources = FrameSlotResources {
                 width: 1920,
                 height: 1080,
@@ -2164,7 +2249,9 @@ mod tests {
             assert!(!resources.reusable(1920, 720, texture_format));
             let other_format = match texture_format {
                 GpuTextureFormat::Rgba8 => GpuTextureFormat::Rgb10A2,
-                GpuTextureFormat::Rgb10A2 => GpuTextureFormat::Rgba8,
+                GpuTextureFormat::Rgb10A2 | GpuTextureFormat::Rgba16Float => {
+                    GpuTextureFormat::Rgba8
+                }
             };
             assert!(!resources.reusable(1920, 1080, other_format));
         }
@@ -2220,10 +2307,18 @@ mod tests {
             producer.ensure_renderer(GpuTextureFormat::Rgb10A2).unwrap();
             let rgb10_pipeline = producer.renderers[&GpuTextureFormat::Rgb10A2].pipeline;
             assert_ne!(rgba8_pipeline, rgb10_pipeline);
+            producer
+                .ensure_renderer(GpuTextureFormat::Rgba16Float)
+                .unwrap();
+            let rgba16_pipeline = producer.renderers[&GpuTextureFormat::Rgba16Float].pipeline;
+            assert_ne!(rgba8_pipeline, rgba16_pipeline);
+            assert_ne!(rgb10_pipeline, rgba16_pipeline);
             for texture_format in [
                 GpuTextureFormat::Rgb10A2,
+                GpuTextureFormat::Rgba16Float,
                 GpuTextureFormat::Rgba8,
                 GpuTextureFormat::Rgb10A2,
+                GpuTextureFormat::Rgba16Float,
             ] {
                 producer.ensure_renderer(texture_format).unwrap();
                 producer.ensure_slot(0, 4, 4, texture_format).unwrap();
@@ -2240,7 +2335,7 @@ mod tests {
                 assert_eq!(other_slot.output.image, other_image);
                 assert_eq!(other_slot.texture_format, GpuTextureFormat::Rgba8);
                 assert!(other_slot.output_initialized);
-                assert_eq!(producer.renderers.len(), 2);
+                assert_eq!(producer.renderers.len(), 3);
                 assert_eq!(
                     producer.renderers[&GpuTextureFormat::Rgba8].pipeline,
                     rgba8_pipeline
@@ -2248,6 +2343,10 @@ mod tests {
                 assert_eq!(
                     producer.renderers[&GpuTextureFormat::Rgb10A2].pipeline,
                     rgb10_pipeline
+                );
+                assert_eq!(
+                    producer.renderers[&GpuTextureFormat::Rgba16Float].pipeline,
+                    rgba16_pipeline
                 );
             }
             producer
@@ -2695,7 +2794,7 @@ mod tests {
                 } else {
                     vulkan
                 });
-                let producer = LinuxGpuFrameProducer::new(1).unwrap();
+                let producer = LinuxGpuFrameProducer::new(2).unwrap();
                 let frame = producer
                     .frame(DecodedVideoFrame {
                         format: crate::StreamFormat {
@@ -2729,6 +2828,73 @@ mod tests {
                         vk::Fence::null(),
                     )
                     .unwrap();
+                device.queue_wait_idle(queue).unwrap();
+                if pixel_format == PixelFormat::P010 {
+                    for (slot, transfer, expected_color, expected_texture) in [
+                        (
+                            1,
+                            crate::ColorTransfer::Pq,
+                            LinuxTextureColorSpace::Pq2020,
+                            GpuTextureFormat::Rgba16Float,
+                        ),
+                        (
+                            0,
+                            crate::ColorTransfer::Hlg,
+                            LinuxTextureColorSpace::Hlg2020,
+                            GpuTextureFormat::Rgba16Float,
+                        ),
+                        (
+                            1,
+                            crate::ColorTransfer::Sdr,
+                            LinuxTextureColorSpace::Sdr709,
+                            GpuTextureFormat::Rgb10A2,
+                        ),
+                    ] {
+                        let mut decoded = frame.frame.clone();
+                        decoded.format.color_transfer = transfer;
+                        decoded.format.color_primaries = if transfer == crate::ColorTransfer::Sdr {
+                            crate::ColorPrimaries::Bt709
+                        } else {
+                            crate::ColorPrimaries::Bt2020
+                        };
+                        decoded.format.color_matrix = if transfer == crate::ColorTransfer::Sdr {
+                            crate::ColorMatrix::Bt709
+                        } else {
+                            crate::ColorMatrix::Bt2020
+                        };
+                        let transition = producer.frame(decoded).unwrap();
+                        device
+                            .reset_command_buffer(command, vk::CommandBufferResetFlags::empty())
+                            .unwrap();
+                        device
+                            .begin_command_buffer(command, &vk::CommandBufferBeginInfo::default())
+                            .unwrap();
+                        let result = transition
+                            .record(render, command.as_raw() as usize, slot)
+                            .unwrap();
+                        assert_eq!(result.color_space, expected_color);
+                        assert_eq!(result.texture_format, expected_texture);
+                        let state = producer.render_resources.state.lock().unwrap();
+                        let resources = state.producer.as_ref().unwrap();
+                        assert_eq!(resources.renderers.len(), 2);
+                        if transfer == crate::ColorTransfer::Pq {
+                            assert_eq!(
+                                resources.slots[0].as_ref().unwrap().output.image.as_raw(),
+                                output.image
+                            );
+                        }
+                        drop(state);
+                        device.end_command_buffer(command).unwrap();
+                        device
+                            .queue_submit(
+                                queue,
+                                &[vk::SubmitInfo::default().command_buffers(&commands)],
+                                vk::Fence::null(),
+                            )
+                            .unwrap();
+                        device.queue_wait_idle(queue).unwrap();
+                    }
+                }
                 drop(frame);
                 assert!(weak.upgrade().is_some());
                 producer.render_resources.retire().unwrap();
@@ -2756,6 +2922,88 @@ mod tests {
             frame.images[1].format = vk::Format::R8G8B8A8_UNORM.as_raw();
             assert!(validate_direct_frame(&frame, format, render).is_err());
         }
+    }
+
+    #[test]
+    fn hdr_output_precision_follows_explicit_color_metadata() {
+        let mut format = crate::StreamFormat::video_default(3840, 2160).unwrap();
+        assert_eq!(
+            GpuTextureFormat::for_stream_format(format).unwrap(),
+            GpuTextureFormat::Rgba8
+        );
+        format.pixel_format = PixelFormat::P010;
+        assert_eq!(
+            GpuTextureFormat::for_stream_format(format).unwrap(),
+            GpuTextureFormat::Rgb10A2
+        );
+        format.color_transfer = crate::ColorTransfer::Pq;
+        assert!(LinuxTextureColorSpace::from_format(format).is_err());
+        format.color_primaries = crate::ColorPrimaries::Bt2020;
+        assert_eq!(
+            LinuxTextureColorSpace::from_format(format).unwrap(),
+            LinuxTextureColorSpace::Pq2020
+        );
+        assert_eq!(
+            GpuTextureFormat::for_stream_format(format).unwrap(),
+            GpuTextureFormat::Rgba16Float
+        );
+        format.color_transfer = crate::ColorTransfer::Hlg;
+        assert_eq!(
+            LinuxTextureColorSpace::from_format(format).unwrap(),
+            LinuxTextureColorSpace::Hlg2020
+        );
+        assert_eq!(
+            GpuTextureFormat::for_stream_format(format).unwrap(),
+            GpuTextureFormat::Rgba16Float
+        );
+        format.pixel_format = PixelFormat::Nv12;
+        assert!(GpuTextureFormat::for_stream_format(format).is_err());
+        format.pixel_format = PixelFormat::P010;
+        format.color_transfer = crate::ColorTransfer::Sdr;
+        assert!(LinuxTextureColorSpace::from_format(format).is_err());
+    }
+
+    #[test]
+    fn p010_dmabuf_layout_requires_matching_storage_and_one_object() {
+        let luma = DmaBufPlane {
+            object_index: 0,
+            offset: 0,
+            pitch: 128,
+        };
+        let chroma = DmaBufPlane {
+            object_index: 0,
+            offset: 8192,
+            pitch: 128,
+        };
+        let mut frame = DmaBufFrame::new(
+            vec![],
+            vec![crate::DmaBufLayer {
+                format: DRM_FORMAT_P010,
+                planes: vec![luma, chroma],
+            }],
+            Arc::new(()),
+        );
+        assert_eq!(
+            yuv_dmabuf_layout(&frame, PixelFormat::P010).unwrap(),
+            (0, luma, chroma)
+        );
+        assert!(yuv_dmabuf_layout(&frame, PixelFormat::Nv12).is_err());
+        frame.layers = vec![
+            crate::DmaBufLayer {
+                format: DRM_FORMAT_R16,
+                planes: vec![luma],
+            },
+            crate::DmaBufLayer {
+                format: DRM_FORMAT_GR1616,
+                planes: vec![chroma],
+            },
+        ];
+        assert_eq!(
+            yuv_dmabuf_layout(&frame, PixelFormat::P010).unwrap(),
+            (0, luma, chroma)
+        );
+        frame.layers[1].planes[0].object_index = 1;
+        assert!(yuv_dmabuf_layout(&frame, PixelFormat::P010).is_err());
     }
 
     #[test]
@@ -2887,7 +3135,10 @@ mod tests {
             }],
             Arc::new(()),
         );
-        assert_eq!(nv12_dmabuf_layout(&packed).unwrap(), (0, luma, chroma));
+        assert_eq!(
+            yuv_dmabuf_layout(&packed, PixelFormat::Nv12).unwrap(),
+            (0, luma, chroma)
+        );
 
         let split = DmaBufFrame::new(
             vec![object],
@@ -2903,7 +3154,10 @@ mod tests {
             ],
             Arc::new(()),
         );
-        assert_eq!(nv12_dmabuf_layout(&split).unwrap(), (0, luma, chroma));
+        assert_eq!(
+            yuv_dmabuf_layout(&split, PixelFormat::Nv12).unwrap(),
+            (0, luma, chroma)
+        );
     }
 
     #[test]
@@ -2938,6 +3192,6 @@ mod tests {
             }],
             Arc::new(()),
         );
-        assert!(nv12_dmabuf_layout(&frame).is_err());
+        assert!(yuv_dmabuf_layout(&frame, PixelFormat::Nv12).is_err());
     }
 }

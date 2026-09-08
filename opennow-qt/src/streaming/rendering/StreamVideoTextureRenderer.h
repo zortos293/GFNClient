@@ -31,6 +31,8 @@ public:
         if (target->resourceType() == QRhiResource::SwapChainRenderTarget) {
             const auto *swapChain = static_cast<QRhiSwapChainRenderTarget *>(target)->swapChain();
             if (swapChain->format() == QRhiSwapChain::SDR) m_outputBits = 8;
+            else if (swapChain->format() == QRhiSwapChain::HDR10) m_outputBits = 10;
+            else m_outputBits = 16;
         } else if (target->resourceType() == QRhiResource::TextureRenderTarget) {
             const auto description = static_cast<QRhiTextureRenderTarget *>(target)->description();
             if (description.colorAttachmentCount() > 0) {
@@ -69,7 +71,7 @@ public:
     bool prepare(QRhiCommandBuffer *cb)
     {
         if (!m_uniforms) {
-            m_uniforms.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 112));
+            m_uniforms.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 128));
             if (!m_uniforms->create()) { m_uniforms.reset(); return false; }
         }
         if (!m_sampler) {
@@ -79,7 +81,7 @@ public:
             if (!m_sampler->create()) { m_sampler.reset(); return false; }
         }
         auto *updates = m_rhi->nextResourceUpdateBatch();
-        updates->updateDynamicBuffer(m_uniforms.get(), 0, 112, m_composition.data());
+        updates->updateDynamicBuffer(m_uniforms.get(), 0, 128, m_composition.data());
         cb->resourceUpdate(updates);
         ensurePipelines();
         return !m_imports[m_currentSlot].bindings || (m_pipelines[0] && m_pipelines[1]);
@@ -116,6 +118,22 @@ public:
     }
 
     QRhiTexture *importedTexture() const { return m_imports[m_currentSlot].texture.get(); }
+
+    void setColorSpace(int sourceSpace, int outputMode, float whiteNits, bool hdrSupported)
+    {
+        m_composition[28] = float(sourceSpace);
+        m_composition[29] = float(outputMode);
+        m_composition[30] = whiteNits;
+        m_composition[31] = hdrSupported ? 1.0f : 0.0f;
+    }
+
+    void updateColorSpace(QRhiCommandBuffer *cb, int sourceSpace)
+    {
+        m_composition[28] = float(sourceSpace);
+        auto *updates = m_rhi->nextResourceUpdateBatch();
+        updates->updateDynamicBuffer(m_uniforms.get(), 112, 16, m_composition.data() + 28);
+        cb->resourceUpdate(updates);
+    }
 
     bool selectTexture(QRhiTexture *texture)
     {
@@ -248,7 +266,7 @@ private:
     std::array<std::unique_ptr<QRhiGraphicsPipeline>, 2> m_pipelines;
     std::unique_ptr<QRhiSampler> m_sampler;
     std::unique_ptr<QRhiBuffer> m_uniforms;
-    std::array<float, 28> m_composition{};
+    std::array<float, 32> m_composition{};
     QVector<quint32> m_passFormat;
     size_t m_currentSlot = 0;
     int m_externalSlot = -1;

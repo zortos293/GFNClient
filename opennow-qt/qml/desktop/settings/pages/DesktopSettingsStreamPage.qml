@@ -52,8 +52,16 @@ Column {
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("HDR")
-            description: qsTr("HDR cannot currently be selected by the native session API")
-            DesktopSettingsToggle { checked: false; enabled: false; opacity: 0.45; Accessible.name: qsTr("HDR unavailable") }
+            description: HdrOutput.supported && !ShellStore.hdrDecoderAvailable()
+                ? qsTr("HDR requires a supported 10-bit H.265 or AV1 hardware decoder.") : HdrOutput.status
+            DesktopSettingsToggle {
+                objectName: "enableHdrToggle"
+                checked: page.settingsScreen.boolSetting("enableHdr", false)
+                enabled: (HdrOutput.supported && ShellStore.hdrDecoderAvailable()) || checked
+                opacity: enabled ? 1 : 0.45
+                Accessible.name: qsTr("HDR")
+                onValueChangedByUser: value => page.settingsScreen.setSetting("enableHdr", value)
+            }
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "drop"; title: qsTr("Color depth")

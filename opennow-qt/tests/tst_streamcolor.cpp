@@ -2,6 +2,7 @@
 
 #include <QGuiApplication>
 #include <QTest>
+#include <qfloat16.h>
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
 #include <atomic>
@@ -202,6 +203,52 @@ private slots:
         QVERIFY(target);
         StreamVideoTextureRenderer renderer;
         QCOMPARE(render(renderer, source.get(), *target), patches({0, 255}, false));
+    }
+
+    void hdrToneMappingPrecedesFinalSdrDither()
+    {
+        const QList<int> codes{128, 256, 384, 512, 580, 581, 582, 768, 769, 770, 896};
+        auto source = makeSource(codes);
+        QVERIFY(source);
+        auto target = makeTarget(QRhiTexture::RGBA8, source->pixelSize());
+        QVERIFY(target);
+        StreamVideoTextureRenderer renderer;
+        renderer.setColorSpace(1, 0, 203.0f, false);
+        const auto data = render(renderer, source.get(), *target);
+        QCOMPARE(data.size(), source->pixelSize().width() * tileSize * 4);
+        for (int patch = 0; patch < codes.size(); ++patch) {
+            const double p = std::pow(codes[patch] / 1023.0, 1.0 / 78.84375);
+            const double nits = 10000.0 * std::pow(std::max(p - 0.8359375, 0.0)
+                / (18.8515625 - 18.6875 * p), 1.0 / 0.1593017578125);
+            const double linear = nits / (203.0 + nits);
+            const double expected = 255.0 * (linear <= 0.0031308 ? linear * 12.92
+                : 1.055 * std::pow(linear, 1.0 / 2.4) - 0.055);
+            const double actual = mean(data, patch, int(codes.size()));
+            QVERIFY2(std::abs(actual - expected) <= 0.04,
+                     qPrintable(QString("PQ code %1: SDR mean %2, expected %3")
+                         .arg(codes[patch]).arg(actual).arg(expected)));
+        }
+    }
+
+    void hdrLinearOutputIsNotSdrClampedOrDithered()
+    {
+        auto source = makeSource({769});
+        QVERIFY(source);
+        auto target = makeTarget(QRhiTexture::RGBA16F, source->pixelSize());
+        QVERIFY(target);
+        StreamVideoTextureRenderer renderer;
+        renderer.setColorSpace(1, 1, 203.0f, true);
+        const auto data = render(renderer, source.get(), *target);
+        QCOMPARE(data.size(), source->pixelSize().width() * tileSize * 8);
+        const auto *pixels = reinterpret_cast<const qfloat16 *>(data.constData());
+        const float first = float(pixels[0]);
+        QVERIFY(first > 10.0f);
+        for (int pixel = 0; pixel < source->pixelSize().width() * tileSize; ++pixel) {
+            QCOMPARE(float(pixels[pixel * 4]), first);
+            QVERIFY(std::abs(float(pixels[pixel * 4 + 1]) - first) < 0.01f);
+            QVERIFY(std::abs(float(pixels[pixel * 4 + 2]) - first) < 0.01f);
+            QCOMPARE(float(pixels[pixel * 4 + 3]), 1.0f);
+        }
     }
 
     void exactEightBitInputsAreUnchanged()

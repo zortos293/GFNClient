@@ -41,6 +41,35 @@ private slots:
         QVERIFY(!client.cancel(QStringLiteral("999")));
     }
 
+    void injectsTransientHdrOutputCapability()
+    {
+        CoreClient client;
+        QSignalSpy responses(&client, &CoreClient::responseReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        for (const auto &method : {QStringLiteral("session.create"), QStringLiteral("streamer.prepare")}) {
+            for (bool supported : {false, true, false}) {
+                responses.clear();
+                client.setNativeHdrSupported(supported);
+                const QJsonObject capabilities{{QStringLiteral("nativeHdrSupported"), !supported},
+                                               {QStringLiteral("protocolVersion"), 6}};
+                const QJsonObject params{{QStringLiteral("runtimeCapabilities"), capabilities},
+                                         {QStringLiteral("appId"), QStringLiteral("123")}};
+                QVERIFY(!client.request(method, params).isEmpty());
+                QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 2'000);
+                const auto actual = responses.first().at(1).toJsonObject()
+                    .value(QStringLiteral("params")).toObject();
+                QCOMPARE(actual.value(QStringLiteral("appId")), params.value(QStringLiteral("appId")));
+                const auto runtime = actual.value(QStringLiteral("runtimeCapabilities")).toObject();
+                QCOMPARE(runtime.value(QStringLiteral("nativeHdrSupported")).toBool(), supported);
+                QCOMPARE(runtime.value(QStringLiteral("protocolVersion")).toInt(), 6);
+                QVERIFY(!actual.contains(QStringLiteral("settings")));
+                QCOMPARE(params.value(QStringLiteral("runtimeCapabilities")).toObject(), capabilities);
+            }
+        }
+        client.stop();
+    }
+
     void negotiatesAndRoutesMessages()
     {
         CoreClient client;

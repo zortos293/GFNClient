@@ -110,12 +110,24 @@ mod implementation {
             .map_err(|error| Error::backend(Subsystem::Ffmpeg, error.to_string()))?;
         let mut device = ptr::null_mut();
         let mut options = ptr::null_mut();
+        let entry = unsafe { ash::Entry::load() }
+            .map_err(|error| Error::unavailable(Subsystem::Vulkan, error.to_string()))?;
+        let extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
+            .map_err(|error| Error::unavailable(Subsystem::Vulkan, error.to_string()))?;
+        let hdr_colorspace = extensions.iter().any(|extension| unsafe {
+            CStr::from_ptr(extension.extension_name.as_ptr())
+                == ash::ext::swapchain_colorspace::NAME
+        });
+        let instance_extensions = if hdr_colorspace {
+            c"VK_KHR_surface+VK_KHR_xlib_surface+VK_KHR_xcb_surface+VK_KHR_wayland_surface+VK_EXT_swapchain_colorspace"
+        } else {
+            c"VK_KHR_surface+VK_KHR_xlib_surface+VK_KHR_xcb_surface+VK_KHR_wayland_surface"
+        };
         unsafe {
             ffi::av_dict_set(
                 &mut options,
                 c"instance_extensions".as_ptr(),
-                c"VK_KHR_surface+VK_KHR_xlib_surface+VK_KHR_xcb_surface+VK_KHR_wayland_surface"
-                    .as_ptr(),
+                instance_extensions.as_ptr(),
                 0,
             );
             ffi::av_dict_set(

@@ -30,6 +30,7 @@ public:
 
     bool initialize();
     bool adopt(QQuickWindow *window);
+    bool adoptFallback(QQuickWindow *window);
     const OpenNowStreamerVulkanDevice *handle() const;
     QString lastError() const;
     static bool validInfo(const OpenNowStreamerVulkanDeviceInfo &info);

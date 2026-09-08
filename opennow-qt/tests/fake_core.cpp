@@ -31,6 +31,9 @@ int main(int argc, char **argv)
         if (method == "core.hello") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"protocolVersion\":1,\"capabilities\":[\"settings\",\"nativeStreamer.v6\",\"nativeStreamer.ownedNvstNegotiation\"]}}\n" << std::flush;
+        } else if (method == "session.create" || method == "streamer.prepare") {
+            std::cout << "{\"type\":\"response\",\"id\":\"" << id
+                      << "\",\"ok\":true,\"result\":" << line << "}\n" << std::flush;
         } else if (method == "settings.get") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"settings\":{\"launchInConsoleMode\":"

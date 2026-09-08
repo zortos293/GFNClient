@@ -33,7 +33,7 @@ QtObject {
         settingsRequestId = coreClient.request("settings.get", {})
     }
 
-    function codecNamesFromCapabilities(capabilities) {
+    function codecNamesFromCapabilities(capabilities, hdrOnly) {
         const result = []
         const backends = capabilities && capabilities.videoBackends
             ? capabilities.videoBackends : []
@@ -48,6 +48,11 @@ QtObject {
             for (let codecIndex = 0; codecIndex < codecs.length; ++codecIndex) {
                 const codec = codecs[codecIndex]
                 const name = String(codec.codec || "").toLowerCase()
+                if (hdrOnly && (["h265", "av1"].indexOf(name) < 0
+                        || (codec.hdrSupported !== undefined && codec.hdrSupported !== true)
+                        || (Array.isArray(codec.colorQualities)
+                            ? codec.colorQualities.indexOf("10bit_420") < 0 : codec.hdrSupported !== true)))
+                    continue
                 if (codec.available && ["h264", "h265", "av1"].indexOf(name) >= 0
                         && result.indexOf(name) < 0)
                     result.push(name)
@@ -62,6 +67,11 @@ QtObject {
         // support enabled while a reconnect or a new hardware probe is pending.
         return nativeRuntimeReady
             && codecNamesFromCapabilities(nativeRuntimeCapabilities).indexOf(name) >= 0
+    }
+
+    function hdrDecoderAvailable() {
+        return nativeRuntimeReady && settings.decoderPreference !== "software"
+            && codecNamesFromCapabilities(nativeRuntimeCapabilities, true).length > 0
     }
 
     function availableCodecValues() {

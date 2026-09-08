@@ -1298,6 +1298,18 @@ fn validate_context(context: &SessionContext, id: &str) -> Result<(), Value> {
             "Session context settings and shortcuts must be objects",
         ));
     }
+    if media_stream_config(context).hdr {
+        let profile = &context.session.extra["negotiatedStreamProfile"];
+        if !matches!(profile["codec"].as_str(), Some("H265" | "HEVC" | "AV1"))
+            || profile["colorQuality"].as_str() != Some("10bit_420")
+        {
+            return Err(error(
+                Some(id),
+                "invalid-context",
+                "HDR requires an accepted HEVC/AV1 10-bit 4:2:0 profile",
+            ));
+        }
+    }
     if let Some(endpoint) = &context.session.media_connection_info {
         if endpoint.ip.trim().is_empty() || endpoint.port == 0 || endpoint.port > u16::MAX.into() {
             return Err(error(
@@ -2155,9 +2167,17 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .and_then(|profile| profile.get("enableCloudGsync"))
         .and_then(Value::as_bool);
     let cloud_gsync = requested_cloud_gsync && negotiated_cloud_gsync.unwrap_or(true);
+    let hdr = context
+        .session
+        .extra
+        .get("negotiatedStreamProfile")
+        .and_then(|profile| profile.get("enableHdr"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     MediaStreamConfig {
         codec,
         color_quality,
+        hdr,
         width: resolution.0,
         height: resolution.1,
         fps,
@@ -2991,6 +3011,42 @@ mod tests {
     }
 
     #[test]
+    fn media_hdr_uses_only_accepted_profile_including_sdr_fallback() {
+        let mut value = synthetic_context("hdr-media-config", json!([]));
+        value["settings"] = json!({"enableHdr":true,"codec":"H264","colorQuality":"8bit_420"});
+        value["session"]["negotiatedStreamProfile"] = json!({
+            "codec":"H265","colorQuality":"10bit_420","enableHdr":true
+        });
+        let context: SessionContext = serde_json::from_value(value.clone()).unwrap();
+        assert!(media_stream_config(&context).hdr);
+        assert_eq!(
+            media_stream_config(&context).color_quality,
+            MediaColorQuality::TenBit420
+        );
+        assert!(validate_context(&context, "hdr").is_ok());
+        value["settings"]["enableHdr"] = json!(false);
+        let context: SessionContext = serde_json::from_value(value.clone()).unwrap();
+        assert!(media_stream_config(&context).hdr);
+        value["settings"]["enableHdr"] = json!(true);
+        for accepted in [json!(false), Value::Null] {
+            value["session"]["negotiatedStreamProfile"]["enableHdr"] = accepted;
+            let context: SessionContext = serde_json::from_value(value.clone()).unwrap();
+            assert!(!media_stream_config(&context).hdr);
+        }
+        value["session"]["negotiatedStreamProfile"]["enableHdr"] = json!(true);
+        for (codec, color) in [
+            ("H264", "10bit_420"),
+            ("H265", "8bit_420"),
+            ("H265", "10bit_444"),
+        ] {
+            value["session"]["negotiatedStreamProfile"]["codec"] = json!(codec);
+            value["session"]["negotiatedStreamProfile"]["colorQuality"] = json!(color);
+            let context: SessionContext = serde_json::from_value(value.clone()).unwrap();
+            assert!(validate_context(&context, "invalid-hdr").is_err());
+        }
+    }
+
+    #[test]
     fn microphone_commands_require_an_active_negotiated_session() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut engine = Engine::new(sender);
@@ -3047,6 +3103,7 @@ mod tests {
             MediaStreamConfig {
                 codec: MediaVideoCodec::H264,
                 color_quality: MediaColorQuality::EightBit420,
+                hdr: false,
                 width: 2560,
                 height: 1440,
                 fps: 120,

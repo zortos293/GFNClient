@@ -86,13 +86,22 @@ impl CloudMatchService {
                 .query_pairs_mut()
                 .append_pair("keyboardLayout", &keyboard_layout)
                 .append_pair("languageCode", &language);
-            let resume = json!({
+            let mut resume = json!({
                 "action": 2,
                 "data": "RESUME",
                 "sessionRequestData": build_create_body(&app_id, params, settings, device_id)["sessionRequestData"],
                 "metaData": null,
                 "adUpdates": null
             });
+            if let Some(hdr_mode) = accepted_hdr_mode(&payload["session"]) {
+                resume["sessionRequestData"]["sdrHdrMode"] = json!(hdr_mode);
+                resume["sessionRequestData"]["clientRequestMonitorSettings"][0]["sdrHdrMode"] =
+                    json!(hdr_mode);
+                resume["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"] =
+                    monitor_display_data(hdr_mode == 1);
+                resume["sessionRequestData"]["requestedStreamingFeatures"]["trueHdr"] =
+                    json!(hdr_mode == 1);
+            }
             // Fresh native sessions remain pollable even if this compatibility
             // mutation is not accepted by an older CloudMatch pool.
             let _ = client
@@ -656,6 +665,10 @@ fn build_resume_body(app_id: &str, session: &Value, settings: &Value, device_id:
         request.insert(key.to_owned(), source[key].clone());
     }
     request.insert(
+        "sdrHdrMode".to_owned(),
+        json!(accepted_hdr_mode(session).unwrap_or(0)),
+    );
+    request.insert(
         "metaData".to_owned(),
         json!(
             source["metaData"]
@@ -680,16 +693,35 @@ fn build_resume_body(app_id: &str, session: &Value, settings: &Value, device_id:
         "metaData":null, "adUpdates":null})
 }
 
+fn monitor_display_data(hdr: bool) -> Value {
+    json!({
+        "displayPrimaryX0":0,"displayPrimaryY0":0,"displayPrimaryX1":0,"displayPrimaryY1":0,
+        "displayPrimaryX2":0,"displayPrimaryY2":0,"displayWhitePointX":0,"displayWhitePointY":0,
+        "desiredContentMaxLuminance":if hdr { 1000 } else { 0 },
+        "desiredContentMinLuminance":0,
+        "desiredContentMaxFrameAverageLuminance":if hdr { 400 } else { 0 }
+    })
+}
+
 fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: &str) -> Value {
     let (width, height) = parse_resolution(&setting_string(settings, "resolution", "1920x1080"));
     let fps = setting_i64(settings, "fps", 60).clamp(30, 240);
     let bitrate = setting_i64(settings, "maxBitrateMbps", 75).clamp(1, 200) * 1000;
     let codec = codec_wire(&setting_string(settings, "codec", "auto"));
+    let hdr = setting_bool(settings, "enableHdr", false)
+        && setting_bool(settings, "nativeHdrSupported", false)
+        && matches!(codec, 2 | 3)
+        && setting_string(settings, "decoderPreference", "auto") != "software"
+        && !matches!(
+            setting_string(settings, "nativeVideoBackend", "auto").as_str(),
+            "software" | "ffmpeg"
+        );
     let requested_color = color_quality_wire(&setting_string(settings, "colorQuality", "8bit_420"));
     // Keep a manually selected codec fixed. H.264 supports only 8-bit 4:2:0,
     // while the official Windows client exposes AV1 at 4:2:0 only. Constrain
     // color instead of silently switching an explicit codec back to Auto/HEVC.
     let (bit_depth, chroma) = match codec {
+        _ if hdr => (1, 0),
         1 => (0, 0),
         3 => (requested_color.0, 0),
         _ => requested_color,
@@ -730,7 +762,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "audioChannelCount":2
     });
     features["mouseMovementFlags"] = json!(0);
-    features["trueHdr"] = json!(false);
+    features["trueHdr"] = json!(hdr);
     features["hidDevices"] = Value::Null;
     features["qosPolicy"] = json!(0);
     features["touchSupport"] = json!(false);
@@ -752,19 +784,15 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "clientRequestMonitorSettings":[{
             "monitorId":0,"positionX":0,"positionY":0,
             "widthInPixels":width,"heightInPixels":height,"framesPerSecond":fps,
-            "sdrHdrMode":0,
-            "displayData":{
-                "displayPrimaryX0":0,"displayPrimaryY0":0,"displayPrimaryX1":0,"displayPrimaryY1":0,
-                "displayPrimaryX2":0,"displayPrimaryY2":0,"displayWhitePointX":0,"displayWhitePointY":0,
-                "desiredContentMaxLuminance":0,"desiredContentMinLuminance":0,"desiredContentMaxFrameAverageLuminance":0
-            },
+            "sdrHdrMode":if hdr { 1 } else { 0 },
+            "displayData":monitor_display_data(hdr),
             "hdr10PlusGamingData":null,
             "dpi":if cfg!(target_os = "macos") { 144 } else { 96 }
         }],
         "useOps":true,
         "audioMode":2,
         "metaData":metadata,
-        "sdrHdrMode":0,
+        "sdrHdrMode":if hdr { 1 } else { 0 },
         "clientDisplayHdrCapabilities":null,
         "surroundAudioInfo":0,
         "remoteControllersBitmap":0,
@@ -879,7 +907,8 @@ fn session_info(
     } else {
         &session["sessionRequestData"]["requestedStreamingFeatures"]
     };
-    let negotiated = negotiated_profile(monitor, features);
+    let mut negotiated = negotiated_profile(monitor, features);
+    negotiated["enableHdr"] = json!(accepted_hdr_mode(session) == Some(1));
     let ad_state = normalize_ad_state(session);
     Ok(json!({
         "sessionId":session_id,
@@ -936,6 +965,17 @@ fn normalize_ad_state(session: &Value) -> Value {
             "opportunity":opportunity
         })
     }
+}
+
+fn accepted_hdr_mode(session: &Value) -> Option<i64> {
+    value_i64(&session["sdrHdrMode"])
+        .or_else(|| {
+            value_i64(
+                &session["sessionRequestData"]["clientRequestMonitorSettings"][0]["sdrHdrMode"],
+            )
+        })
+        .or_else(|| value_i64(&session["sessionRequestData"]["sdrHdrMode"]))
+        .map(|mode| i64::from(mode == 1))
 }
 
 fn negotiated_profile(monitor: &Value, features: &Value) -> Value {
@@ -1525,6 +1565,100 @@ mod tests {
             trusted_cloudmatch_base(direct.as_str()).is_err(),
             "arbitrary caller-supplied IPs must remain rejected"
         );
+    }
+
+    #[test]
+    fn hdr_request_requires_resolved_runtime_opt_in_and_uses_cloudmatch_enums() {
+        let capabilities = json!({"protocolVersion":6,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"d3d11","available":true,"codecs":[
+                {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
+            ]
+        }]});
+        let settings = crate::streamer::StreamerService::embedded_session_settings(
+            &json!({"enableHdr":true}),
+            &capabilities,
+        )
+        .unwrap();
+        let body = build_create_body("123", &json!({}), &settings, "device");
+        let request = &body["sessionRequestData"];
+        assert_eq!(request["sdrHdrMode"], 1);
+        assert_eq!(request["clientRequestMonitorSettings"][0]["sdrHdrMode"], 1);
+        assert_eq!(request["requestedStreamingFeatures"]["trueHdr"], true);
+        assert_eq!(request["requestedStreamingFeatures"]["codec"], 2);
+        assert_eq!(request["requestedStreamingFeatures"]["bitDepth"], 1);
+        assert_eq!(request["requestedStreamingFeatures"]["chromaFormat"], 0);
+        let display_data = &request["clientRequestMonitorSettings"][0]["displayData"];
+        assert_eq!(display_data["desiredContentMaxLuminance"], 1000);
+        assert_eq!(display_data["desiredContentMaxFrameAverageLuminance"], 400);
+        assert_eq!(display_data["desiredContentMinLuminance"], 0);
+        for settings in [
+            json!({}),
+            json!({"codec":"h265","enableHdr":true}),
+            json!({"codec":"h265","nativeHdrSupported":true}),
+            json!({"codec":"h264","enableHdr":true,"nativeHdrSupported":true}),
+            json!({"codec":"h265","enableHdr":true,"nativeHdrSupported":true,"decoderPreference":"software"}),
+        ] {
+            let body = build_create_body("123", &json!({}), &settings, "device");
+            assert_eq!(body["sessionRequestData"]["sdrHdrMode"], 0);
+            let display_data =
+                &body["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
+            assert_eq!(display_data["desiredContentMaxLuminance"], 0);
+            assert_eq!(display_data["desiredContentMaxFrameAverageLuminance"], 0);
+            assert_eq!(display_data["desiredContentMinLuminance"], 0);
+            assert_eq!(
+                body["sessionRequestData"]["requestedStreamingFeatures"]["trueHdr"],
+                false
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_hdr_mode_survives_resume_and_explicit_sdr_fallback_wins() {
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        let mut payload = json!({"session":{"sessionId":"hdr-seat","status":2,
+            "sessionRequestData":{"sdrHdrMode":1,"clientRequestMonitorSettings":[{"sdrHdrMode":1}]},
+            "finalizedStreamingFeatures":{"codec":2,"bitDepth":1,"chromaFormat":0}}});
+        let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+        assert_eq!(info["negotiatedStreamProfile"]["enableHdr"], true);
+        let resumed = build_resume_body(
+            "123",
+            &payload["session"],
+            &json!({"enableHdr":false}),
+            "device",
+        );
+        assert_eq!(resumed["sessionRequestData"]["sdrHdrMode"], 1);
+        assert!(
+            resumed["sessionRequestData"]
+                .get("clientRequestMonitorSettings")
+                .is_none()
+        );
+        assert!(
+            resumed["sessionRequestData"]
+                .get("requestedStreamingFeatures")
+                .is_none()
+        );
+        payload["session"]["sdrHdrMode"] = json!(0);
+        let info = session_info(&payload, &base, "auto", "123", "device").unwrap();
+        assert_eq!(info["negotiatedStreamProfile"]["enableHdr"], false);
+        let resumed = build_resume_body(
+            "123",
+            &payload["session"],
+            &json!({"enableHdr":true,"nativeHdrSupported":true}),
+            "device",
+        );
+        assert_eq!(resumed["sessionRequestData"]["sdrHdrMode"], 0);
+        assert!(
+            resumed["sessionRequestData"]
+                .get("clientRequestMonitorSettings")
+                .is_none()
+        );
+        assert!(
+            resumed["sessionRequestData"]
+                .get("requestedStreamingFeatures")
+                .is_none()
+        );
+        assert_eq!(accepted_hdr_mode(&json!({})), None);
+        assert_eq!(accepted_hdr_mode(&json!({"sdrHdrMode":2})), Some(0));
     }
 
     #[test]

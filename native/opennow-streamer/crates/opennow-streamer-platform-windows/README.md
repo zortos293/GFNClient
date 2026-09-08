@@ -20,6 +20,28 @@ capability is reported only when its selected decoder class and the complete pre
 operation succeed. `WindowsBackend::probe` remains the D3D11 compatibility entry point.
 Non-Windows builds expose the same typed API but report the backend as unavailable.
 
+`CapabilityProbe.h265_hdr`, `av1_hdr`, and `supports_hdr(codec)` report HDR separately from
+SDR codec support. HDR requires the probe device to support P010 hardware decode, an activatable
+hardware MFT configured for actual P010/PQ output, and the embedded video processor's exact
+P010/PQ-to-RGB10A2/PQ conversion. These checks use the default adapter selected by `probe_for`;
+the Qt-adopted device is checked independently when its decoder and converter are created.
+The capability probe does not establish that a monitor or the Qt swapchain supports HDR.
+
+## Embedded HDR color contract
+
+`VideoFormat` carries explicit transfer function, primaries, matrix, range, and chroma siting.
+Callers supply the negotiated defaults, including `VideoChromaSiting::Left` for GFN. Actual
+Media Foundation output metadata overrides these defaults; unsupported metadata and HDR-to-SDR
+decoder downgrades fail rather than being mislabeled. HDR requires ten-bit BT.2020 output;
+ten-bit SDR remains SDR. Color-only changes invalidate converter resources and texture slots.
+
+The embedded renderer publishes `D3d11RecordedFrame` with `texture_format: Rgb10A2` and
+`color_space: Pq2020` for HDR. PQ uses the matching LEFT or TOPLEFT input colorspace. HLG can
+convert to PQ only for TOPLEFT siting and explicit driver support; HLG with LEFT siting and
+full-range PQ fail because no exact DXGI input colorspace is available. SDR uses BT.709 RGB,
+with RGBA8 for eight-bit input and RGB10A2 for ten-bit input.
+The standalone HWND presenter explicitly rejects HDR; HDR presentation belongs to the embedded
+Qt path, which must preserve the recorded texture's color interpretation through scan-out.
 ## Embedded Qt SDR conversion
 
 The embedded frame producer converts NV12/AYUV to RGBA8 and P010/Y410 to RGB10A2,
@@ -61,7 +83,8 @@ the MFT name and activation, D3D manager, or input-type stage where applicable.
 use std::num::NonZeroU32;
 use opennow_streamer_platform_windows::{
     AudioFormat, BackendConfig, Bounds, OwnedWindow, SurfaceTarget, VideoCodec, VideoFormat,
-    WindowsBackend,
+    VideoChromaFormat, VideoChromaSiting, VideoPixelFormat, VideoTransferFunction,
+    VideoColorPrimaries, VideoColorMatrix, WindowsBackend,
 };
 
 let backend = WindowsBackend::start(BackendConfig {
@@ -72,6 +95,13 @@ let backend = WindowsBackend::start(BackendConfig {
         frame_rate_numerator: NonZeroU32::new(120).unwrap(),
         frame_rate_denominator: NonZeroU32::new(1).unwrap(),
         average_bitrate: 75_000_000,
+        pixel_format: VideoPixelFormat::Nv12,
+        chroma_format: VideoChromaFormat::Cs420,
+        chroma_siting: VideoChromaSiting::Left,
+        full_range: false,
+        transfer_function: VideoTransferFunction::Sdr,
+        color_primaries: VideoColorPrimaries::Bt709,
+        color_matrix: VideoColorMatrix::Bt709,
     },
     audio: AudioFormat {
         sample_rate: 48_000,

@@ -23,10 +23,12 @@ use ::windows::Win32::Graphics::Direct3D11::{
     ID3D11VideoProcessorOutputView,
 };
 use ::windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709,
-    DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709, DXGI_FORMAT, DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12,
+    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_FORMAT, DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12,
     DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_Y410,
     DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+};
+use ::windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_COLOR_SPACE_TYPE,
 };
 use ::windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use ::windows::Win32::Media::MediaFoundation::{
@@ -45,9 +47,10 @@ use ::windows::core::{IUnknown, Interface};
 use crate::queue::BoundedQueue;
 use crate::{
     ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendError, BackendEvent, EncodedVideoFrame, PushOutcome,
-    Subsystem, VideoFormat, VideoPixelFormat, WindowsDecoderMode,
+    Subsystem, VideoFormat, VideoPixelFormat, VideoTransferFunction, WindowsDecoderMode,
 };
 
+use super::color::input_color_space;
 use super::decoder::{DecodedVideoFrame, Decoder, DecoderDevice};
 
 // Async Media Foundation transforms do not provide a waitable output handle. Polling at one
@@ -122,9 +125,17 @@ pub enum D3d11TextureFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum D3d11ColorSpace {
+    Sdr709,
+    Pq2020,
+    Hlg2020,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct D3d11RecordedFrame {
     pub texture: *mut c_void,
     pub texture_format: D3d11TextureFormat,
+    pub color_space: D3d11ColorSpace,
     pub width: u32,
     pub height: u32,
     pub frame_slot: u32,
@@ -288,7 +299,7 @@ impl AdoptedResources {
             .cast()
             .map_err(|error| format!("Qt immediate context has no video interface: {error}"))?;
         let video_context_1 = video_context.cast().map_err(|error| {
-            format!("Qt D3D11 context cannot configure explicit SDR color spaces: {error}")
+            format!("Qt D3D11 context cannot configure explicit color spaces: {error}")
         })?;
         let mut reset_token = 0;
         let mut manager = None;
@@ -484,6 +495,7 @@ impl AdoptedResources {
         Ok(D3d11RecordedFrame {
             texture: active_slot.texture.as_raw(),
             texture_format: d3d11_texture_format(processor.output_format),
+            color_space: recorded_color_space(self.format.transfer_function),
             width: processor.output_width,
             height: processor.output_height,
             frame_slot,
@@ -502,7 +514,11 @@ impl AdoptedResources {
         output_width: u32,
         output_height: u32,
     ) -> Result<(), String> {
-        let output_format = output_dxgi_format(self.format.pixel_format);
+        self.format
+            .validate_color()
+            .map_err(|error| error.to_string())?;
+        let input_color_space = input_color_space(self.format)?;
+        let output_format = output_dxgi_format(self.format);
         if self.processor.as_ref().is_some_and(|processor| {
             processor.input_width == input_width
                 && processor.input_height == input_height
@@ -544,12 +560,16 @@ impl AdoptedResources {
             self.video_context_1.VideoProcessorSetStreamColorSpace1(
                 &processor,
                 0,
-                input_color_space(self.format),
+                input_color_space,
             );
             self.video_context_1.VideoProcessorSetOutputColorSpace1(
                 &processor,
-                DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+                output_color_space(self.format.transfer_function),
             );
+            if self.format.transfer_function != VideoTransferFunction::Sdr {
+                self.video_context_1
+                    .VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
+            }
         }
         // QRhi owns slot reuse. Allocate only the slots it actually visits;
         // reserving the ABI maximum would waste seven 4K textures on D3D11.
@@ -568,6 +588,25 @@ impl AdoptedResources {
         });
         Ok(())
     }
+}
+
+pub(super) unsafe fn probe_hdr_conversion(
+    adopted: AdoptedD3d11Context,
+    format: VideoFormat,
+) -> Result<(), String> {
+    if format.transfer_function != VideoTransferFunction::Pq
+        || format.pixel_format != VideoPixelFormat::P010
+    {
+        return Err("HDR10 capability requires actual P010/PQ decoder output".to_owned());
+    }
+    let mut resources = unsafe { AdoptedResources::new(adopted, format)? };
+    resources.ensure_processor(
+        format.width,
+        format.height,
+        DXGI_FORMAT_P010,
+        format.width,
+        format.height,
+    )
 }
 
 fn enable_multithread_protection(context: &ID3D11DeviceContext) -> Result<(), String> {
@@ -1284,6 +1323,7 @@ fn validate_conversion(
     output_format: DXGI_FORMAT,
     format: VideoFormat,
 ) -> Result<(), String> {
+    let input_color_space = input_color_space(format)?;
     unsafe {
         let support = enumerator
             .CheckVideoProcessorFormat(input_format)
@@ -1305,35 +1345,50 @@ fn validate_conversion(
         }
         let enumerator_1 = enumerator
             .cast::<ID3D11VideoProcessorEnumerator1>()
-            .map_err(|error| format!("D3D11 cannot validate explicit SDR conversion: {error}"))?;
+            .map_err(|error| format!("D3D11 cannot validate explicit color conversion: {error}"))?;
         let supported = enumerator_1
             .CheckVideoProcessorFormatConversion(
                 input_format,
-                input_color_space(format),
+                input_color_space,
                 output_format,
-                DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+                output_color_space(format.transfer_function),
             )
             .map_err(|error| format!("query D3D11 embedded conversion: {error}"))?;
         if !supported.as_bool() {
             return Err(format!(
-                "D3D11 driver rejects embedded SDR video conversion {} ({}) -> {} (full-range RGB BT.709)",
+                "D3D11 driver rejects embedded video conversion {} (color space {}) -> {} (color space {})",
                 input_format.0,
-                if format.full_range {
-                    "full-range BT.709"
-                } else {
-                    "limited-range BT.709"
-                },
-                output_format.0
+                input_color_space.0,
+                output_format.0,
+                output_color_space(format.transfer_function).0,
             ));
         }
     }
     Ok(())
 }
 
-fn output_dxgi_format(format: VideoPixelFormat) -> DXGI_FORMAT {
-    match format {
-        VideoPixelFormat::Nv12 | VideoPixelFormat::Ayuv => DXGI_FORMAT_R8G8B8A8_UNORM,
-        VideoPixelFormat::P010 | VideoPixelFormat::Y410 => DXGI_FORMAT_R10G10B10A2_UNORM,
+fn output_dxgi_format(format: VideoFormat) -> DXGI_FORMAT {
+    if format.transfer_function != VideoTransferFunction::Sdr || format.pixel_format.bit_depth() > 8
+    {
+        DXGI_FORMAT_R10G10B10A2_UNORM
+    } else {
+        DXGI_FORMAT_R8G8B8A8_UNORM
+    }
+}
+
+fn output_color_space(transfer: VideoTransferFunction) -> DXGI_COLOR_SPACE_TYPE {
+    match transfer {
+        VideoTransferFunction::Sdr => DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+        VideoTransferFunction::Pq | VideoTransferFunction::Hlg => {
+            DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+        }
+    }
+}
+
+fn recorded_color_space(transfer: VideoTransferFunction) -> D3d11ColorSpace {
+    match transfer {
+        VideoTransferFunction::Sdr => D3d11ColorSpace::Sdr709,
+        VideoTransferFunction::Pq | VideoTransferFunction::Hlg => D3d11ColorSpace::Pq2020,
     }
 }
 
@@ -1342,16 +1397,6 @@ fn d3d11_texture_format(format: DXGI_FORMAT) -> D3d11TextureFormat {
         D3d11TextureFormat::Rgb10A2
     } else {
         D3d11TextureFormat::Rgba8
-    }
-}
-
-fn input_color_space(
-    format: VideoFormat,
-) -> ::windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_TYPE {
-    if format.full_range {
-        DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
-    } else {
-        DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
     }
 }
 
@@ -1377,7 +1422,14 @@ fn chroma_format(format: VideoPixelFormat) -> crate::VideoChromaFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::VideoChromaFormat;
+    use crate::{VideoChromaFormat, VideoChromaSiting, VideoColorMatrix};
+    use ::windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709, DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020,
+        DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
+        DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020,
+        DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020,
+        DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020,
+    };
 
     #[test]
     fn padded_decoder_frames_crop_and_reuse_processor_views_and_slots() {
@@ -1419,6 +1471,10 @@ mod tests {
             pixel_format: VideoPixelFormat::Nv12,
             chroma_format: VideoChromaFormat::Cs420,
             full_range: true,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: crate::VideoTransferFunction::Sdr,
+            color_primaries: crate::VideoColorPrimaries::Bt709,
+            color_matrix: crate::VideoColorMatrix::Bt709,
         };
         for (allocation_width, aperture) in [
             (
@@ -1690,6 +1746,10 @@ mod tests {
             pixel_format: VideoPixelFormat::Nv12,
             chroma_format: VideoChromaFormat::Cs420,
             full_range: false,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: crate::VideoTransferFunction::Sdr,
+            color_primaries: crate::VideoColorPrimaries::Bt709,
+            color_matrix: crate::VideoColorMatrix::Bt709,
         };
         let mut resources = unsafe {
             AdoptedResources::new(
@@ -1800,6 +1860,38 @@ mod tests {
             baseline_refs,
             "frame release must return its lease without leaking samples"
         );
+        for changed in [
+            VideoFormat {
+                chroma_siting: VideoChromaSiting::TopLeft,
+                ..format
+            },
+            VideoFormat {
+                full_range: true,
+                ..format
+            },
+            VideoFormat {
+                transfer_function: VideoTransferFunction::Pq,
+                ..format
+            },
+            VideoFormat {
+                color_primaries: crate::VideoColorPrimaries::Bt2020,
+                ..format
+            },
+            VideoFormat {
+                color_matrix: VideoColorMatrix::Bt601,
+                ..format
+            },
+        ] {
+            resources.reconfigure(changed);
+            assert!(
+                resources.processor.is_none(),
+                "color changes must discard converters and texture slots"
+            );
+            resources.reconfigure(format);
+            resources
+                .ensure_processor(64, 64, DXGI_FORMAT_NV12, 64, 64)
+                .unwrap();
+        }
         resources.reconfigure(VideoFormat {
             width: 128,
             ..format
@@ -1857,7 +1949,7 @@ mod tests {
                 };
                 resources.reconfigure(format);
                 assert!(resources.processor.is_none());
-                let output_format = output_dxgi_format(pixel_format);
+                let output_format = output_dxgi_format(format);
                 let supported = unsafe {
                     enumerator.CheckVideoProcessorFormat(input_format).unwrap()
                         & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0 as u32
@@ -1868,7 +1960,7 @@ mod tests {
                         && enumerator_1
                             .CheckVideoProcessorFormatConversion(
                                 input_format,
-                                input_color_space(format),
+                                input_color_space(format).unwrap(),
                                 output_format,
                                 DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
                             )
@@ -1894,7 +1986,7 @@ mod tests {
                         resources
                             .video_context_1
                             .VideoProcessorGetStreamColorSpace1(&processor.processor, 0,),
-                        input_color_space(format)
+                        input_color_space(format).unwrap()
                     );
                     assert_eq!(
                         resources
@@ -2014,13 +2106,150 @@ mod tests {
         );
         assert_ne!(description.BindFlags & D3D11_BIND_RENDER_TARGET.0 as u32, 0);
 
-        let ten_bit =
-            frame_slot_description(2560, 1440, output_dxgi_format(VideoPixelFormat::P010));
+        let p010 = VideoFormat {
+            pixel_format: VideoPixelFormat::P010,
+            ..color_test_format()
+        };
+        let y410 = VideoFormat {
+            pixel_format: VideoPixelFormat::Y410,
+            ..color_test_format()
+        };
+        let ten_bit = frame_slot_description(2560, 1440, output_dxgi_format(p010));
         assert_eq!(ten_bit.Format, DXGI_FORMAT_R10G10B10A2_UNORM);
-        assert_eq!(output_dxgi_format(VideoPixelFormat::Y410), ten_bit.Format);
+        assert_eq!(output_dxgi_format(y410), ten_bit.Format);
         assert_eq!(
             d3d11_texture_format(ten_bit.Format),
             D3d11TextureFormat::Rgb10A2
+        );
+    }
+
+    fn color_test_format() -> VideoFormat {
+        VideoFormat {
+            codec: crate::VideoCodec::H265,
+            width: 1920,
+            height: 1080,
+            frame_rate_numerator: std::num::NonZeroU32::new(60).unwrap(),
+            frame_rate_denominator: std::num::NonZeroU32::new(1).unwrap(),
+            average_bitrate: 20_000_000,
+            pixel_format: VideoPixelFormat::P010,
+            chroma_format: VideoChromaFormat::Cs420,
+            full_range: false,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: VideoTransferFunction::Sdr,
+            color_primaries: crate::VideoColorPrimaries::Bt709,
+            color_matrix: VideoColorMatrix::Bt709,
+        }
+    }
+
+    #[test]
+    fn hdr_capability_probe_requires_actual_p010_pq_before_gpu_checks() {
+        for format in [
+            color_test_format(),
+            VideoFormat {
+                transfer_function: VideoTransferFunction::Hlg,
+                ..color_test_format()
+            },
+            VideoFormat {
+                transfer_function: VideoTransferFunction::Pq,
+                pixel_format: VideoPixelFormat::Nv12,
+                ..color_test_format()
+            },
+        ] {
+            let result = unsafe {
+                probe_hdr_conversion(
+                    AdoptedD3d11Context {
+                        device: std::ptr::null_mut(),
+                        immediate_context: std::ptr::null_mut(),
+                    },
+                    format,
+                )
+            };
+            assert_eq!(
+                result.unwrap_err(),
+                "HDR10 capability requires actual P010/PQ decoder output"
+            );
+        }
+    }
+
+    #[test]
+    fn hdr_targets_preserve_pq_bt2020_in_rgb10a2() {
+        for transfer in [VideoTransferFunction::Pq, VideoTransferFunction::Hlg] {
+            let format = VideoFormat {
+                transfer_function: transfer,
+                color_primaries: crate::VideoColorPrimaries::Bt2020,
+                color_matrix: VideoColorMatrix::Bt2020,
+                ..color_test_format()
+            };
+            assert_eq!(output_dxgi_format(format), DXGI_FORMAT_R10G10B10A2_UNORM);
+            assert_eq!(
+                output_color_space(transfer),
+                DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+            );
+            assert_eq!(recorded_color_space(transfer), D3d11ColorSpace::Pq2020);
+            assert_eq!(
+                d3d11_texture_format(output_dxgi_format(format)),
+                D3d11TextureFormat::Rgb10A2
+            );
+        }
+    }
+
+    #[test]
+    fn hdr_input_spaces_preserve_transfer_and_range() {
+        let pq = VideoFormat {
+            transfer_function: VideoTransferFunction::Pq,
+            color_primaries: crate::VideoColorPrimaries::Bt2020,
+            color_matrix: VideoColorMatrix::Bt2020,
+            ..color_test_format()
+        };
+        assert_eq!(
+            input_color_space(pq).unwrap(),
+            DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020
+        );
+        assert_eq!(
+            input_color_space(VideoFormat {
+                chroma_siting: VideoChromaSiting::TopLeft,
+                ..pq
+            })
+            .unwrap(),
+            DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020
+        );
+        assert!(
+            input_color_space(VideoFormat {
+                full_range: true,
+                ..pq
+            })
+            .is_err()
+        );
+        let hlg = VideoFormat {
+            transfer_function: VideoTransferFunction::Hlg,
+            chroma_siting: VideoChromaSiting::TopLeft,
+            ..pq
+        };
+        assert!(
+            input_color_space(VideoFormat {
+                chroma_siting: VideoChromaSiting::Left,
+                ..hlg
+            })
+            .is_err()
+        );
+        assert_eq!(
+            input_color_space(hlg).unwrap(),
+            DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020
+        );
+        assert_eq!(
+            input_color_space(VideoFormat {
+                full_range: true,
+                ..hlg
+            })
+            .unwrap(),
+            DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020
+        );
+        assert!(
+            input_color_space(VideoFormat {
+                pixel_format: VideoPixelFormat::Nv12,
+                ..pq
+            })
+            .is_err()
         );
     }
 
@@ -2063,11 +2292,23 @@ mod tests {
                     pixel_format,
                     chroma_format,
                     full_range,
+                    chroma_siting: VideoChromaSiting::Left,
+                    transfer_function: VideoTransferFunction::Sdr,
+                    color_primaries: crate::VideoColorPrimaries::Bt709,
+                    color_matrix: VideoColorMatrix::Bt709,
                 };
-                assert_eq!(output_dxgi_format(pixel_format), output_format);
+                assert_eq!(output_dxgi_format(format), output_format);
                 assert_eq!(d3d11_texture_format(output_format), texture_format);
                 assert_eq!(
-                    input_color_space(format),
+                    recorded_color_space(format.transfer_function),
+                    D3d11ColorSpace::Sdr709
+                );
+                assert_eq!(
+                    output_color_space(format.transfer_function),
+                    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709
+                );
+                assert_eq!(
+                    input_color_space(format).unwrap(),
                     if full_range {
                         DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
                     } else {

@@ -598,6 +598,10 @@ QtObject {
         return settingsOwner.codecAvailable(codec)
     }
 
+    function hdrDecoderAvailable() {
+        return settingsOwner.hdrDecoderAvailable()
+    }
+
     function availableCodecValues() {
         return settingsOwner.availableCodecValues()
     }

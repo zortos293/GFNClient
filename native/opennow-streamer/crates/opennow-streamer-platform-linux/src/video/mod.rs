@@ -7,6 +7,20 @@ mod ffmpeg;
 mod v4l2;
 #[cfg(feature = "vaapi")]
 mod vaapi;
+#[cfg(feature = "ffmpeg")]
+mod vaapi_probe;
+
+pub fn supports_vaapi_ten_bit(codec: VideoCodec) -> bool {
+    #[cfg(feature = "ffmpeg")]
+    {
+        FfmpegDecoder::supports_vaapi_ten_bit(codec)
+    }
+    #[cfg(not(feature = "ffmpeg"))]
+    {
+        let _ = codec;
+        false
+    }
+}
 
 #[cfg(feature = "ffmpeg")]
 pub(crate) use ffmpeg::{FfmpegDecoder, FfmpegMode};

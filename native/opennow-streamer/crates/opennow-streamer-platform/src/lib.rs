@@ -25,10 +25,10 @@ mod windows_raw_input;
 
 pub use embedded_input::{EmbeddedInputCapture, EmbeddedLocalAction};
 pub use graphics::{
-    GraphicsApi, GraphicsContext, GraphicsContextLease, GraphicsFrame, GraphicsFrameError,
-    GraphicsFrameInfo, GraphicsFramePublisher, GraphicsFrameToken, GraphicsPublishOutcome,
-    GraphicsRecordCommand, GraphicsRecordedFrame, GraphicsRenderResources, GraphicsRuntimeError,
-    GraphicsTextureFormat, RenderThreadGraphics,
+    GraphicsApi, GraphicsColorSpace, GraphicsContext, GraphicsContextLease, GraphicsFrame,
+    GraphicsFrameError, GraphicsFrameInfo, GraphicsFramePublisher, GraphicsFrameToken,
+    GraphicsPublishOutcome, GraphicsRecordCommand, GraphicsRecordedFrame, GraphicsRenderResources,
+    GraphicsRuntimeError, GraphicsTextureFormat, RenderThreadGraphics,
 };
 pub use media::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, EncodedFrame, EncodedRecordingReceiver,
@@ -130,11 +130,30 @@ pub(crate) fn embedded_video_backends_with_device(
             backend.zero_copy_modes.clear();
         } else {
             for codec in &mut backend.codecs {
-                codec.color_qualities = Some(if codec.available {
+                let mut colors = if codec.available {
                     vec!["8bit_420"]
                 } else {
                     Vec::new()
-                });
+                };
+                if backend.backend == "vaapi" {
+                    let profile = match codec.codec {
+                        "h265" => opennow_streamer_platform_linux::VideoCodec::H265,
+                        "av1" => opennow_streamer_platform_linux::VideoCodec::Av1,
+                        _ => opennow_streamer_platform_linux::VideoCodec::H264,
+                    };
+                    if opennow_streamer_platform_linux::supports_vaapi_ten_bit(profile) {
+                        colors.push("10bit_420");
+                        codec.available = true;
+                        codec.reason = None;
+                    }
+                }
+                codec.color_qualities = Some(colors);
+            }
+            if backend.backend == "vaapi" {
+                backend.available = backend.codecs.iter().any(|codec| codec.available);
+                if backend.available {
+                    backend.reason = None;
+                }
             }
         }
     }
@@ -239,6 +258,7 @@ fn windows_hardware_backend(
         platform: "windows",
         codecs: vec![
             CodecCapability {
+                hdr_supported: Some(false),
                 color_qualities: None,
                 codec: "h264",
                 available: media_output_available && probe.h264_hardware_decode,
@@ -247,6 +267,7 @@ fn windows_hardware_backend(
                 ),
             },
             CodecCapability {
+                hdr_supported: Some(media_output_available && probe.h265_hdr),
                 color_qualities: None,
                 codec: "h265",
                 available: media_output_available && probe.h265_hardware_decode,
@@ -255,6 +276,7 @@ fn windows_hardware_backend(
                 ),
             },
             CodecCapability {
+                hdr_supported: Some(media_output_available && probe.av1_hdr),
                 color_qualities: None,
                 codec: "av1",
                 available: media_output_available && probe.av1_hardware_decode,
@@ -290,6 +312,7 @@ fn hardware_backend() -> VideoBackendCapability {
         platform: "macos",
         codecs: vec![
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec: "h264",
                 available: h264_available,
@@ -297,6 +320,7 @@ fn hardware_backend() -> VideoBackendCapability {
                     .then_some("H.264 VideoToolbox hardware decode or Metal is unavailable"),
             },
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec: "h265",
                 available: h265_available,
@@ -304,6 +328,7 @@ fn hardware_backend() -> VideoBackendCapability {
                     .then_some("H.265 VideoToolbox hardware decode or Metal is unavailable"),
             },
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec: "av1",
                 available: av1_available,
@@ -339,12 +364,14 @@ fn software_backend() -> VideoBackendCapability {
             platform: "windows",
             codecs: vec![
                 CodecCapability {
+                    hdr_supported: None,
                     color_qualities: None,
                     codec: "h264",
                     available: true,
                     reason: None,
                 },
                 CodecCapability {
+                    hdr_supported: None,
                     color_qualities: None,
                     codec: "h265",
                     available: media_output_available && probe.h265_software_decode,
@@ -353,6 +380,7 @@ fn software_backend() -> VideoBackendCapability {
                     ),
                 },
                 CodecCapability {
+                    hdr_supported: None,
                     color_qualities: None,
                     codec: "av1",
                     available: media_output_available && probe.av1_software_decode,
@@ -372,18 +400,21 @@ fn software_backend() -> VideoBackendCapability {
         platform: "cross-platform",
         codecs: vec![
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec: "h264",
                 available: true,
                 reason: None,
             },
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec: "h265",
                 available: false,
                 reason: Some("H.265 decoder is not built into this binary"),
             },
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec: "av1",
                 available: false,
@@ -408,6 +439,7 @@ fn unavailable_backend(
         codecs: ["h264", "h265", "av1"]
             .into_iter()
             .map(|codec| CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec,
                 available: false,

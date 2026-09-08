@@ -37,6 +37,10 @@ QtObject {
         ShellStore.lastError = ""
         return true
     }
+    function ready() {
+        check(background.status !== Image.Error, "image failed to load")
+        return background.status === Image.Ready
+    }
     function verify() {
         check(background.status === Image.Ready, "image loads asynchronously")
         check(background.opacity === 0.65, "image uses the selected opacity")

@@ -4,6 +4,11 @@ set(OPENNOW_STREAM_RUNTIME_SOURCES
 )
 
 set(OPENNOW_STREAM_PRESENTATION_SOURCES
+    src/streaming/rendering/HdrOutput.cpp
+    src/streaming/rendering/HdrOutput.h
+    src/streaming/rendering/HdrOutputPass.h
+    src/streaming/rendering/HdrChromeEffect.cpp
+    src/streaming/rendering/HdrChromeEffect.h
     src/streaming/StreamVideoItem.cpp
     src/streaming/StreamVideoItem.h
     src/streaming/StreamVideoItemInput.cpp

@@ -726,10 +726,11 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-video[0].adaptiveQuantization.saqAdaptDecayStrengthX100:250".to_owned(),
         "a=x-nv-video[0].adaptiveQuantization.perfAdjEnablement:1".to_owned(),
         "a=x-nv-video[0].enableAv1RcPrecisionFactor:1".to_owned(),
-        // Match the native Geronimo/NVST profile. CloudMatch wire values are
-        // 0/1, while ANNOUNCE carries the real 8/10-bit depth and 0/1 chroma.
         "a=x-nv-video[0].maxNumReferenceFrames:0".to_owned(),
-        "a=x-nv-video[0].dynamicRangeMode:0".to_owned(),
+        format!(
+            "a=x-nv-video[0].dynamicRangeMode:{}",
+            u8::from(super::media_stream_config(context).hdr)
+        ),
         format!("a=x-nv-video[0].bitDepth:{bit_depth}"),
         format!("a=x-nv-video[0].chromaFormat:{chroma_format}"),
         "a=x-nv-video[0].prefilterParams.prefilterMode:0".to_owned(),
@@ -845,7 +846,7 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
 
 fn negotiated_color_format(context: &SessionContext, codec: &str) -> (u8, u8) {
     if codec.eq_ignore_ascii_case("H264") {
-        return (8, 0);
+        return (8, 1);
     }
     let quality = context
         .session
@@ -858,11 +859,11 @@ fn negotiated_color_format(context: &SessionContext, codec: &str) -> (u8, u8) {
         .to_ascii_lowercase();
     let bit_depth = if quality.starts_with("10bit") { 10 } else { 8 };
     let chroma_format = if codec.eq_ignore_ascii_case("AV1") {
-        0
-    } else if quality.ends_with("444") {
         1
+    } else if quality.ends_with("444") {
+        3
     } else {
-        0
+        1
     };
     (bit_depth, chroma_format)
 }
@@ -1285,13 +1286,46 @@ mod tests {
         );
         assert!(sdp.contains("a=x-nv-video[0].maxFPS:120"));
         assert!(sdp.contains("a=x-nv-video[0].bitDepth:10"));
-        assert!(sdp.contains("a=x-nv-video[0].chromaFormat:0"));
+        assert!(sdp.contains("a=x-nv-video[0].chromaFormat:1"));
         assert!(sdp.contains("a=x-nv-video[0].encoderCscMode:2"));
         assert!(sdp.contains("a=x-nv-vqos[0].bitStreamFormat:2"));
         assert!(sdp.contains("a=x-nv-general.clientBundlePort:49006"));
         assert!(sdp.contains("a=x-nv-general.rtcDataChannelOnNativeBundle:1"));
         assert!(sdp.contains("a=x-nv-runtime.encryptionKey:"));
         assert!(sdp.contains("m=video 5004"));
+    }
+
+    #[test]
+    fn announce_dynamic_range_follows_accepted_hdr_not_saved_intent() {
+        for (accepted, requested, mode) in [
+            (json!(true), false, 1),
+            (json!(false), true, 0),
+            (Value::Null, true, 0),
+        ] {
+            let mut value = context();
+            value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H265");
+            value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_420");
+            value.session.extra["negotiatedStreamProfile"]["enableHdr"] = accepted;
+            value.settings["enableHdr"] = json!(requested);
+            let sdp = build_announce(
+                &value,
+                AnnounceParams {
+                    key: &"01".repeat(32),
+                    key_id: 7,
+                    port: 49006,
+                    address: "192.0.2.10",
+                    ufrag: "abcd",
+                    password: "abcdefghijklmnopqrstuv",
+                    fingerprint: "AA:BB",
+                    video_port: 5004,
+                    rtcp_on_sctp: true,
+                    microphone_available: false,
+                },
+            );
+            assert!(sdp.contains(&format!("a=x-nv-video[0].dynamicRangeMode:{mode}\r\n")));
+            assert!(sdp.contains("a=x-nv-video[0].bitDepth:10\r\n"));
+            assert!(sdp.contains("a=x-nv-video[0].chromaFormat:1\r\n"));
+        }
     }
 
     #[test]
@@ -1368,14 +1402,14 @@ mod tests {
         let mut value = context();
         value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H264");
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
-        assert_eq!(negotiated_color_format(&value, "H264"), (8, 0));
+        assert_eq!(negotiated_color_format(&value, "H264"), (8, 1));
     }
 
     #[test]
     fn av1_announce_stays_420_but_preserves_ten_bit_depth() {
         let mut value = context();
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
-        assert_eq!(negotiated_color_format(&value, "AV1"), (10, 0));
+        assert_eq!(negotiated_color_format(&value, "AV1"), (10, 1));
     }
 
     #[test]
@@ -1383,7 +1417,7 @@ mod tests {
         let mut value = context();
         value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H265");
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
-        assert_eq!(negotiated_color_format(&value, "H265"), (10, 1));
+        assert_eq!(negotiated_color_format(&value, "H265"), (10, 3));
     }
 
     #[test]

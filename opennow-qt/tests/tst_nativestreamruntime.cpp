@@ -102,7 +102,8 @@ OpenNowStreamerStatus fakeRecordFrame(
     graphicsCallChanged.wait(lock, [] { return allowRecordCallToFinish; });
     *recorded = OpenNowStreamerRecordedFrame{
         1, 0, OPENNOW_STREAMER_GRAPHICS_API_D3D11,
-        OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, 1920, 1080, 0, 1, 0};
+        OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, OPENNOW_STREAMER_COLOR_SPACE_SDR709,
+        1920, 1080, 0, 1, 0};
     return OPENNOW_STREAMER_OK;
 }
 
@@ -158,7 +159,8 @@ private slots:
                                const OpenNowStreamerRecordCommand *,
                                OpenNowStreamerRecordedFrame *recorded) {
             *recorded = {1, 0, OPENNOW_STREAMER_GRAPHICS_API_D3D11,
-                         OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, 1920, 1080, 0,
+                         OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA8, OPENNOW_STREAMER_COLOR_SPACE_SDR709,
+                         1920, 1080, 0,
                          sequence, 1'000'000'000 + (sequence - 1) * 16'666'667};
             return OPENNOW_STREAMER_OK;
         };

@@ -10,8 +10,12 @@ ApplicationWindow {
     minimumHeight: 540
     visible: true
     visibility: ApplicationWindow.Windowed
-    color: activeRoute === "stream" ? "transparent" : Theme.shell
+    color: "black"
     title: qsTr("OpenNOW")
+
+    Component { id: hdrPopupEffect; HdrChromeEffect {} }
+    Binding { target: window.Overlay.overlay.layer; property: "enabled"; value: HdrOutput.chromeRequired }
+    Binding { target: window.Overlay.overlay.layer; property: "effect"; value: hdrPopupEffect }
 
     property string activeRoute: AppController.route
     readonly property var frameGenerationStats: activeRoute === "stream" && routeLoader.item
@@ -439,6 +443,8 @@ ApplicationWindow {
     Rectangle {
         anchors.fill: parent
         visible: !window.desktopSurfaceActive
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         gradient: Gradient {
             orientation: Gradient.Vertical
             GradientStop { position: 0; color: Qt.darker(Theme.shell, 1.12) }
@@ -459,6 +465,8 @@ ApplicationWindow {
     }
 
     FocusScope {
+        layer.enabled: HdrOutput.chromeRequired && window.activeRoute !== "stream"
+        layer.effect: HdrChromeEffect {}
         x: window.desktopSurfaceActive ? 0 : Math.round((window.width - width * scale) / 2)
         y: window.desktopSurfaceActive ? 0 : Math.round((window.height - height * scale) / 2)
         width: window.desktopSurfaceActive ? window.width : window.designWidth
@@ -572,6 +580,8 @@ ApplicationWindow {
 
     OverlayHost {
         id: consoleOverlayHost
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         readonly property real consoleScale: Math.min(window.width / 1920, window.height / 1080)
         x: Math.round((window.width - width * consoleScale) / 2)
         y: Math.round((window.height - height * consoleScale) / 2)
@@ -587,6 +597,8 @@ ApplicationWindow {
 
     DesktopStreamOverlayHost {
         id: desktopStreamOverlay
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         anchors.fill: parent
         frameGenerationStats: window.frameGenerationStats
         pointerLocked: window.activeRoute === "stream" && routeLoader.item
@@ -602,6 +614,8 @@ ApplicationWindow {
 
     Rectangle {
         id: modeCurtain
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
         anchors.fill: parent
         color: Theme.shell
         opacity: 0

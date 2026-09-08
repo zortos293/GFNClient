@@ -60,14 +60,14 @@ No per-packet or per-input file logging is added to the gameplay path.
 
 The color-depth setting selects the stream's encoded and decoded precision, not HDR.
 Ten-bit video stays ten-bit through native YUV-to-RGB conversion and GPU texture import;
-frame-generation history and generated output retain that texture format. The normal Qt SDR
+SDR frame-generation history and generated output retain that texture format. The normal Qt SDR
 window uses an 8-bit swapchain. Its final video draw applies centered, static 8×8 spatial
 dithering after scaling so lower bits contribute to the displayed gradient instead of being
 discarded before composition. Black, white, neutral balance, and the SDR transfer function
 are preserved. High-precision texture render targets do not receive the 8-bit dither.
 
-`qt-native.log` reports `SDR video composition` when the imported or output format changes,
-including `textureBits`, `outputBits`, and the dither policy. A ten-bit stream with
+`qt-native.log` reports `Video composition` when the imported format, source color space, or output format changes,
+including `sourceColorSpace`, `textureBits`, `outputBits`, and the dither policy. A ten-bit SDR stream with
 `textureBits=10 outputBits=8 dither=ordered-8x8` is the expected SDR path, not native ten-bit
 scan-out. HDR10 swapchains are not used to display unconverted SDR pixels.
 
@@ -208,6 +208,34 @@ display with Off and 2× in both windowed and fullscreen modes. Check output cad
 input latency, scene cuts, reconnects, resize/display changes, and overlays open/closed. STREAM
 FPS must remain near 60, LOCAL OUTPUT FPS should approach 120 only when the hardware sustains
 it, and fallback must not accumulate delay. Repeat on D3D11, Vulkan, and Metal hardware.
+
+### HDR presentation
+
+`HdrOutput` owns render-thread swapchain format changes and fail-closed display capability.
+It prefers scRGB, probes the current surface again after display changes, and uses SDR if HDR
+output or the required resources are unavailable. `CoreClient` injects the transient
+`runtimeCapabilities.nativeHdrSupported` flag into session creation and stream preparation;
+the core owns the final decoder/backend gate and persisted `enableHdr` preference.
+
+ABI 6 imported frames carry their PQ/HLG/SDR color space explicitly. The video shader converts
+PQ and HLG BT.2020 to linear scRGB, or performs luminance-based SDR tone mapping after HDR
+output is lost. SDR chrome uses bounded QML layers and `HdrChromeEffect` to decode sRGB before
+composition; the normal SDR path has no additional layers. HDR10-only surfaces require one
+window-sized RGBA16F scene target (bounded to 8K) and a final PQ-encoding GPU pass so translucent
+chrome blends in linear light. scRGB keeps the direct video path. Neither path creates another
+window, copies frames to the CPU, or restarts media for overlays. Experimental frame generation
+is explicitly unavailable for HDR sources.
+
+Run `opennow-hdrcolor-tests`, `opennow-linuxvulkangraphics-tests`, and the backend-availability
+QML workload. The GPU tests check shader luminance/gamut math, tone-map monotonicity, actual
+linear alpha blending through the HDR10 output pass, and chrome-layer resizing/fullscreen.
+On Windows, the HDR test uses D3D11 WARP for both QRhi devices and disables desktop-settings
+discovery before constructing `QGuiApplication`. This keeps the native Windows window and GPU
+shader checks independent of the WinRT theme services missing from Windows Server CI runners.
+The Windows x64 CI lane runs on an interactive GitHub-hosted desktop and checks that desktop
+before building; session-0 service runners cannot validate native window exposure or fullscreen.
+These tests do not establish that a physical HDR monitor received HDR. The live Windows/Linux
+display and reconnect matrix is in [HDR validation](../docs/hdr.md).
 
 ### Native input acceptance
 

@@ -55,6 +55,24 @@ QtObject {
             "supported codec must re-enable after detection")
         ShellStore.settings = {codec:"av1",nativeVideoBackend:"d3d12"}
         check(!ShellStore.codecAvailable("av1"), "backend changes must immediately update codec support")
+        ShellStore.settings = {codec:"av1", nativeVideoBackend:"auto"}
+        check(!ShellStore.hdrDecoderAvailable(), "missing ten-bit capabilities must not enable HDR")
+        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
+            backend:"vaapi",available:true,codecs:[{codec:"av1",available:true,colorQualities:["8bit_420","10bit_420"]}]
+        }]})
+        check(ShellStore.hdrDecoderAvailable(), "advertised Linux ten-bit decode must enable HDR")
+        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
+            backend:"d3d11",available:true,codecs:[{codec:"h265",available:true,hdrSupported:false,colorQualities:["10bit_420"]}]
+        }]})
+        check(!ShellStore.hdrDecoderAvailable(), "explicit HDR rejection must override ten-bit decode")
+        ShellStore.acceptNativeCapabilities({protocolVersion:6,videoBackends:[{
+            backend:"d3d11",available:true,codecs:[{codec:"h265",available:true,hdrSupported:true}]
+        }]})
+        check(ShellStore.hdrDecoderAvailable(), "advertised Windows HDR conversion must enable HDR")
+        ShellStore.settings = {codec:"h265", nativeVideoBackend:"auto", decoderPreference:"software"}
+        check(!ShellStore.hdrDecoderAvailable(), "software decode must not enable HDR")
+        ShellStore.nativeRuntimeReady = false
+        check(!ShellStore.hdrDecoderAvailable(), "stale HDR capabilities must fail closed")
         codecs.destroy(); backend.destroy()
         return true
     }

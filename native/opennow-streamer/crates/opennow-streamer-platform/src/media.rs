@@ -346,6 +346,7 @@ pub struct MediaStreamConfig {
     pub codec: MediaVideoCodec,
     /// Color class accepted by CloudMatch and requested again during NVST setup.
     pub color_quality: MediaColorQuality,
+    pub hdr: bool,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -360,6 +361,7 @@ impl Default for MediaStreamConfig {
         Self {
             codec: MediaVideoCodec::H264,
             color_quality: MediaColorQuality::default(),
+            hdr: false,
             width: 1920,
             height: 1080,
             fps: 60,
@@ -1067,6 +1069,14 @@ impl MediaSession {
         };
         config.decoder_preference = decoder_preference;
         config.embedded_presentation = true;
+        if stream.hdr {
+            config.stream_format.color_transfer =
+                opennow_streamer_platform_linux::ColorTransfer::Pq;
+            config.stream_format.color_primaries =
+                opennow_streamer_platform_linux::ColorPrimaries::Bt2020;
+            config.stream_format.color_matrix =
+                opennow_streamer_platform_linux::ColorMatrix::Bt2020;
+        }
         if let Some(audio) = config.audio.as_mut() {
             audio.output_device = audio_device.device_name().unwrap_or_default().to_owned();
         }
@@ -1085,12 +1095,13 @@ impl MediaSession {
             ) {
                 return Err("the attached Vulkan device does not support the negotiated codec, color depth, or dimensions".to_owned());
             }
-            if stream.color_quality.bit_depth() == 10 {
-                config.stream_format.pixel_format =
-                    opennow_streamer_platform_linux::PixelFormat::P010;
-            }
-        } else if stream.color_quality.bit_depth() == 10 {
-            return Err("negotiated 10-bit embedded Linux decode requires a compatible shared Vulkan device".to_owned());
+        } else if stream.color_quality.bit_depth() == 10
+            && decoder_preference != opennow_streamer_platform_linux::DecoderPreference::VaApiOnly
+        {
+            return Err("negotiated 10-bit embedded Linux decode requires Vulkan Video or VAAPI P010 import".to_owned());
+        }
+        if stream.color_quality.bit_depth() == 10 {
+            config.stream_format.pixel_format = opennow_streamer_platform_linux::PixelFormat::P010;
         }
         config.vulkan_device = vulkan_device;
         let session = opennow_streamer_platform_linux::LinuxSession::start(config)
@@ -1759,6 +1770,22 @@ impl EmbeddedD3d11State {
                     VideoChromaFormat::Cs420
                 },
                 full_range: false,
+                chroma_siting: opennow_streamer_platform_windows::VideoChromaSiting::Left,
+                transfer_function: if stream.hdr {
+                    opennow_streamer_platform_windows::VideoTransferFunction::Pq
+                } else {
+                    opennow_streamer_platform_windows::VideoTransferFunction::Sdr
+                },
+                color_primaries: if stream.hdr {
+                    opennow_streamer_platform_windows::VideoColorPrimaries::Bt2020
+                } else {
+                    opennow_streamer_platform_windows::VideoColorPrimaries::Bt709
+                },
+                color_matrix: if stream.hdr {
+                    opennow_streamer_platform_windows::VideoColorMatrix::Bt2020
+                } else {
+                    opennow_streamer_platform_windows::VideoColorMatrix::Bt709
+                },
             },
             submission,
             producer: None,
@@ -1864,6 +1891,7 @@ impl EmbeddedD3d11State {
         Ok(crate::GraphicsRecordedFrame {
             resource: recorded.texture as usize as u64,
             resource_view: 0,
+            color_space: recorded.color_space.into(),
             texture_format: match recorded.texture_format {
                 opennow_streamer_platform_windows::D3d11TextureFormat::Rgba8 => {
                     crate::GraphicsTextureFormat::Rgba8

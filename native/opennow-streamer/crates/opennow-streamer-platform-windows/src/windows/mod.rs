@@ -9,13 +9,14 @@ macro_rules! video_log {
 }
 
 mod audio;
+mod color;
 mod decoder;
 mod embedded;
 mod graphics;
 
 pub use embedded::{
-    AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
-    D3d11TextureFormat,
+    AdoptedD3d11Context, D3d11ColorSpace, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter,
+    D3d11RecordedFrame, D3d11TextureFormat,
 };
 
 use std::collections::VecDeque;
@@ -307,6 +308,8 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
                 h264_hardware_decode: false,
                 h265_hardware_decode: false,
                 av1_hardware_decode: false,
+                h265_hdr: false,
+                av1_hdr: false,
                 h264_software_decode: false,
                 h265_software_decode: false,
                 av1_software_decode: false,
@@ -372,6 +375,19 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
             Decoder::probe(graphics, VideoCodec::Av1, WindowsDecoderMode::Software)
                 .map_err(|error| error.to_string())
         });
+    let hdr_support = [VideoCodec::H265, VideoCodec::Av1].map(|codec| {
+        let result = graphics
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|graphics| graphics.probe_hdr(codec));
+        if let Err(error) = &result {
+            video_log!(
+                "Windows HDR10 probe failed api={api:?} codec={}: {error}",
+                codec.label()
+            );
+        }
+        result.is_ok()
+    });
     let audio = AudioRenderer::probe().map_err(|error| error.to_string());
     let h264_hardware_decode = h264_decoder.is_ok();
     let h265_hardware_decode = h265_decoder.is_ok();
@@ -386,6 +402,8 @@ pub(super) fn probe(api: WindowsGraphicsApi) -> CapabilityProbe {
         h264_hardware_decode,
         h265_hardware_decode,
         av1_hardware_decode,
+        h265_hdr: hdr_support[0],
+        av1_hdr: hdr_support[1],
         h264_software_decode,
         h265_software_decode,
         av1_software_decode,

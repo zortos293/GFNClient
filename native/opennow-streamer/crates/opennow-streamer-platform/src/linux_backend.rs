@@ -174,12 +174,20 @@ fn select_embedded_fallback(
     stream: crate::MediaStreamConfig,
     backends: &[VideoBackendCapability],
 ) -> LinuxVideoSelection {
-    if stream.color_quality == crate::MediaColorQuality::EightBit420 {
+    if !stream.color_quality.is_444() {
+        let color = if stream.color_quality.bit_depth() == 10 {
+            "10bit_420"
+        } else {
+            "8bit_420"
+        };
         for (name, preference) in [
             ("cuda", DecoderPreference::CudaOnly),
             ("vaapi", DecoderPreference::VaApiOnly),
             ("v4l2", DecoderPreference::V4l2Only),
         ] {
+            if stream.color_quality.bit_depth() == 10 && name != "vaapi" {
+                continue;
+            }
             if !matches!(requested, "auto" | "hardware")
                 && requested != name
                 && !(requested == "nvdec" && name == "cuda")
@@ -195,15 +203,19 @@ fn select_embedded_fallback(
                             && codec
                                 .color_qualities
                                 .as_ref()
-                                .is_none_or(|qualities| qualities.contains(&"8bit_420"))
+                                .map_or(color == "8bit_420", |qualities| qualities.contains(&color))
                     })
             }) {
                 return LinuxVideoSelection {
-                    path: LinuxVideoPath::Hardware(if matches!(requested, "auto" | "hardware") {
-                        DecoderPreference::HardwareOnly
-                    } else {
-                        preference
-                    }),
+                    path: LinuxVideoPath::Hardware(
+                        if stream.color_quality.bit_depth() == 8
+                            && matches!(requested, "auto" | "hardware")
+                        {
+                            DecoderPreference::HardwareOnly
+                        } else {
+                            preference
+                        },
+                    ),
                     use_vulkan_output: true,
                     fallback_reason: None,
                 };
@@ -342,6 +354,7 @@ fn multi_codec_capability(
                 None
             };
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec,
                 available,
@@ -388,18 +401,21 @@ fn h264_capability(
         platform: "linux",
         codecs: vec![
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec: "h264",
                 available: h264_available,
                 reason: h264_reason,
             },
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec: "h265",
                 available: false,
                 reason: Some("native backend currently supports H.264 only"),
             },
             CodecCapability {
+                hdr_supported: None,
                 color_qualities: None,
                 codec: "av1",
                 available: false,
@@ -423,6 +439,51 @@ fn static_reason(reason: String) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ten_bit_fallback_uses_only_explicit_vaapi_profiles() {
+        let stream = crate::MediaStreamConfig {
+            codec: crate::MediaVideoCodec::H265,
+            color_quality: crate::MediaColorQuality::TenBit420,
+            hdr: true,
+            ..Default::default()
+        };
+        let mut backend = VideoBackendCapability {
+            backend: "vaapi",
+            platform: "linux",
+            codecs: vec![CodecCapability {
+                codec: "h265",
+                available: true,
+                color_qualities: Some(vec!["8bit_420", "10bit_420"]),
+                hdr_supported: None,
+                reason: None,
+            }],
+            zero_copy_modes: vec![],
+            available: true,
+            reason: None,
+        };
+        for requested in ["auto", "hardware", "vaapi"] {
+            assert_eq!(
+                select_embedded_fallback(requested, stream, &[backend.clone()]).path,
+                LinuxVideoPath::Hardware(DecoderPreference::VaApiOnly)
+            );
+        }
+        for name in ["cuda", "v4l2", "ffmpeg"] {
+            backend.backend = name;
+            assert_eq!(
+                select_embedded_fallback("auto", stream, &[backend.clone()]).path,
+                LinuxVideoPath::Software
+            );
+        }
+        backend.backend = "vaapi";
+        for qualities in [None, Some(vec![]), Some(vec!["8bit_420"])] {
+            backend.codecs[0].color_qualities = qualities;
+            assert_eq!(
+                select_embedded_fallback("auto", stream, &[backend.clone()]).path,
+                LinuxVideoPath::Software
+            );
+        }
+    }
 
     #[test]
     fn embedded_fallback_uses_the_selected_codec_not_all_codec_support() {

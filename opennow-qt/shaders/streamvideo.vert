@@ -5,6 +5,7 @@ layout(std140, binding = 0) uniform Composition {
     vec4 bounds;
     vec4 videoRect;
     vec4 parameters;
+    vec4 colorParameters;
 };
 void main()
 {

@@ -43,6 +43,32 @@ pub enum VideoChromaFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoChromaSiting {
+    Left,
+    TopLeft,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoTransferFunction {
+    Sdr,
+    Pq,
+    Hlg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoColorPrimaries {
+    Bt709,
+    Bt2020,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoColorMatrix {
+    Bt601,
+    Bt709,
+    Bt2020,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoFormat {
     pub codec: VideoCodec,
     pub width: u32,
@@ -53,12 +79,17 @@ pub struct VideoFormat {
     /// Preferred decoder output before the MFT reports its actual subtype.
     pub pixel_format: VideoPixelFormat,
     pub chroma_format: VideoChromaFormat,
+    pub chroma_siting: VideoChromaSiting,
     /// Whether the decoded YCbCr samples use full (0-255) rather than studio range.
     pub full_range: bool,
+    pub transfer_function: VideoTransferFunction,
+    pub color_primaries: VideoColorPrimaries,
+    pub color_matrix: VideoColorMatrix,
 }
 
 impl VideoFormat {
     pub fn validate(self) -> Result<(), BackendError> {
+        self.validate_color()?;
         if !(48..=4096).contains(&self.width) || !(48..=2304).contains(&self.height) {
             return Err(BackendError::InvalidConfig(format!(
                 "{} dimensions must be at least 48x48 and no larger than 4096x2304",
@@ -74,6 +105,26 @@ impl VideoFormat {
         if self.average_bitrate == 0 {
             return Err(BackendError::InvalidConfig(
                 "average video bitrate must be non-zero".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_color(self) -> Result<(), BackendError> {
+        if self.transfer_function != VideoTransferFunction::Sdr
+            && (self.pixel_format.bit_depth() != 10
+                || self.color_primaries != VideoColorPrimaries::Bt2020
+                || self.color_matrix != VideoColorMatrix::Bt2020)
+        {
+            return Err(BackendError::InvalidConfig(
+                "HDR requires 10-bit decoder output with BT.2020 primaries and matrix".to_owned(),
+            ));
+        }
+        if (self.color_primaries == VideoColorPrimaries::Bt2020)
+            != (self.color_matrix == VideoColorMatrix::Bt2020)
+        {
+            return Err(BackendError::InvalidConfig(
+                "decoder color primaries and YCbCr matrix are incompatible".to_owned(),
             ));
         }
         Ok(())
@@ -308,7 +359,131 @@ mod tests {
             pixel_format: VideoPixelFormat::Nv12,
             chroma_format: VideoChromaFormat::Cs420,
             full_range: false,
+            chroma_siting: crate::VideoChromaSiting::Left,
+            transfer_function: crate::VideoTransferFunction::Sdr,
+            color_primaries: crate::VideoColorPrimaries::Bt709,
+            color_matrix: crate::VideoColorMatrix::Bt709,
         }
+    }
+
+    #[test]
+    fn ten_bit_sdr_is_not_hdr() {
+        for pixel_format in [VideoPixelFormat::P010, VideoPixelFormat::Y410] {
+            let format = VideoFormat {
+                pixel_format,
+                ..video_format()
+            };
+            assert!(format.validate_color().is_ok());
+            assert_eq!(format.transfer_function, VideoTransferFunction::Sdr);
+        }
+    }
+
+    #[test]
+    fn hdr_requires_ten_bit_bt2020() {
+        for transfer_function in [VideoTransferFunction::Pq, VideoTransferFunction::Hlg] {
+            let format = VideoFormat {
+                pixel_format: VideoPixelFormat::P010,
+                transfer_function,
+                color_primaries: VideoColorPrimaries::Bt2020,
+                color_matrix: VideoColorMatrix::Bt2020,
+                ..video_format()
+            };
+            assert!(format.validate().is_ok());
+            assert!(
+                VideoFormat {
+                    pixel_format: VideoPixelFormat::Nv12,
+                    ..format
+                }
+                .validate_color()
+                .is_err()
+            );
+            assert!(
+                VideoFormat {
+                    color_primaries: VideoColorPrimaries::Bt709,
+                    ..format
+                }
+                .validate_color()
+                .is_err()
+            );
+            assert!(
+                VideoFormat {
+                    color_matrix: VideoColorMatrix::Bt709,
+                    ..format
+                }
+                .validate_color()
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn color_changes_are_part_of_format_identity() {
+        let format = video_format();
+        assert_ne!(
+            format,
+            VideoFormat {
+                chroma_siting: VideoChromaSiting::TopLeft,
+                ..format
+            }
+        );
+        assert_ne!(
+            format,
+            VideoFormat {
+                full_range: true,
+                ..format
+            }
+        );
+        assert_ne!(
+            format,
+            VideoFormat {
+                transfer_function: VideoTransferFunction::Pq,
+                ..format
+            }
+        );
+        assert_ne!(
+            format,
+            VideoFormat {
+                color_primaries: VideoColorPrimaries::Bt2020,
+                ..format
+            }
+        );
+        assert_ne!(
+            format,
+            VideoFormat {
+                color_matrix: VideoColorMatrix::Bt2020,
+                ..format
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_sdr_primaries_and_matrix_mismatches() {
+        let format = video_format();
+        assert!(
+            VideoFormat {
+                color_primaries: VideoColorPrimaries::Bt2020,
+                ..format
+            }
+            .validate_color()
+            .is_err()
+        );
+        assert!(
+            VideoFormat {
+                color_matrix: VideoColorMatrix::Bt2020,
+                ..format
+            }
+            .validate_color()
+            .is_err()
+        );
+        assert!(
+            VideoFormat {
+                color_primaries: VideoColorPrimaries::Bt2020,
+                color_matrix: VideoColorMatrix::Bt2020,
+                ..format
+            }
+            .validate_color()
+            .is_ok()
+        );
     }
 
     #[test]

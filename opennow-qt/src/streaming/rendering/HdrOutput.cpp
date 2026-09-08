@@ -141,6 +141,7 @@ void HdrOutput::updateOutput()
     const auto changeFormat = [&](QRhiSwapChain::Format format) {
         d->rhi->finish();
         auto *previousPass = d->rpDescForSwapchain;
+        sc->destroy();
         sc->setFormat(format);
         auto *nextPass = sc->newCompatibleRenderPassDescriptor();
         bool created = false;
@@ -149,6 +150,7 @@ void HdrOutput::updateOutput()
             created = sc->createOrResize();
         }
         if (!created) {
+            sc->destroy();
             delete nextPass;
             sc->setFormat(QRhiSwapChain::SDR);
             nextPass = sc->newCompatibleRenderPassDescriptor();

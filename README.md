@@ -29,61 +29,60 @@
   <img src="docs/assets/readme/desktop-home.webp" alt="Paper design preview of current OpenNOW Home, with a compact sidebar, full-width continue-playing card, and favourites." width="100%" />
 </p>
 
-<p align="center"><em>Desktop Home · From the OpenNOW Paper design.</em></p>
+<p align="center"><em>Desktop Home, from the OpenNOW Paper design.</em></p>
 
-Browse the GeForce NOW catalog, organize your library, and tune your stream in a
-community-built desktop app. OpenNOW pairs a **Qt Quick interface** with a **Rust
-application core and native NVST streamer**. Desktop and controller-first console
-layouts share the same application and streaming runtime.
+OpenNOW is a community-built GeForce NOW client. The desktop app uses Qt Quick for
+the interface and Rust for account services and streaming. Use a keyboard and mouse,
+or switch to the console layout for a controller. Both layouts run in the same app.
 
 > [!IMPORTANT]
-> OpenNOW is an independent community project, not affiliated with, endorsed by, or
-> sponsored by NVIDIA. You need your own GeForce NOW account; game access and stream
-> options depend on your account, subscription, region, and hardware. NVIDIA and
-> GeForce NOW are trademarks of NVIDIA Corporation.
+> You need your own GeForce NOW account. Your subscription, region, and hardware
+> determine which games and stream settings you can use. OpenNOW is not affiliated
+> with, endorsed by, or sponsored by NVIDIA. NVIDIA and GeForce NOW are trademarks
+> of NVIDIA Corporation.
 
 > [!WARNING]
-> The Qt/native desktop app is under active development. Streaming, GPU interoperability,
-> and platform support still have release-acceptance work remaining. There is no
-> Chromium/WebRTC desktop fallback. See the [acceptance checklist](docs/qt-acceptance.md)
-> rather than assuming a published build has passed every platform gate.
+> The Qt app is still under development. Expect bugs, including platform-specific
+> streaming and GPU issues. It has no Chromium/WebRTC fallback. Publishing a build
+> does not mean it has passed every check in the [acceptance checklist](docs/qt-acceptance.md).
 
 ## Get OpenNOW
 
-For the current desktop app, look for `OpenNOW-Qt-…` packages in
-[GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases). If no Qt nightly
-is published, signed-in GitHub users can download build artifacts from a successful
+Look for packages starting with `OpenNOW-Qt-` in
+[GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases). Older releases
+may contain the retired Electron app, so check the release notes before downloading.
+If there's no published Qt nightly, sign in to GitHub and download the artifacts from a successful
 [`qt-ci` run on `dev`](https://github.com/OpenCloudGaming/OpenNOW/actions/workflows/qt-ci.yml?query=branch%3Adev).
-Historical releases may contain the retired Electron client; check the release notes.
 
-| Platform | Current Qt nightly | Getting started |
+| Platform | Qt package | How to run it |
 | --- | --- | --- |
 | Windows x64 / ARM64 | Portable `.zip` | Extract the entire archive, then run `bin/OpenNOW.exe`. |
-| Linux x64 / ARM64 | `.AppImage` (recommended) | Make the file executable, then launch it. |
-| Linux x64 / ARM64 | `.deb` | Requires distribution-provided Qt 6.8+ and SDL3. Use the AppImage on stock Ubuntu 24.04. |
-| macOS | Not published by the current Qt nightly workflow | See the separate community-maintained [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) project. |
+| Linux x64 / ARM64 | `.AppImage`, recommended | Make the file executable, then launch it. |
+| Linux x64 / ARM64 | `.deb` | Your distribution must provide Qt 6.8+ and SDL3. Use the AppImage on stock Ubuntu 24.04. |
+| macOS | No Qt nightly package | See the separate [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) project. |
 
-Nightlies are **unsigned and updated manually**. Windows may show an unknown-publisher
-warning. Release checksums detect download corruption but are not publisher signatures.
-See the [nightly guide](docs/qt-nightly-release.md) for package details and the
-[release-candidate guide](docs/qt-release-candidate.md) for signed builds and verified updates.
+Nightlies are unsigned. Windows may show an unknown-publisher warning, and you'll
+need to download updates yourself. Checksums help detect corrupted downloads;
+they don't verify who published a package.
+
+The [nightly guide](docs/qt-nightly-release.md) covers these packages. For signed
+builds and verified updates, read the [release-candidate guide](docs/qt-release-candidate.md).
 
 ### Other platforms
 
-These are separate platform projects, not packages of the Qt desktop app.
+These projects are separate from the Qt desktop app.
 
-- **iOS beta:** [Join TestFlight](https://testflight.apple.com/join/u1XPJKH2).
-  The SwiftUI prototype lives on the [`kief5555/ios` branch](https://github.com/OpenCloudGaming/OpenNOW/tree/kief5555/ios/ios/OpenNOWiOS).
-- **Android:** [Download from Google Play](https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow).
-- **Nintendo Switch:** [Download OpenNOW-Switch](https://github.com/OpenCloudGaming/OpenNOW-Switch/releases/latest),
-  native Horizon OS homebrew for modded Switch systems.
+- Try the iOS beta through [TestFlight](https://testflight.apple.com/join/u1XPJKH2).
+  The SwiftUI prototype is on the [`kief5555/ios` branch](https://github.com/OpenCloudGaming/OpenNOW/tree/kief5555/ios/ios/OpenNOWiOS).
+- Get the Android app from [Google Play](https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow).
+- Get [OpenNOW-Switch](https://github.com/OpenCloudGaming/OpenNOW-Switch/releases/latest)
+  for a modded Nintendo Switch. It runs as native Horizon OS homebrew.
 
 ## Inside the client
 
-Images are exported from the [OpenNOW Paper design](https://app.paper.design/file/01M11SPTRPMYQB9S9AX948A6WH/4-0),
-with these artboards aligned to the current Qt app's layouts. They are not screenshots
-of a running build. Games, account details, and session statistics shown
-are design content, not a statement of current game availability or measured performance.
+These images come from the [OpenNOW Paper design](https://app.paper.design/file/01M11SPTRPMYQB9S9AX948A6WH/4-0).
+The boards follow the current Qt layouts, but they aren't app screenshots. The games,
+account details, and statistics are sample content, not proof of game availability or performance.
 
 ### Desktop library
 
@@ -93,35 +92,41 @@ are design content, not a statement of current game availability or measured per
 
 ![Paper design preview of console Home, showing a controller-focused game grid, navigation dock, and button prompts.](docs/assets/readme/console-home.webp)
 
-| | What you can do |
-| --- | --- |
-| **Catalog & library** | Browse games, keep favorites, and organize your library into collections. |
-| **Desktop & console layouts** | Use keyboard and mouse on the desktop or navigate the controller-first shell. |
-| **Stream settings** | Choose resolution, frame rate, bitrate, and codec within the options available to your account and device. |
-| **In-session controls** | Open stream menus and statistics above the same native video surface. |
-| **Screenshots & recordings** | Capture screenshots and source-stream Matroska recordings, then find them in Media. |
-| **Diagnostics** | Export a bounded report from **Settings → About → Copy diagnostics** when a session misbehaves. |
+You can:
 
-Feature availability varies by platform and hardware. For rendering requirements,
-experimental features, and current limitations, see the [Qt app guide](opennow-qt/README.md).
+- Browse the catalog, save favorites, and organize your library into collections.
+- Set the resolution, frame rate, bitrate, and codec your account and device support.
+- Open stream menus and statistics without leaving the video.
+- Take screenshots and record the source stream to Matroska files. Find both in Media.
+- Export a diagnostic report through Settings → About → Copy diagnostics when something breaks.
+
+The [Qt app guide](opennow-qt/README.md) lists hardware requirements, experimental
+features, and platform limitations.
 
 ## How it works
 
-- **Qt owns the interface:** windows, navigation, focus, overlays, and the embedded video item.
-- **The Rust core owns application services:** accounts, settings, catalog requests, and complete session preparation, exposed through the [versioned JSON protocol](docs/core-protocol.md).
-- **The native streamer owns media:** NVST negotiation, transport, decode, audio, gameplay input, and recording. Qt loads it in-process through a [versioned C ABI](native/opennow-streamer/crates/opennow-streamer-ffi/README.md).
+Qt draws the interface and handles windows, navigation, focus, and overlays.
+The Rust core runs in a separate process. It manages accounts, settings, and catalog
+requests, then prepares the session. Qt talks to it over a
+[versioned JSON protocol](docs/core-protocol.md).
 
-Video stays on the native GPU presentation path, with Qt composing stream chrome above
-the same surface. There is no second presenter window or embedded browser runtime.
-See the [native streamer guide](native/opennow-streamer/README.md) for ownership and backend details.
+The native Rust streamer handles NVST transport, decoding, audio, gameplay input,
+and recording. Qt loads it in the desktop process through a
+[versioned C ABI](native/opennow-streamer/crates/opennow-streamer-ffi/README.md).
+Video stays on the GPU, and Qt draws menus over it in the same window. The app doesn't
+embed a browser or open a separate video window. The [streamer guide](native/opennow-streamer/README.md)
+explains the graphics backends and how Qt uses them.
 
 ## Build from source
 
-The current Qt/native development line is **`dev`**. Install **Qt 6.8+** (Quick,
-Multimedia, and ShaderTools), **CMake 3.24+**, a **C++20 toolchain**, **SDL3**, **Cargo**,
-and the platform media dependencies before configuring. Linux also requires
-`pkg-config`, `libwayland-dev`, and `wayland-protocols`, even for X11 builds.
-Follow the [component build guide](opennow-qt/README.md#build) for platform-specific details.
+Use the `dev` branch for the Qt app. Before building, install:
+
+- Qt 6.8+ with Quick, Multimedia, and ShaderTools.
+- CMake 3.24+ and a C++20 toolchain.
+- SDL3, Cargo, and the media dependencies for your platform.
+
+Linux also needs `pkg-config`, `libwayland-dev`, and `wayland-protocols`, even for
+X11 builds. Check the [build guide](opennow-qt/README.md#build) for platform-specific details.
 
 ```sh
 git clone --branch dev https://github.com/OpenCloudGaming/OpenNOW.git
@@ -131,16 +136,16 @@ cmake --build build/opennow-qt
 ctest --test-dir build/opennow-qt --output-on-failure
 ```
 
-The desktop runtime does not require Node.js or npm. JavaScript tooling in this
-repository is used only for tasks such as localization validation.
+You don't need Node.js or npm to build or run the desktop app. The repository uses
+JavaScript for tools such as the localization checker.
 
-Full login and gameplay checks require a real GeForce NOW account. Account-free
-smoke tests, screenshot fixtures, and performance workloads are documented in the
+Testing login and gameplay requires a GeForce NOW account. Without one, you can
+run the smoke tests, screenshot fixtures, and performance checks in the
 [Qt app guide](opennow-qt/README.md) and [acceptance runbook](docs/qt-acceptance.md).
 
 ## Documentation
 
-General product documentation lives at **[opennow.zortos.me](https://opennow.zortos.me)**.
+Start at [opennow.zortos.me](https://opennow.zortos.me) for setup and configuration help.
 
 | For players | For contributors |
 | --- | --- |
@@ -162,19 +167,18 @@ scripts/                 Repository-only localization tooling
 
 ## Contributing
 
-Bug reports, focused fixes, documentation, and translations are welcome. Start with
-the [contributing guide](.github/CONTRIBUTING.md) and [repository guidance](AGENTS.md).
-For localization changes, edit only `locales/en.json`; Crowdin owns the other locales.
+For code changes, read the [contributing guide](.github/CONTRIBUTING.md) and
+[repository guidance](AGENTS.md). Keep pull requests focused on one change.
+For translations, edit only `locales/en.json`. Crowdin manages the other locale files.
 
-Report problems on [GitHub Issues](https://github.com/OpenCloudGaming/OpenNOW/issues)
-or discuss them on [Discord](https://discord.gg/8EJYaJcNfD). For streaming bugs, include
-your build, OS, GPU, reproduction steps, and a diagnostic export. Review attachments
-for personal information before sharing them publicly.
+Found a bug? Open a [GitHub issue](https://github.com/OpenCloudGaming/OpenNOW/issues)
+with your build, OS, GPU, and steps to reproduce it. For streaming bugs, include a
+diagnostic export. Check attachments for personal information before posting them.
+You can also ask for help on [Discord](https://discord.gg/8EJYaJcNfD).
 
 ## Sponsors
 
-OpenNOW's CI usage is generously sponsored by [Blacksmith](https://www.blacksmith.sh/),
-helping keep builds and releases fast for the open-source project.
+[Blacksmith](https://www.blacksmith.sh/) sponsors OpenNOW's CI.
 
 ## Star history
 
@@ -188,4 +192,4 @@ helping keep builds and releases fast for the open-source project.
 
 ## License
 
-OpenNOW is licensed under the [MIT License](LICENSE).
+OpenNOW uses the [MIT License](LICENSE).

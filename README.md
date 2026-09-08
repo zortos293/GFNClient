@@ -9,6 +9,11 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases"><img src="https://img.shields.io/github/downloads/OpenCloudGaming/OpenNOW/total?style=for-the-badge&label=Downloads&color=56E6A5&labelColor=101916" alt="Total GitHub release downloads" /></a>
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/stargazers"><img src="https://img.shields.io/github/stars/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Stars&color=7FD4FF&labelColor=101916" alt="GitHub stars" /></a>
+</p>
+
+<p align="center">
   <a href="#get-opennow">Downloads</a> ·
   <a href="#inside-the-client">Features</a> ·
   <a href="#how-it-works">Architecture</a> ·

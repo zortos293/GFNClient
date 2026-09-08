@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme/desktop-home.webp" alt="Paper design preview of OpenNOW Home, with a continue-playing card, game library, and friends panel." width="100%" />
+  <img src="docs/assets/readme/desktop-home.webp" alt="Paper design preview of current OpenNOW Home, with a compact sidebar, full-width continue-playing card, and favourites." width="100%" />
 </p>
 
 <p align="center"><em>Desktop Home · From the OpenNOW Paper design.</em></p>
@@ -46,9 +46,11 @@ layouts share the same application and streaming runtime.
 
 ## Get OpenNOW
 
-Choose a **Qt nightly** from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases)
-for the current desktop app. Historical releases may contain the retired Electron client;
-check the release notes and look for `OpenNOW-Qt-…` packages.
+For the current desktop app, look for `OpenNOW-Qt-…` packages in
+[GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases). If no Qt nightly
+is published, signed-in GitHub users can download build artifacts from a successful
+[`qt-ci` run on `dev`](https://github.com/OpenCloudGaming/OpenNOW/actions/workflows/qt-ci.yml?query=branch%3Adev).
+Historical releases may contain the retired Electron client; check the release notes.
 
 | Platform | Current Qt nightly | Getting started |
 | --- | --- | --- |
@@ -75,12 +77,13 @@ These are separate platform projects, not packages of the Qt desktop app.
 ## Inside the client
 
 Images are exported from the [OpenNOW Paper design](https://app.paper.design/file/01M11SPTRPMYQB9S9AX948A6WH/4-0),
-not captured from a running build. Games, account details, and session statistics shown
+with these artboards aligned to the current Qt app's layouts. They are not screenshots
+of a running build. Games, account details, and session statistics shown
 are design content, not a statement of current game availability or measured performance.
 
 ### Desktop library
 
-![Paper design preview of the desktop Library, showing game covers, collection navigation, filters, and a game's context menu.](docs/assets/readme/desktop-library.webp)
+![Paper design preview of the current desktop Library, showing the compact sidebar, collection controls, store filters, and larger game covers.](docs/assets/readme/desktop-library.webp)
 
 ### Controller-first console layout
 

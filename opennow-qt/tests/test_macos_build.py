@@ -83,9 +83,16 @@ file(GENERATE OUTPUT "${{CMAKE_BINARY_DIR}}/contract.txt" CONTENT
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_mismatched_rust_target_is_rejected(self):
-        result, _ = self.configure(rust_target="x86_64-apple-darwin")
+        for target in ("x86_64-apple-darwin", "aarch64-unknown-linux-gnu"):
+            with self.subTest(target=target):
+                result, _ = self.configure(rust_target=target)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must match the macOS Qt architecture", result.stderr)
+
+    def test_universal_architecture_is_rejected(self):
+        result, _ = self.configure(arch="arm64;x86_64")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must match the macOS Qt architecture", result.stderr)
+        self.assertIn("Unsupported package target architecture", result.stderr)
 
     def test_ffi_requests_relocatable_install_name(self):
         result, build = self.configure()

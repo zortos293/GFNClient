@@ -27,6 +27,7 @@ impl ConversionParameters {
         let (kr, kb) = match color_space {
             VideoColorSpace::Bt601 => (0.299, 0.114),
             VideoColorSpace::Bt709 => (0.2126, 0.0722),
+            VideoColorSpace::Bt2020 => (0.2627, 0.0593),
         };
         let kg = 1.0 - kr - kb;
         Self {
@@ -94,7 +95,11 @@ mod tests {
                     (VideoBitDepth::Ten, false) => (64.0, 940.0, 512.0),
                     (VideoBitDepth::Ten, true) => (0.0, 1023.0, 512.0),
                 };
-                for matrix in [VideoColorSpace::Bt601, VideoColorSpace::Bt709] {
+                for matrix in [
+                    VideoColorSpace::Bt601,
+                    VideoColorSpace::Bt709,
+                    VideoColorSpace::Bt2020,
+                ] {
                     let parameters = ConversionParameters::new(depth, full_range, matrix);
                     for level in [0.0, 0.25, 0.5, 0.75, 1.0] {
                         assert_rgb(
@@ -135,6 +140,28 @@ mod tests {
                     assert!(codes.iter().all(|code| (0.0..=maximum).contains(code)));
                     assert_rgb(convert_codes(parameters, depth, codes), rgb);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn bt2020_preserves_hdr_rgb_code_values_in_p010_conversion() {
+        for full_range in [false, true] {
+            let (black, luma_range, chroma_range) = if full_range {
+                (0.0, 1023.0, 1023.0)
+            } else {
+                (64.0, 876.0, 896.0)
+            };
+            let parameters =
+                ConversionParameters::new(VideoBitDepth::Ten, full_range, VideoColorSpace::Bt2020);
+            for rgb in [[0.8, 0.1, 0.2], [0.1, 0.8, 0.2], [0.2, 0.1, 0.8]] {
+                let y = 0.2627 * rgb[0] + 0.6780 * rgb[1] + 0.0593 * rgb[2];
+                let codes = [
+                    black + y * luma_range,
+                    512.0 + (rgb[2] - y) / 1.8814 * chroma_range,
+                    512.0 + (rgb[0] - y) / 1.4746 * chroma_range,
+                ];
+                assert_rgb(convert_codes(parameters, VideoBitDepth::Ten, codes), rgb);
             }
         }
     }

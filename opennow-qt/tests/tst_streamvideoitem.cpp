@@ -295,9 +295,49 @@ private slots:
         QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_Escape), quint16(0x1b));
         QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_F24), quint16(0x87));
         QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_unknown), quint16(0));
+        quint16 shiftControl = 0x03;
+#if defined(Q_OS_MACOS)
+        if (!QGuiApplication::testAttribute(Qt::AA_MacDontSwapCtrlAndMeta)) shiftControl = 0x09;
+#endif
         QCOMPARE(StreamVideoItem::inputModifiers(
-                     Qt::ShiftModifier | Qt::ControlModifier, Qt::Key_W), quint16(0x03));
+                     Qt::ShiftModifier | Qt::ControlModifier, Qt::Key_W), shiftControl);
         QCOMPARE(StreamVideoItem::inputModifiers(Qt::ShiftModifier, Qt::Key_Shift), quint16(0));
+    }
+
+    void gameplayControlAndCommandMappingPreservesQtShortcuts()
+    {
+        const bool original = QGuiApplication::testAttribute(Qt::AA_MacDontSwapCtrlAndMeta);
+        const auto restore = qScopeGuard([original] {
+            QGuiApplication::setAttribute(Qt::AA_MacDontSwapCtrlAndMeta, original);
+        });
+        const QVariantMap bindings{{QStringLiteral("guide"), QStringLiteral("Ctrl+G")}};
+        for (const bool dontSwap : {false, true}) {
+            QGuiApplication::setAttribute(Qt::AA_MacDontSwapCtrlAndMeta, dontSwap);
+            bool swapped = false;
+#if defined(Q_OS_MACOS)
+            swapped = !dontSwap;
+#endif
+            const quint16 controlKey = swapped ? 0x5b : 0xa2;
+            const quint16 metaKey = swapped ? 0xa2 : 0x5b;
+            const quint16 controlModifier = swapped ? 0x08 : 0x02;
+            const quint16 metaModifier = swapped ? 0x02 : 0x08;
+            QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_Control), controlKey);
+            QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_Meta), metaKey);
+            QCOMPARE(StreamVideoItem::inputModifiers(Qt::ControlModifier, Qt::Key_W), controlModifier);
+            QCOMPARE(StreamVideoItem::inputModifiers(Qt::MetaModifier, Qt::Key_W), metaModifier);
+            QCOMPARE(StreamVideoItem::inputModifiers(Qt::ControlModifier, Qt::Key_Control), quint16(0));
+            QCOMPARE(StreamVideoItem::inputModifiers(Qt::MetaModifier, Qt::Key_Meta), quint16(0));
+            QCOMPARE(StreamVideoItem::inputModifiers(
+                         Qt::ControlModifier | Qt::MetaModifier, Qt::Key_Control), metaModifier);
+            QCOMPARE(StreamVideoItem::inputModifiers(
+                         Qt::ControlModifier | Qt::MetaModifier, Qt::Key_Meta), controlModifier);
+            QCOMPARE(StreamVideoItem::inputModifiers(Qt::ControlModifier | Qt::MetaModifier
+                         | Qt::AltModifier | Qt::ShiftModifier, Qt::Key_W), quint16(0x0f));
+            QCOMPARE(StreamVideoItem::shortcutActionForInput(
+                         bindings, Qt::Key_G, Qt::ControlModifier), QStringLiteral("guide"));
+            QVERIFY(StreamVideoItem::shortcutActionForInput(
+                         bindings, Qt::Key_G, Qt::MetaModifier).isEmpty());
+        }
     }
 
     void inputEnablementIsExplicitAndObservable()
@@ -505,6 +545,86 @@ private slots:
             QCOMPARE(StreamVideoItem::cursorConfinementRect(viewport, false), viewport);
         }
         QVERIFY(StreamVideoItem::cursorConfinementRect({}, true).isEmpty());
+    }
+
+    void relativeCursorRecenteringDoesNotForwardSyntheticMotion()
+    {
+        if (WaylandPointerCapture::isWayland())
+            QSKIP("Wayland uses native relative pointer events instead of cursor warps.");
+        static OpenNowStreamerConfig callbacks;
+        static QList<QPoint> motions;
+        motions.clear();
+        NativeStreamRuntime::Api api{};
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            *output = reinterpret_cast<OpenNowStreamer *>(new int(1));
+            return OPENNOW_STREAMER_OK;
+        };
+        api.destroy = [](OpenNowStreamer *handle) {
+            delete reinterpret_cast<int *>(handle);
+            return OPENNOW_STREAMER_OK;
+        };
+        api.send = [](const OpenNowStreamer *, const std::uint8_t *, std::size_t) {
+            return OPENNOW_STREAMER_OK;
+        };
+        api.setCaptureActive = [](const OpenNowStreamer *, bool, bool, std::uintptr_t, bool *raw) {
+            *raw = false;
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitMouseRelative = [](const OpenNowStreamer *, std::int16_t x, std::int16_t y) {
+            motions.append(QPoint(x, y));
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto originalCursor = QCursor::pos();
+        const auto reset = qScopeGuard([originalCursor] {
+            StreamVideoItem::setNativeStreamRuntime(nullptr);
+            QCursor::setPos(originalCursor);
+        });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("relative-input")}}));
+        const QByteArray ready = R"({"type":"ok","id":"relative-input"})";
+        callbacks.response_callback(reinterpret_cast<const std::uint8_t *>(ready.constData()),
+                                    ready.size(), callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        for (const bool fullscreen : {false, true}) {
+            if (fullscreen) window.showFullScreen();
+            else window.showNormal();
+            window.requestActivate();
+            QTRY_VERIFY(window.isActive());
+            item->setSize(window.size());
+            item->setInputEnabled(true);
+            item->forceActiveFocus();
+            QTRY_VERIFY(item->captureActive());
+            item->setRelativeMouse(true);
+            item->resynchronizeInput();
+            const auto anchor = item->mapToGlobal(QPointF(item->width() / 2, item->height() / 2)).toPoint();
+            const auto localAnchor = item->mapFromGlobal(anchor);
+            QCOMPARE(item->m_lastMousePosition, localAnchor);
+            QCursor::setPos(anchor + QPoint(12, -9));
+            QMouseEvent movement(QEvent::MouseMove, localAnchor + QPointF(12, -9),
+                                 QPointF(anchor + QPoint(12, -9)), Qt::NoButton,
+                                 Qt::NoButton, Qt::NoModifier);
+            motions.clear();
+            item->mouseMoveEvent(&movement);
+            QCOMPARE(motions, QList<QPoint>{QPoint(12, -9)});
+            QCOMPARE(item->m_lastMousePosition, localAnchor);
+            QMouseEvent recenter(QEvent::MouseMove, localAnchor, QPointF(anchor),
+                                 Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            item->mouseMoveEvent(&recenter);
+            QCOMPARE(motions.size(), 1);
+            item->setInputEnabled(false);
+            QVERIFY(!item->captureActive());
+            item->mouseMoveEvent(&movement);
+            QCOMPARE(motions.size(), 1);
+            item->setRelativeMouse(false);
+        }
     }
 
     void nativePointerLockStaysFixedAndReleasesForOverlays()

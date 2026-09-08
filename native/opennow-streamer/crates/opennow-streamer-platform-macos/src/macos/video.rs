@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use objc2_core_foundation::{
-    CFData, CFDictionary, CFNumber, CFNumberType, CFRetained, CFString, kCFBooleanTrue,
+    CFData, CFDictionary, CFNumber, CFNumberType, CFRetained, CFString, CFType, kCFBooleanTrue,
     kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
 };
 use objc2_core_media::{
@@ -16,7 +16,14 @@ use objc2_core_media::{
     kCMVideoCodecType_AV1,
 };
 use objc2_core_video::{
-    CVImageBuffer, CVPixelBufferGetPixelFormatType, kCVPixelBufferIOSurfacePropertiesKey,
+    CVImageBuffer, CVPixelBufferGetPixelFormatType, kCVImageBufferColorPrimaries_EBU_3213,
+    kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferColorPrimaries_ITU_R_2020,
+    kCVImageBufferColorPrimaries_SMPTE_C, kCVImageBufferColorPrimariesKey,
+    kCVImageBufferTransferFunction_ITU_R_709_2, kCVImageBufferTransferFunction_ITU_R_2100_HLG,
+    kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ, kCVImageBufferTransferFunction_sRGB,
+    kCVImageBufferTransferFunctionKey, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+    kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVImageBufferYCbCrMatrix_ITU_R_2020,
+    kCVImageBufferYCbCrMatrixKey, kCVPixelBufferIOSurfacePropertiesKey,
     kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
@@ -30,8 +37,10 @@ use objc2_video_toolbox::{
 
 use crate::failure::{BackendSubsystem, FailureReporter};
 use crate::format::{
-    Av1Format, FrameTiming, H264Format, H265Format, VideoBitDepth, VideoColorSpace, VideoFormat,
+    Av1Format, FrameTiming, H264Format, H265Format, MetalTextureColorSpace, VideoBitDepth,
+    VideoColorSpace, VideoFormat, VideoTransferFunction,
 };
+use crate::frame_order::FrameOrder;
 use crate::queue::{BoundedQueue, PushResult};
 
 use super::mailbox::LatestMailbox;
@@ -43,6 +52,13 @@ pub(super) struct DecodedFrame {
     pub(super) color_space: VideoColorSpace,
     pub(super) minimum_frame_duration_seconds: f64,
     pub(super) timestamp_100ns: i64,
+    pub(super) frame_index: Option<u32>,
+    pub(super) texture_color_space: MetalTextureColorSpace,
+}
+
+struct SubmittedFrame {
+    order: u64,
+    frame_index: Option<u32>,
 }
 
 // The callback retains the CVImageBuffer and no code mutates it after publication to the queue.
@@ -65,16 +81,17 @@ impl DecodedFrameOutput {
                 queue.push_drop_oldest(frame),
                 PushResult::Replaced(_) | PushResult::Closed(_)
             ),
-            Self::EmbeddedMailbox {
-                mailbox,
-                frame_available,
-            } => {
-                let replaced = mailbox.replace(frame);
-                if let Some(frame_available) = frame_available {
-                    frame_available();
-                }
-                replaced
-            }
+            Self::EmbeddedMailbox { mailbox, .. } => mailbox.replace(frame),
+        }
+    }
+
+    fn notify(&self) {
+        if let Self::EmbeddedMailbox {
+            frame_available: Some(frame_available),
+            ..
+        } = self
+        {
+            frame_available();
         }
     }
 
@@ -112,7 +129,9 @@ struct CallbackContext {
     failures: Arc<FailureReporter>,
     in_flight: Arc<InFlight>,
     color_space: VideoColorSpace,
+    transfer_function: VideoTransferFunction,
     bit_depth: VideoBitDepth,
+    frame_order: FrameOrder,
 }
 
 pub(super) struct VideoDecoder {
@@ -125,6 +144,20 @@ pub(super) struct VideoDecoder {
 // VTDecompressionSession has no thread affinity. Shared owns VideoDecoder behind a Mutex, so
 // decode, reconfiguration, and invalidation are serialized even when StreamSink moves threads.
 unsafe impl Send for VideoDecoder {}
+
+pub(super) fn probe_format(format: &VideoFormat) -> bool {
+    VideoDecoder::new(
+        format,
+        DecodedFrameOutput::EmbeddedMailbox {
+            mailbox: Arc::new(LatestMailbox::new()),
+            frame_available: None,
+        },
+        Arc::new(Counters::default()),
+        Arc::new(FailureReporter::default()),
+        1,
+    )
+    .is_ok()
+}
 
 impl VideoDecoder {
     pub(super) fn new(
@@ -139,6 +172,14 @@ impl VideoDecoder {
             unsafe { format_description.extension(kCMFormatDescriptionExtension_BitsPerComponent) }
                 .and_then(|value| value.downcast_ref::<CFNumber>().and_then(CFNumber::as_i32));
         let bit_depth = format.destination_bit_depth(bitstream_depth)?;
+        if format.transfer_function() != VideoTransferFunction::Sdr
+            && (bit_depth != VideoBitDepth::Ten
+                || matches!(output, DecodedFrameOutput::PresentationQueue(_)))
+        {
+            return Err(BackendError::Metal(
+                "HDR requires ten-bit embedded Metal output".into(),
+            ));
+        }
         let in_flight = Arc::new(InFlight {
             count: AtomicUsize::new(0),
             maximum: maximum_in_flight,
@@ -149,7 +190,9 @@ impl VideoDecoder {
             failures,
             in_flight: Arc::clone(&in_flight),
             color_space: format.color_space(),
+            transfer_function: format.transfer_function(),
             bit_depth,
+            frame_order: FrameOrder::default(),
         });
         let callback = VTDecompressionOutputCallbackRecord {
             decompressionOutputCallback: Some(decompression_callback),
@@ -311,14 +354,21 @@ impl VideoDecoder {
         })?;
         let sample = unsafe { CFRetained::from_raw(sample_ptr) };
         let session = self.session.as_ref().ok_or(BackendError::Stopped)?;
+        let submission = Box::into_raw(Box::new(SubmittedFrame {
+            order: self.callback_context.frame_order.submit(),
+            frame_index: timing.frame_index,
+        }));
         let status = unsafe {
             session.decode_frame(
                 &sample,
                 VTDecodeFrameFlags::Frame_EnableAsynchronousDecompression,
-                ptr::null_mut(),
+                submission.cast(),
                 ptr::null_mut(),
             )
         };
+        if status != 0 {
+            drop(unsafe { Box::from_raw(submission) });
+        }
         check_status("VTDecompressionSessionDecodeFrame", status)
     }
 }
@@ -337,13 +387,17 @@ impl Drop for VideoDecoder {
 
 unsafe extern "C-unwind" fn decompression_callback(
     output_refcon: *mut c_void,
-    _source_refcon: *mut c_void,
+    source_refcon: *mut c_void,
     status: i32,
     _info_flags: VTDecodeInfoFlags,
     image_buffer: *mut CVImageBuffer,
     presentation_time_stamp: CMTime,
     presentation_duration: CMTime,
 ) {
+    let Some(submission) = NonNull::new(source_refcon.cast::<SubmittedFrame>()) else {
+        return;
+    };
+    let submission = unsafe { Box::from_raw(submission.as_ptr()) };
     let Some(context) = NonNull::new(output_refcon.cast::<CallbackContext>()) else {
         return;
     };
@@ -367,18 +421,68 @@ unsafe extern "C-unwind" fn decompression_callback(
                 context.in_flight.release();
                 return;
             }
+            let color_space = unsafe {
+                decoded_color_space(
+                    image
+                        .attachment(kCVImageBufferYCbCrMatrixKey, ptr::null_mut())
+                        .as_deref(),
+                    image
+                        .attachment(kCVImageBufferTransferFunctionKey, ptr::null_mut())
+                        .as_deref(),
+                    image
+                        .attachment(kCVImageBufferColorPrimariesKey, ptr::null_mut())
+                        .as_deref(),
+                    context.color_space,
+                    context.transfer_function,
+                )
+            };
+            let (color_space, texture_color_space) = match color_space {
+                Ok(color_space) => color_space,
+                Err(error) => {
+                    context
+                        .counters
+                        .video_decode_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                    context
+                        .failures
+                        .report_fatal(BackendSubsystem::VideoToolbox, error.to_string());
+                    context.in_flight.release();
+                    return;
+                }
+            };
+            if texture_color_space != MetalTextureColorSpace::Sdr709
+                && (pixel_format != kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    && pixel_format != kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+                    || matches!(context.output, DecodedFrameOutput::PresentationQueue(_)))
+            {
+                context
+                    .counters
+                    .video_decode_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                context.failures.report_fatal(
+                    BackendSubsystem::VideoToolbox,
+                    "VideoToolbox HDR requires ten-bit embedded Metal output".into(),
+                );
+                context.in_flight.release();
+                return;
+            }
             let frame = DecodedFrame {
                 image,
-                color_space: context.color_space,
+                color_space,
                 minimum_frame_duration_seconds: frame_duration_seconds(presentation_duration),
                 timestamp_100ns: time_to_100ns(presentation_time_stamp),
+                frame_index: submission.frame_index,
+                texture_color_space,
             };
             context
                 .counters
                 .video_decoded
                 .fetch_add(1, Ordering::Relaxed);
             context.failures.video_decode_succeeded();
-            if context.output.publish(frame) {
+            let published = context
+                .frame_order
+                .publish(submission.order, || context.output.publish(frame));
+            if published != Some(false) {
                 context
                     .counters
                     .video_frames_dropped
@@ -387,6 +491,9 @@ unsafe extern "C-unwind" fn decompression_callback(
                     .counters
                     .video_decoded_queue_dropped
                     .fetch_add(1, Ordering::Relaxed);
+            }
+            if published.is_some() {
+                context.output.notify();
             }
         } else {
             context
@@ -403,6 +510,97 @@ unsafe extern "C-unwind" fn decompression_callback(
         context.failures.video_decode_failed(Some(status));
     }
     context.in_flight.release();
+}
+
+fn decoded_color_space(
+    matrix: Option<&CFType>,
+    transfer: Option<&CFType>,
+    primaries: Option<&CFType>,
+    fallback: VideoColorSpace,
+    fallback_transfer: VideoTransferFunction,
+) -> Result<(VideoColorSpace, MetalTextureColorSpace), BackendError> {
+    let mut color_space = fallback;
+    if let Some(matrix) = color_attachment(matrix, "YCbCr matrix")? {
+        color_space = if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_601_4 } {
+            VideoColorSpace::Bt601
+        } else if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_709_2 } {
+            VideoColorSpace::Bt709
+        } else if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_2020 } {
+            VideoColorSpace::Bt2020
+        } else {
+            return Err(BackendError::Metal(format!(
+                "unsupported VideoToolbox YCbCr matrix: {matrix}"
+            )));
+        };
+    }
+    let mut transfer_function = fallback_transfer;
+    if let Some(transfer) = color_attachment(transfer, "transfer function")? {
+        transfer_function =
+            if transfer == unsafe { kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ } {
+                VideoTransferFunction::Pq
+            } else if transfer == unsafe { kCVImageBufferTransferFunction_ITU_R_2100_HLG } {
+                VideoTransferFunction::Hlg
+            } else if unsafe {
+                [
+                    kCVImageBufferTransferFunction_ITU_R_709_2,
+                    kCVImageBufferTransferFunction_sRGB,
+                ]
+            }
+            .contains(&transfer)
+            {
+                VideoTransferFunction::Sdr
+            } else {
+                return Err(BackendError::Metal(format!(
+                    "unsupported VideoToolbox transfer function: {transfer}"
+                )));
+            };
+    }
+    let mut bt2020_primaries = fallback_transfer != VideoTransferFunction::Sdr;
+    if let Some(primaries) = color_attachment(primaries, "color primaries")? {
+        bt2020_primaries = if primaries == unsafe { kCVImageBufferColorPrimaries_ITU_R_2020 } {
+            true
+        } else if unsafe {
+            [
+                kCVImageBufferColorPrimaries_ITU_R_709_2,
+                kCVImageBufferColorPrimaries_EBU_3213,
+                kCVImageBufferColorPrimaries_SMPTE_C,
+            ]
+        }
+        .contains(&primaries)
+        {
+            false
+        } else {
+            return Err(BackendError::Metal(format!(
+                "unsupported VideoToolbox color primaries: {primaries}"
+            )));
+        };
+    }
+    let texture_color_space = match (transfer_function, bt2020_primaries) {
+        (VideoTransferFunction::Sdr, false) => MetalTextureColorSpace::Sdr709,
+        (VideoTransferFunction::Pq, true) => MetalTextureColorSpace::Pq2020,
+        (VideoTransferFunction::Hlg, true) => MetalTextureColorSpace::Hlg2020,
+        _ => {
+            return Err(BackendError::Metal(
+                "unsupported VideoToolbox transfer/primaries combination".into(),
+            ));
+        }
+    };
+    Ok((color_space, texture_color_space))
+}
+
+fn color_attachment<'a>(
+    attachment: Option<&'a CFType>,
+    name: &str,
+) -> Result<Option<&'a CFString>, BackendError> {
+    attachment
+        .map(|value| {
+            value.downcast_ref::<CFString>().ok_or_else(|| {
+                BackendError::Metal(format!(
+                    "VideoToolbox returned an invalid {name} attachment"
+                ))
+            })
+        })
+        .transpose()
 }
 
 fn frame_duration_seconds(duration: CMTime) -> f64 {
@@ -578,8 +776,151 @@ fn check_status(api: &'static str, status: i32) -> Result<(), BackendError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_duration_seconds, time_to_100ns};
+    use super::*;
     use objc2_core_media::{CMTime, CMTimeFlags};
+
+    #[test]
+    fn callbacks_preserve_sender_identity_and_reject_late_output() {
+        let mailbox = Arc::new(LatestMailbox::new());
+        let counters = Arc::new(Counters::default());
+        let in_flight = Arc::new(InFlight {
+            count: AtomicUsize::new(2),
+            maximum: 2,
+        });
+        let mut context = CallbackContext {
+            output: DecodedFrameOutput::EmbeddedMailbox {
+                mailbox: Arc::clone(&mailbox),
+                frame_available: None,
+            },
+            counters: Arc::clone(&counters),
+            failures: Arc::new(FailureReporter::default()),
+            in_flight: Arc::clone(&in_flight),
+            color_space: VideoColorSpace::Bt709,
+            transfer_function: VideoTransferFunction::Sdr,
+            bit_depth: VideoBitDepth::Eight,
+            frame_order: FrameOrder::default(),
+        };
+        let first = context.frame_order.submit();
+        let second = context.frame_order.submit();
+        let mut pixel_buffer = ptr::null_mut();
+        let status = unsafe {
+            objc2_core_video::CVPixelBufferCreate(
+                None,
+                16,
+                16,
+                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                None,
+                NonNull::from(&mut pixel_buffer),
+            )
+        };
+        assert_eq!(status, 0);
+        let image = unsafe { CFRetained::from_raw(NonNull::new(pixel_buffer).unwrap()) };
+        for (order, frame_index, timestamp) in
+            [(second, Some(0), 0), (first, Some(u32::MAX), 90_000)]
+        {
+            let submission = Box::into_raw(Box::new(SubmittedFrame { order, frame_index }));
+            unsafe {
+                decompression_callback(
+                    (&mut context as *mut CallbackContext).cast(),
+                    submission.cast(),
+                    0,
+                    VTDecodeInfoFlags::empty(),
+                    CFRetained::as_ptr(&image).as_ptr(),
+                    CMTime::new(timestamp, 90_000),
+                    CMTime::new(750, 90_000),
+                );
+            }
+        }
+        let frame = mailbox.take().unwrap();
+        assert_eq!(frame.frame_index, Some(0));
+        assert_eq!(frame.timestamp_100ns, 0);
+        assert_eq!(in_flight.count.load(Ordering::Acquire), 0);
+        assert_eq!(counters.video_decoded.load(Ordering::Relaxed), 2);
+        assert_eq!(counters.video_frames_dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn main10_probe_formats_create_core_media_descriptions() {
+        for format in [
+            crate::format::h265_main10_probe_format(),
+            crate::format::av1_main10_probe_format(),
+        ] {
+            create_format_description(&format).expect("Main10 probe format description");
+        }
+    }
+
+    #[test]
+    fn negotiated_hdr_metadata_survives_missing_pixel_buffer_attachments() {
+        for (transfer, expected) in [
+            (VideoTransferFunction::Pq, MetalTextureColorSpace::Pq2020),
+            (VideoTransferFunction::Hlg, MetalTextureColorSpace::Hlg2020),
+        ] {
+            assert_eq!(
+                decoded_color_space(None, None, None, VideoColorSpace::Bt2020, transfer).unwrap(),
+                (VideoColorSpace::Bt2020, expected),
+            );
+        }
+    }
+
+    #[test]
+    fn pixel_buffer_attachments_override_negotiated_color_metadata() {
+        let matrix = unsafe { kCVImageBufferYCbCrMatrix_ITU_R_2020 };
+        let transfer = unsafe { kCVImageBufferTransferFunction_ITU_R_2100_HLG };
+        let primaries = unsafe { kCVImageBufferColorPrimaries_ITU_R_2020 };
+        assert_eq!(
+            decoded_color_space(
+                Some(matrix.as_ref()),
+                Some(transfer.as_ref()),
+                Some(primaries.as_ref()),
+                VideoColorSpace::Bt709,
+                VideoTransferFunction::Sdr,
+            )
+            .unwrap(),
+            (VideoColorSpace::Bt2020, MetalTextureColorSpace::Hlg2020),
+        );
+        let matrix = unsafe { kCVImageBufferYCbCrMatrix_ITU_R_601_4 };
+        assert_eq!(
+            decoded_color_space(
+                Some(matrix.as_ref()),
+                None,
+                None,
+                VideoColorSpace::Bt709,
+                VideoTransferFunction::Sdr
+            )
+            .unwrap(),
+            (VideoColorSpace::Bt601, MetalTextureColorSpace::Sdr709),
+        );
+    }
+
+    #[test]
+    fn invalid_or_unrepresentable_color_metadata_is_rejected() {
+        let invalid = CFData::from_bytes(&[1]);
+        let unknown = CFString::from_static_str("unknown matrix");
+        for matrix in [invalid.as_ref() as &CFType, unknown.as_ref() as &CFType] {
+            assert!(
+                decoded_color_space(
+                    Some(matrix),
+                    None,
+                    None,
+                    VideoColorSpace::Bt709,
+                    VideoTransferFunction::Sdr
+                )
+                .is_err()
+            );
+        }
+        let transfer = unsafe { kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ };
+        let primaries = unsafe { kCVImageBufferColorPrimaries_ITU_R_709_2 };
+        assert!(
+            decoded_color_space(
+                None,
+                Some(transfer.as_ref()),
+                Some(primaries.as_ref()),
+                VideoColorSpace::Bt2020,
+                VideoTransferFunction::Pq
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn converts_120_hz_core_media_duration_to_seconds() {

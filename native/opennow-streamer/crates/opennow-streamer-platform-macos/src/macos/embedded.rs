@@ -8,13 +8,11 @@ use block2::RcBlock;
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_core_foundation::{CFRetained, CFString};
+use objc2_core_foundation::CFRetained;
 use objc2_core_video::{
     CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBufferGetHeightOfPlane,
     CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
-    CVPixelBufferGetWidthOfPlane, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
-    kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVImageBufferYCbCrMatrixKey,
-    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    CVPixelBufferGetWidthOfPlane, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
@@ -29,7 +27,7 @@ use objc2_metal::{
 
 use crate::color::ConversionParameters;
 use crate::failure::FailureReporter;
-use crate::format::{MetalFrameFormat, VideoBitDepth, VideoColorSpace};
+use crate::format::{MetalFrameFormat, MetalTextureColorSpace, VideoBitDepth, VideoColorSpace};
 
 use super::mailbox::LatestMailbox;
 use super::video::DecodedFrame;
@@ -162,28 +160,6 @@ impl MetalFrameFormat {
     }
 }
 
-fn frame_color_space(frame: &DecodedFrame) -> Result<VideoColorSpace, BackendError> {
-    let Some(attachment) = (unsafe {
-        frame
-            .image
-            .attachment(kCVImageBufferYCbCrMatrixKey, ptr::null_mut())
-    }) else {
-        return Ok(frame.color_space);
-    };
-    let matrix = attachment.downcast_ref::<CFString>().ok_or_else(|| {
-        BackendError::Metal("VideoToolbox returned an invalid YCbCr matrix attachment".into())
-    })?;
-    if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_601_4 } {
-        Ok(VideoColorSpace::Bt601)
-    } else if matrix == unsafe { kCVImageBufferYCbCrMatrix_ITU_R_709_2 } {
-        Ok(VideoColorSpace::Bt709)
-    } else {
-        Err(BackendError::Metal(format!(
-            "unsupported VideoToolbox YCbCr matrix: {matrix}"
-        )))
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct AdoptedMetalContext {
     pub device: *mut c_void,
@@ -194,6 +170,7 @@ pub struct AdoptedMetalContext {
 pub struct MetalRecordedFrame {
     pub texture: *mut c_void,
     pub format: MetalFrameFormat,
+    pub color_space: MetalTextureColorSpace,
     pub width: u32,
     pub height: u32,
     pub frame_slot: u32,
@@ -312,7 +289,10 @@ impl EmbeddedFrameProducer {
 
     pub fn acquire_latest(&self) -> Option<MetalFrame> {
         let frame = self.mailbox.take()?;
-        let sequence = self.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+        let sequence = frame
+            .frame_index
+            .map(u64::from)
+            .unwrap_or_else(|| self.sequence.fetch_add(1, Ordering::AcqRel) + 1);
         Some(MetalFrame {
             frame,
             state: Arc::clone(&self.state),
@@ -423,7 +403,8 @@ impl MetalState {
                     BackendError::Metal("VideoToolbox returned neither NV12 nor P010".into())
                 })?;
         let output_format = format.output_format();
-        let parameters = format.parameters(frame_color_space(&frame)?);
+        let color_space = frame.texture_color_space;
+        let parameters = format.parameters(frame.color_space);
         self.ensure_pipeline(output_format)?;
         let width = CVPixelBufferGetWidthOfPlane(&frame.image, 0);
         let height = CVPixelBufferGetHeightOfPlane(&frame.image, 0);
@@ -541,6 +522,7 @@ impl MetalState {
         Ok(MetalRecordedFrame {
             texture,
             format: output_format,
+            color_space,
             width: u32::try_from(width).unwrap_or(u32::MAX),
             height: u32::try_from(height).unwrap_or(u32::MAX),
             frame_slot,

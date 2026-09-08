@@ -551,6 +551,7 @@ jobs:
         with:
           key: qt-ci-macos-arm64
           cache-bin: false
+          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
@@ -595,6 +596,7 @@ jobs:
       - name: Package macOS validation bundle
         shell: bash
         run: |
+          mkdir -p build/qt-packages
           cpack --config build/opennow-qt-release/CPackConfig.cmake \
             -G ZIP -B build/qt-packages
       - name: Test relocated bundle without development libraries
@@ -610,6 +612,7 @@ jobs:
             test -x "$bin/$executable"
             lipo "$bin/$executable" -verify_arch arm64
           done
+          test -f "$bin/libopennow_streamer_ffi.dylib"
           lipo "$bin/libopennow_streamer_ffi.dylib" -verify_arch arm64
           otool -D build/opennow-qt-release/OpenNOW.app/Contents/MacOS/libopennow_streamer_ffi.dylib \
             | grep -Fx '@rpath/libopennow_streamer_ffi.dylib'
@@ -627,7 +630,60 @@ jobs:
           unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH
           unset DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH
           "$bin/opennow-acceptance-verify" --help
-          "$bin/OpenNOW" --smoke-test --allow-multiple-instances --desktop --route home --reduced-motion
+          python3 - "$bin" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import select
+          import subprocess
+          import sys
+          import tempfile
+
+          bin_dir = Path(sys.argv[1])
+          for name in ("OpenNOW", "opennow-core", "opennow-acceptance-verify",
+                       "opennow-streamer", "libopennow_streamer_ffi.dylib"):
+              dependencies = subprocess.check_output(["otool", "-L", bin_dir / name], text=True)
+              for line in dependencies.splitlines()[1:]:
+                  dependency = line.strip().split(" (", 1)[0]
+                  assert not dependency.startswith("/") or dependency.startswith(
+                      ("/System/Library/", "/usr/lib/")), (name, dependency)
+          probe = subprocess.run(
+              [bin_dir / "opennow-streamer"],
+              input='{"id":"package-probe","type":"hello","protocolVersion":6}\n'
+                    '{"id":"package-shutdown","type":"shutdown"}\n',
+              text=True, capture_output=True, check=True, timeout=30)
+          messages = [json.loads(line) for line in probe.stdout.splitlines()]
+          ready = next(m for m in messages if m.get("id") == "package-probe")
+          assert ready.get("type") == "ready", ready
+          assert any(b.get("backend") == "videotoolbox" for b in ready["capabilities"]["videoBackends"])
+          with tempfile.TemporaryDirectory() as data_dir:
+              core = subprocess.Popen(
+                  [bin_dir / "opennow-core", "--data-dir", data_dir],
+                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+              try:
+                  core.stdin.write('{"type":"request","id":"package-core","method":"core.hello",'
+                                   '"params":{"protocolVersion":1}}\n')
+                  core.stdin.flush()
+                  assert select.select([core.stdout], [], [], 30)[0], "Core handshake timed out"
+                  response = json.loads(core.stdout.readline())
+                  assert response.get("id") == "package-core" and response.get("ok") is True, response
+              finally:
+                  core.kill()
+                  core.communicate(timeout=5)
+          subprocess.run(
+              [bin_dir / "OpenNOW", "--smoke-test", "--allow-multiple-instances",
+               "--desktop", "--route", "home", "--reduced-motion"],
+              env={**os.environ, "QT_QPA_PLATFORM": "cocoa"}, check=True, timeout=30)
+          PY
+      - name: Upload macOS validation package
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-macos-arm64-validation
+          path: build/qt-packages/*.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
       - name: Preserve macOS test failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

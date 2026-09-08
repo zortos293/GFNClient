@@ -319,24 +319,24 @@ fn hardware_backend() -> VideoBackendCapability {
         platform: "macos",
         codecs: vec![
             CodecCapability {
-                hdr_supported: None,
-                color_qualities: None,
+                hdr_supported: Some(false),
+                color_qualities: Some(vec!["8bit_420"]),
                 codec: "h264",
                 available: h264_available,
                 reason: (!h264_available)
                     .then_some("H.264 VideoToolbox hardware decode or Metal is unavailable"),
             },
             CodecCapability {
-                hdr_supported: None,
-                color_qualities: None,
+                hdr_supported: Some(false),
+                color_qualities: Some(vec!["8bit_420", "10bit_420"]),
                 codec: "h265",
                 available: h265_available,
                 reason: (!h265_available)
                     .then_some("H.265 VideoToolbox hardware decode or Metal is unavailable"),
             },
             CodecCapability {
-                hdr_supported: None,
-                color_qualities: None,
+                hdr_supported: Some(false),
+                color_qualities: Some(vec!["8bit_420", "10bit_420"]),
                 codec: "av1",
                 available: av1_available,
                 reason: (!av1_available)

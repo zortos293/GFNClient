@@ -1,4 +1,5 @@
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -8,6 +9,17 @@ QT_SOURCE = Path(__file__).resolve().parents[1]
 
 
 class MacOSBuildContractTest(unittest.TestCase):
+    def test_architecture_validation_places_input_before_architecture_list(self):
+        workflow = QT_SOURCE.parent / ".github/workflows/qt-ci.yml"
+        commands = [shlex.split(line.strip()) for line in workflow.read_text().splitlines()
+                    if line.strip().startswith("lipo ")]
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(
+            commands,
+            [["lipo", "$bin/$executable", "-verify_arch", "arm64"],
+             ["lipo", "$bin/libopennow_streamer_ffi.dylib", "-verify_arch", "arm64"]],
+        )
+
     def configure(self, arch="arm64", rust_target=""):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

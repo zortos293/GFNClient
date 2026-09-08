@@ -165,6 +165,7 @@ pub struct BackendStats {
     pub video_frames_dropped: u64,
     pub video_decoded_queue_dropped: u64,
     pub video_metal_submitted: u64,
+    pub video_metal_completed: u64,
     pub video_display_underflows: u64,
     pub video_scanout_skipped: u64,
     pub video_presented: u64,
@@ -186,6 +187,7 @@ pub(super) struct Counters {
     video_frames_dropped: AtomicU64,
     video_decoded_queue_dropped: AtomicU64,
     video_metal_submitted: AtomicU64,
+    video_metal_completed: AtomicU64,
     video_display_underflows: AtomicU64,
     video_scanout_skipped: AtomicU64,
     video_presented: AtomicU64,
@@ -208,6 +210,7 @@ impl Counters {
             video_frames_dropped: self.video_frames_dropped.load(Ordering::Relaxed),
             video_decoded_queue_dropped: self.video_decoded_queue_dropped.load(Ordering::Relaxed),
             video_metal_submitted: self.video_metal_submitted.load(Ordering::Relaxed),
+            video_metal_completed: self.video_metal_completed.load(Ordering::Relaxed),
             video_display_underflows: self.video_display_underflows.load(Ordering::Relaxed),
             video_scanout_skipped: self.video_scanout_skipped.load(Ordering::Relaxed),
             video_presented: self.video_presented.load(Ordering::Relaxed),
@@ -603,7 +606,8 @@ impl MacOsBackend {
         let counters = Arc::new(Counters::default());
         let failures = Arc::new(FailureReporter::default());
         let mailbox = Arc::new(LatestMailbox::new());
-        let frame_producer = EmbeddedFrameProducer::new(mailbox, Arc::clone(&counters));
+        let frame_producer =
+            EmbeddedFrameProducer::new(mailbox, Arc::clone(&counters), Arc::clone(&failures));
         let frame_available = publish.map(|publish| {
             let producer = frame_producer.clone();
             Arc::new(move || {

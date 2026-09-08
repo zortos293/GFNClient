@@ -1556,27 +1556,39 @@ mod tests {
             .as_nanos();
         let root = env::temp_dir().join(format!("opennow-core-profile-{unique}"));
         let primary = root.join("OpenNOW");
-        let legacy = root.join("opennow");
+        let legacy = root.join("legacy-opennow");
 
         fs::create_dir_all(&legacy).unwrap();
-        #[cfg(not(windows))]
         assert_eq!(
             select_existing_data_dir(primary.clone(), [legacy.clone()]),
             legacy
         );
-        // Windows resolves these two historical spellings to the same directory,
-        // so the preferred spelling is already considered present.
-        #[cfg(windows)]
-        assert_eq!(
-            select_existing_data_dir(primary.clone(), [legacy.clone()]),
-            primary
-        );
 
         fs::create_dir_all(&primary).unwrap();
-        assert_eq!(
-            select_existing_data_dir(primary.clone(), [root.join("opennow")]),
-            primary
-        );
+        assert_eq!(select_existing_data_dir(primary.clone(), [legacy]), primary);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn historical_profile_spelling_respects_filesystem_case_sensitivity() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!("opennow-core-profile-case-{unique}"));
+        let primary = root.join("OpenNOW");
+        let legacy = root.join("opennow");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("settings.json"), b"{}").unwrap();
+
+        let expected = if primary.canonicalize().is_ok() {
+            primary.clone()
+        } else {
+            legacy.clone()
+        };
+        let selected = select_existing_data_dir(primary, [legacy.clone()]);
+        assert_eq!(selected, expected);
+        assert_eq!(fs::read(selected.join("settings.json")).unwrap(), b"{}");
         let _ = fs::remove_dir_all(root);
     }
 

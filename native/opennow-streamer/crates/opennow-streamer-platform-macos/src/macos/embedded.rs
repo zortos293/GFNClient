@@ -4,6 +4,7 @@ use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use block2::RcBlock;
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -18,13 +19,14 @@ use objc2_core_video::{
 };
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLCommandBuffer, MTLCommandEncoder, MTLDevice, MTLLibrary, MTLLoadAction, MTLPixelFormat,
-    MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStorageMode, MTLStoreAction,
-    MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
+    MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLDevice, MTLLibrary,
+    MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStorageMode,
+    MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
 
 use crate::color::ConversionParameters;
+use crate::failure::FailureReporter;
 use crate::format::{MetalFrameFormat, MetalTextureColorSpace, VideoBitDepth, VideoColorSpace};
 
 use super::mailbox::LatestMailbox;
@@ -180,6 +182,7 @@ pub struct MetalFrame {
     frame: DecodedFrame,
     state: Arc<Mutex<Option<MetalState>>>,
     counters: Arc<Counters>,
+    failures: Arc<FailureReporter>,
     sequence: u64,
 }
 
@@ -247,6 +250,8 @@ impl MetalFrame {
             self.frame.clone(),
             command_buffer,
             frame_slot,
+            Arc::clone(&self.counters),
+            Arc::clone(&self.failures),
         )?;
         self.counters
             .video_metal_submitted
@@ -264,15 +269,21 @@ pub struct EmbeddedFrameProducer {
     state: Arc<Mutex<Option<MetalState>>>,
     sequence: Arc<AtomicU64>,
     counters: Arc<Counters>,
+    failures: Arc<FailureReporter>,
 }
 
 impl EmbeddedFrameProducer {
-    pub(super) fn new(mailbox: Arc<LatestMailbox<DecodedFrame>>, counters: Arc<Counters>) -> Self {
+    pub(super) fn new(
+        mailbox: Arc<LatestMailbox<DecodedFrame>>,
+        counters: Arc<Counters>,
+        failures: Arc<FailureReporter>,
+    ) -> Self {
         Self {
             mailbox,
             state: Arc::new(Mutex::new(None)),
             sequence: Arc::new(AtomicU64::new(0)),
             counters,
+            failures,
         }
     }
 
@@ -286,6 +297,7 @@ impl EmbeddedFrameProducer {
             frame,
             state: Arc::clone(&self.state),
             counters: Arc::clone(&self.counters),
+            failures: Arc::clone(&self.failures),
             sequence,
         })
     }
@@ -311,8 +323,8 @@ impl EmbeddedFrameProducer {
     }
 }
 
-struct SlotResources {
-    output: Retained<ProtocolObject<dyn MTLTexture>>,
+struct InFlightResources {
+    _output: Retained<ProtocolObject<dyn MTLTexture>>,
     _frame: DecodedFrame,
     _luma_cv_texture: CFRetained<CVMetalTexture>,
     _chroma_cv_texture: CFRetained<CVMetalTexture>,
@@ -326,7 +338,7 @@ struct MetalState {
     library: Retained<ProtocolObject<dyn MTLLibrary>>,
     pipelines: [Option<Retained<ProtocolObject<dyn MTLRenderPipelineState>>>; 2],
     texture_cache: CFRetained<CVMetalTextureCache>,
-    slots: HashMap<u32, SlotResources>,
+    slots: HashMap<u32, Retained<ProtocolObject<dyn MTLTexture>>>,
     generation: u64,
 }
 
@@ -372,6 +384,8 @@ impl MetalState {
         frame: DecodedFrame,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
         frame_slot: u32,
+        counters: Arc<Counters>,
+        failures: Arc<FailureReporter>,
     ) -> Result<MetalRecordedFrame, BackendError> {
         if CVPixelBufferGetPlaneCount(&frame.image) != 2 {
             return Err(BackendError::Metal(
@@ -408,7 +422,6 @@ impl MetalState {
         let output = self
             .slots
             .remove(&frame_slot)
-            .map(|resources| resources.output)
             .filter(|texture| {
                 texture.width() == width
                     && texture.height() == height
@@ -474,17 +487,37 @@ impl MetalState {
         encoder.endEncoding();
 
         let texture = Retained::as_ptr(&output).cast_mut().cast::<c_void>();
-        self.slots.insert(
-            frame_slot,
-            SlotResources {
-                output,
-                _frame: frame,
-                _luma_cv_texture: luma_cv_texture,
-                _chroma_cv_texture: chroma_cv_texture,
-                _luma_texture: luma_texture,
-                _chroma_texture: chroma_texture,
+        self.slots.insert(frame_slot, output.clone());
+        let resources = InFlightResources {
+            _output: output,
+            _frame: frame,
+            _luma_cv_texture: luma_cv_texture,
+            _chroma_cv_texture: chroma_cv_texture,
+            _luma_texture: luma_texture,
+            _chroma_texture: chroma_texture,
+        };
+        let completed = RcBlock::new(
+            move |command: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                let _retained_until_completion = &resources;
+                let command = unsafe { command.as_ref() };
+                if command.status() == MTLCommandBufferStatus::Completed {
+                    counters
+                        .video_metal_completed
+                        .fetch_add(1, Ordering::Relaxed);
+                    failures.metal_succeeded();
+                } else {
+                    counters
+                        .video_present_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                    let message = command.error().map_or_else(
+                        || "Qt Metal command buffer failed without an error description".to_owned(),
+                        |error| error.localizedDescription().to_string(),
+                    );
+                    failures.metal_failed(message);
+                }
             },
         );
+        unsafe { command_buffer.addCompletedHandler(RcBlock::as_ptr(&completed)) };
         self.generation = self.generation.wrapping_add(1);
         Ok(MetalRecordedFrame {
             texture,
